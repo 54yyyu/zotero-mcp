@@ -334,7 +334,11 @@ def run_has_level_fill(manifest: dict[str, Any]) -> bool:
     library changes doesn't have. A manifest from before ``has_level_fill``
     was written is read from the records files of its chunks still to land;
     an imported chunk's files are gone, and its records are in the index.
+    Rewrites of items kept for a retry (``retry_keys``) count as fills: they
+    are for items whatever changed, so they hold new runs back the same way.
     """
+    if manifest.get("retry_keys"):
+        return True
     if "has_level_fill" in manifest:
         return bool(manifest["has_level_fill"])
     return any(

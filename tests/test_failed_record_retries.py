@@ -14,6 +14,7 @@ import importlib.util
 import json
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -658,3 +659,37 @@ def test_a_cancelled_file_given_up_by_batch_import_is_rewritten_next_time(build,
 
     assert any("A new abstract for BBB." in text for text in search.chroma_client.embedded)
     assert _saved(tmp_path)["retry_item_keys"] == []
+
+
+def _uploads_of(batch, key):
+    return sum(
+        1
+        for text in batch.fake.uploads.values()
+        for row in text.splitlines()
+        if json.loads(row)["custom_id"].split("#", 1)[0] == key
+    )
+
+
+def test_a_run_rewriting_kept_items_holds_new_runs_past_the_window(build, batch, tmp_path):
+    """Like a fill: a newer run doesn't carry the rewrites, so they would be paid for twice."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG, "CCC": LONG})
+    build(zotero, chunking=False).update_database()
+    _set_update_config(tmp_path, retry_item_keys=["BBB"], retry_item_attempts={"BBB": 1})
+    batch.search(zotero, chunking=False).update_database(use_batch=True)
+    old = (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    for path in tmp_path.glob("**/manifest.json"):
+        manifest = json.loads(path.read_text())
+        manifest["created_at"] = old
+        for entry in manifest["batches"]:
+            entry["submitted_at"] = old
+        path.write_text(json.dumps(manifest))
+    zotero.version = 6
+    zotero.changed = {"CCC"}
+
+    stats = batch.search(zotero, chunking=False).update_database(use_batch=True)
+
+    assert stats.get("batch_deferred")
+    _land(batch, zotero, chunking=False)
+    assert _saved(tmp_path)["retry_item_keys"] == []
+    batch.search(zotero, chunking=False).update_database(use_batch=True)
+    assert _uploads_of(batch, "BBB") == 1
