@@ -89,10 +89,11 @@ once. Its "Index freshness" line says whether the index is behind the library:
   still works; go ahead. Tell the user once, with the steps it lists (stop
   servers and upgrade other copies of zotero-mcp, `zotero-mcp migrate-index
   --dry-run`, `zotero-mcp migrate-index`, then the update exactly as step 4
-  gives it, usually `zotero-cli db update --fulltext`). Say that only the
-  update embeds anything, billed with a paid embedding API, and give its item
-  count and estimated tokens. Ask the user before running any of it; never
-  migrate on your own.
+  gives it: `zotero-cli db update --fulltext` in local mode, plain
+  `zotero-cli db update` with the web API, where `--fulltext` fails). Say
+  that only the update embeds anything, billed with a paid embedding API, and
+  give its item count and estimated tokens. Ask the user before running any
+  of it; never migrate on your own.
 
 If a semantic search fails because the embedding API is unreachable, fall back
 to `search` in `items` mode and tell the user why; do not report that nothing

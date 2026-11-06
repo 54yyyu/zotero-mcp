@@ -429,7 +429,13 @@ def _print_migration_report(report) -> None:
     if report.needed or report.items_needing_articles:
         print("\nNext steps:")
     if report.items_needing_articles:
-        print("  zotero-mcp update-db --fulltext   # embeds the missing article vectors, one per item")
+        from zotero_mcp.utils import is_local_mode
+
+        if is_local_mode():
+            print("  zotero-mcp update-db --fulltext   # embeds the missing article vectors, one per item")
+        else:
+            print("  zotero-mcp update-db   # embeds the missing article vectors, one per item")
+            print("  (it uses the text Zotero has already extracted; --fulltext needs local mode)")
         print("  (use the same options as your usual update; passages are not embedded again)")
     if report.needed:
         print("  Restart any running zotero-mcp server, and upgrade any other copy using this index.")
@@ -1454,9 +1460,10 @@ def main():
             print(f"Database path: {collection_info.get('persist_directory', 'Unknown')}")
             if collection_info.get("migration"):
                 from zotero_mcp.index_migration import status_note
+                from zotero_mcp.utils import is_local_mode
 
                 print("\nIndex migration:")
-                for line in status_note(collection_info["migration"], "zotero-mcp update-db"):
+                for line in status_note(collection_info["migration"], "zotero-mcp update-db", local_mode=is_local_mode()):
                     print(f"  {line}")
 
             update_config = status.get("update_config", {})

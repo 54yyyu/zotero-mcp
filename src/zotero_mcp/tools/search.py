@@ -1916,7 +1916,9 @@ def get_search_database_status(*, ctx: Context) -> str:
 
             output.append("## Index Migration")
             output.append("```")
-            output.extend(status_note(collection_info["migration"], "zotero-mcp update-db"))
+            output.extend(
+                status_note(collection_info["migration"], "zotero-mcp update-db", local_mode=_utils.is_local_mode())
+            )
             output.append("```")
             output.append("")
 

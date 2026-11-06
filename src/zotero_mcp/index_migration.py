@@ -201,21 +201,24 @@ def migrate_index(
     return report
 
 
-def status_note(migration: dict[str, Any], update_command: str) -> list[str]:
+def status_note(migration: dict[str, Any], update_command: str, *, local_mode: bool) -> list[str]:
     """What status says about an unmigrated chunked index: what is wrong and what to run.
 
     ``migration`` is the ``migration`` entry of the collection status (see
     ``chroma_client.read_migration_estimate``); ``update_command`` is how the
-    caller's users run update-db. Step 4 adds ``--fulltext`` unless no waiting
-    item was indexed with full text, as migrate-index's own report does:
-    without it the update leaves those items waiting for their text.
+    caller's users run update-db. In local mode step 4 adds ``--fulltext``
+    unless no waiting item was indexed with full text, as migrate-index's own
+    report does: without it the update leaves those items waiting for their
+    text. ``--fulltext`` fails outside local mode, where the plain update
+    fetches the text Zotero has already extracted, so it is left out there.
 
     Says nothing about whether the run is billed: the settings can't tell a
     paid service from a free one.
     """
     items = migration.get("items_needing_articles")
     tokens = migration.get("estimated_tokens")
-    update = update_command if migration.get("fulltext") is False else f"{update_command} --fulltext"
+    web_fulltext = not local_mode and migration.get("fulltext") is not False
+    update = update_command if migration.get("fulltext") is False or not local_mode else f"{update_command} --fulltext"
     those = f"{items:,} items have" if items is not None else "some items have"
     lines = [
         "This index was built by an earlier version: its passages are in the article-level "
@@ -230,6 +233,11 @@ def status_note(migration: dict[str, Any], update_command: str) -> list[str]:
         f"  4. {update}   (embeds an article record for each of those items; "
         "add the options you usually use)",
     ]
+    if web_fulltext:
+        lines.append(
+            "     It uses the text Zotero has already extracted; --fulltext needs local mode, "
+            "so leave it out here."
+        )
     billed = "With a paid embedding API that is billed."
     if tokens is not None and items is not None:
         cap = migration.get("max_tokens")

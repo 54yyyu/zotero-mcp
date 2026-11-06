@@ -964,9 +964,10 @@ def cmd_db(args):
         print(f"Database path: {ci.get('persist_directory', 'Unknown')}")
         if ci.get("migration"):
             from zotero_mcp.index_migration import status_note
+            from zotero_mcp.utils import is_local_mode
 
             print("\nIndex migration:")
-            for line in status_note(ci["migration"], "zotero-cli db update"):
+            for line in status_note(ci["migration"], "zotero-cli db update", local_mode=is_local_mode()):
                 print(f"  {line}")
         print("\nUpdate configuration:")
         print(f"- Auto update: {uc.get('auto_update', False)}")

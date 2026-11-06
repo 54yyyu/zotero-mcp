@@ -36,6 +36,8 @@ def home(tmp_path, monkeypatch):
     monkeypatch.setenv("USERPROFILE", str(home))
     monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
     monkeypatch.delenv("ZOTERO_EMBEDDING_MODEL", raising=False)
+    # Local mode, where update-db --fulltext works; the web-API tests switch it off.
+    monkeypatch.setenv("ZOTERO_LOCAL", "true")
     monkeypatch.setattr(
         index_staleness,
         "check_active_library",
@@ -376,6 +378,39 @@ def test_step_four_is_the_update_migrate_index_itself_names(index, capsys):
 
     assert command == "zotero-mcp update-db --fulltext"
     assert f"4. {command}   (" in note
+
+
+@pytest.mark.parametrize("which", ["tool", "db-status", "zotero-cli"])
+def test_step_four_with_the_web_api_leaves_out_fulltext(index, monkeypatch, capsys, which):
+    """--fulltext needs local mode; the web API's update fetches the text Zotero extracted."""
+    monkeypatch.setenv("ZOTERO_LOCAL", "false")
+    directory, config = index
+    _seed_unmigrated(directory)
+
+    out = _status_tool() if which == "tool" else _cli_status(monkeypatch, capsys, config, directory, which)
+
+    update = "zotero-cli db update" if which == "zotero-cli" else "zotero-mcp update-db"
+    _assert_note(out, update)
+    assert "--fulltext" not in out.replace("--fulltext needs local mode", "")
+    assert "--fulltext needs local mode" in out
+
+
+def test_migrate_index_with_the_web_api_names_the_same_update_as_status(index, monkeypatch, capsys):
+    from zotero_mcp.cli import _print_migration_report
+
+    monkeypatch.setenv("ZOTERO_LOCAL", "false")
+    directory, config = index
+    _seed_unmigrated(directory)
+    note = _status_tool()
+    capsys.readouterr()
+
+    _print_migration_report(_dry_report(config))
+    out = capsys.readouterr().out
+    command = next(line.split("#")[0].strip() for line in out.splitlines() if "update-db" in line)
+
+    assert command == "zotero-mcp update-db"
+    assert f"4. {command}   (" in note
+    assert "--fulltext needs local mode" in out
 
 
 def _dry_report(config):
