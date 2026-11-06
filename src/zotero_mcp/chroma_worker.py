@@ -16,6 +16,13 @@ call starts a new one, whose first query loads the index again. Everything
 else a semantic search does, such as fetching the Zotero items for its hits,
 stays in the server, so the active library and its clients are unaffected.
 
+Once a worker has passages loaded, only passage activity keeps it: a search
+at that level, or a call that writes or deletes passages. The passage
+collection is large and slow to load again, the article collection small and
+quick, so article searches alone let the worker exit and start a new one
+without passages. A worker never exits while this process runs an index
+update (holds the update lock) or has an iterator open on it.
+
 Requests and replies are length-prefixed pickles on the child's stdin and
 stdout. Both ends are this package, never untrusted data. Anything the
 libraries print in the child goes to stderr, so it cannot break the protocol.
@@ -23,7 +30,9 @@ libraries print in the child goes to stderr, so it cannot break the protocol.
 
 from __future__ import annotations
 
+import contextlib
 import functools
+import inspect
 import logging
 import os
 import pickle
@@ -39,6 +48,54 @@ logger = logging.getLogger(__name__)
 DEFAULT_IDLE_UNLOAD_MINUTES = 10
 
 _HEADER = struct.Struct(">Q")
+
+_clock = time.monotonic  # one place, so tests can move time without waiting
+
+# Index updates running in this process, and when the last one ended. While
+# one runs no worker exits: an update goes on between its calls (fetching
+# items, extracting text), and a new worker would load everything again.
+_updates_running = 0
+_last_update_end = 0.0
+_updates_lock = threading.Lock()
+
+
+@contextlib.contextmanager
+def update_running():
+    """Keep every worker of this process alive while an index update runs."""
+    global _updates_running, _last_update_end
+    with _updates_lock:
+        _updates_running += 1
+    try:
+        yield
+    finally:
+        with _updates_lock:
+            _updates_running -= 1
+            _last_update_end = _clock()
+
+
+# Calls that delete passages whatever their arguments, and calls that write
+# or delete the records named by ``ids``, where a ``KEY#n`` id is a passage.
+_PASSAGE_CALLS = frozenset({"delete_item_chunks", "prune_item_chunks", "reset_collection"})
+_CALLS_BY_ID = frozenset({
+    "add_documents", "upsert_documents", "upsert_embeddings", "delete_documents", "update_metadatas",
+})
+
+
+def _touches_passages(name: str, args: tuple, kwargs: dict) -> bool:
+    """Whether a ``ChromaClient`` call is passage activity, which keeps a worker with passages."""
+    if name in _PASSAGE_CALLS:
+        return True
+    if name != "search" and name not in _CALLS_BY_ID:
+        return False
+    from zotero_mcp.chroma_client import PASSAGES, ChromaClient
+
+    try:
+        bound = inspect.signature(getattr(ChromaClient, name)).bind(None, *args, **kwargs)
+    except TypeError:  # the worker will report the bad call
+        return False
+    if name == "search":
+        return bound.arguments.get("level") == PASSAGES
+    return any("#" in str(doc_id) for doc_id in bound.arguments.get("ids") or ())
 
 
 def _send(stream: BinaryIO, message: Any) -> None:
@@ -110,6 +167,11 @@ class WorkerChromaClient:
     ``persist_directory``, ...) are fetched once and cached. A method that
     returns an iterator is streamed one item per request, so the group_id
     backfill can still update documents between batches.
+
+    The first passage search in each worker gets a ``passage_load`` entry in
+    its result: how long it took, which is mostly loading the passage
+    collection, and whether an idle exit had freed it, so a slow search can be
+    explained to the user.
     """
 
     def __init__(self, config_path: str | None, idle_seconds: float):
@@ -118,10 +180,23 @@ class WorkerChromaClient:
         self._lock = threading.RLock()
         self._proc: subprocess.Popen | None = None
         self._last_used = 0.0
+        # Per worker, reset when one starts:
+        self._passages_loaded = False  # from its first passage call on, only passage calls keep it
+        self._last_passage_used = 0.0
+        self._passage_searched = False  # its first passage search has been reported
+        self._open_iterators = 0
+        self._generation = 0  # which worker an iterator belongs to
+        self._last_iterator_end = 0.0
+        # Whether an idle exit freed loaded passages, so the next load is a reload.
+        self._passages_freed = False
 
     # --- process lifecycle ---------------------------------------------------
 
     def _start(self) -> None:
+        self._generation += 1
+        self._passages_loaded = False
+        self._passage_searched = False
+        self._open_iterators = 0
         cmd = [sys.executable, "-m", "zotero_mcp.chroma_worker", self._config_path or ""]
         self._proc = subprocess.Popen(
             cmd,
@@ -139,15 +214,28 @@ class WorkerChromaClient:
         while True:
             time.sleep(min(30.0, max(self._idle_seconds / 4, 0.05)))
             with self._lock:
-                if self._proc is not proc:
+                if self._proc is not proc or self._stop_if_idle(proc):
                     return
-                if time.monotonic() - self._last_used >= self._idle_seconds:
-                    logger.info(
-                        "Semantic search idle for %d s; stopping its worker to free the index memory",
-                        int(self._idle_seconds),
-                    )
-                    self._stop_locked()
-                    return
+
+    def _stop_if_idle(self, proc: subprocess.Popen) -> bool:
+        """Stop ``proc`` if it has been idle long enough; True if it is gone."""
+        with self._lock:
+            if self._proc is not proc:
+                return True
+            if _updates_running or self._open_iterators:
+                return False
+            last = self._last_passage_used if self._passages_loaded else self._last_used
+            last = max(last, self._last_iterator_end, _last_update_end)
+            if _clock() - last < self._idle_seconds:
+                return False
+            logger.info(
+                "Semantic search idle for %d s%s; stopping its worker to free the index memory",
+                int(self._idle_seconds),
+                " (no passage search or passage update)" if self._passages_loaded else "",
+            )
+            self._passages_freed = self._passages_loaded
+            self._stop_locked()
+            return True
 
     def _stop_locked(self) -> None:
         proc = self._proc
@@ -175,12 +263,14 @@ class WorkerChromaClient:
         proc = self._proc
         return proc.pid if proc is not None and proc.poll() is None else None
 
-    def _request(self, message: tuple) -> Any:
+    def _request(self, message: tuple, passages: bool = False) -> Any:
         with self._lock:
             if self._proc is None or self._proc.poll() is not None:
                 self._proc = None
                 self._start()
             proc = self._proc
+            first_passage_search = passages and message[1] == "search" and not self._passage_searched
+            started = _clock()
             try:
                 _send(proc.stdin, message)
                 status, value = _receive(proc.stdout)
@@ -188,25 +278,37 @@ class WorkerChromaClient:
                 self._stop_locked()
                 raise WorkerExited("the semantic search worker exited during a call") from e
             finally:
-                self._last_used = time.monotonic()
+                self._last_used = _clock()
+                if passages:
+                    self._passages_loaded = True
+                    self._last_passage_used = self._last_used
+            if status == "iter":
+                self._open_iterators += 1
+                value = _RemoteIterator(self, value, self._generation)
+            if first_passage_search and status != "error":
+                self._passage_searched = True
+                if isinstance(value, dict):
+                    value["passage_load"] = {
+                        "seconds": self._last_used - started,
+                        "reloaded": self._passages_freed,
+                        "idle_minutes": self._idle_seconds / 60,
+                    }
+                self._passages_freed = False
         if status == "error":
             raise value
         return status, value
 
+    def _iterator_done(self, generation: int) -> None:
+        with self._lock:
+            if generation == self._generation:
+                self._open_iterators -= 1
+                self._last_iterator_end = _clock()
+
     # --- forwarding ----------------------------------------------------------
 
     def _call(self, name: str, *args, **kwargs):
-        status, value = self._request(("call", name, args, kwargs))
-        if status == "iter":
-            return self._iterate(value)
-        return value
-
-    def _iterate(self, iterator_id: int):
-        while True:
-            status, value = self._request(("next", iterator_id))
-            if status == "done":
-                return
-            yield value
+        passages = _touches_passages(name, args, kwargs)
+        return self._request(("call", name, args, kwargs), passages=passages)[1]
 
     @property
     def embedding_function(self) -> _EmbeddingFunctionProxy:
@@ -225,7 +327,46 @@ class WorkerChromaClient:
         return value
 
 
-# --- which processes use a worker ------------------------------------------------
+class _RemoteIterator:
+    """An iterator living in the worker, fetched one item per request.
+
+    While it is open the worker does not exit, which would lose it. It counts
+    as closed once exhausted, closed, or dropped.
+    """
+
+    def __init__(self, client: WorkerChromaClient, iterator_id: int, generation: int):
+        self._client = client
+        self._id = iterator_id
+        self._generation = generation
+        self._open = True
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if not self._open:
+            raise StopIteration
+        try:
+            status, value = self._client._request(("next", self._id))
+        except BaseException:
+            self.close()
+            raise
+        if status == "done":
+            self.close()
+            raise StopIteration
+        return value
+
+    def close(self) -> None:
+        if self._open:
+            self._open = False
+            self._client._iterator_done(self._generation)
+
+    def __del__(self):
+        with contextlib.suppress(Exception):  # at interpreter exit, say
+            self.close()
+
+
+# --- which processes use a worker------------------------------------------------
 
 # Only the long-running server opts in: a CLI command exits when it is done,
 # which frees the index anyway, and the worker itself must open the real client.

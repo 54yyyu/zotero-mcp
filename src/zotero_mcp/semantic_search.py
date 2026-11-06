@@ -30,7 +30,7 @@ except Exception:
     _tokenizer = None
 
 
-from . import batch_common, fulltext_cache, gemini_batch, openai_batch
+from . import batch_common, chroma_worker, fulltext_cache, gemini_batch, openai_batch
 from .chroma_client import (
     ChromaClient,
     create_chroma_client,
@@ -330,9 +330,12 @@ def _acquire_update_lock(lock_path: Path):
     accepts the small double-work risk.
 
     ``fcntl.flock`` on POSIX, ``msvcrt.locking`` on Windows (#267).
+
+    While it is held, this process's ChromaDB worker does not exit when idle.
     """
     if _force_update_requested():
-        yield True
+        with chroma_worker.update_running():
+            yield True
         return
 
     ensure_private_dir(lock_path.parent)
@@ -352,7 +355,8 @@ def _acquire_update_lock(lock_path: Path):
             fd.flush()
         except Exception:
             pass
-        yield True
+        with chroma_worker.update_running():
+            yield True
     finally:
         if fd is not None:
             fd.close()
