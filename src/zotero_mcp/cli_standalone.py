@@ -983,6 +983,8 @@ def cmd_db(args):
         print("=== Semantic Search Database Status ===")
         print(f"Collection: {ci.get('name', 'Unknown')}")
         print(f"Document count: {ci.get('count', 0)}")
+        print(f"  Article-level records: {ci.get('article_records', 0)}")
+        print(f"  Passage-level records: {ci.get('passage_records', 0)}")
         print(f"Embedding model: {ci.get('embedding_model', 'Unknown')}")
         print(f"Database path: {ci.get('persist_directory', 'Unknown')}")
         print("\nUpdate configuration:")
