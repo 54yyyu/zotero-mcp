@@ -304,6 +304,19 @@ def test_unmigrated_index_cannot_search_articles_yet(build):
     assert "migrate" in result["error"]
 
 
+def test_mixed_unmigrated_index_is_not_said_to_hold_passages_only(build):
+    """Articles and passages share one ChromaDB collection until migrate-index splits them."""
+    search = build(route=False, chunking=True, articles=["ART"], passages=["PAS#0"])
+    search.chroma_client.route_passages = True
+
+    result = search.search("q", level="articles")
+
+    assert result["results"] == []
+    assert "passages only" not in result["error"]
+    assert "together" in result["error"]
+    assert "zotero-mcp migrate-index" in result["error"]
+
+
 def test_a_client_double_without_levels_still_searches():
     """Fakes in this suite and old callers pass no level and know no layout."""
     search = semantic_search.ZoteroSemanticSearch.__new__(semantic_search.ZoteroSemanticSearch)

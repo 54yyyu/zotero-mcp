@@ -5598,6 +5598,13 @@ class ZoteroSemanticSearch:
         if layout["unmigrated_passages"]:
             # Passages are in the article collection, which is searched either
             # way, as it always was until this index is migrated.
+            if requested == SEARCH_ARTICLES and layout["article_records"]:
+                # Articles are there too, so this index is mixed, not passage-only.
+                return None, False, None, (
+                    "This index keeps article and passage records together in one ChromaDB collection, "
+                    "so articles can't be searched on their own. To search them separately, run "
+                    "'zotero-mcp migrate-index'."
+                )
             if requested == SEARCH_ARTICLES:
                 return None, False, None, (
                     "This index holds passages only, in the article collection. To search "
