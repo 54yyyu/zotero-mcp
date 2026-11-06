@@ -503,7 +503,7 @@ def _print_update_stats(stats: dict) -> None:
         )
         if waited.get("stalled"):
             print(f"- WARNING: stalled chunks: {', '.join(waited['stalled'])}")
-    is_batch =stats.get("batch_mode") or stats.get("batch_submitted")
+    is_batch = stats.get("batch_mode") or stats.get("batch_submitted")
     batch_provider = stats.get("batch_provider", "openai")
     label = f"{_provider_label(batch_provider)} batch submission" if is_batch else "Database update"
     if stats.get("batch_deferred"):
