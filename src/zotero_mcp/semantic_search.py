@@ -21,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from pyzotero.zotero_errors import ResourceNotFoundError
+
 try:
     import tiktoken
 
@@ -2578,10 +2580,14 @@ class ZoteroSemanticSearch:
         kept: list[dict[str, Any]] = []
         waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
         for item in items:
-            if item.get("_index_levels") and not (item.get("data", {}).get("fulltext") or "").strip():
+            data = item.get("data", {})
+            if item.get("_index_levels") and not (data.get("fulltext") or "").strip():
                 existing = self.chroma_client.get_document_metadata(item["key"]) or {}
                 if existing.get("has_fulltext") and existing.get("has_fulltext") != "failed":
-                    waiting.add(item["key"])
+                    if not data.get("fulltext_fetch_failed"):
+                        # A failed fetch says nothing about the text: the
+                        # item is left for the next run, not parked.
+                        waiting.add(item["key"])
                     continue
             kept.append(item)
         self.update_config["gaps_waiting_for_text"] = sorted(waiting)
@@ -2681,12 +2687,24 @@ class ZoteroSemanticSearch:
             (text, source) where source is ``web-api:attachment:<key>``. Empty
             strings mean no fulltext is available for this item.
         """
+        text, source, _failed = self._fetch_fulltext_checked(item_key)
+        return text, source
+
+    def _fetch_fulltext_checked(self, item_key: str) -> tuple[str, str, bool]:
+        """``_fetch_fulltext_via_web_api``, plus whether a request failed on the way.
+
+        No text after a failed request says nothing about the item: the text
+        may well be there. Zotero's 404 for an attachment without text is an
+        answer, not a failure.
+        """
         try:
             children = _paginate(self.zotero_client.children, item_key) or []
+        except ResourceNotFoundError:
+            children = []
         except Exception as e:
             logger.debug(f"children({item_key}) failed: {e}")
-            children = []
-        return self._fulltext_from_attachments(
+            return "", "", True
+        return self._fulltext_from_attachments_checked(
             [self._pdf_attachment_key(child) for child in children]
         )
 
@@ -2702,20 +2720,31 @@ class ZoteroSemanticSearch:
 
     def _fulltext_from_attachments(self, attachment_keys: list[str | None]) -> tuple[str, str]:
         """Zotero's extracted text for the first of ``attachment_keys`` that has any."""
+        text, source, _failed = self._fulltext_from_attachments_checked(attachment_keys)
+        return text, source
+
+    def _fulltext_from_attachments_checked(
+        self, attachment_keys: list[str | None]
+    ) -> tuple[str, str, bool]:
+        """``_fulltext_from_attachments``, plus whether a request failed on the way."""
+        failed = False
         for child_key in attachment_keys:
             if not child_key:
                 continue
             try:
                 resp = self.zotero_client.fulltext_item(child_key)
+            except ResourceNotFoundError:
+                continue
             except Exception as e:
                 logger.debug(f"fulltext_item({child_key}) failed: {e}")
+                failed = True
                 continue
             text = str(resp.get("content", "") or "") if isinstance(resp, dict) else (
                 resp if isinstance(resp, str) else ""
             )
             if text.strip():
-                return text, f"web-api:attachment:{child_key}"
-        return "", ""
+                return text, f"web-api:attachment:{child_key}", False
+        return "", "", failed
 
     # For a whole-library pass over at least this many items, one paged listing
     # of the attachments is cheaper than asking for each item's children.
@@ -2781,15 +2810,18 @@ class ZoteroSemanticSearch:
             # attachments only (the parent probe was a request per item that
             # always came back empty).
             if pdf_keys is not None:
-                text, source = self._fulltext_from_attachments(pdf_keys.get(key, []))
+                text, source, failed = self._fulltext_from_attachments_checked(pdf_keys.get(key, []))
             else:
-                text, source = self._fetch_fulltext_via_web_api(key)
+                text, source, failed = self._fetch_fulltext_checked(key)
             if text:
                 data["fulltext"] = text
                 data["fulltextSource"] = source
                 fetched += 1
             else:
                 data["fulltext_attempted"] = True
+                if failed:
+                    # A gap fill must not take this as "Zotero has no text".
+                    data["fulltext_fetch_failed"] = True
             if idx % 25 == 0 or idx == total:
                 try:
                     sys.stderr.write(f"\r  Fulltext: {idx}/{total} items checked, {fetched} with text")
