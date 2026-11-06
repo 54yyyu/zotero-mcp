@@ -287,11 +287,15 @@ class WorkerChromaClient:
             if status == "iter":
                 self._open_iterators += 1
                 value = _RemoteIterator(self, value, self._generation)
+            embedding_seconds = 0.0
+            if message[0] == "call" and message[1] == "search" and isinstance(value, dict):
+                embedding_seconds = value.pop("embedding_seconds", 0.0) or 0.0
             if first_passage_search and status != "error":
                 self._passage_searched = True
                 if isinstance(value, dict):
                     value["passage_load"] = {
-                        "seconds": self._last_used - started,
+                        # Not the query's embedding: a slow API is not a slow load.
+                        "seconds": max(0.0, self._last_used - started - embedding_seconds),
                         "reloaded": self._passages_freed,
                         "idle_minutes": self._idle_seconds / 60,
                     }

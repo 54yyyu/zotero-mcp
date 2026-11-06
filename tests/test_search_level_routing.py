@@ -482,3 +482,22 @@ def test_tool_prints_why_the_search_was_slow_when_nothing_was_found(tool_output)
 
     assert "No semantically similar items" in text
     assert "This search took 42 s because ..." in text
+
+
+def test_a_search_reports_how_long_embedding_the_query_took(build):
+    """So the worker can tell a slow load from a slow embedding API."""
+    import time
+
+    search = build(chunking=True, articles=["ART"], passages=["PAS#0"])
+    client = search.chroma_client
+
+    def slow_embedding(_query):
+        time.sleep(0.05)
+        return [1.0, 0.0]
+
+    client.embedding_function = SimpleNamespace(embed_query_text=slow_embedding)
+
+    results = client.search(query_texts=["q"], n_results=1, level="passages")
+
+    assert results["embedding_seconds"] >= 0.05
+    assert search.search("q", level="passages")["results"]  # the extra key breaks nothing

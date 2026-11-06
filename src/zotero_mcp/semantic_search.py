@@ -5527,9 +5527,10 @@ class ZoteroSemanticSearch:
             results = self.chroma_client.search(
                 query_texts=[query], n_results=fetch_limit, where=where, **search_kwargs
             )
-            load_note = _passage_load_note(
-                results.pop("passage_load", None) if isinstance(results, dict) else None
-            )
+            load_note = None
+            if isinstance(results, dict):
+                results.pop("embedding_seconds", None)  # in-process; the worker drops it itself
+                load_note = _passage_load_note(results.pop("passage_load", None))
 
             _drop_missing_documents(results)
 

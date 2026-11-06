@@ -86,13 +86,14 @@ def worker(tmp_path, monkeypatch):
             return ("ok", client.separate)
         if kind == "call" and name == "search":
             client.search_hook(message)
-            return ("ok", {"ids": [["A"]], "documents": [["text"]]})
+            return ("ok", {"ids": [["A"]], "documents": [["text"]], **client.search_extra})
         return ("ok", None)
 
     monkeypatch.setattr(chroma_worker, "_send", lambda stream, message: sent.append(message))
     monkeypatch.setattr(chroma_worker, "_receive", lambda stream: reply(sent[-1]))
     client = WorkerChromaClient(str(tmp_path / "config.json"), idle_seconds=IDLE)
     client.search_hook = lambda message: None
+    client.search_extra = {}  # more keys in the worker's search reply
     client.separate = True  # passages in their own ChromaDB collection (a migrated index)
     client.clock = clock
     return client
@@ -315,6 +316,20 @@ def test_the_reported_time_includes_starting_the_worker(worker, monkeypatch):
     _slow_load(worker, 40)
 
     assert _passage_search(worker)["passage_load"]["seconds"] == 42
+
+
+def test_the_reported_time_leaves_out_embedding_the_query(worker):
+    # A slow embedding API is not a slow load: the note would blame the
+    # wrong thing and suggest a setting that cannot help.
+    _slow_load(worker, 40)
+    worker.search_extra = {"embedding_seconds": 37.0}
+
+    first = _passage_search(worker)
+    second = _passage_search(worker)
+
+    assert first["passage_load"]["seconds"] == 3
+    assert "embedding_seconds" not in first
+    assert "embedding_seconds" not in second
 
 
 def test_a_passage_search_after_an_idle_exit_says_it_reloaded(worker):

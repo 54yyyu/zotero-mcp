@@ -16,6 +16,7 @@ import logging
 import os
 import sqlite3
 import sys
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -443,6 +444,7 @@ class ChromaClient:
             # method; anything else — ChromaDB's DefaultEmbeddingFunction
             # included — is handed query_texts and left to embed them itself.
             _is_custom_ef = isinstance(self.embedding_function, CUSTOM_EMBEDDING_FUNCTIONS)
+            embedding_started = time.perf_counter()
             if _is_custom_ef and query_texts:
                 query_embeddings = []
                 for qt in query_texts:
@@ -453,9 +455,13 @@ class ChromaClient:
                     query_embeddings.append(emb)
                 query_kwargs["query_embeddings"] = query_embeddings
             else:
-                query_kwargs["query_texts"] = query_texts
+                query_kwargs["query_texts"] = query_texts  # embedded inside query(), not timed apart
+            embedding_seconds = time.perf_counter() - embedding_started
 
             results = self._collection_for_level(level).query(**query_kwargs)
+            # How long the query took to embed, so a slow first search can be
+            # told apart from a slow index load (see chroma_worker).
+            results["embedding_seconds"] = embedding_seconds
             logger.info(f"Semantic search returned {len(results.get('ids', [[]])[0])} results")
             return results
         except Exception as e:
