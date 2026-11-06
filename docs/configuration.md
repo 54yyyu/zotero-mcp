@@ -244,7 +244,12 @@ An update writes every article record before any passage, so article search cove
 
 Passages and articles live in two ChromaDB collections in the same index directory, `zotero_library_passages` and `zotero_library`, so an article search never loads passage vectors into memory. With chunking off, an item that changes loses its passages, and they are added back when chunking is next on.
 
-An index built with chunking on by an earlier version holds its passages in `zotero_library`. It keeps working that way, passages only, until you run `zotero-mcp migrate-index`. That renames the collection, keeping every vector, and takes seconds however large the index is; `--dry-run` reports what would change. The next `update-db` then embeds one article vector per item, and an interrupted run carries on where it stopped. Restart any running server afterwards, and upgrade any other copy of zotero-mcp using the same index, because an older version would go back to writing passages in `zotero_library`.
+An index built with chunking on by an earlier version holds its passages in `zotero_library`, the article-level ChromaDB collection: passages only, or passages beside article records left from before chunking was turned on (a mixed index). Search keeps working that way until you migrate, and the status commands (`zotero-mcp db-status`, `zotero-cli db status`, the `zotero_get_search_database_status` tool) say so, with the steps and an estimate of what the last one costs. To migrate:
+
+1. Stop any running server, and upgrade any other copy of zotero-mcp using the same index; an older version would go back to writing passages in `zotero_library`.
+2. `zotero-mcp migrate-index --dry-run` reports what would change.
+3. `zotero-mcp migrate-index` renames the collection to `zotero_library_passages`, keeping every vector, and moves any article records into a new `zotero_library`. It embeds nothing and takes seconds however large the index is. The server can start again after it.
+4. `zotero-mcp update-db` embeds one article vector for each item that has passages but no article record. This is the only step that costs money with a paid provider; status gives the number of items and an estimated token total, from the length of each item's indexed text, cut to the model's input limit. An interrupted run carries on where it stopped.
 
 A passage longer than the model can read would lose its tail, so `chunk_size` is lowered to fit: about 85% of the model's token limit, at 4 characters per token (3 for OpenAI). For the default model that is roughly 870 characters per passage whatever `chunk_size` says. Models with a larger limit keep your `chunk_size`, and the change is logged once at info level.
 

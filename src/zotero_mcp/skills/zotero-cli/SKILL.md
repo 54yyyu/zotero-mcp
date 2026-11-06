@@ -84,6 +84,13 @@ once. Its "Index freshness" line says whether the index is behind the library:
 - Only the active library is checked; a group library needs its own check.
 - An "Unfinished batch" line means a batch embedding run has chunks not yet
   imported; `zotero-cli db batch-import` imports the finished ones.
+- An "Index migration" section means the index was built by an earlier
+  version, with its passages in the article-level ChromaDB collection. Search
+  still works; go ahead. Tell the user once, with the steps it lists (stop
+  servers and upgrade other copies of zotero-mcp, `zotero-mcp migrate-index
+  --dry-run`, `zotero-mcp migrate-index`, then `zotero-cli db update`) and
+  that only the update costs money: give its item count and estimated
+  tokens. Ask the user before running any of it; never migrate on your own.
 
 If a semantic search fails because the embedding API is unreachable, fall back
 to `search` in `items` mode and tell the user why; do not report that nothing
