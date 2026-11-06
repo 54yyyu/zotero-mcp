@@ -1048,11 +1048,15 @@ def _normalize_item_tags(value):
     return normalized
 
 
-def _resolve_collection_names(zot, names, ctx=None):
-    """Resolve collection names to keys (case-insensitive)."""
+def _resolve_collection_names(zot, names, ctx=None, collections=None):
+    """Resolve collection names to keys (case-insensitive).
+
+    ``collections`` is an already-fetched list (a backend's
+    ``list_collections()``); without it they are paged from ``zot``.
+    """
     if not names:
         return []
-    all_collections = _paginate(zot.collections)
+    all_collections = collections if collections is not None else _paginate(zot.collections)
     results = []
     for name in names:
         name_lower = name.lower()
