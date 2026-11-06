@@ -76,7 +76,8 @@ class SemanticSearchConfig:
     reranker: RerankerConfig = field(default_factory=RerankerConfig)
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
     # Minutes without a semantic search before the MCP server's ChromaDB
-    # worker exits and the index's memory is freed; 0 keeps ChromaDB in the
+    # worker exits and the index's memory is freed (once it holds passages,
+    # only passage searches and writes count); 0 keeps ChromaDB in the
     # server process, loaded until it exits. Keep in step with
     # chroma_worker.DEFAULT_IDLE_UNLOAD_MINUTES.
     idle_unload_minutes: float = 10

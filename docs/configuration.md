@@ -250,7 +250,9 @@ With the default model, 20 passages cover about 13,000 characters, a few pages. 
 
 ChromaDB loads the whole vector index into memory the first time a search runs, and keeps it there until the process holding it exits. Each vector takes its dimension × 4 bytes: a million passages with OpenAI's `text-embedding-3-small` (1,536 dimensions) need about 6 GB. To get that memory back, the MCP server runs ChromaDB in a separate worker process. The worker starts at the first semantic search and exits after 10 minutes with no semantic calls, which returns that memory to the system. The next search starts a new worker and loads the index again.
 
-The reload is quick for article-level indexes. On an Apple M1 Max, with random 3,072-dimension vectors, a new worker answered its first query 0.4 s after starting for 5,000 records (about 150 MB resident) and 0.55 s for 50,000 records (about 700 MB). A large passage-level index takes longer, up to about half a minute for millions of passages. Change the wait with `idle_unload_minutes`, or set it to `0` to keep ChromaDB inside the server:
+Passages and articles load separately, and the passage ChromaDB collection is much the larger. Once a worker has loaded passages, only passage activity keeps it running: a passage search, or an update that writes or deletes passages. Article searches alone let it exit after the wait, and the next one starts a new worker that loads articles only. The worker never exits while an index update runs in the server.
+
+The article reload is quick. On an Apple M1 Max, with random 3,072-dimension vectors, a new worker answered its first article search 0.4 s after starting for 5,000 records (about 150 MB resident), 0.55 s for 50,000 records (about 700 MB), and 0.9 s for 48,750 articles in an index that also held 1.2 million passages. The first passage search in that index took about 6 to 7 s and left the worker using about 15 GB. A passage search that takes 5 s or more says in its result that it had to load the passage collection, and how to keep it loaded. Change the wait with `idle_unload_minutes`, or set it to `0` to keep ChromaDB inside the server:
 
 ```json
 {
@@ -262,7 +264,7 @@ The reload is quick for article-level indexes. On an Apple M1 Max, with random 3
 
 | Setting | Default | What it does |
 |---|---|---|
-| `idle_unload_minutes` | `10` | Minutes without a semantic search or index update before the worker exits. `0` runs ChromaDB inside the server, where the index stays loaded until the server exits. |
+| `idle_unload_minutes` | `10` | Minutes without a semantic search or index update before the worker exits. Once the worker has loaded passages, only passage searches and updates that write or delete passages count. It never exits during an index update in the server. `0` runs ChromaDB inside the server, where the index stays loaded until the server exits. |
 
 The status tool (`zotero_get_search_database_status`) reads its counts from the database file and never loads the index. Command-line tools such as `update-db` run ChromaDB in their own process, which frees the index when the command finishes.
 
