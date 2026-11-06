@@ -299,6 +299,10 @@ With the default model, 20 passages cover about 13,000 characters, a few pages. 
 
 ChromaDB loads the whole vector index into memory the first time a search runs, and keeps it there until the process holding it exits. Each vector takes its dimension × 4 bytes: a million passages with OpenAI's `text-embedding-3-small` (1,536 dimensions) need about 6 GB. To get that memory back, set `idle_unload_minutes`: the MCP server then runs ChromaDB in a separate worker process. The worker starts at the first semantic search and exits after a set time with no semantic calls, which returns that memory to the system. The next search starts a new worker and loads the index again, which takes a few seconds for a small index and can take half a minute for a large one.
 
+Passages and articles load separately, and the passage ChromaDB collection is much the larger. Once a worker has loaded passages, only passage activity keeps it running: a passage search, or an update that writes or deletes passages. Article searches alone let it exit after the wait, and the next one starts a new worker that loads articles only. On an index whose passages are still in the article collection (not yet migrated with `migrate-index`), every call keeps the worker. The worker never exits while an index update runs in the server.
+
+The article reload is quick: on an Apple M1 Max, a new worker answered its first article search in under a second for 50,000 articles, while the first passage search over 1.2 million passages took 6 to 7 s and about 15 GB. When the first passage search in a new worker takes 5 s or more, its result says so. To set the wait:
+
 ```json
 {
   "semantic_search": {
@@ -309,7 +313,7 @@ ChromaDB loads the whole vector index into memory the first time a search runs, 
 
 | Setting | Default | What it does |
 |---|---|---|
-| `idle_unload_minutes` | `0` (off) | Minutes without a semantic search or index update before the worker exits. `0` runs ChromaDB inside the server, where the index stays loaded until the server exits. |
+| `idle_unload_minutes` | `0` (off) | Minutes without a semantic search or index update before the worker exits. Once the worker has loaded passages from their own ChromaDB collection, only passage searches and updates that write or delete passages count. It never exits during an index update in the server. `0` runs ChromaDB inside the server, where the index stays loaded until the server exits. |
 
 The status tool (`zotero_get_search_database_status`) reads its counts from the database file and never loads the index. Command-line tools such as `update-db` run ChromaDB in their own process, which frees the index when the command finishes.
 

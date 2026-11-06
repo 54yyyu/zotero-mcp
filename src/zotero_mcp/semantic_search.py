@@ -27,7 +27,7 @@ except Exception:
     tiktoken = None
 
 
-from . import batch_common, fulltext_cache, gemini_batch, openai_batch
+from . import batch_common, chroma_worker, fulltext_cache, gemini_batch, openai_batch
 from .chroma_client import (
     ChromaClient,
     create_chroma_client,
@@ -68,6 +68,13 @@ logger = logging.getLogger(__name__)
 # BatchAdapter), so this table stays a lookup rather than a second, parallel
 # description of each provider that could drift from the adapter.
 _BATCH_MODULES = {"openai": openai_batch, "gemini": gemini_batch}
+
+SEARCH_ARTICLES = "articles"
+SEARCH_PASSAGES = "passages"
+
+
+def _count_items(count: int) -> str:
+    return f"{count:,} item" if count == 1 else f"{count:,} items"
 
 # How each provider spells "ready to import", for error text only. OpenAI
 # reports "completed", Gemini "succeeded"; both normalize to
@@ -313,9 +320,12 @@ def _acquire_update_lock(lock_path: Path):
     accepts the small double-work risk.
 
     ``fcntl.flock`` on POSIX, ``msvcrt.locking`` on Windows (#267).
+
+    While it is held, this process's ChromaDB worker does not exit when idle.
     """
     if _force_update_requested():
-        yield True
+        with chroma_worker.update_running():
+            yield True
         return
 
     ensure_private_dir(lock_path.parent)
@@ -335,7 +345,8 @@ def _acquire_update_lock(lock_path: Path):
             fd.flush()
         except Exception:
             pass
-        yield True
+        with chroma_worker.update_running():
+            yield True
     finally:
         if fd is not None:
             fd.close()
@@ -747,6 +758,34 @@ def best_snippet(query: str, text: str, width: int = 320) -> tuple[str, int]:
             best_start = start
     snippet = text[best_start : best_start + width].strip()
     return snippet, best_start
+
+
+# A search slower than this looks like a hang, so the result says why.
+SLOW_PASSAGE_LOAD_SECONDS = 5.0
+
+
+def _passage_load_note(load: dict | None) -> str | None:
+    """Why a passage search was slow, from the worker's ``passage_load`` report, or None."""
+    if not load or load.get("seconds", 0) < SLOW_PASSAGE_LOAD_SECONDS:
+        return None
+    seconds = f"{load['seconds']:.0f}"
+    minutes = f"{load.get('idle_minutes', 0):g}"
+    setting = (
+        "set semantic_search.idle_unload_minutes in config.json "
+        "(0 keeps it loaded until the server exits)"
+    )
+    if load.get("reloaded"):
+        return (
+            f"This search took {seconds} s because the passage ChromaDB collection had to be "
+            f"loaded into memory again: it is freed after {minutes} minutes without a passage "
+            f"search or index update. Passage searches are fast while it stays loaded. To keep "
+            f"it loaded longer, {setting}."
+        )
+    return (
+        f"This search took {seconds} s because the passage ChromaDB collection had to be "
+        f"loaded into memory first. Passage searches are fast while it stays loaded; it is "
+        f"freed after {minutes} minutes without one. To change that, {setting}."
+    )
 
 
 def _drop_missing_documents(results: dict) -> int:
@@ -4547,7 +4586,8 @@ class ZoteroSemanticSearch:
                query: str,
                limit: int = 10,
                filters: dict[str, Any] | None = None,
-               group_id: int | None = None) -> dict[str, Any]:
+               group_id: int | None = None,
+               level: str | None = None) -> dict[str, Any]:
         """
         Perform semantic search over the Zotero library.
 
@@ -4559,14 +4599,27 @@ class ZoteroSemanticSearch:
                 groupID). ``None`` (default) searches every indexed library —
                 DB-side filtering via a ChromaDB ``where`` clause, never a
                 Python post-filter.
+            level: ``"articles"`` (one record per item, for finding works on a
+                topic) or ``"passages"`` (for finding where something is done
+                or stated). ``None`` (default) follows the chunking setting.
 
         Returns:
             Search results with Zotero item details
         """
         try:
+            search_level, chunked, level_note, level_error = self._resolve_search_level(level)
+            if level_error:
+                return {
+                    "query": query,
+                    "limit": limit,
+                    "filters": filters,
+                    "group_id": group_id,
+                    "results": [],
+                    "total_found": 0,
+                    "error": level_error,
+                }
             reranker = self._get_reranker()
             multiplier = max(1, int(self._reranker_config.get("candidate_multiplier", 3) or 3))
-            chunked = self._chunking_enabled
             fetch_limit = limit
             if chunked:
                 # Passages are grouped back to items downstream, so fetch
@@ -4582,7 +4635,18 @@ class ZoteroSemanticSearch:
                 where = {"$and": [filters, group_clause]} if filters else group_clause
 
             # Perform semantic search
-            results = self.chroma_client.search(query_texts=[query], n_results=fetch_limit, where=where)
+            search_kwargs: dict[str, Any] = {}
+            # On an unmigrated index everything is in the article collection,
+            # which is what the client searches by default.
+            if search_level == SEARCH_PASSAGES and self.chroma_client.separate_passages():
+                search_kwargs["level"] = SEARCH_PASSAGES
+            results = self.chroma_client.search(
+                query_texts=[query], n_results=fetch_limit, where=where, **search_kwargs
+            )
+            load_note = None
+            if isinstance(results, dict):
+                results.pop("embedding_seconds", None)  # in-process; the worker drops it itself
+                load_note = _passage_load_note(results.pop("passage_load", None))
 
             _drop_missing_documents(results)
 
@@ -4623,6 +4687,9 @@ class ZoteroSemanticSearch:
                 "results": enriched_results,
                 "total_found": len(enriched_results),
                 "rerank": rerank_info,
+                "level": search_level,
+                "level_note": level_note,
+                "load_note": load_note,
             }
 
         except Exception as e:
@@ -4650,6 +4717,91 @@ class ZoteroSemanticSearch:
                 # The index is local, but each query is embedded by the API.
                 "embedding_api_unreachable": isinstance(e, EmbeddingAPIUnreachable),
             }
+
+    def _resolve_search_level(
+        self, requested: str | None
+    ) -> tuple[str | None, bool, str | None, str | None]:
+        """Decide what to search: ``(level, whether hits are passages, note, error)``.
+
+        Reads the layout from SQLite, so choosing costs no vector index load.
+        A client double with no layout gets the behaviour from before levels.
+        """
+        layout_of = getattr(self.chroma_client, "index_layout", None)
+        layout = layout_of() if layout_of else None
+        if not isinstance(layout, dict):
+            return requested, self._chunking_enabled, None, None
+        if requested not in (None, SEARCH_ARTICLES, SEARCH_PASSAGES):
+            return None, False, None, (
+                f"Unknown search level {requested!r}: use '{SEARCH_ARTICLES}' or '{SEARCH_PASSAGES}'."
+            )
+
+        if layout["unmigrated_passages"]:
+            # Passages are in the article collection, which is searched either
+            # way, as it always was until this index is migrated.
+            if requested == SEARCH_ARTICLES and layout["article_records"]:
+                # Articles are there too, so this index is mixed, not passage-only.
+                return None, False, None, (
+                    "This index keeps article and passage records together in one ChromaDB collection, "
+                    "so articles can't be searched on their own. To search them separately, run "
+                    "'zotero-mcp migrate-index', then 'zotero-mcp update-db'."
+                )
+            if requested == SEARCH_ARTICLES:
+                return None, False, None, (
+                    "This index holds passages only, in the article collection. To search "
+                    "articles too, run 'zotero-mcp migrate-index', then 'zotero-mcp update-db'."
+                )
+            return SEARCH_PASSAGES, self._chunking_enabled or requested == SEARCH_PASSAGES, None, None
+
+        if requested == SEARCH_PASSAGES and not layout["passage_records"]:
+            return None, False, None, (
+                "This index has no passages. Enable semantic_search.chunking in config.json "
+                "and run 'zotero-mcp update-db' to add them."
+            )
+        if requested == SEARCH_ARTICLES and not layout["article_records"] and layout["passage_records"]:
+            return None, False, None, (
+                "This index has no article records yet. Run 'zotero-mcp update-db' to embed them."
+            )
+        level = requested or self._default_search_level(layout)
+        return level, level == SEARCH_PASSAGES, self._search_level_note(level, layout), None
+
+    def _default_search_level(self, layout: dict[str, Any]) -> str:
+        """The level to search when the caller did not choose one.
+
+        The chunking setting decides, so results never switch level because an
+        index run reached some point. The other level is used only while the
+        chosen one has no records at all, and the note says so.
+        """
+        articles, passages = layout["article_records"], layout["passage_records"]
+        if self._chunking_enabled:
+            return SEARCH_PASSAGES if passages else SEARCH_ARTICLES
+        return SEARCH_ARTICLES if articles or not passages else SEARCH_PASSAGES
+
+    def _search_level_note(self, level: str, layout: dict[str, Any]) -> str | None:
+        """Tell the caller what was searched and what the other level holds.
+
+        A passage fill can take days, and until it ends passages cover only part
+        of the library. An agent can't see that from the results, so it gets the
+        counts and can decide to search the other level. The counts are for the
+        whole index, whichever library was searched. Only an index with articles
+        alone and chunking off, or one still unmigrated, gets no note; an index
+        with passages alone is told no article records are indexed yet.
+        """
+        if layout["unmigrated_passages"] or layout["passage_items"] is None:
+            # No passage count could be read: give no counts rather than wrong ones.
+            return None
+        items = {SEARCH_ARTICLES: layout["article_records"], SEARCH_PASSAGES: layout["passage_items"]}
+        other = SEARCH_PASSAGES if level == SEARCH_ARTICLES else SEARCH_ARTICLES
+        searched, elsewhere = items[level], items[other]
+        if not searched:
+            return None
+
+        note = f"Searched {level} ({_count_items(searched)} in the index)."
+        if elsewhere:
+            note += f" The {other[:-1]} level has {_count_items(elsewhere)}"
+            return f"{note}, so searching it may find more." if elsewhere > searched else f"{note}."
+        if level == SEARCH_PASSAGES:
+            return f"{note} No article records are indexed yet."
+        return f"{note} No passages are indexed yet." if self._chunking_enabled else None
 
     def _enrich_search_results(
         self, chroma_results: dict[str, Any], query: str, limit: int | None = None
