@@ -437,6 +437,61 @@ _STREAM_SENTINEL = object()
 _STREAM_COMMIT_THRESHOLD = 200
 
 
+class _HeldText:
+    """Items' full text kept on disk between the article pass and the passage pass.
+
+    A run writing both levels embeds every article record before any passage.
+    Holding each item's text in memory until its passages are written would
+    keep the whole library's text in memory for the run, so the article pass
+    moves it to a private temporary directory and the passage pass reads it
+    back, one slice at a time. No file is parsed twice either way. Text that
+    can't be written to disk stays in memory.
+    """
+
+    _KEY = "_held_fulltext"
+
+    def __init__(self) -> None:
+        self._dir: Any = None
+        self._count = 0
+
+    def hold(self, item: dict[str, Any]) -> None:
+        data = item.get("data") or {}
+        text = data.get("fulltext") or ""
+        if not text:
+            return
+        try:
+            if self._dir is None:
+                import tempfile
+
+                self._dir = tempfile.TemporaryDirectory(prefix="zotero-mcp-text-")
+            self._count += 1
+            path = Path(self._dir.name) / f"{self._count}.txt"
+            path.write_text(text, encoding="utf-8")
+        except OSError as e:
+            logger.debug(f"Keeping the text of {item.get('key')} in memory: {e}")
+            return
+        item[self._KEY] = str(path)
+        data["fulltext"] = ""
+
+    def restore(self, item: dict[str, Any]) -> None:
+        path = item.pop(self._KEY, None)
+        if path:
+            item.setdefault("data", {})["fulltext"] = Path(path).read_text(encoding="utf-8")
+            Path(path).unlink(missing_ok=True)
+
+    @staticmethod
+    def release(item: dict[str, Any]) -> None:
+        """Drop the text again once the item's passages are built."""
+        data = item.get("data") or {}
+        if data.get("fulltext"):
+            data["fulltext"] = ""
+
+    def close(self) -> None:
+        if self._dir is not None:
+            self._dir.cleanup()
+            self._dir = None
+
+
 def _split_prepared_into_requests(prepared: dict[str, Any], request_batch_size: int):
     """Yield ``(documents, metadatas, ids, item_keys)`` request-sized payloads.
 
@@ -1253,6 +1308,8 @@ class ZoteroSemanticSearch:
     _scan_gaps: dict[str, set[str]] = {}
     # Items a run only adds a missing level to, set per run by update_database.
     _level_fill_keys: set[str] = frozenset()
+    # Text kept between the article and passage passes, set per run by update_database.
+    _held_text: _HeldText | None = None
     # How long an unfinished batch run stops gap fills; a run left this long has
     # been forgotten, and its results may be gone.
     BATCH_RUN_BLOCKS_FILL_DAYS = 14
@@ -4152,28 +4209,65 @@ class ZoteroSemanticSearch:
                 and hasattr(self.chroma_client, "upsert_embeddings")
             )
 
-            if use_streaming:
-                logger.info(
-                    f"Streaming index: {max_parallel} parallel embedding requests"
-                )
-                self._stream_index_items(
-                    all_items,
-                    force_full_rebuild,
-                    stats,
-                    _failed_docs,
-                    embedding_function,
-                    max_parallel,
-                    _report_item_progress,
-                )
+            # On a split index every article record is embedded before any
+            # passage, so article-level search is complete early in a long
+            # run. A run stopped between the passes leaves only passages to
+            # write; the sync version stays where it was, and the gap fill
+            # finds items with an article record and no passages.
+            passage_items = (
+                [item for item in all_items if self._levels_to_write(item)[1]]
+                if self._separate_passages()
+                else []
+            )
+            if passage_items:
+                passes = [
+                    (SEARCH_ARTICLES, all_items, frozenset(item["key"] for item in passage_items)),
+                    (SEARCH_PASSAGES, passage_items, frozenset()),
+                ]
+                self._held_text = _HeldText()
             else:
-                for i in range(0, len(all_items), batch_size):
-                    batch = all_items[i : i + batch_size]
+                passes = [(None, all_items, frozenset())]
+            accounted: set[str] = set()
+
+            for level, pass_items, keep_cached in passes:
+                if level == SEARCH_PASSAGES:
+                    seen_items = 0
+                    total = len(pass_items)
+                    _report(
+                        f"\r{' ' * _term_width(120)}\r"
+                        f"  Article records written. Writing passages for {total} items...\n"
+                    )
+                if use_streaming:
+                    logger.info(
+                        f"Streaming index: {max_parallel} parallel embedding requests"
+                    )
+                    self._stream_index_items(
+                        pass_items,
+                        force_full_rebuild,
+                        stats,
+                        _failed_docs,
+                        embedding_function,
+                        max_parallel,
+                        _report_item_progress,
+                        level=level,
+                        keep_cached=keep_cached,
+                        accounted_keys=accounted,
+                    )
+                    continue
+                for i in range(0, len(pass_items), batch_size):
+                    batch = pass_items[i : i + batch_size]
 
                     # Show per-item progress within this batch
                     for item in batch:
                         _report_item_progress(item)
 
-                    batch_stats = self._process_item_batch(batch, force_full_rebuild, _failed_docs)
+                    if level is None:
+                        batch_stats = self._process_item_batch(batch, force_full_rebuild, _failed_docs)
+                    else:
+                        batch_stats = self._process_item_batch(
+                            batch, force_full_rebuild, _failed_docs,
+                            level=level, keep_cached=keep_cached, accounted=accounted,
+                        )
 
                     stats["processed_items"] += batch_stats["processed"]
                     stats["added_items"] += batch_stats["added"]
@@ -4197,6 +4291,8 @@ class ZoteroSemanticSearch:
                 import time as _retry_time
 
                 _retry_time.sleep(1)  # Brief pause before retry
+                # Articles first here too.
+                _failed_docs.sort(key=lambda failed: "parent_item_key" in failed[1])
 
                 retry_ok = 0
                 # Items whose passages all got written, and items with any
@@ -4314,6 +4410,9 @@ class ZoteroSemanticSearch:
             self._drop_passages_on_write = False
             self._scan_gaps = {}
             self._level_fill_keys = frozenset()
+            if self._held_text is not None:
+                self._held_text.close()
+                self._held_text = None
             # Release the update flock on every exit path. Paired with the
             # __enter__ call above; the "not acquired" branch releases
             # separately before its early return, so this finally only runs
@@ -4340,6 +4439,7 @@ class ZoteroSemanticSearch:
         self,
         items: list[dict[str, Any]],
         force_rebuild: bool = False,
+        level: str | None = None,
     ) -> dict[str, Any]:
         """Build the documents for ``items`` and classify them existing-vs-new.
 
@@ -4358,6 +4458,12 @@ class ZoteroSemanticSearch:
         documents each entry in ``item_keys_order`` contributed — so a caller
         can split the batch on item boundaries without re-deriving them from
         the ids.
+
+        ``level`` limits the slice to one level, for a run that writes every
+        article record before any passage: ``SEARCH_ARTICLES`` skips items that
+        get no article record (the passage pass counts them) and moves the text
+        of items still to get passages to disk; ``SEARCH_PASSAGES`` reads it
+        back and counts only items the article pass did not.
         """
         stats = {"processed": 0, "skipped": 0, "errors": 0}
 
@@ -4374,12 +4480,32 @@ class ZoteroSemanticSearch:
         # can slice the flat lists back into whole items.
         item_doc_counts: list[int] = []
 
+        held = self._held_text
         for item in items:
             try:
                 article, passages = self._levels_to_write(item)
-                records = self._build_item_records(item, chunking=passages, article=article)
+                counts = True
+                if level == SEARCH_ARTICLES:
+                    if not article:
+                        continue
+                    hold = passages
+                    passages = False
+                    records = self._build_item_records(item, chunking=False, article=True)
+                    if hold and held is not None:
+                        held.hold(item)
+                elif level == SEARCH_PASSAGES:
+                    counts = not article
+                    if held is not None:
+                        held.restore(item)
+                    try:
+                        records = self._build_item_records(item, chunking=passages, article=False)
+                    finally:
+                        _HeldText.release(item)
+                else:
+                    records = self._build_item_records(item, chunking=passages, article=article)
                 if not records:
-                    stats["skipped"] += 1
+                    if counts:
+                        stats["skipped"] += 1
                     continue
 
                 documents.extend(record["document"] for record in records)
@@ -4387,7 +4513,8 @@ class ZoteroSemanticSearch:
                 ids.extend(record["id"] for record in records)
                 item_keys_order.append(item["key"])
                 item_doc_counts.append(len(records))
-                stats["processed"] += 1
+                if counts:
+                    stats["processed"] += 1
 
             except Exception as e:
                 logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
@@ -4430,6 +4557,9 @@ class ZoteroSemanticSearch:
         embedding_function: Any,
         max_parallel: int,
         report_progress: Any,
+        level: str | None = None,
+        keep_cached: frozenset[str] = frozenset(),
+        accounted_keys: set[str] | None = None,
     ) -> None:
         """Index ``all_items`` with preparation, embedding and commits overlapped.
 
@@ -4442,7 +4572,8 @@ class ZoteroSemanticSearch:
 
         Mutates ``stats`` and ``failed_docs`` in place, exactly as the
         synchronous path does, so the caller's end-of-run retry pass is shared
-        between both paths.
+        between both paths. ``level``, ``keep_cached`` and ``accounted_keys``
+        are as in :meth:`_process_item_batch`.
         """
         slice_size = _realtime_slice_size(max_parallel)
         request_batch_size = (
@@ -4487,9 +4618,14 @@ class ZoteroSemanticSearch:
                     for item in slice_items:
                         report_progress(item)
 
-                    prepared = self._prepare_and_classify_slice(
-                        slice_items, force_rebuild
-                    )
+                    if level is None:
+                        prepared = self._prepare_and_classify_slice(
+                            slice_items, force_rebuild
+                        )
+                    else:
+                        prepared = self._prepare_and_classify_slice(
+                            slice_items, force_rebuild, level=level
+                        )
                     prep = prepared["prep_stats"]
                     bump("processed_items", prep["processed"])
                     bump("skipped_items", prep["skipped"])
@@ -4552,7 +4688,8 @@ class ZoteroSemanticSearch:
         write_ids: list[str] = []
         write_vectors: list[Any] = []
         write_keys: dict[str, bool] = {}
-        accounted_keys: set[str] = set()
+        if accounted_keys is None:
+            accounted_keys = set()
 
         def flush() -> None:
             nonlocal write_docs, write_metas, write_ids, write_vectors, write_keys
@@ -4578,9 +4715,8 @@ class ZoteroSemanticSearch:
                 # an item's extracted text has done its job once its embedding
                 # is persisted, so evict per commit rather than at the end.
                 try:
-                    fulltext_cache.evict_many(
-                        list(write_keys), config_path=self.config_path
-                    )
+                    if done := [k for k in write_keys if k not in keep_cached]:
+                        fulltext_cache.evict_many(done, config_path=self.config_path)
                 except Exception as exc:
                     logger.debug(f"Fulltext cache eviction failed: {exc}")
             finally:
@@ -4706,6 +4842,9 @@ class ZoteroSemanticSearch:
         items: list[dict[str, Any]],
         force_rebuild: bool = False,
         _failed_docs: list | None = None,
+        level: str | None = None,
+        keep_cached: frozenset[str] = frozenset(),
+        accounted: set[str] | None = None,
     ) -> dict[str, int]:
         """Prepare a batch of items and hand it to ChromaDB for embedding.
 
@@ -4719,8 +4858,16 @@ class ZoteroSemanticSearch:
         mid-run. Without this, the retry path at update_database:839-865 is
         dead code — a NameError raised here would crash the whole reindex,
         making every transient ChromaDB error fatal instead of recoverable.
+
+        ``level``, ``keep_cached`` and ``accounted`` serve a run written in two
+        passes: the level this pass writes, the items whose cached text the
+        passage pass still needs, and the items already counted as added or
+        updated.
         """
-        prepared = self._prepare_and_classify_slice(items, force_rebuild)
+        if level is None:
+            prepared = self._prepare_and_classify_slice(items, force_rebuild)
+        else:
+            prepared = self._prepare_and_classify_slice(items, force_rebuild, level=level)
         prep_stats = prepared["prep_stats"]
         stats = {
             "processed": prep_stats["processed"],
@@ -4743,6 +4890,10 @@ class ZoteroSemanticSearch:
                     self.chroma_client.upsert_documents(documents, metadatas, ids)
                     self._prune_stale_chunks(metadatas)
                 for k in item_keys_order:
+                    if accounted is not None:
+                        if k in accounted:
+                            continue
+                        accounted.add(k)
                     if k in existing_item_keys:
                         stats["updated"] += 1
                     else:
@@ -4753,7 +4904,8 @@ class ZoteroSemanticSearch:
                 # roughly proportional to what is still un-embedded, instead
                 # of growing to the size of the whole library.
                 try:
-                    fulltext_cache.evict_many(item_keys_order, config_path=self.config_path)
+                    if done := [k for k in item_keys_order if k not in keep_cached]:
+                        fulltext_cache.evict_many(done, config_path=self.config_path)
                 except Exception as e:
                     logger.debug(f"Fulltext cache eviction failed: {e}")
             except EmbeddingAPIUnreachable:
