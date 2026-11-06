@@ -985,8 +985,18 @@ def cmd_db(args):
         print(f"Document count: {ci.get('count', 0)}")
         print(f"  Article-level records: {ci.get('article_records', 0)}")
         print(f"  Passage-level records: {ci.get('passage_records', 0)}")
+        for label, key in (("Items with article records", "article_items"), ("Items with passages", "passage_items")):
+            if key in ci:
+                print(f"  {label}: {'unknown' if ci[key] is None else ci[key]}")
         print(f"Embedding model: {ci.get('embedding_model', 'Unknown')}")
         print(f"Database path: {ci.get('persist_directory', 'Unknown')}")
+        if ci.get("migration"):
+            from zotero_mcp.index_migration import status_note
+            from zotero_mcp.utils import is_local_mode
+
+            print("\nIndex migration:")
+            for line in status_note(ci["migration"], "zotero-cli db update", local_mode=is_local_mode()):
+                print(f"  {line}")
         print("\nUpdate configuration:")
         print(f"- Auto update: {uc.get('auto_update', False)}")
         print(f"- Frequency: {uc.get('update_frequency', 'manual')}")

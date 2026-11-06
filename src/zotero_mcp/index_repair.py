@@ -375,6 +375,13 @@ def _locate_sources(
 
     sources = []
     for name, level in names:
+        # No dimension means nothing was ever written, as in the new article
+        # collection of a migrated index before its first update-db.
+        row = con.execute("SELECT dimension FROM collections WHERE name = ?", (name,)).fetchone()
+        if row is not None and not row[0] and len(names) > 1:
+            report.collections_left_out.append(name)
+            progress(f"{name} is empty; update-db will embed its items.")
+            continue
         collection_id, dim, meta_segment, vector_segment = _locate(con, name)
         segment_dir = persist_dir / vector_segment
         # A small collection can have a header with no metadata beside it yet.

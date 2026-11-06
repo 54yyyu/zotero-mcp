@@ -146,6 +146,17 @@ def test_a_collection_with_no_saved_vectors_does_not_stop_the_other(make_index):
     assert json.loads(Path(report.report_path).read_text())["collections_left_out"] == ["zotero_library"]
 
 
+def test_a_migrated_index_with_no_articles_yet_can_be_repaired(make_index):
+    """Its article collection has no dimension until the first update-db writes to it."""
+    persist, config = make_index(lambda c: c.create_collection("zotero_library"), _add_passages)
+
+    report = repair_index(config, **QUIET)
+
+    assert report.collections_left_out == ["zotero_library"]
+    assert report.chunks_kept == ITEMS * CHUNKS
+    assert _ids_in(persist, PASSAGES) == sorted(_passage_ids())
+
+
 def test_no_saved_vectors_anywhere_is_refused(make_index):
     _, config = make_index(lambda c: _add_articles(c, metadata=None))
 
