@@ -42,13 +42,6 @@ More:
 _LABEL_COLUMN = 34
 
 
-def _subparsers_action(parser: argparse.ArgumentParser) -> argparse._SubParsersAction:
-    for action in parser._actions:
-        if isinstance(action, argparse._SubParsersAction):
-            return action
-    raise ValueError("parser has no subcommands")
-
-
 def _option_label(action: argparse.Action) -> str:
     names = ", ".join(action.option_strings)
     if action.nargs == 0:  # store_true / store_false / store_const
@@ -62,50 +55,34 @@ def _option_label(action: argparse.Action) -> str:
     return f"{names} {metavar}"
 
 
-def _help_text(action: argparse.Action) -> str:
-    text = action.help or ""
-    try:
-        return text % {**vars(action), "default": action.default}
-    except (KeyError, ValueError, TypeError):
-        return text
-
-
 def command_options(sub: argparse.ArgumentParser) -> list[argparse.Action]:
-    """The user-facing options of one command (everything but -h)."""
+    """The options of one command, everything but -h."""
     return [
         a for a in sub._actions
-        if a.option_strings
-        and not isinstance(a, argparse._HelpAction)
-        and a.help is not argparse.SUPPRESS
+        if a.option_strings and a.dest != "help" and a.help is not argparse.SUPPRESS
     ]
 
 
 def _entry(label: str, text: str, indent: int, width: int) -> list[str]:
-    pad = " " * indent
-    column = max(_LABEL_COLUMN, indent + len(label) + 2)
-    if indent + len(label) + 2 > _LABEL_COLUMN:  # long label: text on the next line
-        lines = [pad + label]
-        column = _LABEL_COLUMN
-        first_prefix = " " * column
-    else:
-        lines = []
-        first_prefix = pad + label + " " * (column - indent - len(label))
-    body = textwrap.wrap(text, max(width - column, 30)) or [""]
-    lines.append(first_prefix + body[0])
-    lines.extend(" " * column + line for line in body[1:])
-    return lines
+    """``label`` and wrapped ``text``; a label too long for its column gets a line to itself."""
+    body = textwrap.wrap(text, max(width - _LABEL_COLUMN, 30)) or [""]
+    rest = [" " * _LABEL_COLUMN + line for line in body[1:]]
+    if indent + len(label) + 2 > _LABEL_COLUMN:
+        return [" " * indent + label, " " * _LABEL_COLUMN + body[0], *rest]
+    return [" " * indent + label.ljust(_LABEL_COLUMN - indent) + body[0], *rest]
 
 
-def render_full_help(parser: argparse.ArgumentParser, width: int | None = None) -> str:
-    """Every command with every option, grouped by what it is for."""
+def render_full_help(parser: argparse.ArgumentParser, commands, width: int | None = None) -> str:
+    """Every command with every option, grouped by what it is for.
+
+    ``commands`` is the object ``parser.add_subparsers()`` returned.
+    """
     width = width or min(shutil.get_terminal_size((100, 24)).columns, 110)
-    action = _subparsers_action(parser)
-    commands = action.choices
-    summaries = {a.dest: a.help or "" for a in action._choices_actions}
+    summaries = {a.dest: a.help or "" for a in commands._choices_actions}
 
     grouped = {name for _, names in HELP_GROUPS for name in names}
     groups = list(HELP_GROUPS)
-    leftover = [name for name in commands if name not in grouped]
+    leftover = [name for name in commands.choices if name not in grouped]
     if leftover:
         groups.append(("Other", leftover))
 
@@ -120,23 +97,28 @@ def render_full_help(parser: argparse.ArgumentParser, width: int | None = None) 
         out.append(title)
         out.append("-" * len(title))
         for name in names:
-            sub = commands.get(name)
+            sub = commands.choices.get(name)
             if sub is None:
                 continue
             out.extend(_entry(name, summaries.get(name, ""), 2, width))
             for opt in command_options(sub):
-                out.extend(_entry(_option_label(opt), _help_text(opt), 6, width))
+                out.extend(_entry(_option_label(opt), opt.help or "", 6, width))
             out.append("")
     out.append(FOOTER.rstrip("\n"))
     return "\n".join(out) + "\n"
 
 
 class FullHelpAction(argparse.Action):
-    """``-h`` / ``--help`` at the top level prints the full reference."""
+    """``-h`` / ``--help`` at the top level prints the full reference.
 
-    def __init__(self, option_strings, dest=argparse.SUPPRESS, default=argparse.SUPPRESS, help=None):
+    Pass the ``add_subparsers()`` result as ``commands=``.
+    """
+
+    def __init__(self, option_strings, commands, dest=argparse.SUPPRESS,
+                 default=argparse.SUPPRESS, help=None):
         super().__init__(option_strings, dest=dest, default=default, nargs=0, help=help)
+        self.commands = commands
 
     def __call__(self, parser, namespace, values, option_string=None):
-        print(render_full_help(parser), end="")
+        print(render_full_help(parser, self.commands), end="")
         parser.exit()

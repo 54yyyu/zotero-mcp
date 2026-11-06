@@ -120,3 +120,11 @@ def test_help_for_one_command_still_works(capsys):
     out = _full_help(capsys, "help", "db-status")
     assert "--config-path" in out
     assert "update-db" not in out
+
+
+def test_help_covers_the_0_16_commands_and_flags(capsys):
+    out = _full_help(capsys, "help")
+    for text in ("repair-db", "--dry-run", "--extraction-workers N", "--batch-max-requests N",
+                 "--allow-mass-deletion", "--allow-unauthenticated"):
+        assert text in out
+    assert "%(" not in out  # help strings are printed as written, not %-expanded

@@ -1010,6 +1010,7 @@ def run_batch_import(args, provider: str | None = None) -> None:
         print(f"Error importing batch: {e}")
         sys.exit(1)
 
+
 def _build_parser() -> argparse.ArgumentParser:
     """The complete command line, built in one place so help and tests can inspect it."""
     parser = argparse.ArgumentParser(
@@ -1019,9 +1020,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
 
     # Create subparsers for different commands
-    parser.add_argument("-h", "--help", action=FullHelpAction,
-                        help="Show every command and option, then exit")
     subparsers = parser.add_subparsers(dest="command", metavar="<command>", help="Command to run")
+    parser.add_argument("-h", "--help", action=FullHelpAction, commands=subparsers,
+                        help="Show every command and option, then exit")
 
     # Server command (default behavior)
     server_parser = subparsers.add_parser("serve", help="Run the MCP server")
