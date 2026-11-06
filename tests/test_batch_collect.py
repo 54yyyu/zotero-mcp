@@ -2459,6 +2459,26 @@ def test_t7_batch_import_gives_up_a_cancelled_file_and_keeps_its_ids(iso):
     assert iso.new_search().update_config["retry_item_keys"] == ["R0"], "the next update embeds it"
 
 
+def test_t7_a_file_still_cancelling_is_not_given_up_before_its_paid_rows_arrive(iso):
+    """OpenAI writes the rows it finished only once the cancel is final."""
+    run = _two_file_run(iso)
+    iso.provider.statuses["batch-1"] = "cancelling"
+    iso.provider.statuses["batch-2"] = "completed"
+
+    iso.new_search()._import_batch("openai")
+
+    manifest = openai_batch.load_manifest(Path(run["manifest_path"]))
+    assert not manifest["batches"][0].get("abandoned"), "still settling at the provider"
+    assert not manifest.get("failed_ids")
+    assert batch_common.run_is_unfinished(manifest, openai_batch.ADAPTER), "in flight, not dead"
+
+    iso.provider.statuses["batch-1"] = "cancelled"
+    iso.provider.expired_with_output = True
+    iso.new_search()._import_batch("openai")
+
+    assert _indexed(iso) == {"R0", "R1"}, "the rows paid for before the cancel go in"
+
+
 def test_t7_a_cancelled_files_unfinished_rows_are_not_sent_again(iso):
     run = _two_file_run(iso, records_per_file=2)
     iso.provider.statuses["batch-1"] = "cancelled"

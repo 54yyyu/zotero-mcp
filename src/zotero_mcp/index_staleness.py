@@ -313,7 +313,6 @@ _DEAD_RAW_STATUSES = {
     "failed": "failed",
     "expired": "expired",
     "cancelled": "cancelled",
-    "cancelling": "cancelled",
     "JOB_STATE_FAILED": "failed",
     "JOB_STATE_EXPIRED": "expired",
     "JOB_STATE_CANCELLED": "cancelled",
@@ -323,6 +322,10 @@ _DEAD_RAW_STATUSES = {
 def _recorded_state(provider: str, entry: dict[str, Any]) -> str:
     """The chunk's state as the manifest recorded it; no provider call."""
     state = entry.get("state")
+    if entry.get("status") == "cancelling":
+        # Older releases cached a cancel still settling as "cancelled". It is
+        # in flight: the rows it finished arrive once the cancel is final.
+        return "in_progress"
     if not state and entry.get("status"):
         # The raw statuses the two provider modules map to a dead state. Kept
         # here because importing those modules loads chromadb (~0.3 s).

@@ -236,10 +236,13 @@ def test_openai_normalize_status_matches_old_terminal_and_importable_sets():
         assert (normalized in batch_common.IMPORTABLE_STATES) == (status in old_importable), status
 
 
-def test_openai_cancelling_status_normalizes_to_cancelled():
-    """Deliberate mapping (per the refactor plan): a batch mid-cancellation
-    is treated as terminal-cancelled rather than left "active" forever."""
-    assert openai_batch.ADAPTER.normalize_status("cancelling") == batch_common.STATE_CANCELLED
+def test_openai_cancelling_status_is_still_in_flight():
+    """A batch mid-cancellation becomes "cancelled" within minutes, and only
+    then has the file of the rows it finished, which were paid for. Until
+    then nothing may treat it as dead or give it up."""
+    normalized = openai_batch.ADAPTER.normalize_status("cancelling")
+    assert normalized not in batch_common.TERMINAL_STATES
+    assert normalized != batch_common.STATE_CANCELLED
 
 
 def test_gemini_normalize_status_matches_old_terminal_and_importable_sets():

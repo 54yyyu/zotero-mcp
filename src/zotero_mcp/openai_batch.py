@@ -56,7 +56,10 @@ _STATUS_MAP = {
     "failed": batch_common.STATE_FAILED,
     "expired": batch_common.STATE_EXPIRED,
     "cancelled": batch_common.STATE_CANCELLED,
-    "cancelling": batch_common.STATE_CANCELLED,
+    # Still settling: the file of the rows finished before the cancel, which
+    # are paid for, appears only once the batch reaches "cancelled". Until
+    # then it is in flight, so nothing treats it as dead or gives it up.
+    "cancelling": batch_common.STATE_IN_PROGRESS,
     "pending": batch_common.STATE_PENDING,
 }
 

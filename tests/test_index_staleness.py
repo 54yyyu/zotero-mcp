@@ -341,6 +341,17 @@ def test_batch_report_does_not_import_chromadb(tmp_path):
     assert out.strip() == "[1, 1] False"
 
 
+def test_a_chunk_still_cancelling_is_not_reported_dead(tmp_path):
+    """Its paid rows arrive once the cancel is final; older releases cached it as cancelled."""
+    cfg = _config(tmp_path, {"0": 1})
+    _manifest(tmp_path, "openai", "run-c", [
+        {"batch_id": "b1", "status": "cancelling", "state": "cancelled"},
+        {"batch_id": "b2", "status": "cancelling"},
+    ])
+    found = st.unfinished_batch_runs(cfg, group_id=0)
+    assert found[0]["dead"] == 0
+
+
 def test_run_with_only_dead_chunks_does_not_offer_import(tmp_path):
     cfg = _config(tmp_path, {"0": 1})
     _manifest(tmp_path, "gemini", "run-e", [{"batch_id": "b1", "status": "JOB_STATE_FAILED"}])
