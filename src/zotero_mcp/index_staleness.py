@@ -330,15 +330,35 @@ def _recorded_state(provider: str, entry: dict[str, Any]) -> str:
     return str(state or "")
 
 
+def _newest_open_run(ours: list[dict[str, Any]], run_covers: Any) -> dict[str, Any] | None:
+    """Newest of one library's runs (newest first) that still has chunks to
+    import, is not given up on, and is not covered by a newer run.
+
+    The manifest-only counterpart of ``batch_common.find_manifest``: without a
+    provider adapter, chunk states are taken as recorded, so a newer run that
+    has since died may still count as covering an older one.
+    """
+    for index, manifest in enumerate(ours):
+        if manifest.get("abandoned_at"):
+            continue
+        if all(b.get("imported_at") for b in manifest.get("batches", [])):
+            continue
+        if any(run_covers(newer, manifest) for newer in ours[:index]):
+            continue
+        return manifest
+    return None
+
+
 def unfinished_batch_runs(config_path: str | None, group_id: int | None = None) -> list[dict[str, Any]]:
-    """Newest batch run of ``group_id`` per provider that still has chunks not
-    imported (any library's newest run when ``group_id`` is None).
+    """Per provider, the newest run of ``group_id`` that still has chunks not
+    imported and that no newer run covers or replaces (any library's newest
+    run when ``group_id`` is None).
 
     Reads manifests only: no provider call, and no directory is created.
     ``dead`` counts the unimported chunks the manifest records as failed,
     expired or cancelled, which ``batch-import`` cannot import.
     """
-    from zotero_mcp.batch_common import find_manifest, newest_manifest_for_group
+    from zotero_mcp.batch_common import find_manifest, manifests_for_group, run_covers
 
     found: list[dict[str, Any]] = []
     base = _batch_dirs(config_path)
@@ -352,7 +372,7 @@ def unfinished_batch_runs(config_path: str | None, group_id: int | None = None) 
             except FileNotFoundError:
                 continue
         else:
-            manifest = newest_manifest_for_group(root, group_id)
+            manifest = _newest_open_run(manifests_for_group(root, group_id), run_covers)
             if manifest is None:
                 continue
         entries = manifest.get("batches", [])

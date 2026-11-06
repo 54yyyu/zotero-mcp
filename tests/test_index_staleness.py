@@ -276,6 +276,39 @@ def test_other_librarys_newer_run_does_not_hide_this_librarys_unfinished_one(tmp
     assert st.unfinished_batch_runs(cfg, group_id=5) == []
 
 
+def test_newer_finished_run_does_not_hide_an_older_run_it_does_not_cover(tmp_path):
+    # An incremental run never covers a first build, so the build stays
+    # unfinished after the newer run lands (see batch_common.run_covers).
+    cfg = _config(tmp_path, {"0": 1})
+    _manifest(tmp_path, "openai", "run-build", [{"batch_id": "b", "status": "in_progress"}],
+              created="2026-11-01T10:00:00.000000Z")
+    _manifest(tmp_path, "openai", "run-small", [{"batch_id": "c", "imported_at": "x"}],
+              created="2026-11-03T10:00:00.000000Z")
+    for name, since in (("run-build", 0), ("run-small", 40)):
+        path = tmp_path / "openai_batches" / name / "manifest.json"
+        data = json.loads(path.read_text())
+        data["since_version"] = since
+        path.write_text(json.dumps(data))
+    assert [r["run_id"] for r in st.unfinished_batch_runs(cfg, group_id=0)] == ["run-build"]
+
+
+def test_abandoned_or_covered_runs_are_not_reported(tmp_path):
+    cfg = _config(tmp_path, {"0": 1})
+    _manifest(tmp_path, "openai", "run-old", [{"batch_id": "b", "status": "in_progress"}],
+              created="2026-11-01T10:00:00.000000Z")
+    _manifest(tmp_path, "openai", "run-gone", [{"batch_id": "c", "status": "in_progress"}],
+              created="2026-11-02T10:00:00.000000Z")
+    _manifest(tmp_path, "openai", "run-rebuild", [{"batch_id": "d", "imported_at": "x"}],
+              created="2026-11-03T10:00:00.000000Z")
+    for name, extra in (("run-gone", {"abandoned_at": "2026-11-02T12:00:00"}),
+                        ("run-rebuild", {"force_full_rebuild": True})):
+        path = tmp_path / "openai_batches" / name / "manifest.json"
+        data = json.loads(path.read_text())
+        data.update(extra)
+        path.write_text(json.dumps(data))
+    assert st.unfinished_batch_runs(cfg, group_id=0) == []
+
+
 def test_dead_chunks_point_at_batch_status_not_batch_import(tmp_path):
     cfg = _config(tmp_path, {"0": 1})
     _manifest(tmp_path, "openai", "run-d", [
