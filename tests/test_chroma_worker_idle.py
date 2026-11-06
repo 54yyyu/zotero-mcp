@@ -82,6 +82,8 @@ def worker(tmp_path, monkeypatch):
                 return ("ok", next(iterators[name]))
             except StopIteration:
                 return ("done", None)
+        if kind == "call" and name == "separate_passages":
+            return ("ok", client.separate)
         if kind == "call" and name == "search":
             client.search_hook(message)
             return ("ok", {"ids": [["A"]], "documents": [["text"]]})
@@ -91,6 +93,7 @@ def worker(tmp_path, monkeypatch):
     monkeypatch.setattr(chroma_worker, "_receive", lambda stream: reply(sent[-1]))
     client = WorkerChromaClient(str(tmp_path / "config.json"), idle_seconds=IDLE)
     client.search_hook = lambda message: None
+    client.separate = True  # passages in their own ChromaDB collection (a migrated index)
     client.clock = clock
     return client
 
@@ -173,6 +176,25 @@ def test_passage_activity_resets_the_timer(worker, call):
 
     assert not _idle_check(worker)
     worker.clock.now += 100
+    assert _idle_check(worker)
+
+
+PASSAGE_WRITES = {k: v for k, v in PASSAGE_CALLS.items() if v[0] != "search"}
+
+
+@pytest.mark.parametrize("call", PASSAGE_WRITES.values(), ids=PASSAGE_WRITES.keys())
+def test_on_an_unmigrated_index_a_passage_write_leaves_every_call_counting(worker, call):
+    # Passages still in the article collection: searches carry no level, and
+    # the one collection holds everything, so any call keeps the worker.
+    worker.separate = False
+    name, args, kwargs = call
+    getattr(worker, name)(*args, **kwargs)
+    for _ in range(4):
+        worker.clock.now += 500
+        _article_search(worker)
+        assert not _idle_check(worker)
+
+    worker.clock.now += IDLE
     assert _idle_check(worker)
 
 

@@ -20,8 +20,10 @@ Once a worker has passages loaded, only passage activity keeps it: a search
 at that level, or a call that writes or deletes passages. The passage
 collection is large and slow to load again, the article collection small and
 quick, so article searches alone let the worker exit and start a new one
-without passages. A worker never exits while this process runs an index
-update (holds the update lock) or has an iterator open on it.
+without passages. This applies only where passages have their own
+collection: on an index not yet migrated they share the article collection,
+and every call keeps the worker. A worker never exits while this process
+runs an index update (holds the update lock) or has an iterator open on it.
 
 Requests and replies are length-prefixed pickles on the child's stdin and
 stdout. Both ends are this package, never untrusted data. Anything the
@@ -308,6 +310,14 @@ class WorkerChromaClient:
 
     def _call(self, name: str, *args, **kwargs):
         passages = _touches_passages(name, args, kwargs)
+        if passages and name != "search":
+            # Only where passages have their own ChromaDB collection. Until an
+            # index is migrated they sit in the article collection, which
+            # every search loads, so every call keeps the worker as before.
+            # Asked each time, not cached here: a migration in another
+            # process changes the answer, and each search's index_layout()
+            # call makes the worker read the layout again.
+            passages = bool(self._request(("call", "separate_passages", (), {}))[1])
         return self._request(("call", name, args, kwargs), passages=passages)[1]
 
     @property

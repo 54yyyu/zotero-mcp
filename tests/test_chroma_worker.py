@@ -164,9 +164,11 @@ def test_idle_worker_exits_and_the_next_call_starts_a_new_one(config, monkeypatc
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="kills the worker with POSIX signals")
-def test_after_a_passage_write_article_reads_do_not_keep_the_worker(config, monkeypatch):
-    # tests/test_chroma_worker_idle.py covers the rules with a fake clock;
-    # this runs them on a real worker and its reaper thread.
+def test_a_passage_write_to_an_unmigrated_index_leaves_every_call_counting(config, monkeypatch):
+    # This index keeps its passages in the article collection, so every
+    # search loads them and every call must keep the worker, as before
+    # passages had a collection of their own. tests/test_chroma_worker_idle.py
+    # covers the rules with a fake clock; this runs a real worker and reaper.
     monkeypatch.setattr(chroma_worker, "_shared", {})
     client = chroma_worker.shared_client(config, idle_minutes=1 / 60)  # one second
     client.upsert_embeddings(
@@ -175,14 +177,12 @@ def test_after_a_passage_write_article_reads_do_not_keep_the_worker(config, monk
     )
     first = client.worker_pid
 
-    deadline = time.monotonic() + 10
-    while client.worker_pid == first and time.monotonic() < deadline:
+    end = time.monotonic() + 3
+    while time.monotonic() < end:
         assert client.get_existing_ids(["ITEM0001#0"]) == {"ITEM0001#0"}
         time.sleep(0.2)
 
-    assert client.worker_pid != first
-    with pytest.raises(ProcessLookupError):
-        os.kill(first, 0)
+    assert client.worker_pid == first
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="kills the worker with POSIX signals")
