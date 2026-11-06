@@ -31,23 +31,23 @@ _last_presearch_sync_ts: float = 0.0
 _presearch_sync_lock = _threading.Lock()
 
 
-def _maybe_fire_presearch_sync(search) -> None:
+def _maybe_fire_presearch_sync(search) -> bool:
     """Schedule a background semantic-search DB update if auto-update is due.
 
     Runs in a daemon thread so the current tool call returns immediately.
     Intentionally swallows exceptions — a failed background sync must never
-    surface as a search-tool error to the user.
+    surface as a search-tool error to the user. Returns whether it started one.
     """
     global _last_presearch_sync_ts
     try:
         if not search.should_update_database():
-            return
+            return False
     except Exception:
-        return
+        return False
     now = _time.monotonic()
     with _presearch_sync_lock:
         if now - _last_presearch_sync_ts < _PRESEARCH_SYNC_MIN_INTERVAL:
-            return
+            return False
         _last_presearch_sync_ts = now
 
     def _run():
@@ -62,6 +62,57 @@ def _maybe_fire_presearch_sync(search) -> None:
         target=contextvars.copy_context().run, args=(_run,),
         daemon=True, name="zmcp-presearch-sync",
     ).start()
+    return True
+
+
+#: How long a library version read for the stale-index note is reused.
+_LIBRARY_VERSION_TTL = 60.0
+_library_versions: dict[int, tuple[float, int | None]] = {}
+
+
+def _library_version_check(search, group_id: int):
+    """Start reading the library version through the search's own client;
+    returns a function that gives it (or None). The read is one request, run
+    while the search embeds its query, and reused for a minute, a failed or
+    slow read too, so a Zotero that does not answer costs one wait a minute."""
+    cached = _library_versions.get(group_id)
+    if cached and _time.monotonic() - cached[0] < _LIBRARY_VERSION_TTL:
+        return lambda: cached[1]
+    box: dict[str, int] = {}
+
+    def _read():
+        try:
+            version = search.zotero_client.last_modified_version()
+            if isinstance(version, int):
+                box["version"] = version
+        except Exception as e:
+            _search_logger.debug(f"Library version read failed: {e}")
+
+    thread = _threading.Thread(target=_read, daemon=True, name="zmcp-library-version")
+    thread.start()
+
+    def result() -> int | None:
+        thread.join(1.0)
+        version = box.get("version")
+        _library_versions[group_id] = (_time.monotonic(), version)
+        return version
+
+    return result
+
+
+def _stale_index_note(search, library_version: int | None) -> str | None:
+    """One line when the library changed after the index's last update."""
+    load = getattr(search, "_load_last_sync_version", None)
+    if library_version is None or load is None:
+        return None
+    indexed = load()
+    if not isinstance(indexed, int) or not indexed or library_version <= indexed:
+        return None
+    return (
+        "Note: the library has changed since the index was last updated "
+        f"(version {library_version}, index at {indexed}); "
+        "zotero_update_search_database adds the changes."
+    )
 
 
 #: How long the client-side advanced-search walk may run before it returns a
@@ -70,9 +121,12 @@ def _maybe_fire_presearch_sync(search) -> None:
 #: (#456), and far under the 300s MCP idle timeout it used to hit.
 _ADVANCED_SCAN_BUDGET_SECONDS = 20
 
-#: Ceiling for semantic_search(full_passage=True). A chunk is ~1500 characters,
-#: so this only bites on item-level records, whose stored text can be far longer.
-_FULL_PASSAGE_MAX_CHARS = 4000
+#: Ceilings for semantic_search(full_passage=True), per hit and for all hits
+#: together. A passage is at most 1500 characters (chunk_size), so the per-hit
+#: cap only bites on item-level records, whose stored text can be far longer;
+#: the total keeps a large ``limit`` from returning whole papers.
+_FULL_PASSAGE_MAX_CHARS = 1500
+_FULL_PASSAGE_TOTAL_CHARS = 15000
 
 
 def _server_side_filters(
@@ -1413,7 +1467,7 @@ def semantic_search(
         full_passage: Return the whole matched passage instead of a short
             excerpt (default: False). On a passage-indexed library this is
             the complete chunk; otherwise the indexed text is capped at
-            4000 characters.
+            1500 characters. Hits share 15000 characters, at least 400 each.
         ctx: MCP context
 
     Returns:
@@ -1489,18 +1543,30 @@ def semantic_search(
 
         # Fire-and-forget: if auto-update is due, kick off a background sync
         # so subsequent searches see fresh library state. Never blocks here.
-        _maybe_fire_presearch_sync(search)
+        syncing = _maybe_fire_presearch_sync(search)
+        # Is the index behind the library? Only for the active library, and
+        # not while the sync just started catches it up.
+        version_check = (
+            _library_version_check(search, group_id)
+            if not syncing and group_id is not None and group_id == _client.get_active_group_id()
+            else None
+        )
 
         # Perform search
         results = search.search(query=query, limit=limit, filters=filters, group_id=group_id)
+        stale_note = _stale_index_note(search, version_check()) if version_check else None
 
         if results.get("error"):
-            return f"Semantic search error: {results['error']}"
+            message = f"Semantic search error: {results['error']}"
+            if results.get("embedding_api_unreachable"):
+                message += " Use zotero_search_items for a keyword search meanwhile."
+            return message
 
         search_results = results.get("results", [])
 
         if not search_results:
-            return f"No semantically similar items found for query: '{query}'"
+            message = f"No semantically similar items found for query: '{query}'"
+            return f"{message}\n\n{stale_note}" if stale_note else message
 
         # Format results as markdown
         output = [f"# Semantic Search Results for '{query}'", ""]
@@ -1527,6 +1593,10 @@ def semantic_search(
                 )
             output.append("")
 
+        passage_cap = min(
+            _FULL_PASSAGE_MAX_CHARS,
+            max(400, _FULL_PASSAGE_TOTAL_CHARS // len(search_results)),
+        )
         for i, result in enumerate(search_results, 1):
             similarity_score = result.get("similarity_score", 0)
             rerank_score = result.get("rerank_score")
@@ -1538,11 +1608,7 @@ def semantic_search(
             passage = result.get("matched_passage") or result.get("matched_text", "")
             if full_passage:
                 full = result.get("matched_text") or passage
-                snippet = (
-                    full[:_FULL_PASSAGE_MAX_CHARS] + "..."
-                    if len(full) > _FULL_PASSAGE_MAX_CHARS
-                    else full
-                )
+                snippet = full[:passage_cap] + "..." if len(full) > passage_cap else full
             else:
                 snippet = passage[:400] + "..." if len(passage) > 400 else passage
 
@@ -1591,6 +1657,8 @@ def semantic_search(
                     output.append(f"**Error:** {error}")
                 output.append("")
 
+        if stale_note:
+            output.append(stale_note)
         return "\n".join(output)
 
     except Exception as e:
@@ -1657,6 +1725,8 @@ def update_search_database(
 
         if stats.get("error"):
             output.append(f"**Error:** {stats['error']}")
+        elif stats.get("skipped_message"):
+            output.append(stats["skipped_message"])
         else:
             output.append(f"**Total items:** {stats.get('total_items', 0)}")
             output.append(f"**Processed:** {stats.get('processed_items', 0)}")

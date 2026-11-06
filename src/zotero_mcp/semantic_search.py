@@ -50,6 +50,7 @@ from .config_light import (  # noqa: F401
     reranker_enabled,
     should_update,
 )
+from .embeddings.base import EmbeddingAPIUnreachable
 from .embeddings.registry import batch_capable_providers
 from .extract import PAGE_SEPARATOR
 from .identifiers import metadata_match_keys
@@ -3183,6 +3184,28 @@ class ZoteroSemanticSearch:
             if batch_max_requests is not None:
                 throttle["batch_max_requests"] = batch_max_requests
 
+            # A new run would be cut from the same sync version as an
+            # unfinished one, so it pays again for the same items, and the
+            # older run's parked chunks are never sent. Background syncs hit
+            # this every startup or once a day; wait for the import instead.
+            # A force rebuild, asked for by name, still goes ahead.
+            if batch_enabled and not force_full_rebuild:
+                waiting = batch_common.unfinished_run(
+                    batch_common.get_batch_root(active_batch_provider, self.config_path),
+                    self._pinned_group_id(),
+                    _batch_adapter(active_batch_provider),
+                )
+                if waiting:
+                    stats["skipped_reason"] = "batch_run_unfinished"
+                    stats["skipped_message"] = (
+                        f"Batch run {waiting.get('run_id')} for this library is unfinished, "
+                        "so no new batch was submitted. Run 'zotero-mcp batch-import' to "
+                        "collect it; the changes since then go out on the next update."
+                    )
+                    _report(f"\n{stats['skipped_message']}\n")
+                    stats["duration"] = str(datetime.now() - start_time)
+                    return stats
+
             # The Batch API path builds one item-level record per item
             # (_prepare_index_records) and has no chunking step, so a config
             # asking for passage chunking silently produced a truncated,
@@ -3204,7 +3227,12 @@ class ZoteroSemanticSearch:
 
             # In batch mode, defer destructive rebuilds until import so the
             # existing search index remains usable while the batch runs.
+            # A rebuild empties the index first, so the embedding API is
+            # checked before that, not after.
+            api_checked = False
             if force_full_rebuild and not batch_enabled:
+                self._check_embedding_api()
+                api_checked = True
                 logger.info("Force rebuilding database...")
                 self.chroma_client.reset_collection()
 
@@ -3362,6 +3390,12 @@ class ZoteroSemanticSearch:
                     max_enqueued_tokens=throttle["batch_max_enqueued_tokens"],
                     max_requests=throttle["batch_max_requests"],
                 )
+                # This run did its work, so an auto-update is not due again
+                # until its next turn. Without this, should_update stayed true
+                # until an import and every search could pay for the same
+                # changes again. The sync version waits for the import.
+                self.update_config["last_update"] = datetime.now().isoformat()
+                self._save_update_config()
                 batch_ids = ", ".join(stats.get("batch_ids", []))
                 _report(
                     f"  Submitted {batch_label} embedding batch"
@@ -3387,6 +3421,12 @@ class ZoteroSemanticSearch:
                 stats["duration"] = str(end_time - start_time)
                 stats["end_time"] = end_time.isoformat()
                 return stats
+
+            # One short request before any real work: off the network an API
+            # accepts, every batch of the run would fail, and the run would
+            # still save the update time as if it had worked.
+            if all_items and not api_checked:
+                self._check_embedding_api()
 
             # User-friendly progress reporting
             total = stats["total_items"] = len(all_items)
@@ -3565,6 +3605,13 @@ class ZoteroSemanticSearch:
             logger.info(f"Database update completed in {stats['duration']}")
             return stats
 
+        except EmbeddingAPIUnreachable as e:
+            # Raised by the check before any document is embedded: nothing
+            # changed, and last_update and the sync version stay where they were.
+            logger.error(f"Stopping the update: {e}")
+            stats["error"] = f"{e} Run the update again once the API can be reached."
+            stats["duration"] = str(datetime.now() - start_time)
+            return stats
         except Exception as e:
             logger.error(f"Error updating database: {e}")
             stats["error"] = str(e)
@@ -3578,6 +3625,14 @@ class ZoteroSemanticSearch:
             # separately before its early return, so this finally only runs
             # for the path where we actually hold the lock.
             lock_cm.__exit__(None, None, None)
+
+    def _check_embedding_api(self) -> None:
+        """Send one short request to a remote embedding API; raises
+        :class:`EmbeddingAPIUnreachable` if it cannot be reached. Local
+        models have nothing to check."""
+        check = getattr(type(getattr(self.chroma_client, "embedding_function", None)), "check_reachable", None)
+        if check is not None:
+            check(self.chroma_client.embedding_function)
 
     def _prepare_and_classify_slice(
         self,
@@ -4567,6 +4622,8 @@ class ZoteroSemanticSearch:
                 "results": [],
                 "total_found": 0,
                 "error": error,
+                # The index is local, but each query is embedded by the API.
+                "embedding_api_unreachable": isinstance(e, EmbeddingAPIUnreachable),
             }
 
     def _enrich_search_results(

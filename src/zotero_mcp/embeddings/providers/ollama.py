@@ -195,3 +195,24 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
             if status == 429 or (status is not None and status >= 500):
                 return True, None
         return False, None
+
+    def _unreachable_reason(self, exc: Exception) -> str | None:
+        """Connection errors, timeouts, 401 and 403 mean "server unreachable".
+
+        A 401 or 403 comes from a proxy in front of a remote Ollama server;
+        Ollama itself does not authenticate.
+        """
+        try:
+            import requests
+        except ImportError:
+            return None
+
+        if isinstance(exc, requests.exceptions.Timeout):
+            return "timed out"
+        if isinstance(exc, requests.exceptions.ConnectionError):
+            return "connection failed"
+        if isinstance(exc, requests.exceptions.HTTPError):
+            status = getattr(exc.response, "status_code", None)
+            if status in (401, 403):
+                return f"HTTP {status}"
+        return None

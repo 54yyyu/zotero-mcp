@@ -92,7 +92,7 @@ class _EmbeddingFunctionProxy:
         self.__dict__[name] = value  # one round trip per setting, as WorkerChromaClient does
         return value
 
-    def __call__(self, documents):
+    def _function(self):
         with self._lock:
             if self._local is None:
                 from zotero_mcp.embeddings import registry
@@ -100,7 +100,22 @@ class _EmbeddingFunctionProxy:
                 self._local = registry.create_embedding_function(
                     self._client.embedding_model, self._client.embedding_config
                 )
-        return self._local(documents)
+        return self._local
+
+    def __call__(self, documents):
+        return self._function()(documents)
+
+    def check_reachable(self) -> None:
+        """The update's API check, on the server's copy (see the class doc).
+
+        Asked of the worker's function first, so a local model is never
+        loaded here: only remote providers have ``probe_max_retries``.
+        """
+        if getattr(self, "probe_max_retries", None) is None:
+            return
+        function = self._function()
+        if check := getattr(type(function), "check_reachable", None):
+            check(function)
 
 
 class WorkerChromaClient:

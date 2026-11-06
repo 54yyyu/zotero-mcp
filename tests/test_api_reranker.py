@@ -348,3 +348,21 @@ def test_semantic_search_full_passage_returns_stored_text_capped(monkeypatch, tm
     assert "much longer chunk" in out
     assert "x" * search_module._FULL_PASSAGE_MAX_CHARS not in out  # capped, with room for the prefix
     assert "..." in out
+
+
+def test_full_passage_hits_share_a_total_budget(monkeypatch, tmp_path):
+    class ManyHits(_FixedSemanticSearch):
+        def search(self, query, limit=10, filters=None, group_id=None):
+            hit = super().search(query)["results"][0]
+            return {"results": [dict(hit, item_key=f"K{i}") for i in range(limit)], "total_found": limit}
+
+    one = _run_tool(monkeypatch, tmp_path, None, full_passage=True)
+    monkeypatch.setattr(semantic_search, "create_semantic_search", lambda *a, **kw: ManyHits(None))
+    from conftest import DummyContext
+
+    from zotero_mcp.tools import search as search_module
+
+    many = search_module.semantic_search(query="q", limit=50, full_passage=True, ctx=DummyContext())
+
+    assert "x" * 1400 in one and "x" * 1600 not in one
+    assert len(many) < 50 * 900, "fifty full passages must not each get the per-hit cap"
