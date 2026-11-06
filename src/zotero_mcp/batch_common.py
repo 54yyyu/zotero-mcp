@@ -578,9 +578,16 @@ def is_settled(batch: dict[str, Any]) -> bool:
 
 
 def add_failed_ids(manifest: dict[str, Any], ids: list[str]) -> None:
-    """Record ids given up on; a run with any does not advance the sync version."""
+    """Record ids given up on, once each, in the order they came.
+
+    What a run with any does to the sync version is up to its promotion.
+    """
     failed = manifest.setdefault("failed_ids", [])
-    failed.extend(doc_id for doc_id in ids if doc_id not in failed)
+    seen = set(failed)
+    for doc_id in ids:
+        if doc_id not in seen:
+            seen.add(doc_id)
+            failed.append(doc_id)
 
 
 def requeue_failed_batches(adapter: BatchAdapter, manifest: dict[str, Any]) -> tuple[int, int]:
