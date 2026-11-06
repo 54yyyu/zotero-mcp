@@ -2013,6 +2013,7 @@ def _guess_content_type(filename):
         "djvu": "image/vnd.djvu",
         "html": "text/html",
         "txt": "text/plain",
+        "vtt": "text/vtt",
         **{e.lstrip("."): t for e, t in _TEXT_ATTACHMENT_TYPES.items()},
         "doc": "application/msword",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
