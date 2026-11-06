@@ -65,6 +65,8 @@ class FakeZotero:
         self.keys = list(keys)
         self.abstract = abstract
         self.version = 5
+        # Items changed since the last sync: key -> new abstract.
+        self.changed: dict[str, str] = {}
 
     def item(self, key):
         return {
@@ -74,10 +76,10 @@ class FakeZotero:
                 "key": key,
                 "itemType": "journalArticle",
                 "title": f"Title {key}",
-                "abstractNote": self.abstract,
+                "abstractNote": self.changed.get(key, self.abstract),
                 "creators": [],
                 "dateAdded": "2024-01-01T00:00:00Z",
-                "dateModified": "2024-01-01T00:00:00Z",
+                "dateModified": "2024-02-01T00:00:00Z" if key in self.changed else "2024-01-01T00:00:00Z",
             },
         }
 
@@ -85,7 +87,8 @@ class FakeZotero:
         return [] if start else [self.item(k) for k in self.keys]
 
     def item_versions(self, since=None, **kwargs):
-        return {} if since is not None else {k: self.version for k in self.keys}
+        keys = self.changed if since is not None else self.keys
+        return {k: self.version for k in keys}
 
     def children(self, *a, **kw):
         return []
@@ -299,3 +302,67 @@ def test_an_item_level_index_writes_articles_only(build):
     search.update_database()
 
     assert search.writes == ["AAA", "BBB"]
+
+
+CHANGED = " ".join(f"Rewritten sentence {i} of the new abstract." for i in range(100))
+
+
+def _stop_in_the_passage_pass(monkeypatch, search):
+    ef = search.chroma_client.embedding_function
+    original_call = type(ef).__call__
+
+    def refuse_passages(self, input):
+        if any(len(text) < 600 for text in input):  # a passage, not a whole article
+            raise EmbeddingAPIUnreachable("openai", "api.example", "connection refused")
+        return original_call(self, input)
+
+    monkeypatch.setattr(type(ef), "__call__", refuse_passages)
+    stats = search.update_database()
+    monkeypatch.setattr(type(ef), "__call__", original_call)
+    assert stats.get("embedding_api_unreachable") == "api.example"
+
+
+def _passages_of(search, key):
+    got = search.chroma_client.client.get_collection(f"{NAME}_passages").get(
+        where={"parent_item_key": key}, include=["documents"]
+    )
+    return got["documents"]
+
+
+def _changed_and_stopped(build, monkeypatch, parallel):
+    zotero = FakeZotero(["AAA", "BBB"])
+    build(zotero, parallel=parallel).update_database()
+    zotero.version = 6
+    zotero.changed = {"AAA": CHANGED}
+    _stop_in_the_passage_pass(monkeypatch, build(zotero, parallel=parallel))
+    return zotero
+
+
+@pytest.mark.parametrize("parallel", [1, 2], ids=["sequential", "streaming"])
+def test_a_stop_leaves_a_changed_item_without_its_stale_passages(build, monkeypatch, parallel):
+    """Otherwise a full scan sees the new article, and the gap fill can't see the old passages."""
+    zotero = _changed_and_stopped(build, monkeypatch, parallel)
+    search = build(zotero, parallel=parallel)
+
+    assert _passages_of(search, "AAA") == []
+    assert len(_passages_of(search, "BBB")) == 5, "an unchanged item keeps its passages"
+
+
+@pytest.mark.parametrize("parallel", [1, 2], ids=["sequential", "streaming"])
+def test_a_full_scan_after_a_stop_writes_a_changed_items_new_passages(build, monkeypatch, parallel):
+    zotero = _changed_and_stopped(build, monkeypatch, parallel)
+    config_path = Path(build(zotero).config_path)
+    config = json.loads(config_path.read_text())
+    config["semantic_search"].pop("last_sync_versions", None)
+    config["semantic_search"].pop("last_sync_version", None)
+    config_path.write_text(json.dumps(config))  # a full scan, as after a migration
+
+    search = build(zotero, parallel=parallel)
+    stats = search.update_database()
+
+    assert stats.get("error") is None
+    passages = _passages_of(search, "AAA")
+    assert len(passages) == 5
+    assert all("Sentence number" not in p for p in passages)
+    assert len(search.chroma_client.embedded) == 5, "AAA's passages only, not its article"
+

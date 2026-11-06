@@ -4701,6 +4701,10 @@ class ZoteroSemanticSearch:
                         write_docs, write_metas, write_ids, write_vectors
                     )
                     self._prune_stale_chunks(write_metas)
+                    if level == SEARCH_ARTICLES:
+                        self._drop_replaced_passages(
+                            [k for k, existed in write_keys.items() if existed and k in keep_cached]
+                        )
             except Exception as exc:
                 logger.warning(f"Batch upsert failed ({exc}), saving for retry")
                 record_failures(write_docs, write_metas, write_ids)
@@ -4803,6 +4807,19 @@ class ZoteroSemanticSearch:
                     pass
             time.sleep(0.05)
 
+    def _drop_replaced_passages(self, item_keys: list[str]) -> None:
+        """Delete the old passages of items whose new article record was just written.
+
+        Their new passages follow in the passage pass. A run stopped before
+        then leaves each item with an article and no passages, which the gap
+        fill finds; old passages left in place would describe the item before
+        its change, and hide it from the gap fill for good.
+        """
+        if not hasattr(self.chroma_client, "prune_item_chunks"):
+            return
+        for item_key in item_keys:
+            self.chroma_client.prune_item_chunks(item_key, 0)
+
     def _prune_stale_chunks(self, metadatas: list[dict[str, Any]]) -> None:
         """Drop each just-written item's passages past its new ``n_chunks``.
 
@@ -4889,6 +4906,10 @@ class ZoteroSemanticSearch:
                 with self._chroma_call_lock:
                     self.chroma_client.upsert_documents(documents, metadatas, ids)
                     self._prune_stale_chunks(metadatas)
+                    if level == SEARCH_ARTICLES:
+                        self._drop_replaced_passages(
+                            [k for k in item_keys_order if k in existing_item_keys and k in keep_cached]
+                        )
                 for k in item_keys_order:
                     if accounted is not None:
                         if k in accounted:
