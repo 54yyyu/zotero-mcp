@@ -3788,6 +3788,25 @@ class ZoteroSemanticSearch:
                 limit=limit, force_rebuild=force_full_rebuild, batch=batch_enabled
             )
             gapped_index = bool(index_gaps)
+            # Items that only a run with their full text can fill. What is no
+            # longer a gap is forgotten, but only by a run that looked for
+            # every gap: a limited run, a rebuild and (until it can make
+            # passages) a batch run don't, and would forget items still waiting.
+            if (
+                limit is None
+                and not force_full_rebuild
+                and not batch_enabled
+                and self._separate_passages()
+            ):
+                waiting_for_text = [
+                    key for key in self.update_config.get("gaps_waiting_for_text") or [] if key in index_gaps
+                ]
+                if "gaps_waiting_for_text" in self.update_config:
+                    self.update_config["gaps_waiting_for_text"] = waiting_for_text
+                if checks := self.update_config.get("gaps_text_checked"):
+                    self.update_config["gaps_text_checked"] = {
+                        key: check for key, check in checks.items() if key in waiting_for_text
+                    }
             if index_gaps and (unfinished_run := self._unfinished_batch_run()):
                 _report(
                     f"Batch run {unfinished_run} has not finished, so missing records are left "
@@ -3795,17 +3814,6 @@ class ZoteroSemanticSearch:
                 )
                 index_gaps = {}
             self._scan_gaps = index_gaps
-            # Items that only a run with their full text can fill. What is no
-            # longer a gap is forgotten, and the rest don't count as work.
-            waiting_for_text = [
-                key for key in self.update_config.get("gaps_waiting_for_text") or [] if key in index_gaps
-            ]
-            if "gaps_waiting_for_text" in self.update_config:
-                self.update_config["gaps_waiting_for_text"] = waiting_for_text
-            if checks := self.update_config.get("gaps_text_checked"):
-                self.update_config["gaps_text_checked"] = {
-                    key: check for key, check in checks.items() if key in waiting_for_text
-                }
             # Waiting items count as work only when this run may ask for their text.
             left_alone = self._still_waiting_for_text(include_fulltext_via_api)
             has_fillable_gaps = len(index_gaps) > len(left_alone & set(index_gaps))

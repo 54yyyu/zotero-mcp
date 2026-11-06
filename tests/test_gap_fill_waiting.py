@@ -282,3 +282,42 @@ def test_no_text_in_zotero_is_not_a_fetch_error(build, tmp_path):
     build(zotero, chunking=True, fulltext=True).update_database()
 
     assert _saved(tmp_path)["gaps_text_checked"]["AAA"]["checks"] == 1
+
+
+# --- runs that keep the waiting list -------------------------------------------------
+
+
+def test_a_limited_run_keeps_the_waiting_list(build, tmp_path):
+    zotero = FakeZotero({"AAA": LONG})
+    _park(build, zotero)
+
+    build(zotero, chunking=True).update_database(limit=1)
+
+    assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
+
+
+def test_a_run_whose_fill_is_held_back_keeps_the_waiting_list(build, tmp_path, monkeypatch):
+    zotero = FakeZotero({"AAA": LONG})
+    _park(build, zotero)
+    zotero.version = 6
+    zotero.changed = {"AAA"}
+
+    search = build(zotero, chunking=True)
+    monkeypatch.setattr(search, "_unfinished_batch_run", lambda: "run-1")
+    search.update_database()
+
+    assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
+
+
+def test_a_run_stopped_by_an_unreachable_api_keeps_the_waiting_list(build, tmp_path):
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    _park(build, zotero)
+    zotero.version = 6
+    zotero.changed = {"BBB"}
+
+    search = build(zotero, chunking=True)
+    search.chroma_client.embedding_function.unreachable = True
+    stats = search.update_database()
+
+    assert stats.get("embedding_api_unreachable")
+    assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
