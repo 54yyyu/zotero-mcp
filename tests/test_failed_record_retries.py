@@ -282,6 +282,27 @@ def test_an_unmigrated_index_still_holds_the_sync_version(build, tmp_path):
     assert not _saved(tmp_path).get("retry_item_keys")
 
 
+def test_an_unmigrated_index_moves_on_when_only_a_kept_item_fails(build, tmp_path):
+    """The retry key already tracks it; holding the watermark would re-buy every change."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG, "CCC": LONG})
+    build(zotero, split=False).update_database()
+    zotero.abstracts["BBB"] = f"{POISON} {LONG}"
+    _set_update_config(tmp_path, retry_item_keys=["BBB"], retry_item_attempts={"BBB": 1})
+    zotero.version = 6
+    zotero.changed = {"CCC"}
+    zotero.abstracts["CCC"] = "A new abstract for CCC."
+
+    search = build(zotero, split=False)
+    search.update_database()
+
+    assert search._load_last_sync_version() == 6
+    assert _saved(tmp_path)["retry_item_keys"] == ["BBB"]
+    zotero.changed = set()
+    search = build(zotero, split=False)
+    search.update_database()
+    assert not any("A new abstract for CCC." in text for text in search.chroma_client.embedded)
+
+
 # --- add_failed_ids ---------------------------------------------------------------
 
 
@@ -295,13 +316,15 @@ def test_add_failed_ids_keeps_order_and_drops_repeats():
 
 def test_add_failed_ids_is_linear():
     """A large run gives up whole files of ids; a quadratic check takes minutes."""
-    manifest = {"failed_ids": [f"old{i}" for i in range(30000)]}
+    # Quadratic, this takes minutes and hits the test timeout; linear, milliseconds.
+    # The bound leaves a slow runner plenty of room.
+    manifest = {"failed_ids": [f"old{i}" for i in range(100000)]}
     started = time.monotonic()
 
-    batch_common.add_failed_ids(manifest, [f"new{i}" for i in range(30000)])
+    batch_common.add_failed_ids(manifest, [f"new{i}" for i in range(100000)])
 
-    assert time.monotonic() - started < 2
-    assert len(manifest["failed_ids"]) == 60000
+    assert time.monotonic() - started < 10
+    assert len(manifest["failed_ids"]) == 200000
 
 
 # --- the Batch API path ------------------------------------------------------------
@@ -453,3 +476,71 @@ def test_the_import_says_an_unmigrated_index_keeps_its_sync_version(build, batch
     assert "sync version stays put" in errors
     assert "embeds them again" not in errors
     assert build(zotero, chunking=False, split=False)._load_last_sync_version() == 5
+
+
+def test_an_unmigrated_batch_run_moves_on_when_only_a_kept_item_fails(build, batch, tmp_path):
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG, "CCC": LONG})
+    build(zotero, chunking=False, split=False).update_database()
+    _set_update_config(tmp_path, retry_item_keys=["BBB"], retry_item_attempts={"BBB": 1})
+    zotero.version = 6
+    zotero.changed = {"CCC"}
+
+    batch.search(zotero, chunking=False, split=False).update_database(use_batch=True)
+    stats = _land(batch, zotero, fail={"BBB"}, chunking=False, split=False)
+
+    assert build(zotero, chunking=False, split=False)._load_last_sync_version() == 6
+    assert _saved(tmp_path)["retry_item_keys"] == ["BBB"]
+    errors = " ".join(str(error) for error in stats["errors"])
+    assert "sync version stays put" not in errors
+
+
+def test_a_change_run_does_not_cover_a_run_rewriting_kept_items():
+    """The newer run doesn't carry the rewrites, so superseding would pay for them twice."""
+    older = {"run_id": "a", "group_id": 0, "since_version": 5, "retry_keys": ["BBB"]}
+    newer = {"run_id": "b", "group_id": 0, "since_version": 5}
+
+    assert not batch_common.run_covers(newer, older)
+    assert batch_common.run_covers({**newer, "retry_keys": ["BBB", "CCC"]}, older)
+    assert batch_common.run_covers({**newer, "force_full_rebuild": True}, older)
+
+
+def test_a_superseded_run_settles_the_rewrites_it_landed(build, batch, tmp_path):
+    """Its records are in the index even though it doesn't move the sync version."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG, "CCC": LONG})
+    build(zotero, chunking=False).update_database()
+    zotero.abstracts["CCC"] = f"{POISON} {LONG}"
+    _set_update_config(
+        tmp_path, retry_item_keys=["BBB", "CCC"], retry_item_attempts={"BBB": 1, "CCC": 1}
+    )
+    batch.search(zotero, chunking=False).update_database(use_batch=True)
+
+    batch.fake.finish_all(fail={"CCC"})
+    search = batch.search(zotero, chunking=False)
+    search._superseded_by = lambda provider, manifest: "a-newer-run"
+    stats = search._import_batch("openai")
+
+    assert stats["imported_items"] == 1
+    assert _saved(tmp_path)["retry_item_keys"] == ["CCC"], "not written, so still kept"
+    errors = " ".join(str(error) for error in stats["errors"])
+    assert "rewrites the items kept for a retry" in errors
+
+
+def test_a_kept_item_without_text_is_dropped_by_a_batch_run(build, batch, tmp_path):
+    """Nothing to embed is not a failure, and keeping it would fetch it on every run."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG, "EMPTY": LONG})
+    build(zotero, chunking=False).update_database()
+    zotero.abstracts["BBB"] = "A new abstract for BBB."
+    _set_update_config(
+        tmp_path, retry_item_keys=["BBB", "EMPTY"], retry_item_attempts={"BBB": 1, "EMPTY": 1}
+    )
+    search = batch.search(zotero, chunking=False)
+    original = search._build_item_records
+
+    def build_records(item, **kwargs):
+        return [] if item.get("key") == "EMPTY" else original(item, **kwargs)
+
+    search._build_item_records = build_records
+    search.update_database(use_batch=True)
+    _land(batch, zotero, chunking=False)
+
+    assert _saved(tmp_path)["retry_item_keys"] == []

@@ -328,6 +328,10 @@ def run_covers(newer: dict[str, Any], older: dict[str, Any], adapter: BatchAdapt
         return True
     if older.get("force_full_rebuild") or older.get("limited"):
         return False
+    if not set(older.get("retry_keys") or []) <= set(newer.get("retry_keys") or []):
+        # Items kept for a retry are rewritten whatever changed, so only a run
+        # carrying them too covers them; otherwise they are paid for twice.
+        return False
     if "since_version" not in newer and "since_version" not in older:
         return True
     newer_since, older_since = newer.get("since_version"), older.get("since_version")
