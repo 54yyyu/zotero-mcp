@@ -10,6 +10,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from zotero_mcp.cli_help import FullHelpAction
+
 # NOTE: Do NOT import zotero_mcp.server at module level.
 # That triggers heavy imports (FastMCP, ChromaDB, sentence-transformers, torch)
 # which take several seconds. Import lazily only when needed (serve command).
@@ -1009,24 +1011,18 @@ def run_batch_import(args, provider: str | None = None) -> None:
         sys.exit(1)
 
 
-def main():
-    """Main entry point for the CLI."""
-    tolerate_console_encoding()
+def _build_parser() -> argparse.ArgumentParser:
+    """The complete command line, built in one place so help and tests can inspect it."""
     parser = argparse.ArgumentParser(
         description="Zotero Model Context Protocol server",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "Batch API indexing (OpenAI or Gemini, ~50% of realtime cost):\n"
-            "  zotero-mcp update-db --batch            Submit embeddings asynchronously\n"
-            "  zotero-mcp update-db --batch --auto-loop  Submit, then poll and import\n"
-            "  zotero-mcp batch-status                 Check submitted batch status\n"
-            "  zotero-mcp batch-import                 Import completed embeddings\n"
-            "  zotero-mcp help update-db               Show update-db options\n"
-        ),
+        usage="zotero-mcp [-h] <command> [options]",
+        add_help=False,
     )
 
     # Create subparsers for different commands
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    subparsers = parser.add_subparsers(dest="command", metavar="<command>", help="Command to run")
+    parser.add_argument("-h", "--help", action=FullHelpAction, commands=subparsers,
+                        help="Show every command and option, then exit")
 
     # Server command (default behavior)
     server_parser = subparsers.add_parser("serve", help="Run the MCP server")
@@ -1166,6 +1162,14 @@ def main():
                                   help="Print the granted key (for ZOTERO_LOCAL_API_KEY)")
     authorize_parser.add_argument("--no-save", action="store_true",
                                   help="Do not persist the key to the config file")
+
+    return parser
+
+
+def main():
+    """Main entry point for the CLI."""
+    tolerate_console_encoding()
+    parser = _build_parser()
 
     args = parser.parse_args(_normalize_help_args(sys.argv[1:]))
 
@@ -1624,7 +1628,7 @@ def main():
                     mcp, args.host, allow_unauthenticated=args.allow_unauthenticated,
                 )
         except ValueError as e:
-            server_parser.error(str(e))
+            parser.error(str(e))
         # Re-apply the toolset profile now that the transport is known. The
         # import-time call in server.py assumed stdio; an HTTP transport also
         # needs the ChatGPT connector tools. setup_zotero_environment() runs

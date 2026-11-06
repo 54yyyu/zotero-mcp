@@ -284,13 +284,13 @@ def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool)
     print("is not searchable.")
     print("With chunking, each item is split into overlapping passages, one vector")
     print("each, so long PDFs stay searchable and results can quote the matching passage.")
-    print("Changing this setting requires 'zotero-mcp update-db --force-rebuild'.")
-    print("Warning: on a large library, chunking multiplies the size of the index.")
-    print("  - Each item can produce many embeddings, so indexing takes far more API calls,")
-    print("    time and, with a paid provider, money.")
-    print("  - The search index is loaded into memory: about 6 GB per million passages at")
-    print("    1536 dimensions and twice that at 3072 (text-embedding-3-large).")
-    print("    'semantic_search.idle_unload_minutes' frees it when idle.")
+    print("Warning: on a large library chunking multiplies the index: many more embeddings")
+    print("to pay for and wait on, and the index sits in memory (about 6 GB per million")
+    print("passages). Changing it needs 'zotero-mcp update-db --force-rebuild'.")
+    print(
+        "The Batch API is enabled here and ignores chunking; use 'update-db --no-batch'."
+        if batch_enabled else "The Batch API ignores chunking."
+    )
     hint = "Y/n" if was_enabled else "y/N"
     raw = input(f"Index full text as passages? [{hint}]: ").strip().lower()
     enabled = was_enabled if raw == "" else raw in ("y", "yes")
@@ -316,11 +316,6 @@ def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool)
             f"That is up to {int(chunking['max_chunks_per_item']) * 10_000:,} embeddings "
             "per 10,000 items."
         )
-        if batch_enabled:
-            print(
-                "Warning: the Batch API is enabled, and passage chunking is ignored "
-                "on that path. Use 'update-db --no-batch' or disable the Batch API."
-            )
     if enabled != was_enabled:
         print("Chunking changed: run 'zotero-mcp update-db --force-rebuild' to apply it.")
     return chunking

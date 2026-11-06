@@ -203,3 +203,7 @@ Add `-v` anywhere to see progress messages (e.g., which API calls are made):
 ```bash
 zotero-cli -v search "CRISPR"
 ```
+
+## Finding a flag
+
+`zotero-cli --help` and `zotero-cli <command> --help` show the options of `zotero-cli`. The server's own commands (`serve`, `setup`, `update-db`, `batch-status`, `repair-db` and the rest) have a single reference: `zotero-mcp help` prints every command with every option, and `zotero-mcp help update-db` shows one command.
