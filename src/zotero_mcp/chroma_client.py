@@ -680,16 +680,24 @@ class ChromaClient:
         Unlike :meth:`get_all_ids` this raises on a read failure, for the guard
         in front of a reset: not knowing must not read as "there are none".
         Counts by subtraction, because unattributed documents never match a
-        ``group_id`` filter and they would be lost too.
+        ``group_id`` filter and they would be lost too. Covers the passage
+        collection as well, which a reset deletes with the articles.
         """
-        everything = self.collection.get(include=[])
-        ours = self.collection.get(where={"group_id": int(group_id)}, include=[])
-        return len(set(everything.get("ids", [])) - set(ours.get("ids", [])))
+        outside = 0
+        for collection in self.collections():
+            everything = collection.get(include=[])
+            ours = collection.get(where={"group_id": int(group_id)}, include=[])
+            outside += len(set(everything.get("ids", [])) - set(ours.get("ids", [])))
+        return outside
 
     def has_passage_documents(self) -> bool:
-        """Does the index hold passage-chunked documents? Raises on a read failure."""
-        found = self.collection.get(where={"chunk_index": {"$gte": 0}}, limit=1, include=[])
-        return bool(found.get("ids"))
+        """Does the index hold passage-chunked documents, in either collection?
+        Raises on a read failure."""
+        for collection in self.collections():
+            found = collection.get(where={"chunk_index": {"$gte": 0}}, limit=1, include=[])
+            if found.get("ids"):
+                return True
+        return False
 
     def iter_metadatas(self, batch_size: int = 500) -> Iterator[tuple[list[str], list[dict[str, Any]]]]:
         """Stream ``(ids, metadatas)`` over the whole collection in batches.
