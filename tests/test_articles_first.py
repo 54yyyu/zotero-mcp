@@ -366,3 +366,46 @@ def test_a_full_scan_after_a_stop_writes_a_changed_items_new_passages(build, mon
     assert all("Sentence number" not in p for p in passages)
     assert len(search.chroma_client.embedded) == 5, "AAA's passages only, not its article"
 
+
+
+@pytest.mark.parametrize("parallel", [1, 2], ids=["sequential", "streaming"])
+def test_the_next_incremental_run_after_a_stop_pays_only_for_the_passages(build, monkeypatch, parallel):
+    zotero = _changed_and_stopped(build, monkeypatch, parallel)
+
+    search = build(zotero, parallel=parallel)
+    stats = search.update_database()
+
+    assert stats.get("error") is None
+    assert len(_passages_of(search, "AAA")) == 5
+    assert all("Rewritten sentence" in p or "Title AAA" in p for p in _passages_of(search, "AAA"))
+    assert len(search.chroma_client.embedded) == 5, "AAA's current article is not embedded again"
+
+
+def test_an_incremental_change_still_rewrites_a_stale_article(build):
+    zotero = FakeZotero(["AAA"])
+    build(zotero).update_database()
+    zotero.version = 6
+    zotero.changed = {"AAA": CHANGED}
+
+    search = build(zotero)
+    search.update_database()
+
+    assert len(search.chroma_client.embedded) == 6, "the article and five passages"
+
+
+def test_an_article_written_with_full_text_is_rewritten_by_a_run_without_it(build, monkeypatch):
+    """Passages-only would leave the two levels written from different text."""
+    monkeypatch.setattr(
+        semantic_search.ZoteroSemanticSearch, "_fetch_fulltext_checked",
+        lambda self, key: (FULLTEXT, "pdf", False),
+    )
+    zotero = FakeZotero(["AAA"])
+    build(zotero, include_fulltext=True).update_database()
+    zotero.version = 6
+    zotero.changed = {"AAA": CHANGED}
+    _stop_in_the_passage_pass(monkeypatch, build(zotero, include_fulltext=True))
+
+    search = build(zotero, include_fulltext=False)
+    search.update_database()
+
+    assert len(search.chroma_client.embedded) == 6, "the article and five passages"

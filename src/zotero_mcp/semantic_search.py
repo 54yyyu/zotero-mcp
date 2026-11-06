@@ -2791,6 +2791,32 @@ class ZoteroSemanticSearch:
                 kept.append(item)
         return self._without_fills_lacking_text(kept)
 
+    def _keep_current_articles(
+        self, items: list[dict[str, Any]], gaps: dict[str, set[str]]
+    ) -> None:
+        """Changed items whose article record is already current get only their passages.
+
+        A run stopped between the article and passage passes leaves the sync
+        version where it was, so the next run fetches the same changes again.
+        Its article records were written; an item that has one for its
+        current version, written from the same text, and no passages needs
+        only those. Anything else is rewritten in full, as before.
+        """
+        for item in items:
+            key = item.get("key", "")
+            if gaps.get(key) != {SEARCH_PASSAGES} or item.get("_index_levels"):
+                continue
+            data = item.get("data", {})
+            existing = self.chroma_client.get_document_metadata(key)
+            if not existing or "parent_item_key" in existing:
+                continue
+            if not _same_moment(existing.get("date_modified"), data.get("dateModified")):
+                continue
+            # Written from the same text: with full text both times, or without.
+            if bool((data.get("fulltext") or "").strip()) != (existing.get("has_fulltext") is True):
+                continue
+            item["_index_levels"] = gaps[key]
+
     def _unfinished_batch_run(self) -> str | None:
         """Run id of a recent batch run for this library that has not finished landing.
 
@@ -3995,6 +4021,7 @@ class ZoteroSemanticSearch:
                     include_fulltext=include_fulltext_via_api,
                 )
                 self._run_deletion_pass(stats, current_library_keys, allow_mass_deletion)
+                self._keep_current_articles(all_items, index_gaps)
                 gap_items = self._get_gap_items_from_api(
                     index_gaps,
                     already_fetched={item.get("key") for item in all_items},
