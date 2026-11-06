@@ -416,3 +416,42 @@ def test_default_budgets_split_passages_into_files_that_fit(module, per_file):
     for chunk_records, _ in chunks:
         estimated = sum(batch_common.estimate_tokens(r["document"], module.ADAPTER.chars_per_token) for r in chunk_records)
         assert estimated <= budget
+
+
+def _isolate_home(monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+
+def test_article_records_are_submitted_before_any_passage(env, monkeypatch, tmp_path):
+    """Article-level search is complete once the first files land."""
+    _isolate_home(monkeypatch, tmp_path)
+    keys = ["AAA", "BBB", "CCC"]
+    search = env.build(FakeZotero({k: LONG for k in keys}), chunking=True, batch_extra={"batch_max_requests": 2})
+
+    search.update_database()
+
+    submitted = _submitted(env)
+    assert submitted[:3] == keys
+    assert all("#" in i for i in submitted[3:])
+    assert len(submitted) == 18
+
+
+def test_items_are_counted_once_when_articles_and_passages_land_apart(env, monkeypatch, tmp_path):
+    _isolate_home(monkeypatch, tmp_path)
+    keys = ["AAA", "BBB", "CCC"]
+    search = env.build(FakeZotero({k: LONG for k in keys}), chunking=True, batch_extra={"batch_max_requests": 2})
+    search.update_database()
+
+    added = updated = 0
+    for _ in range(10):
+        env.fake.finish_all()
+        stats = search._import_batch("openai")
+        added += stats["added_items"]
+        updated += stats["updated_items"]
+        if not [j for j in env.fake.jobs.values() if j.status == "in_progress"]:
+            break
+
+    assert (added, updated) == (3, 0)
+    assert _ids(search) == set(keys)
+    assert len(_passages(search)) == 15

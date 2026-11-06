@@ -3507,6 +3507,16 @@ class ZoteroSemanticSearch:
                 stats["batch_nothing_to_embed"] = True
             return stats
 
+        # Every article record goes in the files before any passage, so
+        # article-level search is complete once the first files land. The sort
+        # is stable: an item's passages stay in order.
+        records.sort(key=lambda record: "#" in record["id"])
+        # Its article and passages now land in different files: the import
+        # counts the item where its article lands, not again at its first passage.
+        with_article = {record["id"] for record in records if "#" not in record["id"]}
+        for record in records:
+            if record["id"].endswith("#0") and record["id"][:-2] in with_article:
+                record["counted_with_article"] = True
         item_keys = sorted({record["id"].split("#", 1)[0] for record in records})
         existing_items = (
             self._existing_item_keys(item_keys) if not force_full_rebuild else set()
@@ -6356,13 +6366,14 @@ class ZoteroSemanticSearch:
                 stats["errors"].extend(missing_errors)
 
                 if ids:
-                    # Item-level counts, each item counted where it first appears:
-                    # its article record or first passage. An item's passages
-                    # can be spread over several files.
+                    # Item-level counts, each item counted once: where its
+                    # article record lands, or else its first passage. An
+                    # item's records can be spread over several files.
                     first_records = {
                         doc_id.split("#", 1)[0]
                         for doc_id in ids
-                        if "#" not in doc_id or doc_id.endswith("#0")
+                        if "#" not in doc_id
+                        or (doc_id.endswith("#0") and not records[doc_id].get("counted_with_article"))
                     }
                     existing_items = self._existing_item_keys(sorted(first_records))
                     metadatas = [records[doc_id]["metadata"] for doc_id in ids]
