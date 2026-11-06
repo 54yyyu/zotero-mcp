@@ -271,7 +271,8 @@ def test_a_passage_that_keeps_failing_sends_its_item_back_to_the_gap_fill(env):
 
     assert len([p for p in _passages(search) if p.startswith("AAA")]) == 4
     assert len([p for p in _passages(search) if p.startswith("BBB")]) == 5
-    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
+    # Kept for a retry, so it is rewritten in full whatever levels it has.
+    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"articles", "passages"}}
 
     search._import_batch("openai")
 
