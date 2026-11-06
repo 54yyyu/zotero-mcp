@@ -156,6 +156,15 @@ def _park(build, zotero):
     build(zotero, chunking=True).update_database()
 
 
+def _age_tried(tmp_path, key, days):
+    """Move the stored time of ``key``'s last unanswered try ``days`` into the past."""
+    config_path = tmp_path / "config.json"
+    data = json.loads(config_path.read_text())
+    checks = data["semantic_search"]["update_config"]["gaps_text_checked"]
+    checks[key]["tried_at"] = (datetime.now() - timedelta(days=days)).isoformat()
+    config_path.write_text(json.dumps(data))
+
+
 def _age_check(tmp_path, key, days):
     """Move the stored time of ``key``'s last text check ``days`` into the past."""
     config_path = tmp_path / "config.json"
@@ -257,7 +266,8 @@ def test_a_fetch_error_does_not_park_an_item(build, tmp_path):
     assert len(_passage_ids(search)) == 5
 
 
-def test_a_fetch_error_on_a_waiting_item_leaves_it_due(build, tmp_path):
+def test_a_fetch_error_on_a_waiting_item_does_not_lengthen_its_wait(build, tmp_path):
+    """No answer is not "no text": the backoff stays, and the item is tried again the next day."""
     zotero = FakeZotero({"AAA": LONG})
     _park(build, zotero)
     build(zotero, chunking=True, fulltext=True).update_database()
@@ -265,10 +275,69 @@ def test_a_fetch_error_on_a_waiting_item_leaves_it_due(build, tmp_path):
     before = _saved(tmp_path)["gaps_text_checked"]["AAA"]
 
     zotero.fulltext_error = ConnectionError("connection reset")
+    zotero.text_requests.clear()
+    build(zotero, chunking=True, fulltext=True).update_database()
+    after = _saved(tmp_path)["gaps_text_checked"]["AAA"]
+
+    assert zotero.text_requests == ["AAA"]
+    assert (after["at"], after["checks"]) == (before["at"], before["checks"])
+    assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
+
+    build(zotero, chunking=True, fulltext=True).update_database()
+    assert zotero.text_requests == ["AAA"], "not on every run"
+
+    _age_tried(tmp_path, "AAA", days=1.1)
+    zotero.fulltext_error = None
+    zotero.texts["AAA"] = TEXT
+    search = build(zotero, chunking=True, fulltext=True)
+    search.update_database()
+    assert len(_passage_ids(search)) == 5
+
+
+def test_a_waiting_item_zotero_never_returns_is_tried_once_a_day(build, tmp_path):
+    """Otherwise it counts as work on every run, and no run is ever "library unchanged"."""
+    zotero = FakeZotero({"AAA": LONG})
+    _park(build, zotero)
+    zotero.fetched.clear()
+
+    def gone(key):
+        zotero.fetched.append(key)
+        raise ConnectionError("connection reset")
+
+    zotero.item = gone
+    build(zotero, chunking=True, fulltext=True).update_database()
     build(zotero, chunking=True, fulltext=True).update_database()
 
-    assert _saved(tmp_path)["gaps_text_checked"]["AAA"] == before
+    assert zotero.fetched == ["AAA"]
     assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
+
+    _age_tried(tmp_path, "AAA", days=1.1)
+    build(zotero, chunking=True, fulltext=True).update_database()
+    assert zotero.fetched == ["AAA", "AAA"]
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        {"at": "2026-01-01T00:00:00+00:00", "checks": 1},
+        {"at": "2026-01-01T00:00:00", "checks": "many"},
+        {"at": None, "checks": None, "tried_at": "yesterday"},
+        "not a record",
+    ],
+)
+def test_a_damaged_check_record_does_not_stop_the_run(build, tmp_path, record):
+    zotero = FakeZotero({"AAA": LONG})
+    _park(build, zotero)
+    config_path = tmp_path / "config.json"
+    data = json.loads(config_path.read_text())
+    data["semantic_search"]["update_config"]["gaps_text_checked"] = {"AAA": record}
+    config_path.write_text(json.dumps(data))
+
+    stats = build(zotero, chunking=True, fulltext=True).update_database()
+
+    assert stats.get("error") is None
+    assert zotero.text_requests == ["AAA"], "a record that can't be read is due"
+    assert _saved(tmp_path)["gaps_text_checked"]["AAA"]["checks"] >= 1
 
 
 def test_no_text_in_zotero_is_not_a_fetch_error(build, tmp_path):
@@ -342,6 +411,7 @@ def test_a_full_scan_of_a_complete_split_index_embeds_nothing(build, tmp_path):
 
     assert search.chroma_client.embedded == []
     assert stats["total_items"] == 0
+
 
 
 # --- the Batch API path ----------------------------------------------------------

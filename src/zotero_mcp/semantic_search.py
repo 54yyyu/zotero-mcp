@@ -2550,7 +2550,11 @@ class ZoteroSemanticSearch:
         skipped = self._still_waiting_for_text(include_fulltext)
         items: list[dict[str, Any]] = []
         for key in sorted(gaps):
-            if key in already_fetched or key not in library_keys or key in skipped:
+            if key in already_fetched or key in skipped:
+                continue
+            if key not in library_keys:
+                # Another library's item, which this run can't ask about.
+                self._note_unanswered_recheck(key, waiting)
                 continue
             if not include_fulltext:
                 # No run without text can fill this; don't fetch the item to find out.
@@ -2562,8 +2566,10 @@ class ZoteroSemanticSearch:
                 item = self.zotero_client.item(key)
             except Exception as e:
                 logger.debug(f"item({key}) failed while filling index gaps: {e}")
+                self._note_unanswered_recheck(key, waiting)
                 continue
             if not item or item.get("data", {}).get("itemType") in _NON_INDEXED_ITEM_TYPES:
+                self._note_unanswered_recheck(key, waiting)
                 continue
             item["_index_levels"] = gaps[key]
             items.append(item)
@@ -2573,18 +2579,59 @@ class ZoteroSemanticSearch:
         self.update_config["gaps_waiting_for_text"] = sorted(waiting)
         return self._without_fills_lacking_text(items)
 
+    @staticmethod
+    def _local_time(value: Any) -> datetime | None:
+        """A stored ISO time as naive local time, or None when it can't be read."""
+        try:
+            moment = datetime.fromisoformat(str(value))
+        except (TypeError, ValueError):
+            return None
+        if moment.tzinfo is not None:
+            moment = moment.astimezone().replace(tzinfo=None)
+        return moment
+
+    @staticmethod
+    def _check_count(check: Any) -> int:
+        """How many times Zotero answered a waiting item without text; 0 if unreadable."""
+        try:
+            return max(int(check.get("checks") or 0), 0) if isinstance(check, dict) else 0
+        except (TypeError, ValueError):
+            return 0
+
+    def _text_checks(self) -> dict[str, Any]:
+        checks = self.update_config.get("gaps_text_checked")
+        return dict(checks) if isinstance(checks, dict) else {}
+
     @classmethod
     def _text_recheck_due(cls, check: Any, now: datetime) -> bool:
-        """Whether a waiting item last asked for its text at ``check`` may be asked again."""
+        """Whether a waiting item with the stored ``check`` may be asked for its text again.
+
+        ``at`` and ``checks`` record Zotero's answers without text, and set the
+        backoff. ``tried_at`` records a try that got no answer (a failed
+        request, or an item this library doesn't hold): it doesn't lengthen
+        the backoff, but the item isn't tried again for a day. A record that
+        can't be read is due.
+        """
         if not isinstance(check, dict):
             return True
-        try:
-            at = datetime.fromisoformat(str(check.get("at")))
-            checks = max(int(check.get("checks") or 1), 1)
-        except (TypeError, ValueError):
+        tried = cls._local_time(check.get("tried_at"))
+        if tried is not None and now - tried < timedelta(days=cls.GAP_TEXT_RECHECK_FIRST_DAYS):
+            return False
+        at = cls._local_time(check.get("at"))
+        if at is None:
             return True
+        checks = max(cls._check_count(check), 1)
         wait = min(cls.GAP_TEXT_RECHECK_FIRST_DAYS * 2 ** min(checks - 1, 16), cls.GAP_TEXT_RECHECK_MAX_DAYS)
         return now - at >= timedelta(days=wait)
+
+    def _note_unanswered_recheck(self, key: str, waiting: set[str]) -> None:
+        """Record that a waiting item was due but this run got no answer about its text."""
+        if key not in waiting:
+            return
+        checks = self._text_checks()
+        previous = checks.get(key) if isinstance(checks.get(key), dict) else {}
+        checks[key] = {**previous, "tried_at": datetime.now().isoformat()}
+        self.update_config["gaps_text_checked"] = checks
 
     def _still_waiting_for_text(self, include_fulltext: bool) -> set[str]:
         """Waiting items this run leaves alone.
@@ -2595,7 +2642,7 @@ class ZoteroSemanticSearch:
         waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
         if not include_fulltext:
             return waiting
-        checks = self.update_config.get("gaps_text_checked") or {}
+        checks = self._text_checks()
         now = datetime.now()
         return {key for key in waiting if not self._text_recheck_due(checks.get(key), now)}
 
@@ -2605,13 +2652,13 @@ class ZoteroSemanticSearch:
         The item's other level was built from its full text, which this run
         does not have, say because the text came from a local ``--fulltext``
         run. Filling from metadata would close the gap for good with a record
-        that cannot match the body of the paper. The gap stays for a run that
-        has the text, and is remembered so later runs don't fetch the item again
-        just to find this out.
+        that cannot match the body of the paper. The gap stays, and the item
+        goes on the waiting list: runs without full text leave it alone, and
+        runs with full text ask Zotero again once its backoff runs out
+        (``_text_recheck_due``). A failed request parks nothing.
         """
         kept: list[dict[str, Any]] = []
         waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
-        checks = dict(self.update_config.get("gaps_text_checked") or {})
         for item in items:
             data = item.get("data", {})
             key = item.get("key")
@@ -2621,24 +2668,26 @@ class ZoteroSemanticSearch:
                     if data.get("fulltext_fetch_failed"):
                         # A failed fetch says nothing about the text: the
                         # item is left for the next run, not parked.
+                        self._note_unanswered_recheck(key, waiting)
                         continue
                     waiting.add(key)
                     if data.get("fulltext_attempted"):
                         # Zotero answered, without text: wait longer next time.
-                        previous = checks.get(key) if isinstance(checks.get(key), dict) else {}
+                        checks = self._text_checks()
                         checks[key] = {
                             "at": datetime.now().isoformat(),
-                            "checks": int(previous.get("checks") or 0) + 1,
+                            "checks": self._check_count(checks.get(key)) + 1,
                         }
+                        self.update_config["gaps_text_checked"] = checks
                     continue
             if key in waiting and (data.get("fulltext") or "").strip():
                 waiting.discard(key)
+                checks = self._text_checks()
                 checks.pop(key, None)
+                self.update_config["gaps_text_checked"] = checks
             kept.append(item)
         self.update_config["gaps_waiting_for_text"] = sorted(waiting)
-        if checks:
-            self.update_config["gaps_text_checked"] = checks
-        else:
+        if not self._text_checks():
             self.update_config.pop("gaps_text_checked", None)
         return kept
 
@@ -3806,9 +3855,9 @@ class ZoteroSemanticSearch:
                 ]
                 if "gaps_waiting_for_text" in self.update_config:
                     self.update_config["gaps_waiting_for_text"] = waiting_for_text
-                if checks := self.update_config.get("gaps_text_checked"):
+                if "gaps_text_checked" in self.update_config:
                     self.update_config["gaps_text_checked"] = {
-                        key: check for key, check in checks.items() if key in waiting_for_text
+                        key: check for key, check in self._text_checks().items() if key in waiting_for_text
                     }
             if index_gaps and (unfinished_run := self._unfinished_batch_run()):
                 _report(
