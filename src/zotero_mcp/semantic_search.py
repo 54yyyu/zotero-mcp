@@ -4561,7 +4561,7 @@ class ZoteroSemanticSearch:
             # needs no held watermark; holding it would buy every change again.
             kept_before = set(self.update_config.get("retry_item_keys") or [])
             given_up = self._settle_retry_keys(
-                written=set(self._retry_keys_in_run) - failed_keys,
+                written=(set(self._retry_keys_in_run) | set(self._undropped_passages)) - failed_keys,
                 failed=failed_keys,
                 keep_failed=keep_failed,
             )
@@ -5051,9 +5051,16 @@ class ZoteroSemanticSearch:
             self._note_undropped_passages(item_key)
 
     def _note_undropped_passages(self, item_key: str) -> None:
-        """Remember an item whose old passages are still stored after its new article."""
+        """Remember an item whose old passages are still stored after its new article.
+
+        It is kept for a retry at once, and saved, so a run stopped before its
+        new passages are written can't leave the old ones for good: the next
+        run rewrites the item. A run that writes them lets it go.
+        """
         if isinstance(self._undropped_passages, set):
             self._undropped_passages.add(item_key)
+        self._settle_retry_keys(written=set(), failed={item_key}, keep_failed=True)
+        self._save_update_config()
 
     def _prune_stale_chunks(self, metadatas: list[dict[str, Any]]) -> None:
         """Drop each just-written item's passages past its new ``n_chunks``.

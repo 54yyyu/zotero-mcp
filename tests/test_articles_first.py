@@ -497,3 +497,44 @@ def test_undropped_passages_do_not_carry_over_to_the_next_run(build, monkeypatch
     search._note_undropped_passages("CCC")
 
     assert not search._undropped_passages
+
+
+def test_an_item_whose_old_passages_stayed_is_kept_for_a_retry(build, monkeypatch):
+    """A stop then can't leave its stale passages for good: the next run rewrites it."""
+    zotero = FakeZotero(["AAA", "BBB"])
+    build(zotero).update_database()
+    zotero.version = 6
+    zotero.changed = {"AAA": CHANGED}
+    search = build(zotero)
+    monkeypatch.setattr(search.chroma_client, "prune_item_chunks", lambda key, keep: None)
+    _stop_in_the_passage_pass(monkeypatch, search)
+
+    config_path = Path(search.config_path)
+    config = json.loads(config_path.read_text())
+    assert config["semantic_search"]["update_config"]["retry_item_keys"] == ["AAA"]
+    config["semantic_search"].pop("last_sync_versions", None)
+    config["semantic_search"].pop("last_sync_version", None)
+    config_path.write_text(json.dumps(config))  # a full scan
+
+    search = build(zotero)
+    stats = search.update_database()
+
+    assert stats.get("error") is None
+    passages = _passages_of(search, "AAA")
+    assert len(passages) == 5
+    assert all("Sentence number" not in p for p in passages)
+
+
+def test_a_run_that_writes_the_new_passages_lets_the_retry_go(build, monkeypatch):
+    zotero = FakeZotero(["AAA"])
+    build(zotero).update_database()
+    zotero.version = 6
+    zotero.changed = {"AAA": CHANGED}
+    search = build(zotero)
+    monkeypatch.setattr(search.chroma_client, "prune_item_chunks", lambda key, keep: None)
+
+    stats = search.update_database()
+
+    assert stats.get("error") is None
+    config = json.loads(Path(search.config_path).read_text())
+    assert not config["semantic_search"]["update_config"].get("retry_item_keys")
