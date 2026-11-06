@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`zotero_semantic_search(full_passage=True)` returns the whole matched passage** (#772) instead of the 400-character excerpt, so an agent can quote it without reading the paper. A passage is returned whole; item-level text is cut at 1500 characters, and all hits share 15000 characters (at least 400 each), so a large `limit` stays bounded. Thanks @mronkko.
 - **Bearer-token authentication for the HTTP transports** (#616, #643). With `ZOTERO_MCP_AUTH_TOKEN` set (environment, `.env` or `client_env` in the config file), `serve --transport streamable-http` and `sse` answer `401` to any request without `Authorization: Bearer <token>`, SSE message posts included. The token is compared in constant time and never printed; an empty or malformed value stops the server at startup instead of being used, and `zotero-mcp setup` keeps a saved token when it rewrites the config. Docs show the header for Claude Code, Codex and Cursor. Thanks @iamnotmili, and @falcon1-1-code for the design discussion.
 
 ### Changed

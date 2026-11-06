@@ -121,9 +121,12 @@ def _stale_index_note(search, library_version: int | None) -> str | None:
 #: (#456), and far under the 300s MCP idle timeout it used to hit.
 _ADVANCED_SCAN_BUDGET_SECONDS = 20
 
-#: Ceiling for semantic_search(full_passage=True). A chunk is ~1500 characters,
-#: so this only bites on item-level records, whose stored text can be far longer.
-_FULL_PASSAGE_MAX_CHARS = 4000
+#: Ceilings for semantic_search(full_passage=True), per hit and for all hits
+#: together. A passage is at most 1500 characters (chunk_size), so the per-hit
+#: cap only bites on item-level records, whose stored text can be far longer;
+#: the total keeps a large ``limit`` from returning whole papers.
+_FULL_PASSAGE_MAX_CHARS = 1500
+_FULL_PASSAGE_TOTAL_CHARS = 15000
 
 
 def _server_side_filters(
@@ -1464,7 +1467,7 @@ def semantic_search(
         full_passage: Return the whole matched passage instead of a short
             excerpt (default: False). On a passage-indexed library this is
             the complete chunk; otherwise the indexed text is capped at
-            4000 characters.
+            1500 characters. Hits share 15000 characters, at least 400 each.
         ctx: MCP context
 
     Returns:
@@ -1590,6 +1593,10 @@ def semantic_search(
                 )
             output.append("")
 
+        passage_cap = min(
+            _FULL_PASSAGE_MAX_CHARS,
+            max(400, _FULL_PASSAGE_TOTAL_CHARS // len(search_results)),
+        )
         for i, result in enumerate(search_results, 1):
             similarity_score = result.get("similarity_score", 0)
             rerank_score = result.get("rerank_score")
@@ -1601,11 +1608,7 @@ def semantic_search(
             passage = result.get("matched_passage") or result.get("matched_text", "")
             if full_passage:
                 full = result.get("matched_text") or passage
-                snippet = (
-                    full[:_FULL_PASSAGE_MAX_CHARS] + "..."
-                    if len(full) > _FULL_PASSAGE_MAX_CHARS
-                    else full
-                )
+                snippet = full[:passage_cap] + "..." if len(full) > passage_cap else full
             else:
                 snippet = passage[:400] + "..." if len(passage) > 400 else passage
 
