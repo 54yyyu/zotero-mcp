@@ -2466,3 +2466,36 @@ def test_t7_a_cancelled_files_unfinished_rows_are_not_sent_again(iso):
     assert manifest["failed_ids"] == ["R1"]
     assert manifest["batches"][0]["imported_at"]
     assert _indexed(iso) == {"R0"}
+
+
+def _run_with_a_file_failing_for_the_last_time(env):
+    run = _two_file_run(env)
+    run["batches"][1]["attempts"] = batch_common.MAX_BATCH_ATTEMPTS
+    openai_batch.save_manifest(run)
+    env.provider.statuses["batch-1"] = "completed"
+    env.provider.statuses["batch-2"] = "failed"
+    return run
+
+
+def test_t7_a_collect_says_when_it_gave_a_file_up(iso):
+    _set_version(iso, 10)
+    run = _run_with_a_file_failing_for_the_last_time(iso)
+
+    stats = iso.new_search().collect_batch_results()
+
+    errors = str(stats["batch_collect"]["errors"])
+    assert run["run_id"] in errors
+    assert "gave up on 1 chunk" in errors
+    assert "1 record(s)" in errors and "next update" in errors
+    assert run["run_id"] in str(_notice(iso).get("notes")), "kept for whoever looks next"
+
+
+def test_t7_on_an_unmigrated_index_it_says_the_changes_are_bought_again(iso, monkeypatch):
+    monkeypatch.setattr(semantic_search.ZoteroSemanticSearch, "_separate_passages", lambda self: False)
+    _set_version(iso, 10)
+    _run_with_a_file_failing_for_the_last_time(iso)
+
+    stats = iso.new_search().collect_batch_results()
+
+    assert "every change since" in str(stats["batch_collect"]["errors"])
+    assert _versions(iso)["0"] == 10

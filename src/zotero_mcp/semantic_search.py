@@ -5656,6 +5656,8 @@ class ZoteroSemanticSearch:
                 failed_rows = result.get("failed_items", 0) + result.get("missing_items", 0)
                 if failed_rows:
                     errors.append(f"run {run_id}: {failed_rows} item(s) came back without an embedding")
+                if note := self._given_up_note(run, result.get("batches_abandoned", 0)):
+                    errors.append(note)
                 if result.get("retry_given_up"):
                     gave_up = True
                     given_up_notes.append(f"run {run_id}: {result['retry_given_up']}")
@@ -5718,6 +5720,38 @@ class ZoteroSemanticSearch:
                 )
             else:
                 _report(f"Checked {len(summary['runs'])} unfinished batch run(s): nothing new is ready yet.\n")
+
+    def _given_up_note(self, run: dict[str, Any], given_up: int) -> str | None:
+        """What a collect says about files it gave up on, or about a run that
+        has landed with records still lacking an embedding.
+
+        A file given up on is settled, so nothing else reports it, and the
+        records in it cost something on the next update either way.
+        """
+        failed_ids = run.get("failed_ids") or []
+        landed = all(batch_common.is_settled(batch) for batch in run.get("batches", []))
+        if not given_up and not (landed and failed_ids):
+            return None
+        run_id = run.get("run_id")
+        parts = [f"run {run_id}:"]
+        if given_up:
+            parts.append(
+                f"gave up on {given_up} chunk(s) that failed at the provider and can't be sent again."
+            )
+        if landed and failed_ids:
+            if run.get("reset_at") or self._separate_passages():
+                parts.append(
+                    f"{len(failed_ids)} record(s) have no embedding; the next update-db embeds them again."
+                )
+            else:
+                parts.append(
+                    f"{len(failed_ids)} record(s) have no embedding. The sync version stays put, so the "
+                    "next update submits every change since that version again, including chunks "
+                    "already imported."
+                )
+        elif given_up:
+            parts.append("The rest of the run carries on.")
+        return " ".join(parts)
 
     def batch_notice(self, group_id: int | None = None) -> dict[str, Any]:
         """The last collect problems and deferral for this library, if any."""
