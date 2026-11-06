@@ -173,6 +173,16 @@ def test_note_says_articles_are_not_there_yet(build):
     assert "No article records are indexed yet" in note
 
 
+def test_note_says_articles_are_not_there_yet_with_chunking_on(build):
+    """A passage-only index tells the agent articles are missing, whatever the setting."""
+    search = build(chunking=True, passages=["PAS#0"])
+
+    note = search.search("q")["level_note"]
+
+    assert "Searched passages (1 item in the index)" in note
+    assert "No article records are indexed yet" in note
+
+
 def test_passage_count_includes_an_item_missing_its_first_passage(build):
     """An item whose passage 0 failed to write still has passages to search."""
     search = build(chunking=True, articles=["A", "B"], passages=["A#0", "A#1", "B#1"])

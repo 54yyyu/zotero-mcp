@@ -5642,8 +5642,9 @@ class ZoteroSemanticSearch:
         A passage fill can take days, and until it ends passages cover only part
         of the library. An agent can't see that from the results, so it gets the
         counts and can decide to search the other level. The counts are for the
-        whole index, whichever library was searched. An index with one level and
-        no choice to make, or still unmigrated, gets no note.
+        whole index, whichever library was searched. Only an index with articles
+        alone and chunking off, or one still unmigrated, gets no note; an index
+        with passages alone is told no article records are indexed yet.
         """
         if layout["unmigrated_passages"]:
             return None
