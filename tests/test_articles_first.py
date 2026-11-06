@@ -449,3 +449,22 @@ def test_held_text_after_close_stays_in_memory():
 
     assert item["data"]["fulltext"] == "text"
     assert "_held_fulltext" not in item
+
+
+@pytest.mark.parametrize("parallel", [1, 2], ids=["sequential", "streaming"])
+def test_old_passages_that_could_not_be_deleted_are_reported(build, monkeypatch, caplog, parallel):
+    """ChromaDB's delete swallows its errors; the run must still notice."""
+    import logging
+
+    zotero = FakeZotero(["AAA", "BBB"])
+    build(zotero, parallel=parallel).update_database()
+    zotero.version = 6
+    zotero.changed = {"AAA": CHANGED}
+    search = build(zotero, parallel=parallel)
+    monkeypatch.setattr(search.chroma_client, "prune_item_chunks", lambda key, keep: None)
+
+    with caplog.at_level(logging.WARNING, logger="zotero_mcp.semantic_search"):
+        _stop_in_the_passage_pass(monkeypatch, search)
+
+    assert search._undropped_passages == {"AAA"}
+    assert any("AAA" in r.getMessage() and "passages" in r.getMessage() for r in caplog.records)

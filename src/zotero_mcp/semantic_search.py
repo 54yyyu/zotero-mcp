@@ -1314,6 +1314,8 @@ class ZoteroSemanticSearch:
     _level_fill_keys: set[str] = frozenset()
     # Text kept between the article and passage passes, set per run by update_database.
     _held_text: _HeldText | None = None
+    # Items whose old passages could not be deleted in the article pass, set per run.
+    _undropped_passages: set[str] = frozenset()
     # How long an unfinished batch run stops gap fills; a run left this long has
     # been forgotten, and its results may be gone.
     BATCH_RUN_BLOCKS_FILL_DAYS = 14
@@ -4256,6 +4258,7 @@ class ZoteroSemanticSearch:
                     (SEARCH_PASSAGES, passage_items, frozenset()),
                 ]
                 self._held_text = _HeldText()
+                self._undropped_passages = set()
             else:
                 passes = [(None, all_items, frozenset())]
             accounted: set[str] = set()
@@ -4846,10 +4849,29 @@ class ZoteroSemanticSearch:
         fill finds; old passages left in place would describe the item before
         its change, and hide it from the gap fill for good.
         """
-        if not hasattr(self.chroma_client, "prune_item_chunks"):
+        if not hasattr(self.chroma_client, "prune_item_chunks") or not item_keys:
             return
         for item_key in item_keys:
             self.chroma_client.prune_item_chunks(item_key, 0)
+        # The delete logs its errors and goes on, so check that it happened.
+        try:
+            left = {doc_id.split("#", 1)[0] for doc_id in self.chroma_client.get_existing_ids(
+                [f"{item_key}#0" for item_key in item_keys]
+            )}
+        except Exception as e:
+            logger.debug(f"Could not check the deleted passages: {e}")
+            left = set(item_keys)
+        for item_key in sorted(left):
+            logger.warning(
+                f"Could not delete the old passages of {item_key} from the ChromaDB collection; "
+                "they stay until its new passages are written."
+            )
+            self._note_undropped_passages(item_key)
+
+    def _note_undropped_passages(self, item_key: str) -> None:
+        """Remember an item whose old passages are still stored after its new article."""
+        if isinstance(self._undropped_passages, set):
+            self._undropped_passages.add(item_key)
 
     def _prune_stale_chunks(self, metadatas: list[dict[str, Any]]) -> None:
         """Drop each just-written item's passages past its new ``n_chunks``.
