@@ -5110,13 +5110,27 @@ class ZoteroSemanticSearch:
         passages = getattr(self.chroma_client, "passage_documents", None)
         if passages is None:
             return
-        stale = [
-            doc_id
-            for doc_id, document in passages(item_key)
-            if digests.get(doc_id) != _passage_digest(document or "")
-        ]
-        if stale:
-            self.chroma_client.delete_documents(stale)
+        try:
+            stale = [
+                doc_id
+                for doc_id, document in passages(item_key)
+                if digests.get(doc_id) != _passage_digest(document or "")
+            ]
+            if stale:
+                # The delete logs its errors and goes on, so check that it happened.
+                self.chroma_client.delete_documents(stale)
+                left = self.chroma_client.get_existing_ids(stale)
+            else:
+                left = set()
+        except Exception as e:
+            logger.debug(f"Could not read or delete the passages of {item_key}: {e}")
+            left = {item_key}
+        if left:
+            logger.warning(
+                f"Could not delete the old passages of {item_key} from the ChromaDB collection; "
+                "the item is kept for a retry, so the next update-db rewrites it."
+            )
+            self._note_undropped_passages(item_key)
 
     def _prune_stale_chunks(self, metadatas: list[dict[str, Any]]) -> None:
         """Drop each just-written item's passages past its new ``n_chunks``.

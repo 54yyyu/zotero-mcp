@@ -562,3 +562,27 @@ def test_an_overtaken_run_landing_by_id_keeps_the_newer_passages(env, monkeypatc
 
     assert stats["imported_items"] >= 1
     assert sorted(_passage_texts(search, "AAA")) == sorted(newer)
+
+
+@pytest.mark.parametrize("failure", ["read", "delete"])
+def test_stale_passages_an_article_landing_could_not_drop_keep_the_item_for_a_retry(
+    env, monkeypatch, tmp_path, caplog, failure
+):
+    import logging
+
+    search = _changed_run(env, monkeypatch, tmp_path)
+    if failure == "read":
+        def broken(key):
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr(search.chroma_client.__class__, "passage_documents", lambda self, key: broken(key))
+    else:
+        monkeypatch.setattr(search.chroma_client.__class__, "delete_documents", lambda self, ids: None)
+    _finish_where(env, lambda i: "#" not in i)
+
+    with caplog.at_level(logging.WARNING, logger="zotero_mcp.semantic_search"):
+        search._import_batch("openai")
+
+    config = json.loads(Path(env.config).read_text())
+    assert "AAA" in config["semantic_search"]["update_config"]["retry_item_keys"]
+    assert any("AAA" in r.getMessage() for r in caplog.records if r.name == "zotero_mcp.semantic_search")
