@@ -404,7 +404,10 @@ def test_mixed_unmigrated_index_is_not_said_to_hold_passages_only(build):
     assert result["results"] == []
     assert "passages only" not in result["error"]
     assert "together" in result["error"]
-    assert "zotero-mcp migrate-index" in result["error"]
+    # migrate-index embeds nothing, so articles still missing need update-db.
+    assert result["error"].rstrip(".").endswith(
+        "run 'zotero-mcp migrate-index', then 'zotero-mcp update-db'"
+    )
 
 
 def test_a_client_double_without_levels_still_searches():

@@ -5603,7 +5603,7 @@ class ZoteroSemanticSearch:
                 return None, False, None, (
                     "This index keeps article and passage records together in one ChromaDB collection, "
                     "so articles can't be searched on their own. To search them separately, run "
-                    "'zotero-mcp migrate-index'."
+                    "'zotero-mcp migrate-index', then 'zotero-mcp update-db'."
                 )
             if requested == SEARCH_ARTICLES:
                 return None, False, None, (
