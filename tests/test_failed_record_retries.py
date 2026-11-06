@@ -618,3 +618,42 @@ def test_items_given_up_by_a_collect_reach_the_notice_once(build, batch, tmp_pat
     notice = build(zotero, chunking=False).batch_notice()
     assert "BBB" in notice["given_up"]
     assert not any("Gave up" in note for note in notice.get("notes", []))
+
+
+def test_a_batch_rewrite_with_chunking_off_drops_the_items_stale_passages(build, batch, tmp_path):
+    """A kept item is rewritten, not filled: its old passages must not stay searchable."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    build(zotero).update_database()
+    zotero.abstracts["BBB"] = "A new abstract for BBB."
+    _set_update_config(tmp_path, retry_item_keys=["BBB"], retry_item_attempts={"BBB": 1})
+
+    batch.search(zotero, chunking=False).update_database(use_batch=True)
+    _land(batch, zotero, chunking=False)
+
+    search = build(zotero, chunking=False)
+    assert not [p for p in _passage_ids(search) if p.startswith("BBB")]
+    assert [p for p in _passage_ids(search) if p.startswith("AAA")]
+    assert _saved(tmp_path)["retry_item_keys"] == []
+
+
+def test_a_cancelled_file_given_up_by_batch_import_is_rewritten_next_time(build, batch, tmp_path):
+    """Its items keep their old records, so only a forced rewrite brings their changes in."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    build(zotero).update_database()
+    zotero.version = 6
+    zotero.changed = {"BBB"}
+    zotero.abstracts["BBB"] = "A new abstract for BBB."
+
+    batch.search(zotero).update_database(use_batch=True)
+    for job in batch.fake.jobs.values():
+        job.status = "cancelled"
+    batch.search(zotero)._import_batch("openai")
+
+    assert _saved(tmp_path)["retry_item_keys"] == ["BBB"]
+    search = build(zotero)
+    assert search._load_last_sync_version() == 6
+    zotero.changed = set()
+    search.update_database()
+
+    assert any("A new abstract for BBB." in text for text in search.chroma_client.embedded)
+    assert _saved(tmp_path)["retry_item_keys"] == []

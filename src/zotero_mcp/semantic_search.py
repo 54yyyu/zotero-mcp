@@ -3455,8 +3455,9 @@ class ZoteroSemanticSearch:
                     stats["skipped"] += 1
                     continue
 
-                if item.get("_index_levels"):
+                if item.get("_index_levels") and item.get("key") not in self._retry_keys_in_run:
                     # The import must not treat this as a rewrite of the item.
+                    # An item kept for a retry is one.
                     for record in item_records:
                         record["level_fill"] = True
                 records.extend(item_records)
