@@ -2707,7 +2707,10 @@ class ZoteroSemanticSearch:
             if not existing or not _same_moment(existing.get("date_modified"), data.get("dateModified")):
                 kept.append(item)
                 continue
-            if (data.get("fulltext") or "").strip() and not existing.get("has_fulltext"):
+            # New text for an item indexed without it: never indexed with
+            # text, or "failed" (asked, none then). Attaching a PDF doesn't
+            # change the item, so this is where its text comes in.
+            if (data.get("fulltext") or "").strip() and existing.get("has_fulltext") is not True:
                 kept.append(item)
                 continue
             if item.get("key") in gaps:

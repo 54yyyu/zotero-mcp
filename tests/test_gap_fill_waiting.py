@@ -413,6 +413,28 @@ def test_a_full_scan_of_a_complete_split_index_embeds_nothing(build, tmp_path):
     assert stats["total_items"] == 0
 
 
+def test_a_full_scan_picks_up_text_for_an_item_that_had_none(build, tmp_path):
+    """Attaching a PDF doesn't change the item, so a full scan is where its text comes in."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    search = build(zotero, chunking=True, fulltext=True)
+    search.update_database()
+    stored = search.chroma_client.get_document_metadata("AAA")
+    assert stored["has_fulltext"] == "failed"
+    config = tmp_path / "config.json"
+    data = json.loads(config.read_text())
+    data["semantic_search"].pop("last_sync_version", None)
+    data["semantic_search"].pop("last_sync_versions", None)
+    config.write_text(json.dumps(data))
+
+    zotero.texts["AAA"] = TEXT
+    search = build(zotero, chunking=True, fulltext=True)
+    search.update_database()
+
+    embedded = search.chroma_client.embedded
+    assert embedded and any("Body sentence" in text for text in embedded)
+    assert not any("Title BBB" in text for text in embedded), "BBB is unchanged"
+    assert search.chroma_client.get_document_metadata("AAA")["has_fulltext"] is True
+
 
 # --- the Batch API path ----------------------------------------------------------
 
