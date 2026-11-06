@@ -5646,7 +5646,8 @@ class ZoteroSemanticSearch:
         alone and chunking off, or one still unmigrated, gets no note; an index
         with passages alone is told no article records are indexed yet.
         """
-        if layout["unmigrated_passages"]:
+        if layout["unmigrated_passages"] or layout["passage_items"] is None:
+            # No passage count could be read: give no counts rather than wrong ones.
             return None
         items = {SEARCH_ARTICLES: layout["article_records"], SEARCH_PASSAGES: layout["passage_items"]}
         other = SEARCH_PASSAGES if level == SEARCH_ARTICLES else SEARCH_ARTICLES

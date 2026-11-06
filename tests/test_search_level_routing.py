@@ -191,6 +191,86 @@ def test_passage_count_includes_an_item_missing_its_first_passage(build):
     assert "Searched passages (2 items in the index)" in search.search("q")["level_note"]
 
 
+def test_passage_count_handles_keys_of_different_lengths(build):
+    """Items whose keys share a prefix are each counted once."""
+    passages = ["AB#0", "AB#1", "AB1#0", "AB1#1", "ABC#2", "B#0"]
+    search = build(chunking=True, articles=["A"], passages=passages)
+
+    assert search.chroma_client.index_layout()["passage_items"] == 4
+
+
+def _failing_reads(monkeypatch, *fragments):
+    """Make chroma_client's SQLite reads fail for queries containing any fragment.
+
+    Stands in for a ChromaDB upgrade that changes the tables the counts read.
+    """
+    import sqlite3
+
+    real_connect = sqlite3.connect
+
+    class Connection:
+        def __init__(self, con):
+            self._con = con
+
+        def execute(self, sql, *args):
+            if any(f in sql for f in fragments):
+                raise sqlite3.OperationalError("no such table: embeddings")
+            return self._con.execute(sql, *args)
+
+        def __getattr__(self, name):
+            return getattr(self._con, name)
+
+    fake = SimpleNamespace(**{k: getattr(sqlite3, k) for k in dir(sqlite3) if not k.startswith("__")})
+    fake.connect = lambda *a, **k: Connection(real_connect(*a, **k))
+    monkeypatch.setattr(chroma_client, "sqlite3", fake)
+    monkeypatch.setattr(chroma_client, "_passage_count_failure_logged", False, raising=False)
+
+
+def test_search_works_when_the_passage_item_count_cannot_be_read(build, monkeypatch, caplog):
+    search = build(chunking=True, articles=["A", "B"], passages=["A#0", "A#1", "B#0"])
+    _failing_reads(monkeypatch, "WITH RECURSIVE")
+
+    result = search.search("q")
+    search.search("q")
+
+    assert sorted(_keys(result)) == ["A", "B"]
+    assert "Searched passages (2 items in the index)" in result["level_note"]
+    assert sum("passage" in r.getMessage() for r in caplog.records if r.levelname == "WARNING") == 1
+
+
+def test_search_works_without_any_passage_item_count(build, monkeypatch):
+    search = build(chunking=True, articles=["A", "B"], passages=["A#0", "B#0"])
+    _failing_reads(monkeypatch, "WITH RECURSIVE", "chunk_index")
+
+    result = search.search("q")
+    article_result = search.search("q", level="articles")
+
+    assert sorted(_keys(result)) == ["A", "B"]
+    assert result["level_note"] is None
+    assert sorted(_keys(article_result)) == ["A", "B"]
+    assert "passage" not in (article_result["level_note"] or "")
+
+
+def test_chromadb_keeps_the_id_index_the_passage_count_seeks_through(build):
+    """The item count relies on this index for speed; a ChromaDB upgrade without it should fail here."""
+    import sqlite3
+
+    search = build(chunking=True, passages=["A#0"])
+    db = f"{(chroma_client.Path(search.chroma_client.persist_directory) / 'chroma.sqlite3').as_uri()}?mode=ro"
+    con = sqlite3.connect(db, uri=True)
+    try:
+        indexes = con.execute("PRAGMA index_list(embeddings)").fetchall()
+        columns = [
+            [c[2] for c in con.execute(f"PRAGMA index_info('{name}')").fetchall()]
+            for _, name, unique, *_ in indexes
+            if unique
+        ]
+    finally:
+        con.close()
+
+    assert ["segment_id", "embedding_id"] in columns
+
+
 def test_no_note_when_the_index_has_only_the_level_the_setting_asks_for(build):
     assert build(chunking=False, articles=["ART"]).search("q")["level_note"] is None
 

@@ -918,7 +918,7 @@ def _level_counts(con: sqlite3.Connection, collection_name: str) -> tuple[str | 
     return row[0], total - chunks, chunks
 
 
-def _passage_counts(con: sqlite3.Connection, collection_name: str) -> tuple[str | None, int, int]:
+def _passage_counts(con: sqlite3.Connection, collection_name: str) -> tuple[str | None, int, int | None]:
     """(collection id, records, items) of the passage collection, cheaply.
 
     Runs on every search, so it counts items without scanning a million ids.
@@ -926,6 +926,7 @@ def _passage_counts(con: sqlite3.Connection, collection_name: str) -> tuple[str 
     an item's passages sit together: each step seeks past ``KEY#`` to the next
     item. That makes one index seek per item, and counts an item whose first
     passage failed to write, which counting ``chunk_index = 0`` would miss.
+    The item count is None when it could not be read.
     """
     row = con.execute("SELECT id FROM collections WHERE name = ?", (collection_name,)).fetchone()
     if row is None:
@@ -936,25 +937,54 @@ def _passage_counts(con: sqlite3.Connection, collection_name: str) -> tuple[str 
     if segment is None:
         return row[0], 0, 0
     records = con.execute("SELECT count(*) FROM embeddings WHERE segment_id = ?", (segment[0],)).fetchone()[0]
-    # '$' is the character after '#', so "KEY$" sorts after every "KEY#n".
-    items = con.execute(
-        """
-        WITH RECURSIVE item(id) AS (
-            SELECT (SELECT embedding_id FROM embeddings WHERE segment_id = :segment
-                    ORDER BY embedding_id LIMIT 1)
-            UNION ALL
-            SELECT (SELECT embedding_id FROM embeddings
-                    WHERE segment_id = :segment AND embedding_id > CASE
-                        WHEN instr(item.id, '#') THEN substr(item.id, 1, instr(item.id, '#') - 1)
-                        ELSE item.id END || '$'
-                    ORDER BY embedding_id LIMIT 1)
-            FROM item WHERE item.id IS NOT NULL
-        )
-        SELECT count(id) FROM item
-        """,
-        {"segment": segment[0]},
-    ).fetchone()[0]
-    return row[0], records, items
+    return row[0], records, _passage_item_count(con, segment[0])
+
+
+# '$' is the character after '#', so "KEY$" sorts after every "KEY#n".
+_PASSAGE_ITEMS_SQL = """
+WITH RECURSIVE item(id) AS (
+    SELECT (SELECT embedding_id FROM embeddings WHERE segment_id = :segment
+            ORDER BY embedding_id LIMIT 1)
+    UNION ALL
+    SELECT (SELECT embedding_id FROM embeddings
+            WHERE segment_id = :segment AND embedding_id > CASE
+                WHEN instr(item.id, '#') THEN substr(item.id, 1, instr(item.id, '#') - 1)
+                ELSE item.id END || '$'
+            ORDER BY embedding_id LIMIT 1)
+    FROM item WHERE item.id IS NOT NULL
+)
+SELECT count(id) FROM item
+"""
+
+# The count used before: it misses an item whose first passage is missing.
+_FIRST_PASSAGES_SQL = """
+SELECT count(*)
+FROM embedding_metadata m JOIN embeddings e ON e.id = m.id
+WHERE e.segment_id = :segment AND m.key = 'chunk_index' AND m.int_value = 0
+"""
+
+_passage_count_failure_logged = False
+
+
+def _passage_item_count(con: sqlite3.Connection, segment: str) -> int | None:
+    """Items in a passage segment, or None when ChromaDB's tables can't be read.
+
+    Both queries read ChromaDB's internal tables, which a ChromaDB upgrade may
+    change. This runs on every search, so a failure falls back to the older
+    count, then to none, and is logged once instead of breaking the search.
+    """
+    global _passage_count_failure_logged
+    for sql in (_PASSAGE_ITEMS_SQL, _FIRST_PASSAGES_SQL):
+        try:
+            return con.execute(sql, {"segment": segment}).fetchone()[0]
+        except sqlite3.Error as e:
+            if not _passage_count_failure_logged:
+                _passage_count_failure_logged = True
+                logger.warning(
+                    f"Could not count the items with passages from ChromaDB's tables ({e}). "
+                    "Search goes on; its note gives a less exact count, or none."
+                )
+    return None
 
 
 def read_index_layout(persist_directory: str, collection_name: str) -> dict[str, Any]:
@@ -967,7 +997,8 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
     ``unmigrated_passages`` is how many of them are still in the article
     collection. Those are only "unmigrated" while the passage collection is
     empty; once it holds records the index has been split, so any left behind
-    are reported but no longer decide where passages go.
+    are reported but no longer decide where passages go. ``passage_items`` is
+    None when ChromaDB's tables could not be read for it.
     """
     layout: dict[str, Any] = {
         "article_records": 0,
