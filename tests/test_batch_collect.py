@@ -639,13 +639,34 @@ def test_auto_loop_drives_a_new_run_to_the_end(env):
     assert _versions(env)["0"] == 10
 
 
-def test_auto_loop_is_deferred_too_rather_than_waiting_on_a_run_it_did_not_start(env):
-    env.new_search().update_database()
+def test_auto_loop_waits_for_a_run_it_did_not_start_and_then_updates(env, tmp_path, monkeypatch, capsys):
+    """--auto-loop is asking to wait; exiting deferred left the user nothing to wait on."""
+    from zotero_mcp.cli import _print_update_stats
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    stats = env.new_search().update_database(batch_max_requests=1, batch_max_tokens=1)
+    assert env.provider.created == ["batch-1"] and stats["batch_pending"] == 1
+    env.zotero.add("CCC", 11)
+    real_create = env.provider.batches.create
+
+    def create_finished(**kwargs):
+        created = real_create(**kwargs)
+        env.provider.statuses[created.id] = "completed"
+        return created
+
+    env.provider.batches.create = create_finished
+    env.provider.finish_all()
 
     stats = env.new_search().update_database(auto_loop=True, batch_poll_interval=0)
 
-    assert stats["batch_deferred"]
-    assert "auto_loop" not in stats
+    assert not stats.get("batch_deferred")
+    assert stats["batch_waited"]["imported_items"] == 1, "the first run's second chunk"
+    assert stats["submitted_items"] == 1, "only CCC is new"
+    assert _indexed(env) == {"AAA", "BBB", "CCC"}
+    assert _versions(env)["0"] == 11
+    _print_update_stats(stats)
+    assert "Waited for unfinished batch runs" in capsys.readouterr().out
 
 
 def test_the_update_tool_says_what_was_collected_and_deferred(env, monkeypatch):

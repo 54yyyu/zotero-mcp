@@ -494,7 +494,16 @@ def _print_update_stats(stats: dict) -> None:
     _print_batch_collect(stats)
     if stats.get("batch_discard_warning"):
         print(f"\nWARNING: {stats['batch_discard_warning']}")
-    is_batch = stats.get("batch_mode") or stats.get("batch_submitted")
+    if stats.get("batch_waited"):
+        waited = stats["batch_waited"]
+        print(
+            f"\nWaited for unfinished batch runs (--auto-loop): {len(waited['runs'])} run(s), "
+            f"{waited['imported_items']} embeddings imported, "
+            f"{waited['submitted_chunks']} waiting chunks submitted"
+        )
+        if waited.get("stalled"):
+            print(f"- WARNING: stalled chunks: {', '.join(waited['stalled'])}")
+    is_batch =stats.get("batch_mode") or stats.get("batch_submitted")
     batch_provider = stats.get("batch_provider", "openai")
     label = f"{_provider_label(batch_provider)} batch submission" if is_batch else "Database update"
     if stats.get("batch_deferred"):
@@ -909,7 +918,8 @@ def main():
                                  help="Cap requests per uploaded batch file")
     update_db_parser.add_argument("--auto-loop", action="store_true",
                                  help="After submitting, keep polling, importing completed batches and "
-                                      "submitting held-back chunks until the run finishes")
+                                      "submitting held-back chunks until the run finishes. An unfinished "
+                                      "run that would hold this update up is carried to the end first")
     update_db_parser.add_argument("--poll-interval", type=int, default=60, metavar="SECONDS",
                                  help="Seconds between --auto-loop polls (default: 60)")
 

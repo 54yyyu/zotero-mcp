@@ -3728,6 +3728,8 @@ class ZoteroSemanticSearch:
                 (`semantic_search.<provider>_batch.batch_max_requests`).
             auto_loop: After submitting, keep polling, importing completed
                 batches and submitting parked ones until the run finishes.
+                An unfinished run that would defer this update is driven to
+                the end first, and the update then goes ahead.
             batch_poll_interval: Seconds between auto-loop polls.
             allow_mass_deletion: One-run opt-in for a deletion pass that
                 would remove a large share of the library's indexed docs
@@ -4003,6 +4005,23 @@ class ZoteroSemanticSearch:
                 in_flight = self._blocking_batch_runs(collect_provider, self._run_group_id)
                 explicit_realtime = not batch_enabled and False in (use_batch, use_openai_batch, use_gemini_batch)
                 blocking = [run for run in in_flight if not batch_common.may_supersede(new_run, run)]
+                if blocking and auto_loop and not explicit_realtime:
+                    # The user asked to wait for batch runs: carry the ones in
+                    # the way to the end, as 'batch-import' would, then go on.
+                    blocking = self._wait_for_blocking_runs(
+                        collect_provider, new_run, batch_poll_interval, stats
+                    )
+                    if not blocking:
+                        # Those runs have landed and moved the sync version
+                        # this update starts from.
+                        last_sync_version = self._load_last_sync_version() if not force_full_rebuild else 0
+                        use_incremental = (
+                            not force_full_rebuild
+                            and not extract_fulltext
+                            and limit is None
+                            and last_sync_version > 0
+                            and not configured_collection_keys
+                        )
                 if in_flight and explicit_realtime:
                     stats["batch_discard_warning"] = (
                         f"Batch run {in_flight[-1].get('run_id')} is still unfinished. This realtime "
@@ -6441,6 +6460,44 @@ class ZoteroSemanticSearch:
         """Import completed Gemini Batch API embeddings into ChromaDB."""
         return self._import_batch("gemini", batch_ids)
 
+    def _wait_for_blocking_runs(
+        self, provider: str, new_run: dict[str, Any], poll_interval: int, stats: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Drive the runs that hold this update up to the end, one at a time.
+
+        For ``--auto-loop``: the run worked on is the one 'batch-import' would
+        pick. Stops when nothing holds the update up any more, or when a run
+        can make no more progress. Returns the runs still in the way, oldest
+        first. Called with the update lock held.
+        """
+        def in_the_way() -> list[dict[str, Any]]:
+            return [
+                run for run in self._blocking_batch_runs(provider, self._run_group_id)
+                if not batch_common.may_supersede(new_run, run)
+            ]
+
+        waited = {"runs": [], "polls": 0, "imported_items": 0, "submitted_chunks": 0}
+        stats["batch_waited"] = waited
+        blocking = in_the_way()
+        # Each pass finishes a run or stops at one that can't go on, so this
+        # many passes is enough for every run there is.
+        for _ in range(len(self._unfinished_batch_runs(provider, self._run_group_id))):
+            if not blocking:
+                break
+            _report(
+                f"\nWaiting for batch run {blocking[-1].get('run_id')} to finish before updating "
+                "(--auto-loop).\n"
+            )
+            loop = self.auto_loop_batch_pipeline(provider, poll_interval=poll_interval)
+            waited["runs"].append(loop.get("run_id"))
+            for key in ("polls", "imported_items", "submitted_chunks"):
+                waited[key] += loop.get(key, 0)
+            blocking = in_the_way()
+            if loop.get("stalled"):
+                waited["stalled"] = loop["stalled"]
+                break
+        return blocking
+
     def auto_loop_batch_pipeline(
         self,
         provider: str,
@@ -6481,6 +6538,7 @@ class ZoteroSemanticSearch:
             aggregate["polls"] += 1
 
             manifest = self._find_run(provider)
+            aggregate["run_id"] = manifest.get("run_id")
             client = adapter.create_client(self.chroma_client.embedding_config)
             # Through _submit_pending_chunks, not straight to the provider
             # module: the loop must obey the same supersession rule as every
