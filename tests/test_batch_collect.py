@@ -208,11 +208,12 @@ def presearch(env, monkeypatch):
     """Fire the pre-search sync synchronously, on a clock the test controls."""
 
     class InlineThread:
-        def __init__(self, target, **kwargs):
+        def __init__(self, target, args=(), **kwargs):
             self._target = target
+            self._args = args
 
         def start(self):
-            self._target()
+            self._target(*self._args)
 
     clock = SimpleNamespace(now=100_000.0)
     monkeypatch.setattr(search_tools, "_threading", SimpleNamespace(Thread=InlineThread))

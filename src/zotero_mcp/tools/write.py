@@ -446,6 +446,145 @@ def _search_item_keys(zot, query, tag, limit) -> tuple[list[str], bool]:
     return [it.get("key") for it in items if it.get("key")], more
 
 
+#: Zotero's cap on keys per ``itemKey`` filter and on objects per
+#: multi-object write; both the web and the local API enforce it.
+_BATCH_CHUNK = 50
+
+
+def _fetch_items_by_key(zot, keys, ctx, *, fetch_missing: bool = True) -> dict:
+    """``{key: item}`` for *keys*, one ``itemKey`` request per 50 keys.
+
+    The batch edits used to call ``zot.item(key)`` once per key: 1000 keys,
+    1000 round trips before a single write. An ``itemKey`` filter also returns
+    the items' child notes, which are dropped, and omits trashed items, which
+    ``item()`` returns; so with *fetch_missing* a key the batch did not return
+    is fetched on its own, and one that cannot be fetched is reported and left
+    out, as before. A client without ``items()`` gets the per-key path.
+    """
+    found: dict = {}
+    if callable(getattr(zot, "items", None)):
+        for start in range(0, len(keys), _BATCH_CHUNK):
+            chunk = keys[start:start + _BATCH_CHUNK]
+            wanted = set(chunk)
+            try:
+                rows = _utils._paginate(zot.items, itemKey=",".join(chunk))
+            except Exception:
+                continue  # the per-key pass below reports each key's error
+            for it in rows or []:
+                key = it.get("key") if isinstance(it, dict) else None
+                if key in wanted and key not in found:
+                    found[key] = it
+    if fetch_missing:
+        for key in keys:
+            if key in found:
+                continue
+            try:
+                fetched = zot.item(key)
+            except Exception as e:
+                ctx.error(f"Failed to fetch item {key}: {e}")
+                continue
+            if fetched:
+                found[key] = fetched
+    return found
+
+
+def _multi_write_failures(write_zot) -> dict:
+    """Per-object failures of the multi-object write *write_zot* just sent.
+
+    A multi-object POST answers 200 even when some objects were refused, and
+    lists those under ``failed`` by their index in the payload; pyzotero's
+    ``update_items`` returns True regardless and leaves the response on
+    ``write_zot.request``. Unreadable means nothing to report: the HTTP
+    status already passed.
+    """
+    try:
+        failed = write_zot.request.json().get("failed") or {}
+        return {int(i): f for i, f in failed.items()}
+    except Exception:
+        return {}
+
+
+def _write_batch_edits(zot, write_zot, edits, ctx) -> tuple[int, int]:
+    """Write edited items back, 50 per request. Returns (updated, failed).
+
+    *edits* is a list of ``(key, item, mutate)``: *item* is the read-side item
+    with the edit already applied, and *mutate* applies the same edit to a
+    freshly fetched copy. When reads and writes go to different backends
+    (hybrid mode) the versions are unrelated, so the write-side copies are
+    fetched, in batches, and edited instead. An object refused for a stale
+    version (412) goes through the per-item re-fetch-and-retry; a chunk the
+    backend will not take as a batch is written one item at a time, so a bad
+    item fails alone and is counted alone.
+    """
+    hybrid = write_zot is not zot
+    if hybrid:
+        write_side = _fetch_items_by_key(
+            write_zot, [key for key, _it, _m in edits], ctx, fetch_missing=False,
+        )
+        pending = []
+        for key, _it, mutate in edits:
+            fresh = write_side.get(key)
+            if fresh is not None:
+                mutate(fresh)
+            pending.append((key, fresh, mutate))
+    else:
+        pending = list(edits)
+
+    updated = failed = 0
+    one_by_one = []  # (key, item or None, mutate); None means re-fetch first
+    batchable = []
+    can_batch = callable(getattr(write_zot, "update_items", None))
+    for key, item, mutate in pending:
+        if item is None:
+            one_by_one.append((key, None, mutate))
+        elif can_batch:
+            batchable.append((key, _helpers._strip_unwritable_fields(item), mutate))
+        else:
+            one_by_one.append((key, item, mutate))
+
+    for start in range(0, len(batchable), _BATCH_CHUNK):
+        chunk = batchable[start:start + _BATCH_CHUNK]
+        try:
+            write_zot.update_items([item for _k, item, _m in chunk])
+        except Exception as e:
+            ctx.info(
+                f"Batch write of {len(chunk)} item(s) failed ({e}); "
+                "writing them one at a time."
+            )
+            one_by_one.extend(chunk)
+            continue
+        refused = _multi_write_failures(write_zot)
+        for idx, (key, _item, mutate) in enumerate(chunk):
+            failure = refused.get(idx)
+            if failure is None:
+                updated += 1
+            elif isinstance(failure, dict) and failure.get("code") == 412:
+                one_by_one.append((key, None, mutate))
+            else:
+                message = failure.get("message") if isinstance(failure, dict) else failure
+                ctx.error(f"Failed to update item {key}: {message}")
+                failed += 1
+
+    for key, item, mutate in one_by_one:
+        try:
+            if item is None:
+                result = _helpers._update_item_with_version_retry(
+                    write_zot, key, mutate, ctx=ctx,
+                )
+            else:
+                result = write_zot.update_item(item)
+        except Exception as e:
+            ctx.error(f"Failed to update item {key}: {e}")
+            failed += 1
+            continue
+        if _helpers._handle_write_response(result, ctx):
+            updated += 1
+        else:
+            ctx.error(f"Update may have failed for item {key}: {result}")
+            failed += 1
+    return updated, failed
+
+
 @with_zotero_api_lock
 def batch_update_tags(
     query: str = "",
@@ -515,15 +654,8 @@ def batch_update_tags(
         if explicit_keys:
             # Explicit selection: fetch each key; a key that can't be fetched
             # is reported and skipped rather than failing the whole batch.
-            items = []
-            for key in explicit_keys:
-                try:
-                    fetched = zot.item(key)
-                except Exception as e:
-                    ctx.error(f"Failed to fetch item {key}: {e}")
-                    continue
-                if fetched:
-                    items.append(fetched)
+            fetched = _fetch_items_by_key(zot, explicit_keys, ctx)
+            items = [fetched[key] for key in explicit_keys if key in fetched]
             if not items:
                 return f"No items found for item_keys {explicit_keys}"
         else:
@@ -539,10 +671,10 @@ def batch_update_tags(
                 return f"No items found matching {' and '.join(filter_desc) or 'the given filters'}"
 
         # Initialize counters
-        updated_count = 0
         skipped_count = 0
         added_tag_counts = {tag: 0 for tag in (add_tags or [])}
         removed_tag_counts = {tag: 0 for tag in (remove_tags or [])}
+        edits = []
 
         # Process each item
         for item in items:
@@ -575,43 +707,18 @@ def batch_update_tags(
                         added_tag_counts[tag] += 1
                         needs_update = True
 
-            # Update the item if needed
             if needs_update:
-                try:
-                    item_key = item.get("key", "unknown")
+                def _set_tags(it, tags=current_tags):
+                    it["data"]["tags"] = tags
 
-                    # When reads and writes go to different backends, the
-                    # version numbers are unrelated — re-fetch from the write
-                    # side so the update carries a version it recognizes.
-                    if write_zot is not zot:
-                        def _set_tags(it):
-                            it["data"]["tags"] = current_tags
-
-                        try:
-                            ctx.info(f"Updating item {item_key} via web API with tags: {current_tags}")
-                            result = _helpers._update_item_with_version_retry(
-                                write_zot, item_key, _set_tags, ctx=ctx,
-                            )
-                        except Exception as e:
-                            ctx.error(f"Failed to fetch/update item {item_key} via web API: {str(e)}")
-                            skipped_count += 1
-                            continue
-                    else:
-                        item["data"]["tags"] = current_tags
-                        ctx.info(f"Updating item {item_key} with tags: {current_tags}")
-                        result = write_zot.update_item(item)
-
-                    if _helpers._handle_write_response(result, ctx):
-                        updated_count += 1
-                    else:
-                        ctx.error(f"Update may have failed for item {item_key}: {result}")
-                        skipped_count += 1
-                except Exception as e:
-                    ctx.error(f"Failed to update item {item.get('key', 'unknown')}: {str(e)}")
-                    # Continue with other items instead of failing completely
-                    skipped_count += 1
+                item["data"]["tags"] = current_tags
+                edits.append((item.get("key", "unknown"), item, _set_tags))
             else:
                 skipped_count += 1
+
+        # One multi-object write per 50 items rather than one PATCH each.
+        updated_count, failed_count = _write_batch_edits(zot, write_zot, edits, ctx)
+        skipped_count += failed_count
 
         # Format the response
         response = ["# Batch Tag Update Results", ""]
@@ -780,16 +887,12 @@ def batch_update_extra(
         except ValueError as e:
             return str(e)
 
-        updated_count = 0
         skipped_count = 0
+        edits = []
+        fetched = _fetch_items_by_key(zot, item_keys, ctx)
 
         for item_key in item_keys:
-            try:
-                item = zot.item(item_key)
-            except Exception as e:
-                ctx.error(f"Failed to fetch item {item_key}: {str(e)}")
-                skipped_count += 1
-                continue
+            item = fetched.get(item_key)
             if not item:
                 skipped_count += 1
                 continue
@@ -806,28 +909,15 @@ def batch_update_extra(
                 skipped_count += 1
                 continue
 
-            try:
-                # If writing via web API, re-fetch the item from web to get
-                # the correct version number for the update
-                if write_zot is not zot:
-                    def _set_extra(it):
-                        it["data"]["extra"] = new_extra
+            def _set_extra(it, value=new_extra):
+                it["data"]["extra"] = value
 
-                    result = _helpers._update_item_with_version_retry(
-                        write_zot, item_key, _set_extra, ctx=ctx,
-                    )
-                else:
-                    item["data"]["extra"] = new_extra
-                    result = write_zot.update_item(item)
+            item["data"]["extra"] = new_extra
+            edits.append((item_key, item, _set_extra))
 
-                if _helpers._handle_write_response(result, ctx):
-                    updated_count += 1
-                else:
-                    ctx.error(f"Update may have failed for item {item_key}: {result}")
-                    skipped_count += 1
-            except Exception as e:
-                ctx.error(f"Failed to update item {item_key}: {str(e)}")
-                skipped_count += 1
+        # One multi-object write per 50 items rather than one PATCH each.
+        updated_count, failed_count = _write_batch_edits(zot, write_zot, edits, ctx)
+        skipped_count += failed_count
 
         response = ["# Batch Extra Update Results", ""]
         response.append(f"Items processed: {len(item_keys)}")
@@ -857,24 +947,14 @@ def batch_update_extra(
 @mcp.tool(
     name="zotero_batch_update",
     description=(
-        "Edit metadata across many items in one call: add/remove tags "
-        "and upsert/remove `Key: value` lines in Extra (Better BibTeX "
-        "keys, tex.* fields). "
-        "Select items by item_keys, and/or a free-text query, and/or an "
-        "existing tag (query and tag are ANDed; tag may be a list to "
-        "OR); item_keys wins. At least one selector AND one action are "
-        "required. "
-        "add_tags/remove_tags keep the item's other tags — not a "
-        "replace-all. set_keys upserts Extra lines, matching a line "
-        "case-insensitively by its `key:` prefix and replacing it in "
-        "place, else appending; remove_keys deletes those lines; lines "
-        "without a colon are preserved. "
-        "limit: max items for query/tag selection (default 50, at most "
-        "1000); the report says when more matched. "
-        "A query-only selection leaves attachments out; Extra edits "
-        "skip attachments, notes and annotations. Items needing no "
-        "change are skipped and counted. Requires a writable library. "
-        "Example: zotero_batch_update(tag='to-read', "
+        "Edit many items in one call: add or remove tags, and set or remove "
+        "`Key: value` lines in Extra (BetterBibTeX keys, tex.* fields). "
+        "Select by item_keys, or by query and/or tag (ANDed; a list of tags "
+        "ORs); item_keys wins. Needs a selector and an action. "
+        "add_tags/remove_tags leave other tags alone. set_keys upserts Extra "
+        "lines by case-insensitive key; remove_keys deletes them. limit: "
+        "items selected by query/tag (default 50, up to 1000); the report "
+        "says if more matched. Example: (tag='to-read', "
         "add_tags=['reviewed'], remove_tags=['to-read'])."
     )
 )
@@ -946,13 +1026,72 @@ def batch_update(
 
 
 @mcp.tool(
+    name="zotero_manage_collection",
+    description=(
+        "Create, update or delete a collection. action='create': name, and "
+        "optionally parent_collection for a subcollection. 'update': "
+        "collection_key plus a new name, a new parent_collection, or "
+        "to_top_level=True; the key, items and subcollections are kept, and a "
+        "collection cannot move under itself or its own subcollection. "
+        "'delete': collection_key; permanent (Zotero does not trash "
+        "collections) and takes its subcollections with it, but the items "
+        "stay in the library. parent_collection: a key, name or "
+        "'Parent/Child' path. To file items into collections use "
+        "zotero_set_item_collections."
+    )
+)
+def manage_collection(
+    action: Literal["create", "update", "delete"],
+    collection_key: str | None = None,
+    name: str | None = None,
+    parent_collection: str | None = None,
+    to_top_level: bool = False,
+    *,
+    ctx: Context
+) -> str:
+    """Dispatch the collection-write surface to create/update/delete.
+
+    Replaces the separate ``zotero_create_collection``,
+    ``zotero_update_collection`` and ``zotero_delete_collection`` tools, which
+    stay registered in the off-by-default ``legacy`` toolset until 0.17.
+    """
+    if action == "create":
+        if collection_key:
+            return (
+                "Error: action='create' takes name (and optionally "
+                "parent_collection), not collection_key. Use action='update' "
+                "to change an existing collection."
+            )
+        if not name or not name.strip():
+            return "Error: action='create' requires name."
+        return create_collection(name=name, parent_collection=parent_collection, ctx=ctx)
+
+    if not collection_key:
+        return f"Error: action='{action}' requires collection_key (zotero_search_collections finds it)."
+
+    if action == "update":
+        return update_collection(
+            collection_key=collection_key, name=name,
+            parent_collection=parent_collection, to_top_level=to_top_level, ctx=ctx,
+        )
+
+    if action == "delete":
+        if name is not None or parent_collection or to_top_level:
+            return (
+                "Error: action='delete' takes only collection_key. Use "
+                "action='update' to rename or move a collection."
+            )
+        return delete_collection(collection_key=collection_key, ctx=ctx)
+
+    return f"Error: unknown action '{action}'. Expected one of: create, update, delete."
+
+
+@mcp.tool(
     name="zotero_create_collection",
     description=(
-        "Create a new collection (project/folder) in your Zotero library. "
-        "To create a subcollection, pass parent_collection (not parent_key) as either "
-        "a collection key (8-character string like 'KMMQDFQ4'), a collection name, "
-        "or a 'Parent/Child' path when the name is shared. "
-        "Use zotero_search_collections to find collection keys."
+        "Deprecated (removed in 0.17): use "
+        "zotero_manage_collection(action='create'). Creates a collection; "
+        "parent_collection is a key, name or 'Parent/Child' path."
     )
 )
 @with_zotero_api_lock
@@ -1005,14 +1144,9 @@ def create_collection(
 @mcp.tool(
     name="zotero_delete_collection",
     description=(
-        "Delete a collection (folder) from your Zotero library by its "
-        "8-character key. Items inside the collection are NOT deleted — they "
-        "remain in the library (and in any other collections they belong to). "
-        "Subcollections ARE deleted along with the parent. "
-        "This is a hard delete — Zotero's API does not trash collections, so "
-        "the operation cannot be undone via the API. Use "
-        "zotero_search_collections to find the key first. "
-        'Example: zotero_delete_collection(collection_key="KMMQDFQ4").'
+        "Deprecated (removed in 0.17): use "
+        "zotero_manage_collection(action='delete'). Permanently deletes a "
+        "collection and its subcollections; items stay in the library."
     )
 )
 def delete_collection(
@@ -1047,15 +1181,9 @@ def delete_collection(
 @mcp.tool(
     name="zotero_update_collection",
     description=(
-        "Rename a collection or move it under a different parent, keeping its "
-        "key, subcollections and item membership (#517). collection_key: the "
-        "8-character key of the collection to change. name: the new name, or "
-        "omit to keep it. parent_collection: key, name or 'Parent/Child' path of the new parent; "
-        "a collection cannot be moved under itself or one of its own "
-        "subcollections. to_top_level=True moves it out of any parent. Pass "
-        "at least one change. Use zotero_search_collections to find keys. "
-        'Example: zotero_update_collection(collection_key="KMMQDFQ4", '
-        'name="AI & ML").'
+        "Deprecated (removed in 0.17): use "
+        "zotero_manage_collection(action='update'). Renames a collection "
+        "(name) or moves it (parent_collection, or to_top_level=True)."
     )
 )
 @with_zotero_api_lock
@@ -1139,24 +1267,10 @@ def update_collection(
 @mcp.tool(
     name="zotero_search_collections",
     description=(
-        "Search collections by name in the active library and return their "
-        "8-character keys. Matching is case-insensitive substring and applies "
-        "ONLY to the collection's own name — not to parent names, "
-        "descriptions, or items inside the collection. "
-        "Multi-word queries are ANDed across words (NOT OR-ed): query "
-        "'reading list' matches only collections whose name contains both "
-        "'reading' AND 'list'. To match either word, issue two separate "
-        "searches. Leading/trailing whitespace is ignored and empty words "
-        "are dropped. "
-        "Returns the collection's key plus its parent (if any). "
-        "include_trashed: when True, also match collections currently in "
-        "the Zotero Trash (results annotated as such). Default False — "
-        "trashed collections are otherwise invisible to automated clients. "
-        "Performance: scans all collections in the active library (O(n)); "
-        "for very large libraries expect a full-list pagination under the "
-        "hood. "
-        'Example: zotero_search_collections(query="orals") → keys for every '
-        'collection with "orals" in its name.'
+        "Find collections by name in the active library; returns their keys "
+        "and parents. Case-insensitive substring on the collection's own "
+        "name, and every word must match ('reading list' needs both). "
+        "include_trashed=True also matches collections in the Trash."
     )
 )
 @with_zotero_api_lock
@@ -1220,17 +1334,12 @@ def search_collections(
 @mcp.tool(
     name="zotero_set_item_collections",
     description=(
-        "Change which collections existing items belong to — an "
-        "incremental add/remove of item membership, NOT collection "
-        "creation (use zotero_create_collection / "
-        "zotero_delete_collection for that). "
-        "item_keys must be an ARRAY of item keys, e.g. [\"KEY1\", \"KEY2\"] — not a single string. "
-        "add_to and remove_from accept arrays of collection keys, names, or "
-        "'/'-separated paths (resolved and validated automatically; unknown, "
-        "trashed, or ambiguous specs fail before anything is changed). "
-        "Existing memberships not named in remove_from are left alone; to "
-        "replace an item's memberships wholesale use zotero_update_item. "
-        "Use zotero_search_items to find item keys and zotero_search_collections to find collection keys."
+        "Add items to, or remove them from, collections, leaving their other "
+        "memberships alone. item_keys: an array of item keys. add_to / "
+        "remove_from: arrays of collection keys, names or 'Parent/Child' "
+        "paths, all checked before anything changes. To replace memberships "
+        "wholesale use zotero_update_item; to create, rename or delete a "
+        "collection, zotero_manage_collection."
     )
 )
 @with_zotero_api_lock
@@ -3121,29 +3230,20 @@ def _unknown_fields_error(unknown: list[str], item_type: str) -> str:
 @mcp.tool(
     name="zotero_update_item",
     description=(
-        "Update metadata on an existing Zotero item by key. Only what "
-        "you pass is changed. "
-        "fields: {name: value} of metadata to set (a JSON object string "
-        "is accepted). Names may be snake_case (title, date, doi, url, "
-        "abstract, publication_title, access_date, short_title, "
-        "book_title, citation_key, item_type, place, extra, volume, "
-        "issue, pages, publisher, issn, isbn, edition, language) or any "
-        "raw Zotero API field name. An unknown name fails the call and "
-        "lists the valid ones; a name that is not valid for this item's "
-        "type is reported as skipped. item_type migrates the item "
-        "(overlapping fields kept, type-specific ones dropped). "
-        "TAG SEMANTICS (easy to get wrong): tags REPLACES the whole tag "
-        "list; add_tags/remove_tags are incremental and preferred. They "
-        "are mutually exclusive with tags. "
-        "collections (keys) and collection_names likewise REPLACE "
-        "membership — pass collections=[] to clear it; for incremental "
-        "moves use zotero_set_item_collections. "
-        "creators: full replacement list of {creatorType, firstName, "
-        "lastName} objects. "
-        "Requires a writable library (fails in local-only mode). To edit "
-        "notes use zotero_manage_note. "
-        "Example: zotero_update_item(item_key='RTKZQI8E', "
-        "fields={'doi': '10.1145/3708319'}, add_tags=['reviewed'])."
+        "Change metadata on one item; only what you pass changes. fields: "
+        "{name: value} with snake_case names (title, date, doi, url, "
+        "abstract, publication_title, short_title, book_title, citation_key, "
+        "item_type, place, extra, volume, issue, pages, publisher, issn, "
+        "isbn, edition, language, access_date) or raw Zotero field names. "
+        "Unknown names fail and list the valid ones; names the item's type "
+        "lacks are skipped and reported. citation_key sets the BetterBibTeX "
+        "key; item_type converts the item, dropping fields the new type "
+        "lacks. creators: a full replacement list of {creatorType, firstName, "
+        "lastName}. tags REPLACES all tags; add_tags/remove_tags edit "
+        "incrementally (preferred; not with tags). collections (keys) or "
+        "collection_names REPLACE membership (collections=[] clears it); for "
+        "incremental moves use zotero_set_item_collections. For notes use "
+        "zotero_manage_note."
     )
 )
 @with_zotero_api_lock
@@ -3420,13 +3520,9 @@ def update_item(
 @mcp.tool(
     name="zotero_delete_item",
     description=(
-        "Move a Zotero item to the Trash. Works for any item type (book, "
-        "journalArticle, webpage, attachment, etc.). For notes, use "
-        "zotero_manage_note(action='delete') — identical mechanism, "
-        "constrained to notes for safety. Trashed items are recoverable "
-        "from Zotero's Trash — empty the Trash in the Zotero UI for "
-        "permanent deletion. By default refuses to trash notes; set "
-        "allow_note=True to override."
+        "Move an item to the Trash (recoverable in Zotero). Any item type, "
+        "but for notes use zotero_manage_note(action='delete'), or pass "
+        "allow_note=True."
     )
 )
 def delete_item(
@@ -4540,21 +4636,11 @@ def _extract_pdf_toc(pdf_path: str, timeout: int = _TOC_TIMEOUT) -> TocOutcome:
 @mcp.tool(
     name="zotero_get_pdf_outline",
     description=(
-        "Extract the table of contents (outline/bookmarks) from a PDF "
-        "attachment, returned as a hierarchical markdown list with each "
-        "entry's page number. "
-        "Use this to orient in a paper before calling "
-        "zotero_get_item_fulltext — the outline is typically < 200 "
-        "tokens versus 10K+ for the full text. If the PDF has no "
-        "embedded outline, returns a short 'no outline' message rather "
-        "than failing. "
-        "item_key: the PDF ATTACHMENT key OR the parent item key — both "
-        "are accepted; attachment-to-parent resolution is automatic. "
-        "Find the right key with zotero_get_item_children if unsure. "
-        "Scope: PDFs only (EPUBs have no outline extraction here). "
-        "Requires PyMuPDF (the [pdf] extra). "
-        "Read-only; works in local or web mode. "
-        "Example: zotero_get_pdf_outline(item_key='RTKZQI8E')."
+        "Return a PDF's table of contents with page numbers, usually under "
+        "200 tokens: find the pages you need, then read them with "
+        "zotero_read_pdf_pages instead of the full text. item_key: the parent "
+        "item or the PDF attachment. Says so when the PDF has no outline. "
+        "PDFs only; needs PyMuPDF (the [pdf] extra)."
     )
 )
 def get_pdf_outline(
@@ -4948,35 +5034,16 @@ def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
 @mcp.tool(
     name="zotero_attach_file",
     description=(
-        "Attach a file to an EXISTING Zotero item as an imported child "
-        "attachment (uploads the file bytes). Use when the item is already "
-        "in the library and you have its key — e.g. attaching a PDF you "
-        "found for a reference. To create a NEW item from a file, use "
-        "zotero_add_item(source=<file path>) instead. "
-        "item_key: key of the existing REGULAR item. Passing an "
-        "attachment/note key fails with a hint to use its parent. "
-        "file_path: ABSOLUTE local path (.pdf, .epub, .djvu, .doc, .docx, "
-        ".odt, .rtf). "
-        "url: direct http(s) link, downloaded server-side — PDF-only; for "
-        "other formats download locally and use file_path. Exactly one of "
-        "file_path/url must be given. "
-        "filename: optional stored-filename override; defaults to the "
-        "file's basename or the URL's last path segment (falling back to "
-        "<item_key>.pdf); a missing extension is appended automatically. "
-        "Returns the created attachment's key. Idempotent: if the item "
-        "already has an attachment with the same filename or identical "
-        "content (MD5), nothing is re-uploaded. Requires a writable library "
-        "(fails in local-only mode). Uploads count against the Zotero "
-        "cloud storage quota unless WebDAV sync is configured. Run "
-        "zotero_update_search_database afterwards to index the new file "
-        "for semantic search. "
-        "link_mode: 'import' (default) uploads the file bytes; "
-        "'linked' records the absolute path only (like Zotero's "
-        "'Add Link to File') — the file is NOT moved or copied and no "
-        "cloud quota is used. 'linked' requires file_path (not url) and "
-        "a writable library; filename then only sets the title. "
-        "Example: zotero_attach_file(item_key='ABCD2345', "
-        "file_path='/Users/me/smith-2020.pdf')."
+        "Attach a file to an EXISTING regular item (not an attachment or "
+        "note). To create a new item from a file, use "
+        "zotero_add_item(source=<path>). Give exactly one of file_path "
+        "(absolute: .pdf, .epub, .djvu, .doc, .docx, .odt, .rtf) or url (a "
+        "direct PDF link, downloaded by the server). filename: overrides the "
+        "stored name. link_mode: 'import' (default) uploads a copy, which "
+        "counts against Zotero storage unless WebDAV is set up; 'linked' "
+        "links the file where it is (file_path only, nothing copied). Skips "
+        "the upload when the item already has the same file. Returns the "
+        "attachment key."
     ),
 )
 @with_zotero_api_lock
@@ -6107,39 +6174,23 @@ def detect_source_type(source: str) -> str:
 @mcp.tool(
     name="zotero_add_item",
     description=(
-        "Add item(s) to Zotero from any source: DOI, URL, ISBN, BibTeX, "
-        "CSL JSON, or a local file. Use for every 'add this to Zotero' "
-        "request. "
-        "source: the identifier, URL, citation text, or ABSOLUTE file "
-        "path. DOI/URL/ISBN/PMID also take many at once (list or "
-        "comma/newline-separated). "
-        "BibTeX/CSL JSON may be inline (many entries per call) or a path "
-        "to .bib/.bibtex/.json/.csljson; documents are .pdf, .epub, .docx "
-        "and similar. "
-        "source_type: 'auto' (default) detects it, incl. comma/newline "
-        "DOI lists; override for URL/ISBN batches. Routing: doi → CrossRef "
-        "(best metadata — prefer a DOI when you have one); url → "
-        "doi.org/arxiv.org get full metadata, anything else becomes a bare "
-        "'webpage' item that is often not citable, so resolve to a DOI "
-        "first; isbn → Open Library then Google Books (noisy — verify "
-        "after); bibtex/csl_json → one item per entry, citation key kept "
-        "in Extra; file → extracts the PDF's DOI and enriches via "
-        "CrossRef, else guesses from filename/text, then attaches the file. "
-        "collections: keys, names, or '/'-paths ('_project/topic'), "
-        "validated before anything is created — an unknown or ambiguous "
-        "spec fails the call rather than leaving an unfiled item; "
-        "create_missing_collections=True creates them instead. "
-        "if_exists: 'duplicate' (default) always creates; 'file' is "
-        "idempotent — reuses the item matching the DOI/ISBN/URL, adding "
-        "missing collections/tags, never removing; 'skip' leaves a match "
-        "untouched. "
-        "attach_mode: 'auto' (default) attaches an OA PDF, 'linked_url' "
-        "bookmarks it, 'none' skips, 'required' fails without one. "
-        "title: file sources only, when extraction misses. "
-        "Requires a writable library (fails in local-only mode). Run "
-        "zotero_update_search_database afterwards for semantic search. "
-        "Example: zotero_add_item(source='10.1145/3708319', "
-        "collections=['9SU943GB'], if_exists='file')."
+        "Add items from a DOI, URL, ISBN, PMID, BibTeX, CSL JSON or a local "
+        "file; use it for every 'add this to Zotero' request. source: the "
+        "identifier, URL, citation text or ABSOLUTE file path. "
+        "DOI/URL/ISBN/PMID also take a comma- or newline-separated batch; "
+        "BibTeX and CSL JSON may be inline (many entries) or a .bib/.json "
+        "path. source_type: 'auto' (default) detects it. Prefer a DOI: a URL "
+        "other than doi.org or arxiv.org becomes a bare webpage item, and "
+        "ISBN metadata is noisy (verify it). For a file, its DOI is looked "
+        "up, else metadata is guessed, then the file is attached; title "
+        "overrides a missed title. collections: keys, names or 'Parent/Child' "
+        "paths, checked before anything is created "
+        "(create_missing_collections=True makes missing ones). if_exists: "
+        "'duplicate' (default) always creates; 'file' reuses an item with the "
+        "same DOI/ISBN/URL, adding missing collections and tags; 'skip' "
+        "leaves a match alone. attach_mode: 'auto' (default) attaches an "
+        "open-access PDF, 'linked_url' links it, 'none' skips, 'required' "
+        "fails without one."
     )
 )
 def add_item(

@@ -58,7 +58,7 @@
         },
         {
           "name": "ZOTERO_MCP_TOOLSETS",
-          "description": "Which optional tool groups to expose, as a comma-separated list. Every tool is sent to the model on each request, so optional capabilities are off by default. Use 'all' for the full surface, 'none' for core only, named groups (scite, duplicates, discovery, feeds, relations, libraries, search-admin, pdf-geometry) to add them, or a leading '-' to subtract.",
+          "description": "Which optional tool groups to expose, as a comma-separated list. Every tool is sent to the model on each request, so optional capabilities are off by default. Use 'all' for the full surface, 'none' for core only, 'default' for the default profile, named groups (scite, duplicates, discovery, feeds, relations, libraries, search-admin, pdf-geometry, legacy) to add them, or a leading '-' to subtract. 'legacy' brings back tool names merged in 0.16 (until 0.17).",
           "format": "string",
           "isRequired": false
         }

@@ -702,3 +702,69 @@ class TestAmbiguousParentCollection:
             collection_key="ABC00003", parent_collection="Course A/Readings", ctx=ctx
         )
         assert twin_readings.updated_collections[0]["parentCollection"] == "READA001"
+
+
+# ===========================================================================
+# zotero_manage_collection (0.16): one tool for create/update/delete
+# ===========================================================================
+
+
+class TestManageCollection:
+    def test_create_dispatches(self, monkeypatch, fake_zot, ctx):
+        _patch_web_only(monkeypatch, fake_zot)
+        result = server.manage_collection(
+            action="create", name="Sub", parent_collection="Machine Learning", ctx=ctx
+        )
+        assert "NEWCOL0000" in result
+        assert fake_zot.created_collections[0]["parentCollection"] == "ABC00001"
+
+    def test_update_dispatches(self, monkeypatch, fake_zot, ctx):
+        _patch_web_only(monkeypatch, fake_zot)
+        result = server.manage_collection(
+            action="update", collection_key="ABC00003", to_top_level=False,
+            name="NLP & Speech", ctx=ctx,
+        )
+        assert "Updated collection" in result
+        assert fake_zot.updated_collections[0]["name"] == "NLP & Speech"
+
+    def test_delete_dispatches(self, monkeypatch, fake_zot, ctx):
+        _patch_web_only(monkeypatch, fake_zot)
+        result = server.manage_collection(action="delete", collection_key="ABC00001", ctx=ctx)
+        assert "Deleted" in result
+        assert fake_zot.deleted_collections[0]["key"] == "ABC00001"
+
+    @pytest.mark.parametrize(
+        "kwargs, needle",
+        [
+            ({"action": "create"}, "requires name"),
+            ({"action": "create", "name": "X", "collection_key": "ABC00001"}, "not collection_key"),
+            ({"action": "update", "name": "X"}, "requires collection_key"),
+            ({"action": "delete"}, "requires collection_key"),
+            ({"action": "delete", "collection_key": "ABC00001", "name": "X"}, "takes only collection_key"),
+        ],
+    )
+    def test_wrong_arguments_change_nothing(self, monkeypatch, fake_zot, ctx, kwargs, needle):
+        _patch_web_only(monkeypatch, fake_zot)
+        result = server.manage_collection(**kwargs, ctx=ctx)
+        assert needle in result
+        assert not fake_zot.created_collections
+        assert not fake_zot.deleted_collections
+
+
+def test_old_collection_tools_are_legacy_only():
+    import asyncio
+
+    from zotero_mcp.toolsets import TOOLSETS, apply_toolsets
+
+    old = {"zotero_create_collection", "zotero_update_collection", "zotero_delete_collection"}
+    assert old <= TOOLSETS["legacy"]
+    try:
+        apply_toolsets(server.mcp, raw=None, transport="stdio")
+        names = {t.name for t in asyncio.run(server.mcp.list_tools())}
+        assert "zotero_manage_collection" in names
+        assert not old & names
+        apply_toolsets(server.mcp, raw="default,legacy", transport="stdio")
+        names = {t.name for t in asyncio.run(server.mcp.list_tools())}
+        assert old <= names
+    finally:
+        apply_toolsets(server.mcp, raw="all", transport="streamable-http")

@@ -748,3 +748,27 @@ def test_scoped_hits_still_name_the_collection(monkeypatch):
                                   limit=6, ctx=DummyContext())
     assert "in Collection MSYFGVKG" in result
     assert "entire library" not in result
+
+
+def test_search_items_without_query_lists_by_tag(monkeypatch):
+    """0.16 folded zotero_search_by_tag into zotero_search_items: a tag with no
+    query answers exactly as the old tool did, scope wording included."""
+    from zotero_mcp import server
+    hits = [_tagged(k) for k in ("KYYQ2HSY", "YLVWDV8K")]
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client",
+                        lambda: _ScopeZotero(hits))
+
+    merged = server.search_items(tag=["didn't use"], limit=6, ctx=DummyContext())
+    old = server.search_by_tag(tag=["didn't use"], limit=6, ctx=DummyContext())
+
+    assert merged == old
+    assert "entire library" in merged
+
+
+def test_search_items_needs_a_query_or_a_tag():
+    from zotero_mcp import server
+    result = server.search_items(query="  ", ctx=DummyContext())
+    assert "Search query cannot be empty" in result
+    assert "tag" in result
+    result = server.search_items(tag=["t"], search_all_libraries=True, ctx=DummyContext())
+    assert "needs a query" in result
