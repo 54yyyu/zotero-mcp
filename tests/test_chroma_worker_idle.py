@@ -278,6 +278,23 @@ def test_the_first_passage_search_in_a_worker_reports_its_time(worker):
     assert "passage_load" not in _article_search(worker)
 
 
+def test_the_reported_time_includes_starting_the_worker(worker, monkeypatch):
+    # When the search itself starts the worker (the last one exited between
+    # the search's earlier calls and this one), the user waits for that too.
+    worker.search  # noqa: B018 - fetched once, as the server has by now
+    worker.stop()
+
+    class _SlowStart(_Proc):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            worker.clock.now += 2
+
+    monkeypatch.setattr(chroma_worker.subprocess, "Popen", _SlowStart)
+    _slow_load(worker, 40)
+
+    assert _passage_search(worker)["passage_load"]["seconds"] == 42
+
+
 def test_a_passage_search_after_an_idle_exit_says_it_reloaded(worker):
     _slow_load(worker, 40)
     _passage_search(worker)

@@ -265,12 +265,12 @@ class WorkerChromaClient:
 
     def _request(self, message: tuple, passages: bool = False) -> Any:
         with self._lock:
+            started = _clock()  # the user waits for a new worker to start, too
             if self._proc is None or self._proc.poll() is not None:
                 self._proc = None
                 self._start()
             proc = self._proc
             first_passage_search = passages and message[1] == "search" and not self._passage_searched
-            started = _clock()
             try:
                 _send(proc.stdin, message)
                 status, value = _receive(proc.stdout)
