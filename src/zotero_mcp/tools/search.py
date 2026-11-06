@@ -1495,7 +1495,10 @@ def semantic_search(
         results = search.search(query=query, limit=limit, filters=filters, group_id=group_id)
 
         if results.get("error"):
-            return f"Semantic search error: {results['error']}"
+            message = f"Semantic search error: {results['error']}"
+            if results.get("embedding_api_unreachable"):
+                message += " Use zotero_search_items for a keyword search meanwhile."
+            return message
 
         search_results = results.get("results", [])
 

@@ -50,6 +50,7 @@ from .config_light import (  # noqa: F401
     reranker_enabled,
     should_update,
 )
+from .embeddings.base import EmbeddingAPIUnreachable
 from .embeddings.registry import batch_capable_providers
 from .extract import PAGE_SEPARATOR
 from .identifiers import metadata_match_keys
@@ -3226,7 +3227,12 @@ class ZoteroSemanticSearch:
 
             # In batch mode, defer destructive rebuilds until import so the
             # existing search index remains usable while the batch runs.
+            # A rebuild empties the index first, so the embedding API is
+            # checked before that, not after.
+            api_checked = False
             if force_full_rebuild and not batch_enabled:
+                self._check_embedding_api()
+                api_checked = True
                 logger.info("Force rebuilding database...")
                 self.chroma_client.reset_collection()
 
@@ -3416,6 +3422,12 @@ class ZoteroSemanticSearch:
                 stats["end_time"] = end_time.isoformat()
                 return stats
 
+            # One short request before any real work: off the network an API
+            # accepts, every batch of the run would fail, and the run would
+            # still save the update time as if it had worked.
+            if all_items and not api_checked:
+                self._check_embedding_api()
+
             # User-friendly progress reporting
             total = stats["total_items"] = len(all_items)
             try:
@@ -3593,6 +3605,13 @@ class ZoteroSemanticSearch:
             logger.info(f"Database update completed in {stats['duration']}")
             return stats
 
+        except EmbeddingAPIUnreachable as e:
+            # Raised by the check before any document is embedded: nothing
+            # changed, and last_update and the sync version stay where they were.
+            logger.error(f"Stopping the update: {e}")
+            stats["error"] = f"{e} Run the update again once the API can be reached."
+            stats["duration"] = str(datetime.now() - start_time)
+            return stats
         except Exception as e:
             logger.error(f"Error updating database: {e}")
             stats["error"] = str(e)
@@ -3606,6 +3625,14 @@ class ZoteroSemanticSearch:
             # separately before its early return, so this finally only runs
             # for the path where we actually hold the lock.
             lock_cm.__exit__(None, None, None)
+
+    def _check_embedding_api(self) -> None:
+        """Send one short request to a remote embedding API; raises
+        :class:`EmbeddingAPIUnreachable` if it cannot be reached. Local
+        models have nothing to check."""
+        check = getattr(type(getattr(self.chroma_client, "embedding_function", None)), "check_reachable", None)
+        if check is not None:
+            check(self.chroma_client.embedding_function)
 
     def _prepare_and_classify_slice(
         self,
@@ -4595,6 +4622,8 @@ class ZoteroSemanticSearch:
                 "results": [],
                 "total_found": 0,
                 "error": error,
+                # The index is local, but each query is embedded by the API.
+                "embedding_api_unreachable": isinstance(e, EmbeddingAPIUnreachable),
             }
 
     def _enrich_search_results(
