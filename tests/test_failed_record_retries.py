@@ -461,6 +461,7 @@ def test_an_update_that_collects_a_run_says_what_it_gave_up(build, batch, tmp_pa
     assert _saved(tmp_path)["retry_item_keys_given_up"] == ["BBB"]
     errors = " ".join(stats["batch_collect"]["errors"])
     assert "Gave up" in errors and "BBB" in errors
+    assert "embeds them again" not in errors, "nothing is embedded again once given up on"
 
 
 def test_the_import_says_an_unmigrated_index_keeps_its_sync_version(build, batch, tmp_path):

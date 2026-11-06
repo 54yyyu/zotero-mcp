@@ -5747,7 +5747,11 @@ class ZoteroSemanticSearch:
             parts.append(
                 f"gave up on {given_up} chunk(s) that failed at the provider and can't be sent again."
             )
-        if landed and failed_ids:
+        given_up_items = set(self.update_config.get("retry_item_keys_given_up") or [])
+        if landed and failed_ids and {doc_id.split("#", 1)[0] for doc_id in failed_ids} <= given_up_items:
+            # Said by the import's own note on the items given up on.
+            pass
+        elif landed and failed_ids:
             if run.get("reset_at") or self._separate_passages():
                 parts.append(
                     f"{len(failed_ids)} record(s) have no embedding; the next update-db embeds them again."
@@ -5760,7 +5764,7 @@ class ZoteroSemanticSearch:
                 )
         elif given_up:
             parts.append("The rest of the run carries on.")
-        return " ".join(parts)
+        return " ".join(parts) if len(parts) > 1 else None
 
     def batch_notice(self, group_id: int | None = None) -> dict[str, Any]:
         """The last collect problems and deferral for this library, if any."""
