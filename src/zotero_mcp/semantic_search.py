@@ -2618,17 +2618,28 @@ class ZoteroSemanticSearch:
         paying for them again would also supersede the run.
         """
         cutoff = datetime.now(timezone.utc) - timedelta(days=self.BATCH_RUN_BLOCKS_FILL_DAYS)
-        for provider, module in _BATCH_MODULES.items():
-            adapter = _batch_adapter(provider)
-            for run in module.manifests_for_group(config_path=self.config_path, group_id=self._pinned_group_id()):
-                try:
-                    created = datetime.fromisoformat(str(run.get("created_at")).replace("Z", "+00:00"))
-                except ValueError:
-                    continue
-                if created < cutoff:
-                    continue
-                if batch_common.run_is_unfinished(run, adapter):
-                    return str(run.get("run_id"))
+        group_id = self._pinned_group_id()
+        provider = self._collect_provider()
+        if provider:
+            # The runs collect and batch-import carry forward: not one a newer
+            # run or sync took over, or another model made, which nothing will
+            # ever import. Newest first.
+            candidates = list(reversed(self._unfinished_batch_runs(provider, group_id)))
+        else:
+            candidates = [
+                run
+                for name, module in _BATCH_MODULES.items()
+                for run in module.manifests_for_group(config_path=self.config_path, group_id=group_id)
+                if batch_common.run_is_unfinished(run, _batch_adapter(name))
+            ]
+        for run in candidates:
+            try:
+                created = datetime.fromisoformat(str(run.get("created_at")).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if created < cutoff:
+                continue
+            return str(run.get("run_id"))
         return None
 
     def _parse_creators_string(self, creators_str: str) -> list[dict[str, str]]:

@@ -8,6 +8,8 @@ stored is the failure that costs users money.
 import importlib.util
 import json
 import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -411,3 +413,37 @@ def test_scan_keeps_an_up_to_date_item_that_has_a_gap():
     assert decide({"has_fulltext": True}, {"passages"}) == "extract"
     assert decide({"has_fulltext": "failed"}, {"passages"}) == "metadata_only"
     assert decide({"has_fulltext": True}, None) is None
+
+
+def test_a_superseded_batch_run_does_not_block_fills(build, tmp_path, monkeypatch):
+    """batch-import never touches a run a newer one took over, so it must not hold fills back."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    search = build(FakeZotero({"AAA": LONG}), chunking=True)
+    search.chroma_client.embedding_model = "openai"
+    search.chroma_client.embedding_config = {"model_name": "text-embedding-3-small", "api_key": "test"}
+    group_id = search._pinned_group_id()
+    now = datetime.now(timezone.utc)
+    earlier = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    later = now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    runs = {
+        "older-run": {
+            "run_id": "older-run", "created_at": earlier, "group_id": group_id,
+            "since_version": 5, "target_sync_version": 6,
+            "batches": [{"batch_id": "b1", "status": "in_progress", "imported_at": None}],
+        },
+        "rebuild-run": {
+            "run_id": "rebuild-run", "created_at": later, "group_id": group_id,
+            "force_full_rebuild": True, "since_version": None, "target_sync_version": 6,
+            "batches": [{"batch_id": "b2", "status": "completed", "imported_at": later}],
+        },
+    }
+    for run_id, manifest in runs.items():
+        root = tmp_path / "openai_batches" / run_id
+        root.mkdir(parents=True)
+        (root / "manifest.json").write_text(json.dumps(manifest))
+
+    assert search._unfinished_batch_run() is None
+
+    (tmp_path / "openai_batches" / "rebuild-run" / "manifest.json").unlink()
+    assert search._unfinished_batch_run() == "older-run", "on its own it still holds fills back"
