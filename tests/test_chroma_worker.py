@@ -34,6 +34,7 @@ from chromadb.config import Settings
 from zotero_mcp import chroma_worker
 from zotero_mcp.chroma_client import ChromaClient, create_chroma_client
 from zotero_mcp.chroma_worker import WorkerChromaClient, WorkerExited
+from zotero_mcp.config import SemanticSearchConfig
 
 N = 30
 
@@ -56,7 +57,6 @@ def config(tmp_path, monkeypatch):
     path.write_text(json.dumps({"semantic_search": {
         "persist_directory": str(persist),
         "embedding_model": "default",
-        "idle_unload_minutes": 10,  # opt-in: the default (0) keeps ChromaDB in-process
     }}))
     # The worker is `python -m zotero_mcp.chroma_worker`; make sure it imports
     # this checkout, as the server's own interpreter would.
@@ -186,18 +186,55 @@ def test_a_call_in_flight_when_the_worker_dies_raises(config, monkeypatch):
         client.get_collection_info()
 
 
-@pytest.mark.parametrize("idle", [{"idle_unload_minutes": 0}, {}], ids=["zero", "unset"])
-def test_zero_or_unset_idle_minutes_keeps_chromadb_in_process(tmp_path, monkeypatch, idle):
-    monkeypatch.setattr(chroma_worker, "_enabled", True)
-    monkeypatch.setattr(chroma_worker, "_shared", {})
+def _bare_config(tmp_path, **idle):
     path = tmp_path / "config.json"
     path.write_text(json.dumps({"semantic_search": {
         "persist_directory": str(tmp_path / "chroma_db"),
         **idle,
     }}))
+    return str(path)
 
-    assert isinstance(create_chroma_client(str(path)), ChromaClient)
+
+def test_zero_idle_minutes_keeps_chromadb_in_process(tmp_path, monkeypatch):
+    monkeypatch.setattr(chroma_worker, "_enabled", True)
+    monkeypatch.setattr(chroma_worker, "_shared", {})
+
+    assert isinstance(create_chroma_client(_bare_config(tmp_path, idle_unload_minutes=0)), ChromaClient)
     SharedSystemClient.clear_system_cache()
+
+
+def test_unset_idle_minutes_means_ten_in_the_server(tmp_path, monkeypatch):
+    monkeypatch.setattr(chroma_worker, "_enabled", True)
+    monkeypatch.setattr(chroma_worker, "_shared", {})
+
+    client = create_chroma_client(_bare_config(tmp_path))
+
+    assert isinstance(client, WorkerChromaClient)
+    assert client._idle_seconds == 600
+    assert chroma_worker.DEFAULT_IDLE_UNLOAD_MINUTES == 10
+    assert SemanticSearchConfig().idle_unload_minutes == 10  # one default, two places
+
+
+@pytest.mark.parametrize("path", [None, "missing.json"], ids=["no-path", "nonexistent-path"])
+def test_no_config_file_also_means_ten_in_the_server(tmp_path, monkeypatch, path):
+    monkeypatch.setenv("HOME", str(tmp_path))  # keep the default index location off the real one
+    monkeypatch.setattr(chroma_worker, "_enabled", True)
+    monkeypatch.setattr(chroma_worker, "_shared", {})
+
+    client = create_chroma_client(str(tmp_path / path) if path else None)
+
+    assert isinstance(client, WorkerChromaClient)
+    assert client._idle_seconds == 600
+
+
+def test_a_users_own_idle_minutes_wins_over_the_default(tmp_path, monkeypatch):
+    monkeypatch.setattr(chroma_worker, "_enabled", True)
+    monkeypatch.setattr(chroma_worker, "_shared", {})
+
+    client = create_chroma_client(_bare_config(tmp_path, idle_unload_minutes=3))
+
+    assert isinstance(client, WorkerChromaClient)
+    assert client._idle_seconds == 180
 
 
 def test_outside_the_server_chromadb_stays_in_process(tmp_path):
@@ -206,3 +243,117 @@ def test_outside_the_server_chromadb_stays_in_process(tmp_path):
 
     assert isinstance(create_chroma_client(str(path)), ChromaClient)
     SharedSystemClient.clear_system_cache()
+
+
+class _NeedsKeywords(Exception):
+    """Pickles fine, cannot be unpickled: like the openai SDK's APIStatusError."""
+
+    def __init__(self, message, *, response, body):
+        super().__init__(message)
+
+
+def test_an_exception_that_cannot_be_unpickled_still_reaches_the_caller_as_an_error(monkeypatch):
+    import io
+
+    class Boom:
+        def fail(self):
+            raise _NeedsKeywords("429 rate limited", response=None, body=None)
+
+    monkeypatch.setattr("zotero_mcp.chroma_client.create_chroma_client", lambda config_path: Boom())
+    requests, replies = io.BytesIO(), io.BytesIO()
+    chroma_worker._send(requests, ("call", "fail", (), {}))
+    requests.seek(0)
+
+    chroma_worker._serve(None, requests, replies)
+
+    replies.seek(0)
+    status, error = chroma_worker._receive(replies)  # must not raise while reading
+    assert status == "error"
+    assert "429 rate limited" in str(error)
+
+
+# --- the embedding function, which the server reads and calls itself ----------
+#
+# Indexing asks the client for ``embedding_function``: its
+# ``max_parallel_requests`` picks the streaming pipeline (on by default for
+# OpenAI and Gemini) and ``chars_per_token`` sizes passages. Forwarded by
+# name, the attribute became a callable that runs in the worker with no such
+# attributes, so every server-side update silently lost its parallelism.
+
+
+@pytest.fixture()
+def openai_config(config, tmp_path):
+    """A config for an OpenAI index. No embedding call may leave this machine:
+    the base_url is a closed local port, so a call made by mistake in the
+    worker (which the test patches cannot reach) fails fast instead."""
+    path = tmp_path / "openai_config.json"
+    path.write_text(json.dumps({"semantic_search": {
+        "persist_directory": str(tmp_path / "openai_chroma_db"),
+        "embedding_model": "openai",
+        "embedding_config": {"api_key": "sk-test", "base_url": "http://127.0.0.1:9"},
+    }}))
+    return str(path)
+
+
+def test_the_embedding_function_reports_the_providers_own_settings(openai_config):
+    ef = create_chroma_client(openai_config).embedding_function
+
+    assert ef.max_parallel_requests == 4  # OpenAI's default: the streaming pipeline
+    assert ef.chars_per_token == 3
+    assert getattr(ef, "no_such_setting", "fallback") == "fallback"
+
+
+def test_a_setting_is_read_from_the_worker_once(openai_config, monkeypatch):
+    client = create_chroma_client(openai_config)
+    ef = client.embedding_function
+    assert ef.chars_per_token == 3
+
+    def no_more_requests(message):
+        raise AssertionError(f"asked the worker again: {message}")
+
+    monkeypatch.setattr(client, "_request", no_more_requests)
+    assert ef.chars_per_token == 3
+
+
+def test_the_embedding_function_embeds_in_this_process_so_requests_can_overlap(openai_config, monkeypatch):
+    seen = []
+
+    def fake_create(model, config):
+        seen.append((model, config.get("api_key")))
+        return lambda documents: [[float(len(d))] for d in documents]
+
+    monkeypatch.setattr("zotero_mcp.embeddings.registry.create_embedding_function", fake_create)
+    client = create_chroma_client(openai_config)
+
+    assert client.embedding_function(["ab", "abc"]) == [[2.0], [3.0]]
+    assert seen == [("openai", "sk-test")]
+    client.embedding_function(["x"])
+    assert len(seen) == 1  # built once
+
+
+def test_a_streaming_update_runs_through_the_worker(openai_config, monkeypatch):
+    from zotero_mcp import semantic_search
+
+    monkeypatch.setattr(
+        "zotero_mcp.embeddings.registry.create_embedding_function",
+        lambda model, config: (lambda documents: [[float(len(d)), 1.0] for d in documents]),
+    )
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
+    client = create_chroma_client(openai_config)
+    search = semantic_search.ZoteroSemanticSearch(chroma_client=client, config_path=openai_config)
+    monkeypatch.setattr(search, "_save_update_config", lambda *a, **k: None)
+    items = [
+        {"key": f"ITEM{i:04d}", "data": {"title": f"Title {i}", "itemType": "journalArticle",
+                                         "abstractNote": f"Abstract {i}", "creators": []}}
+        for i in range(10)
+    ]
+    monkeypatch.setattr(search, "_get_items_from_source", lambda **kwargs: list(items))
+    streamed = []
+    original = search._stream_index_items
+    monkeypatch.setattr(search, "_stream_index_items", lambda *a, **k: streamed.append(1) or original(*a, **k))
+
+    stats = search.update_database()
+
+    assert streamed, "the update did not use the streaming pipeline"
+    assert stats["added_items"] == 10 and stats["errors"] == 0
+    assert client.get_collection_info()["count"] == 10
