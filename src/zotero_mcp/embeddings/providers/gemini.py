@@ -68,6 +68,8 @@ class GeminiEmbeddingFunction(RemoteEmbeddingFunction):
     # truncated first and only then prepended the v2 prefix.
     truncate_queries = True
 
+    default_api_host = "generativelanguage.googleapis.com"
+
     def __init__(self, model_name: str = "gemini-embedding-001", api_key: str | None = None,
                  base_url: str | None = None, request_batch_size: int | None = None,
                  rate_limit_rps: float | None = None,
@@ -199,7 +201,15 @@ class GeminiEmbeddingFunction(RemoteEmbeddingFunction):
         return [e.values for e in response.embeddings]
 
     def _classify_error(self, exc: Exception) -> tuple[bool, float | None]:
-        """Retry rate limits (429) and server errors (5xx); no reliable Retry-After."""
+        """Retry rate limits (429), server errors (5xx) and network blips.
+
+        Gemini gives no reliable Retry-After, so every retry uses the
+        limiter's own backoff. Connection errors and timeouts are retried as
+        the OpenAI and Ollama providers already did, so a short network blip
+        in a long run does not stop it.
+        """
+        if _transport_error_reason(exc):
+            return True, None
         try:
             from google.genai import errors
         except ImportError:
@@ -218,3 +228,38 @@ class GeminiEmbeddingFunction(RemoteEmbeddingFunction):
             # fall back to the limiter's own exponential backoff.
             return True, None
         return False, None
+
+    def _unreachable_reason(self, exc: Exception) -> str | None:
+        """Connection errors, timeouts, 401 and 403 mean "API unreachable"."""
+        reason = _transport_error_reason(exc)
+        if reason:
+            return reason
+        try:
+            from google.genai import errors
+        except ImportError:
+            return None
+        code = getattr(exc, "code", None)
+        if isinstance(exc, errors.APIError) and code in (401, 403):
+            return f"HTTP {code}"
+        return None
+
+
+def _transport_error_reason(exc: Exception) -> str | None:
+    """"timed out" / "connection failed" for google-genai's transport errors.
+
+    google-genai sends requests through httpx, or through httpx2 when that is
+    installed; the two have separate class hierarchies, so check both. These
+    are the two exception families google-genai itself treats as transient.
+    """
+    import importlib
+
+    for module_name in ("httpx", "httpx2"):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        if isinstance(exc, module.TimeoutException):
+            return "timed out"
+        if isinstance(exc, module.ConnectError):
+            return "connection failed"
+    return None

@@ -61,6 +61,7 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
     # tokenizes far worse than prose, and overestimating cost merely paces a
     # little conservatively, while underestimating it earns 429s.
     chars_per_token = 3
+    default_api_host = "api.openai.com"
 
     def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None,
                  base_url: str | None = None, request_batch_size: int | None = None,
@@ -253,6 +254,22 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
         if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
             return True, None
         return False, None
+
+    def _unreachable_reason(self, exc: Exception) -> str | None:
+        """Connection errors, timeouts, 401 and 403 mean "API unreachable"."""
+        try:
+            import openai
+        except ImportError:
+            return None
+
+        # APITimeoutError subclasses APIConnectionError, so test it first.
+        if isinstance(exc, openai.APITimeoutError):
+            return "timed out"
+        if isinstance(exc, openai.APIConnectionError):
+            return "connection failed"
+        if isinstance(exc, openai.APIStatusError) and exc.status_code in (401, 403):
+            return f"HTTP {exc.status_code}"
+        return None
 
     @staticmethod
     def _parse_retry_after(exc: Exception) -> float | None:

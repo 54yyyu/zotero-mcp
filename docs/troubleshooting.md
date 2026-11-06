@@ -48,8 +48,19 @@ Or have the proxy rewrite `Host` to `localhost:<port>`. To switch the check off 
 - **Semantic search returns no results**: Ensure the database is initialized with `zotero-mcp update-db` and check status with `zotero-mcp db-status`
 - **Limited search quality**: For better semantic search results, use `zotero-mcp update-db --fulltext` to index full-text content (requires local Zotero setup)
 - **OpenAI/Gemini API errors**: Verify your API keys are correctly set and have sufficient credits/quota
+- **"Could not reach the embedding API at ..."**: see [Embedding API unreachable](#embedding-api-unreachable)
 - **Ollama `Read timed out`**: see the `timeout` and `request_batch_size` settings in [Semantic search](semantic-search.md#ollama)
 - **`Error loading hnsw index` on Windows**: your user folder name has non-ASCII characters. Move the index to an ASCII path with `persist_directory`, see [Index location](semantic-search.md#index-location)
+
+<a id="embedding-api-unreachable"></a>
+
+### Embedding API unreachable
+
+Some embedding APIs, such as one run by a university, accept requests only from a particular network. Elsewhere every request fails with a connection error, a timeout, or HTTP 401 or 403. When an update has something to embed, it first sends one short test request; if the API cannot be reached it stops there, before embedding anything. (Items are collected, and with `--fulltext` their PDF text extracted, before that request; the extracted text is cached, so the next run does not extract it again.) An update that loses the API part way through stops too. In both cases what was already written stays in the index, and neither the last update time nor the sync watermark moves, so the next `update-db` carries on from there. `--force-rebuild` checks the API before it empties the index; if the API goes away after that, the rebuild stops, says how many items the index holds now, and the next `update-db` scans the whole library to add the rest. The message names the host and suggests checking your network or VPN; for a 401 it leads with the API key, and for a server on this machine (`localhost`, for example Ollama) it says to check that the server is running. A request that fails this way in the middle of a run is followed by one short test request: if the API still answers, that batch is set aside and retried at the end of the run as before, and only if the test request fails too does the run stop.
+
+`db-status`, `zotero-cli db status` and `zotero_get_search_database_status` show the last such failure: when it happened and which host. The next update that embeds successfully clears it. For an hour after the failure, the server's own background updates (on startup and before a search) do not try again; a `zotero-mcp update-db` you run yourself always does.
+
+The index is stored locally, but each semantic search query is embedded by the same API, so `zotero_semantic_search` returns the same message until the API can be reached. Use `zotero_search_items` for a keyword search meanwhile. zotero-mcp never switches to another embedding provider: its vectors would not match the index.
 
 <a id="database-issues"></a>
 
