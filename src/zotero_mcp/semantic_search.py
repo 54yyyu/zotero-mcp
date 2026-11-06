@@ -5873,7 +5873,7 @@ class ZoteroSemanticSearch:
                     if not run.get("abandoned_at") and (
                         batch_common.run_is_unfinished(run, adapter)
                         or (position == 0 and run.get("force_full_rebuild") and any(
-                            not batch.get("imported_at") for batch in run.get("batches", [])
+                            not batch_common.is_settled(batch) for batch in run.get("batches", [])
                         ))
                     )
                 ]

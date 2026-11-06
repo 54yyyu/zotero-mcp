@@ -2499,3 +2499,28 @@ def test_t7_on_an_unmigrated_index_it_says_the_changes_are_bought_again(iso, mon
 
     assert "every change since" in str(stats["batch_collect"]["errors"])
     assert _versions(iso)["0"] == 10
+
+
+def test_t7_a_settled_rebuild_with_a_file_given_up_is_not_offered_for_abandoning(iso):
+    run = openai_batch.submit_embedding_batches(
+        records=[{"id": f"R{i}", "document": "x" * 150, "metadata": {"item_key": f"R{i}", "group_id": 0}}
+                 for i in range(2)],
+        model_name="text-embedding-3-small",
+        embedding_config={"api_key": "test"},
+        config_path=str(iso.config_path),
+        client=iso.provider,
+        force_full_rebuild=True,
+        target_sync_version=20,
+        group_id=0,
+        max_enqueued_tokens=100_000,
+        max_requests=1,
+        scope=REBUILD_SCOPE,
+    )
+    run["batches"][0]["imported_at"] = datetime.now().isoformat()
+    run["batches"][1]["abandoned"] = True
+    openai_batch.save_manifest(run)
+
+    result = iso.new_search().abandon_batch_run("openai")
+
+    assert result == {"candidates": []}, "nothing is left of it to give up"
+    assert not openai_batch.load_manifest(Path(run["manifest_path"])).get("abandoned_at")
