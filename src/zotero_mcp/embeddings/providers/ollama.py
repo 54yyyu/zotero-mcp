@@ -97,6 +97,9 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
 
     def _prepare_query(self, text: str) -> str:
         # Runs after the base class's query truncation, as for Gemini v2.
+        instruction = getattr(self, "query_instruction", "")
+        if instruction:
+            return f"Instruct: {instruction}\nQuery: {text}"
         return self._gemma_prefixed(self.GEMMA_QUERY_PREFIX, text)
 
     @staticmethod
@@ -134,10 +137,6 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
             tokens_per_minute=config.get("tokens_per_minute"),
             query_instruction=config.get("query_instruction"),
         )
-
-    def _prepare_query(self, text: str) -> str:
-        instruction = getattr(self, "query_instruction", "")
-        return f"Instruct: {instruction}\nQuery: {text}" if instruction else text
 
     def _embed_batch(self, texts: list[str], is_query: bool = False) -> list[list[float]]:
         """One /api/embed request for ``texts``.
