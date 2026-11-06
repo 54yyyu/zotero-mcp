@@ -453,11 +453,14 @@ class _HeldText:
     def __init__(self) -> None:
         self._dir: Any = None
         self._count = 0
+        self._closed = False
 
     def hold(self, item: dict[str, Any]) -> None:
         data = item.get("data") or {}
         text = data.get("fulltext") or ""
-        if not text:
+        if not text or self._closed:
+            # After close, a pipeline thread still finishing must not leave
+            # a new directory behind: the text stays in memory.
             return
         try:
             if self._dir is None:
@@ -487,6 +490,7 @@ class _HeldText:
             data["fulltext"] = ""
 
     def close(self) -> None:
+        self._closed = True
         if self._dir is not None:
             self._dir.cleanup()
             self._dir = None

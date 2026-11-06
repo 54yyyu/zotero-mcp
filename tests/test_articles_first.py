@@ -409,3 +409,43 @@ def test_an_article_written_with_full_text_is_rewritten_by_a_run_without_it(buil
     search.update_database()
 
     assert len(search.chroma_client.embedded) == 6, "the article and five passages"
+
+
+def test_the_spilled_text_is_removed_after_a_stop(build, monkeypatch, tmp_path):
+    import tempfile
+
+    spill = tmp_path / "spill"
+    spill.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(spill))
+    monkeypatch.setattr(
+        semantic_search.ZoteroSemanticSearch, "_fetch_fulltext_checked",
+        lambda self, key: (FULLTEXT, "pdf", False),
+    )
+    monkeypatch.setattr(semantic_search.ZoteroSemanticSearch, "_BULK_ATTACHMENT_WALK_MIN_ITEMS", 10_000)
+    search = build(FakeZotero(KEYS), include_fulltext=True)
+    held: list[str] = []
+    original_hold = semantic_search._HeldText.hold
+
+    def hold(self, item):
+        original_hold(self, item)
+        if item.get("_held_fulltext"):
+            held.append(item["_held_fulltext"])
+
+    monkeypatch.setattr(semantic_search._HeldText, "hold", hold)
+
+    _stop_in_the_passage_pass(monkeypatch, search)
+
+    assert held and all(p.startswith(str(spill)) for p in held)
+    assert list(spill.iterdir()) == []
+
+
+def test_held_text_after_close_stays_in_memory():
+    """A producer thread still running after the run closed must not make a new directory."""
+    held = semantic_search._HeldText()
+    held.close()
+    item = {"key": "AAA", "data": {"fulltext": "text"}}
+
+    held.hold(item)
+
+    assert item["data"]["fulltext"] == "text"
+    assert "_held_fulltext" not in item
