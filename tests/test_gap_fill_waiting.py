@@ -165,6 +165,71 @@ def _age_check(tmp_path, key, days):
     config_path.write_text(json.dumps(data))
 
 
+# --- re-checking with full text on ---------------------------------------------------
+
+
+def test_a_waiting_item_is_filled_once_a_run_has_its_text(build, tmp_path):
+    """The waiting list is for runs that can't have text, not for every run after."""
+    zotero = FakeZotero({"AAA": LONG})
+    _park(build, zotero)
+    assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
+
+    zotero.texts["AAA"] = TEXT
+    search = build(zotero, chunking=True, fulltext=True)
+    search.update_database()
+
+    assert len(_passage_ids(search)) == 5
+    assert search.chroma_client.embedded, "the passages were embedded from the text"
+    assert _saved(tmp_path).get("gaps_waiting_for_text") == []
+
+
+def test_a_run_without_text_still_skips_a_waiting_item(build):
+    zotero = FakeZotero({"AAA": LONG})
+    _park(build, zotero)
+
+    zotero.fetched.clear()
+    build(zotero, chunking=True).update_database()
+
+    assert zotero.fetched == []
+
+
+def test_an_item_still_without_text_is_checked_again_with_a_backoff(build, tmp_path):
+    """One API call per item per run would add up on a large library."""
+    zotero = FakeZotero({"AAA": LONG})
+    _park(build, zotero)
+
+    build(zotero, chunking=True, fulltext=True).update_database()
+    assert zotero.text_requests == ["AAA"]
+    assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
+    assert _saved(tmp_path)["gaps_text_checked"]["AAA"]["checks"] == 1
+
+    build(zotero, chunking=True, fulltext=True).update_database()
+    assert zotero.text_requests == ["AAA"], "not again within a day"
+
+    _age_check(tmp_path, "AAA", days=1.1)
+    build(zotero, chunking=True, fulltext=True).update_database()
+    assert zotero.text_requests == ["AAA", "AAA"]
+    assert _saved(tmp_path)["gaps_text_checked"]["AAA"]["checks"] == 2
+
+    _age_check(tmp_path, "AAA", days=1.5)
+    build(zotero, chunking=True, fulltext=True).update_database()
+    assert zotero.text_requests == ["AAA", "AAA"], "the wait doubles after each check"
+
+    _age_check(tmp_path, "AAA", days=2.1)
+    build(zotero, chunking=True, fulltext=True).update_database()
+    assert zotero.text_requests == ["AAA", "AAA", "AAA"]
+
+
+def test_the_backoff_stops_doubling_at_thirty_days(build):
+    due = semantic_search.ZoteroSemanticSearch._text_recheck_due
+    now = datetime.now()
+
+    assert due(None, now)
+    assert not due({"at": (now - timedelta(days=29)).isoformat(), "checks": 12}, now)
+    assert due({"at": (now - timedelta(days=30, minutes=1)).isoformat(), "checks": 12}, now)
+    assert due({"at": "not a time", "checks": 1}, now)
+
+
 # --- fetch errors ------------------------------------------------------------------
 
 
@@ -190,3 +255,30 @@ def test_a_fetch_error_does_not_park_an_item(build, tmp_path):
     search.update_database()
 
     assert len(_passage_ids(search)) == 5
+
+
+def test_a_fetch_error_on_a_waiting_item_leaves_it_due(build, tmp_path):
+    zotero = FakeZotero({"AAA": LONG})
+    _park(build, zotero)
+    build(zotero, chunking=True, fulltext=True).update_database()
+    _age_check(tmp_path, "AAA", days=1.1)
+    before = _saved(tmp_path)["gaps_text_checked"]["AAA"]
+
+    zotero.fulltext_error = ConnectionError("connection reset")
+    build(zotero, chunking=True, fulltext=True).update_database()
+
+    assert _saved(tmp_path)["gaps_text_checked"]["AAA"] == before
+    assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
+
+
+def test_no_text_in_zotero_is_not_a_fetch_error(build, tmp_path):
+    """Zotero answers 404 for an attachment it has no text for."""
+    from pyzotero.zotero_errors import ResourceNotFoundError
+
+    zotero = FakeZotero({"AAA": LONG})
+    _park(build, zotero)
+    zotero.fulltext_error = ResourceNotFoundError("Not found")
+
+    build(zotero, chunking=True, fulltext=True).update_database()
+
+    assert _saved(tmp_path)["gaps_text_checked"]["AAA"]["checks"] == 1

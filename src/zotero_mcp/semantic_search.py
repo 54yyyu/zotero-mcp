@@ -1256,6 +1256,11 @@ class ZoteroSemanticSearch:
     # How long an unfinished batch run stops gap fills; a run left this long has
     # been forgotten, and its results may be gone.
     BATCH_RUN_BLOCKS_FILL_DAYS = 14
+    # A gap fill waiting for full text Zotero did not have is asked for it again
+    # after this many days, doubling after each answer without text, up to the
+    # cap. Zotero indexes PDFs some time after they are added.
+    GAP_TEXT_RECHECK_FIRST_DAYS = 1
+    GAP_TEXT_RECHECK_MAX_DAYS = 30
 
     # Share of the model's input limit a passage may fill. Characters per token
     # is an estimate, and the head of a passage is cut off if it overshoots.
@@ -2542,9 +2547,10 @@ class ZoteroSemanticSearch:
         if library_keys is None:
             return []
         waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
+        skipped = self._still_waiting_for_text(include_fulltext)
         items: list[dict[str, Any]] = []
         for key in sorted(gaps):
-            if key in already_fetched or key not in library_keys or key in waiting:
+            if key in already_fetched or key not in library_keys or key in skipped:
                 continue
             if not include_fulltext:
                 # No run without text can fill this; don't fetch the item to find out.
@@ -2567,6 +2573,32 @@ class ZoteroSemanticSearch:
         self.update_config["gaps_waiting_for_text"] = sorted(waiting)
         return self._without_fills_lacking_text(items)
 
+    @classmethod
+    def _text_recheck_due(cls, check: Any, now: datetime) -> bool:
+        """Whether a waiting item last asked for its text at ``check`` may be asked again."""
+        if not isinstance(check, dict):
+            return True
+        try:
+            at = datetime.fromisoformat(str(check.get("at")))
+            checks = max(int(check.get("checks") or 1), 1)
+        except (TypeError, ValueError):
+            return True
+        wait = min(cls.GAP_TEXT_RECHECK_FIRST_DAYS * 2 ** min(checks - 1, 16), cls.GAP_TEXT_RECHECK_MAX_DAYS)
+        return now - at >= timedelta(days=wait)
+
+    def _still_waiting_for_text(self, include_fulltext: bool) -> set[str]:
+        """Waiting items this run leaves alone.
+
+        A run without full text can't fill any of them. A run with it asks
+        Zotero again for each item whose backoff has run out.
+        """
+        waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
+        if not include_fulltext:
+            return waiting
+        checks = self.update_config.get("gaps_text_checked") or {}
+        now = datetime.now()
+        return {key for key in waiting if not self._text_recheck_due(checks.get(key), now)}
+
     def _without_fills_lacking_text(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Drop fills that would write metadata-only records for an item with full text.
 
@@ -2579,18 +2611,35 @@ class ZoteroSemanticSearch:
         """
         kept: list[dict[str, Any]] = []
         waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
+        checks = dict(self.update_config.get("gaps_text_checked") or {})
         for item in items:
             data = item.get("data", {})
+            key = item.get("key")
             if item.get("_index_levels") and not (data.get("fulltext") or "").strip():
-                existing = self.chroma_client.get_document_metadata(item["key"]) or {}
+                existing = self.chroma_client.get_document_metadata(key) or {}
                 if existing.get("has_fulltext") and existing.get("has_fulltext") != "failed":
-                    if not data.get("fulltext_fetch_failed"):
+                    if data.get("fulltext_fetch_failed"):
                         # A failed fetch says nothing about the text: the
                         # item is left for the next run, not parked.
-                        waiting.add(item["key"])
+                        continue
+                    waiting.add(key)
+                    if data.get("fulltext_attempted"):
+                        # Zotero answered, without text: wait longer next time.
+                        previous = checks.get(key) if isinstance(checks.get(key), dict) else {}
+                        checks[key] = {
+                            "at": datetime.now().isoformat(),
+                            "checks": int(previous.get("checks") or 0) + 1,
+                        }
                     continue
+            if key in waiting and (data.get("fulltext") or "").strip():
+                waiting.discard(key)
+                checks.pop(key, None)
             kept.append(item)
         self.update_config["gaps_waiting_for_text"] = sorted(waiting)
+        if checks:
+            self.update_config["gaps_text_checked"] = checks
+        else:
+            self.update_config.pop("gaps_text_checked", None)
         return kept
 
     def _narrow_full_scan_to_changes(
@@ -3753,7 +3802,13 @@ class ZoteroSemanticSearch:
             ]
             if "gaps_waiting_for_text" in self.update_config:
                 self.update_config["gaps_waiting_for_text"] = waiting_for_text
-            has_fillable_gaps = len(index_gaps) > len(waiting_for_text)
+            if checks := self.update_config.get("gaps_text_checked"):
+                self.update_config["gaps_text_checked"] = {
+                    key: check for key, check in checks.items() if key in waiting_for_text
+                }
+            # Waiting items count as work only when this run may ask for their text.
+            left_alone = self._still_waiting_for_text(include_fulltext_via_api)
+            has_fillable_gaps = len(index_gaps) > len(left_alone & set(index_gaps))
 
             target_sync_version: int | None = None
             all_items: list[dict[str, Any]] = []
