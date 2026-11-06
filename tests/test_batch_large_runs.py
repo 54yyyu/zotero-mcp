@@ -110,6 +110,8 @@ def _records(n):
 @pytest.fixture()
 def run(monkeypatch, tmp_path):
     """Submit a run of two-record files, one file allowed in the queue at a time."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     fake = FakeOpenAI()
     monkeypatch.setattr(openai_batch, "create_openai_client", lambda *_a, **_k: fake)
     monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
@@ -118,7 +120,7 @@ def run(monkeypatch, tmp_path):
     chroma = FakeChroma()
     search = semantic_search.ZoteroSemanticSearch(chroma_client=chroma, config_path=str(config))
 
-    def _submit(n=4, *, force=False, budget=25):
+    def _submit(n=4, *, force=False, budget=25, scope=None):
         manifest = openai_batch.submit_embedding_batches(
             records=_records(n),
             model_name="text-embedding-3-small",
@@ -130,6 +132,7 @@ def run(monkeypatch, tmp_path):
             client=fake,
             max_enqueued_tokens=budget,
             max_requests=2,
+            scope=scope,
         )
         return manifest
 
@@ -412,3 +415,63 @@ def test_auto_loop_stops_when_only_abandoned_files_are_left(run, monkeypatch):
 
     assert aggregate["abandoned"] == 1
     assert run.manifest()["failed_ids"] == ["K000", "K001"]
+
+
+def _rebuild_that_gives_up_its_first_file(run, failing_row=None):
+    """A rebuild whose first file fails every time, so it is given up and nothing resets.
+
+    The second file lands, less ``failing_row``, which then goes round again.
+    """
+    manifest = run.submit(n=4, force=True, budget=100, scope={"limited": False, "since_version": None})
+    for _ in range(batch_common.MAX_BATCH_ATTEMPTS):
+        failing = [j for j in run.fake.unfinished() if "K000" in run.fake.ids_in(j)]
+        others = [j for j in run.fake.unfinished() if j not in failing]
+        for job_id in failing:
+            run.fake.fail(job_id)
+        for job_id in others:
+            run.fake.finish(job_id, fail=[failing_row] if failing_row in run.fake.ids_in(job_id) else [])
+        try:
+            run.search._import_batch("openai")
+        except RuntimeError:
+            pass
+    return manifest
+
+
+def _set_watermark(run, version):
+    run.search._save_update_config(last_sync_version=version, library_key="0")
+
+
+def test_a_rebuild_that_gave_up_a_file_keeps_the_sync_version(run):
+    """It wrote over the index without a reset, so the old version still holds."""
+    _set_watermark(run, 5)
+    _rebuild_that_gives_up_its_first_file(run)
+
+    assert run.chroma.resets == 0
+    assert set(run.chroma.stored) == {"EXISTING", "K002", "K003"}
+    assert run.manifest()["failed_ids"] == ["K000", "K001"]
+    assert run.watermark() == 5
+
+
+def test_a_rebuild_that_gave_up_a_file_moves_a_split_index_on_to_its_target(run):
+    """A split index has the gap fill for what was given up, as for any other run."""
+    run.chroma.separate_passages = lambda: True
+    _set_watermark(run, 5)
+    _rebuild_that_gives_up_its_first_file(run)
+
+    assert run.chroma.resets == 0
+    assert run.watermark() == 7
+    assert run.search.update_config["retry_item_keys"] == ["K000", "K001"]
+
+
+def test_giving_up_a_rebuild_that_never_reset_does_not_zero_the_sync_version(run):
+    _set_watermark(run, 5)
+    manifest = _rebuild_that_gives_up_its_first_file(run, failing_row="K003")
+    saved = run.manifest()
+    assert any(batch.get("imported_at") for batch in saved["batches"])
+    assert not saved.get("reset_at") and not saved.get("promoted_at")
+
+    result = run.search.abandon_batch_run("openai", run_id=manifest["run_id"])
+
+    assert "needs_confirmation" not in result
+    assert result["sync_version_reset"] is False
+    assert run.watermark() == 5

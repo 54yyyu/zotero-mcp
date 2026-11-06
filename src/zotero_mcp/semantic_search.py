@@ -81,6 +81,23 @@ SEARCH_ARTICLES = "articles"
 SEARCH_PASSAGES = "passages"
 
 
+def _run_replaced_index(manifest: dict[str, Any]) -> bool:
+    """Did this run empty the ChromaDB collection and replace its contents?
+
+    A force rebuild that gave a file up writes what arrived over the existing
+    index instead, so the sync version that index had still holds. ``reset_at``
+    is written just before the reset; a manifest from before it (with no
+    ``since_version`` either) counts as a reset unless it gave a file up.
+    """
+    if not manifest.get("force_full_rebuild"):
+        return False
+    if manifest.get("reset_at"):
+        return True
+    if "since_version" in manifest:
+        return False
+    return not any(batch.get("abandoned") for batch in manifest.get("batches", []))
+
+
 def _count_items(count: int) -> str:
     return f"{count:,} item" if count == 1 else f"{count:,} items"
 
@@ -5335,7 +5352,7 @@ class ZoteroSemanticSearch:
                 and self._run_is_usable(provider, run)
                 and not any(_is_superseded(run, newer, adapter) for newer in runs[:position])
             ):
-                self._promote_run(provider, run, bool(run.get("force_full_rebuild")))
+                self._promote_run(provider, run, _run_replaced_index(run))
 
     def _promote_run(self, provider: str, manifest: dict[str, Any], rebuilt_now: bool) -> None:
         """A whole run has landed: move the sync version of its library.
@@ -5621,13 +5638,18 @@ class ZoteroSemanticSearch:
                 if not matching:
                     raise FileNotFoundError(f"No {adapter.label} batch run {run_id} for this library")
                 run = matching[0]
-            # reset_at is written just before the reset; older manifests have
-            # only their imported chunks to show for it.
-            reset_happened = bool(
-                run.get("force_full_rebuild")
-                and not run.get("promoted_at")
-                and (run.get("reset_at") or any(batch.get("imported_at") for batch in run.get("batches", [])))
-            )
+            # reset_at is written just before the reset. Manifests from before
+            # it (no since_version either) have only their imported chunks to
+            # show for it; a rebuild that gave a file up writes over the index
+            # without a reset.
+            if "since_version" in run:
+                did_reset = bool(run.get("reset_at"))
+            else:
+                did_reset = bool(run.get("reset_at")) or (
+                    any(batch.get("imported_at") for batch in run.get("batches", []))
+                    and not any(batch.get("abandoned") for batch in run.get("batches", []))
+                )
+            reset_happened = bool(run.get("force_full_rebuild") and not run.get("promoted_at") and did_reset)
             if reset_happened and not confirm:
                 found_id = run.get("run_id")
                 return {
@@ -6140,7 +6162,7 @@ class ZoteroSemanticSearch:
                     self._promote_run(
                         provider,
                         manifest,
-                        bool(manifest.get("force_full_rebuild")) and stats["batches_imported"] > 0,
+                        _run_replaced_index(manifest) and stats["batches_imported"] > 0,
                     )
             return stats
         finally:
