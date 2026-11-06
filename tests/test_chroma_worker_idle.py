@@ -13,6 +13,8 @@ no real minutes pass and no ChromaDB is opened.
 """
 
 import itertools
+import logging
+import sqlite3
 
 import pytest
 
@@ -83,6 +85,8 @@ def worker(tmp_path, monkeypatch):
             except StopIteration:
                 return ("done", None)
         if kind == "call" and name == "separate_passages":
+            if isinstance(client.separate, Exception):
+                return ("error", client.separate)
             return ("ok", client.separate)
         if kind == "call" and name == "search":
             client.search_hook(message)
@@ -197,6 +201,31 @@ def test_on_an_unmigrated_index_a_passage_write_leaves_every_call_counting(worke
 
     worker.clock.now += IDLE
     assert _idle_check(worker)
+
+
+@pytest.mark.parametrize("call", PASSAGE_WRITES.values(), ids=PASSAGE_WRITES.keys())
+def test_a_failed_layout_check_never_fails_the_write(worker, call, caplog, monkeypatch):
+    # With routing on (the default from branch 6) separate_passages() reads
+    # SQLite, which can fail or time out. The write, a reset_collection for
+    # recovery included, must still run; it then counts as ordinary activity,
+    # which keeps the worker (the safe side).
+    sent = []
+    real_send = chroma_worker._send
+    worker.separate = sqlite3.OperationalError("database is locked")
+    name, args, kwargs = call
+    monkeypatch.setattr(
+        chroma_worker, "_send", lambda stream, message: (sent.append(message), real_send(stream, message))
+    )
+    with caplog.at_level(logging.WARNING, logger="zotero_mcp.chroma_worker"):
+        getattr(worker, name)(*args, **kwargs)
+        getattr(worker, name)(*args, **kwargs)
+
+    assert [m[1] for m in sent if m[0] == "call"].count(name) == 2  # both writes went through
+    assert len([r for r in caplog.records if "database is locked" in r.getMessage()]) == 1
+    for _ in range(4):
+        worker.clock.now += 500
+        _article_search(worker)
+        assert not _idle_check(worker)
 
 
 ARTICLE_CALLS = {

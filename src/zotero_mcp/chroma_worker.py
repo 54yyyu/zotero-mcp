@@ -191,6 +191,7 @@ class WorkerChromaClient:
         self._last_iterator_end = 0.0
         # Whether an idle exit freed loaded passages, so the next load is a reload.
         self._passages_freed = False
+        self._layout_check_warned = False  # a failed separate_passages() is logged once
 
     # --- process lifecycle ---------------------------------------------------
 
@@ -321,7 +322,20 @@ class WorkerChromaClient:
             # Asked each time, not cached here: a migration in another
             # process changes the answer, and each search's index_layout()
             # call makes the worker read the layout again.
-            passages = bool(self._request(("call", "separate_passages", (), {}))[1])
+            try:
+                passages = bool(self._request(("call", "separate_passages", (), {}))[1])
+            except Exception as e:
+                # The answer reads SQLite, which can be locked or damaged. The
+                # write must still run (reset_collection is a recovery step);
+                # as ordinary activity it keeps the worker, the safe side.
+                if not self._layout_check_warned:
+                    self._layout_check_warned = True
+                    logger.warning(
+                        "Could not tell whether passages have their own ChromaDB collection "
+                        "(%s); passage writes will keep the semantic search worker like any call",
+                        e,
+                    )
+                passages = False
         return self._request(("call", name, args, kwargs), passages=passages)[1]
 
     @property

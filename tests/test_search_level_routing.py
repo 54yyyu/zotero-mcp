@@ -501,3 +501,21 @@ def test_a_search_reports_how_long_embedding_the_query_took(build):
 
     assert results["embedding_seconds"] >= 0.05
     assert search.search("q", level="passages")["results"]  # the extra key breaks nothing
+
+
+def test_a_routed_client_reads_the_layout_to_say_where_passages_are(build, monkeypatch):
+    """With routing on, separate_passages() reads SQLite and can raise, which is
+    why the worker client guards its probe (test_chroma_worker_idle.py)."""
+    import sqlite3
+
+    search = build(chunking=True, articles=["ART"], passages=["PAS#0"])
+    client = search.chroma_client
+    client.route_passages = True
+    client._unmigrated = None
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(chroma_client, "read_index_layout", locked)
+    with pytest.raises(sqlite3.OperationalError):
+        client.separate_passages()
