@@ -455,3 +455,82 @@ def test_items_are_counted_once_when_articles_and_passages_land_apart(env, monke
     assert (added, updated) == (3, 0)
     assert _ids(search) == set(keys)
     assert len(_passages(search)) == 15
+
+
+CHANGED = " ".join(f"Rewritten sentence {i} of the new abstract." for i in range(100))
+
+
+def _finish_where(env, wanted):
+    """Finish only the jobs whose ids all satisfy ``wanted``."""
+    for job_id, job in env.fake.jobs.items():
+        ids = env.fake.ids_in(job_id)
+        if job.status != "in_progress" or not all(wanted(i) for i in ids):
+            continue
+        rows = [
+            {"custom_id": i, "response": {"status_code": 200, "body": {"data": [{"embedding": [1.0, 0.0]}]}}}
+            for i in ids
+        ]
+        job.status = "completed"
+        job.output_file_id = f"out-{job_id}"
+        env.fake.outputs[job.output_file_id] = "\n".join(json.dumps(r) for r in rows)
+
+
+def _passage_texts(search, key):
+    return search.chroma_client.client.get_collection(f"{NAME}_passages").get(
+        where={"parent_item_key": key}, include=["documents"]
+    )["documents"]
+
+
+def _changed_run(env, monkeypatch, tmp_path):
+    _isolate_home(monkeypatch, tmp_path)
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG, "CCC": LONG})
+    search = env.build(zotero, chunking=True)
+    search.update_database()
+    _land(env, search)
+    zotero.version = 6
+    zotero.changed = {"AAA", "BBB"}
+    zotero.abstracts["AAA"] = zotero.abstracts["BBB"] = CHANGED
+    search = env.build(zotero, chunking=True, batch_extra={"batch_max_requests": 2})
+    search.update_database()
+    return search
+
+
+def test_an_article_landing_drops_its_items_stale_passages(env, monkeypatch, tmp_path):
+    """Should the passage files never land, the gap fill finds the item."""
+    search = _changed_run(env, monkeypatch, tmp_path)
+
+    _finish_where(env, lambda i: "#" not in i)
+    search._import_batch("openai")
+
+    assert _passage_texts(search, "AAA") == []
+    assert len(_passage_texts(search, "CCC")) == 5, "an unchanged item keeps its passages"
+    assert "AAA" in search._find_index_gaps(limit=None, force_rebuild=False)
+
+
+def test_an_article_landing_after_its_passages_keeps_them(env, monkeypatch, tmp_path):
+    search = _changed_run(env, monkeypatch, tmp_path)
+
+    _finish_where(env, lambda i: "#" in i)
+    search._import_batch("openai")
+    _finish_where(env, lambda i: True)
+    search._import_batch("openai")
+
+    texts = _passage_texts(search, "AAA")
+    assert len(texts) == 5
+    assert all("Sentence number" not in t for t in texts)
+
+
+def test_an_article_landing_keeps_the_cached_text_for_its_passages(env, monkeypatch, tmp_path):
+    search = _changed_run(env, monkeypatch, tmp_path)
+    evicted: list[str] = []
+    monkeypatch.setattr(
+        semantic_search.fulltext_cache, "evict_many",
+        lambda keys, config_path=None: evicted.extend(keys) or 0,
+    )
+
+    _finish_where(env, lambda i: "#" not in i)
+    search._import_batch("openai")
+    assert "AAA" not in evicted
+
+    _land(env, search)
+    assert "AAA" in evicted

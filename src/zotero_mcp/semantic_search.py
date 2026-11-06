@@ -551,6 +551,13 @@ class _HeldText:
             self._dir = None
 
 
+def _passage_digest(document: str) -> str:
+    """A short fingerprint of a passage's text."""
+    import hashlib
+
+    return hashlib.sha256(document.encode("utf-8")).hexdigest()[:16]
+
+
 def _split_prepared_into_requests(prepared: dict[str, Any], request_batch_size: int):
     """Yield ``(documents, metadatas, ids, item_keys)`` request-sized payloads.
 
@@ -3513,10 +3520,19 @@ class ZoteroSemanticSearch:
         records.sort(key=lambda record: "#" in record["id"])
         # Its article and passages now land in different files: the import
         # counts the item where its article lands, not again at its first passage.
+        # An article record also carries a digest of each of its item's new
+        # passages, which follow in later files (see _drop_unlike_passages).
         with_article = {record["id"] for record in records if "#" not in record["id"]}
+        follow: dict[str, dict[str, str]] = {}
         for record in records:
-            if record["id"].endswith("#0") and record["id"][:-2] in with_article:
-                record["counted_with_article"] = True
+            key = record["id"].split("#", 1)[0]
+            if "#" in record["id"] and key in with_article:
+                follow.setdefault(key, {})[record["id"]] = _passage_digest(record["document"])
+                if record["id"].endswith("#0"):
+                    record["counted_with_article"] = True
+        for record in records:
+            if record["id"] in follow:
+                record["passages_follow"] = follow[record["id"]]
         item_keys = sorted({record["id"].split("#", 1)[0] for record in records})
         existing_items = (
             self._existing_item_keys(item_keys) if not force_full_rebuild else set()
@@ -5082,6 +5098,26 @@ class ZoteroSemanticSearch:
         self._settle_retry_keys(written=set(), failed={item_key}, keep_failed=True)
         self._save_update_config()
 
+    def _drop_unlike_passages(self, item_key: str, digests: dict[str, str]) -> None:
+        """Delete an item's stored passages that are not the ones its new article came with.
+
+        A batch run sends article records before passages, so an item's new
+        article can land with its passages still to come, or given up on.
+        Its old passages would describe the item before its change and hide
+        it from the gap fill. Passages of this run that landed first match
+        their digest, and stay.
+        """
+        passages = getattr(self.chroma_client, "passage_documents", None)
+        if passages is None:
+            return
+        stale = [
+            doc_id
+            for doc_id, document in passages(item_key)
+            if digests.get(doc_id) != _passage_digest(document or "")
+        ]
+        if stale:
+            self.chroma_client.delete_documents(stale)
+
     def _prune_stale_chunks(self, metadatas: list[dict[str, Any]]) -> None:
         """Drop each just-written item's passages past its new ``n_chunks``.
 
@@ -6390,6 +6426,12 @@ class ZoteroSemanticSearch:
                         doc_id.split("#", 1)[0] for doc_id in ids if records[doc_id].get("level_fill")
                     }
                     self._prune_stale_chunks(metadatas)
+                    followed = [
+                        doc_id for doc_id in ids if records[doc_id].get("passages_follow")
+                    ]
+                    if not superseded_by:
+                        for doc_id in followed:
+                            self._drop_unlike_passages(doc_id, records[doc_id]["passages_follow"])
                     stats["imported_items"] += len(ids)
                     stats["updated_items"] += len(existing_items)
                     stats["added_items"] += len(first_records) - len(existing_items)
@@ -6399,9 +6441,11 @@ class ZoteroSemanticSearch:
                     # hold the whole library on the batch flow, since nothing
                     # else on it ever evicts. Ids are ``<key>`` or
                     # ``<key>#<n>``, so strip any chunk suffix first.
+                    # An article whose passages are in a later file keeps it:
+                    # they may be sent again.
                     try:
                         fulltext_cache.evict_many(
-                            {doc_id.split("#", 1)[0] for doc_id in ids},
+                            {doc_id.split("#", 1)[0] for doc_id in ids if doc_id not in followed},
                             config_path=self.config_path,
                         )
                     except Exception as e:
