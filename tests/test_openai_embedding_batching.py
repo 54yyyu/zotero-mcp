@@ -151,3 +151,105 @@ def test_non_voyage_requests_omit_input_type():
     ef([0, 1])
     ef.embed_query([0.5])
     assert calls and all(c["extra_body"] is None for c in calls)
+
+
+def _sizes_under_token_cap(ef, documents, calls):
+    ef(documents)
+    return [len(c["input"]) for c in calls]
+
+
+class _EchoLength:
+    """Documents for the fake client, which turns each input into a float."""
+
+    def __init__(self, tokens, unit="abc"):
+        self.text = unit * tokens
+
+    def __float__(self):
+        return float(len(self.text))
+
+    def __str__(self):
+        return self.text
+
+
+def test_full_size_documents_are_split_below_openais_request_token_limit():
+    # 64 documents at the 8000-token input limit is 512,000 tokens in one
+    # request, which OpenAI refuses.
+    ef, calls = _make(batch_size=64)
+    sizes = _sizes_under_token_cap(ef, [_EchoLength(8000) for _ in range(64)], calls)
+
+    assert sum(sizes) == 64
+    assert max(sizes) * ef.max_input_tokens <= ef.max_request_tokens
+    assert ef.max_request_tokens < 300_000
+
+
+def test_short_documents_still_fill_the_request_batch_size():
+    ef, calls = _make(batch_size=64)
+    sizes = _sizes_under_token_cap(ef, [_EchoLength(500) for _ in range(64)], calls)
+
+    assert sizes == [64]
+
+
+def test_token_splitting_preserves_input_order():
+    ef, calls = _make(batch_size=64)
+    documents = [_EchoLength(8000 - i) for i in range(64)]
+
+    out = ef(documents)
+
+    assert len(calls) > 1
+    assert out == [[float(d)] for d in documents]
+
+
+def test_a_document_over_the_token_cap_goes_out_alone():
+    ef, calls = _make(batch_size=64)
+    ef.max_request_tokens = 100
+    sizes = _sizes_under_token_cap(
+        ef, [_EchoLength(1000), _EchoLength(10), _EchoLength(1000)], calls
+    )
+
+    assert sizes == [1, 1, 1]
+
+
+def test_three_byte_text_stays_under_both_checks():
+    ef, calls = _make(batch_size=64)
+    sizes = _sizes_under_token_cap(ef, [_EchoLength(8000, unit="中") for _ in range(64)], calls)
+
+    assert max(sizes) * 8000 <= ef.max_request_tokens
+
+
+def _request_bytes(call):
+    return sum(len(str(document).encode("utf-8")) for document in call["input"])
+
+
+def test_long_words_stay_under_openais_bytes_check():
+    # Measured live: OpenAI first refuses a request whose UTF-8 bytes / 4 pass
+    # 300,000, whatever its real token count. 25 documents of 8000 long-word
+    # tokens were 200,000 real tokens and were refused as 570,175.
+    ef, calls = _make(batch_size=64)
+    documents = [_EchoLength(4800, unit="characteristically ") for _ in range(64)]
+
+    _sizes_under_token_cap(ef, documents, calls)
+
+    assert max(_request_bytes(c) // 4 for c in calls) <= 300_000
+
+
+def test_two_byte_text_is_counted_in_bytes_not_characters():
+    # Measured live: 729,999 characters of Russian were refused as 346,751,
+    # which is the byte count / 4.
+    ef, calls = _make(batch_size=64)
+    documents = [_EchoLength(30_000, unit="я") for _ in range(64)]
+
+    _sizes_under_token_cap(ef, documents, calls)
+
+    assert max(_request_bytes(c) // 4 for c in calls) <= 300_000
+
+
+def test_text_of_one_byte_tokens_stays_under_openais_token_check():
+    # Measured live: above 300,000 real tokens a request is refused however few
+    # bytes it has. Digit and symbol tables come close to a token per byte, so
+    # bytes / 3 ran 2.5 times below the real count here.
+    ef, calls = _make(batch_size=64)
+    documents = [_EchoLength(8000, unit="1") for _ in range(64)]
+
+    sizes = _sizes_under_token_cap(ef, documents, calls)
+
+    assert max(sizes) * 8000 <= 300_000

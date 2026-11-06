@@ -368,21 +368,39 @@ def _warmup_reranker_in_background() -> None:
 
 
 def _format_chunking_status(status: dict) -> str:
-    """Describe what the next indexing run will actually do about chunking.
+    """Kept for callers and tests; the logic lives in ``semantic_summary``."""
+    from zotero_mcp.semantic_summary import format_chunking_status
 
-    Reports the effective behaviour, not the requested setting: the OpenAI
-    Batch API path has no chunking step, so `chunking.enabled: true` there
-    still yields one truncated vector per item (#416).
-    """
-    chunking = status.get("chunking", {})
-    if not chunking.get("enabled"):
-        max_tokens = chunking.get("max_tokens")
-        if isinstance(max_tokens, (int, float)) and max_tokens < 2000:
-            return f"disabled (item-level indexing; only the first ~{int(max_tokens)} tokens of each item are searchable)"
-        return "disabled (item-level indexing)"
-    if chunking.get("effective"):
-        return "enabled"
-    return "requested but NOT applied (Batch API path indexes item-level)"
+    return format_chunking_status(status)
+
+
+def _load_semantic_section(config_path) -> dict:
+    """The ``semantic_search`` section of the config file ({} when unreadable)."""
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            return (json.load(f) or {}).get("semantic_search") or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _print_semantic_config(status: dict, config_path, prefix: str) -> None:
+    """The shared settings block, the same rows ``setup`` shows."""
+    from zotero_mcp.semantic_summary import print_rows, semantic_config_rows
+
+    section = _load_semantic_section(config_path)
+    # The status only knows the OpenAI state; for any other provider this
+    # would read as "off" and hide a Gemini batch setting.
+    batch_active = (
+        status.get("openai_batch", {}).get("active")
+        if section.get("embedding_model") == "openai"
+        else None
+    )
+    rows = semantic_config_rows(
+        section,
+        max_tokens=status.get("chunking", {}).get("max_tokens"),
+        batch_active=batch_active,
+    )
+    print_rows(rows, prefix)
 
 
 # Providers with Batch API support, for argparse ``choices=``.
@@ -1321,13 +1339,9 @@ def main():
                 print(f"  Database path: {collection_info.get('persist_directory', 'Unknown')}")
 
                 update_config = status.get("update_config", {})
-                batch_config = status.get("openai_batch", {})
-                print(f"  Auto update: {update_config.get('auto_update', False)}")
-                print(f"  Update frequency: {update_config.get('update_frequency', 'manual')}")
                 print(f"  Last update: {update_config.get('last_update', 'Never')}")
                 print(f"  Should update: {status.get('should_update', False)}")
-                print(f"  OpenAI Batch API: {'active' if batch_config.get('active') else 'inactive'}")
-                print(f"  Passage chunking: {_format_chunking_status(status)}")
+                _print_semantic_config(status, config_path, "  ")
 
                 if collection_info.get('error'):
                     print(f"  Error: {collection_info['error']}")
@@ -1383,14 +1397,10 @@ def main():
             print(f"Database path: {collection_info.get('persist_directory', 'Unknown')}")
 
             update_config = status.get("update_config", {})
-            batch_config = status.get("openai_batch", {})
-            print("\nUpdate configuration:")
-            print(f"- Auto update: {update_config.get('auto_update', False)}")
-            print(f"- Frequency: {update_config.get('update_frequency', 'manual')}")
-            print(f"- Last update: {update_config.get('last_update', 'Never')}")
-            print(f"- Should update: {status.get('should_update', False)}")
-            print(f"- OpenAI Batch API: {'active' if batch_config.get('active') else 'inactive'}")
-            print(f"- Passage chunking: {_format_chunking_status(status)}")
+            print(f"Last update: {update_config.get('last_update', 'Never')}")
+            print(f"Should update: {status.get('should_update', False)}")
+            print("\nConfiguration:")
+            _print_semantic_config(status, config_path, "- ")
 
             if collection_info.get("unreadable"):
                 from zotero_mcp.chroma_client import unreadable_index_message
