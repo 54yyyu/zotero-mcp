@@ -110,13 +110,13 @@ Example (Claude Desktop / Claude Code):
 - `zotero_synthesize_annotations`: Per-paper digest of highlights and notes across a collection or tag
 - `zotero_get_notes`: List notes, or pass `query` to search note and annotation text
 - `zotero_manage_note`: Create, update, or trash a note via `action="create"|"update"|"delete"`
-- `zotero_create_annotation`: Highlight (`text=`), area box (`rect=[x, y, width, height]`) or sticky note (`note=[x, y]`)
+- `zotero_create_annotation`: Highlight (`text=`, or an underline with `underline=True`), area box (`rect=[x, y, width, height]`) or sticky note (`note=[x, y]`)
 - `zotero_update_annotation`: Change an annotation's text, comment, color or tags
 - `zotero_delete_annotation`: Permanently delete an annotation
 - `zotero_get_page_layout`: Detect figure and table regions on a PDF page with normalized boxes, for area annotations (`pdf-geometry`)
 
 ### 📦 Adding and editing items
-- `zotero_add_item`: Add items from a DOI, URL, ISBN, PMID, BibTeX, CSL JSON or a local file. Takes `collections` (keys, names or `parent/child` paths, validated before anything is created), `if_exists` (`"duplicate"`, the default, always creates; `"file"` reuses an item matching the DOI/ISBN/URL and files it into missing collections; `"skip"` leaves a match untouched) and `create_missing_collections`. The `zotero-cli add` commands default to `--if-exists file`.
+- `zotero_add_item`: Add items from a DOI, URL, ISBN, PMID, BibTeX, CSL JSON or a local file. Takes `collections` (keys, names or `parent/child` paths, validated before anything is created), `if_exists` (`"file"`, the default, reuses an item matching the DOI/arXiv ID/ISBN/URL and files it into missing collections; `"duplicate"` always creates a new item; `"skip"` leaves a match untouched) and `create_missing_collections`. The `zotero-cli add` commands default to `--if-exists file`.
 - `zotero_attach_file`: Attach a local file or a PDF URL to an existing item (returns the attachment key; skips a file already attached)
 - `zotero_update_item`: Update metadata, tags and collection membership of one item
 - `zotero_batch_update`: Add or remove tags and Extra lines across many items
@@ -136,7 +136,7 @@ Example (Claude Desktop / Claude Code):
 - `zotero_switch_library`: Set the library every later call works on
 
 ### 🧹 Duplicates (`duplicates`)
-- `zotero_find_duplicates`: Find duplicate items by title and/or DOI, paged with `limit`/`offset`
+- `zotero_find_duplicates`: Find duplicate items by title and/or DOI, paged with `limit`/`offset`. With a readable local SQLite backend, scanning works with Zotero closed and has no item-count ceiling; API scans keep the 5,000-item ceiling (scope with `collection_key`)
 - `zotero_merge_duplicates`: Merge duplicates with a dry-run preview; `auto=True` merges every same-DOI group behind a two-call plan/confirm gate
 
 ### 🌐 Discovery (`discovery`) and feeds (`feeds`)

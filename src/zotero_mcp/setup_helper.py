@@ -603,10 +603,12 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
     config_dir = config_path.parent
     config_dir.mkdir(parents=True, exist_ok=True)
 
-    # Load existing config or create new one
+    # Load existing config or create new one. Claude Desktop writes this file
+    # as UTF-8; without an explicit encoding Windows reads it with the locale
+    # code page and the rewrite below would garble other servers' entries.
     if config_path.exists():
         try:
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 config = json.load(f)
             print(f"Loaded existing config from: {config_path}")
         except json.JSONDecodeError:
@@ -675,7 +677,7 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
 
     # Write updated config
     try:
-        with open(config_path, 'w') as f:
+        with open(config_path, 'w', encoding="utf-8") as f:
             json.dump(config, f, indent=2)
         _restrict_file_permissions(config_path)
         print(f"\nSuccessfully wrote config to: {config_path}")

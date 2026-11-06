@@ -82,6 +82,9 @@ class LibraryBackend(Protocol):
     def find_by_citation_key(self, citekey: str) -> dict | None: ...
     def recent_items(self, *, limit: int = 10, collection_key: str | None = None) -> list[dict]: ...
     def top_items(self, *, limit: int = 100) -> list[dict]: ...
+    def duplicate_scan_items(self, collection_key: str | None = None) -> list[dict] | None:
+        """Unbounded local scan, or None to request the caller's bounded API path."""
+        ...
     def list_items(
         self,
         item_type: str | None = None,
@@ -163,6 +166,11 @@ class SqliteBackend:
     def __init__(self, reader, group_id: int):
         self._reader = reader
         self._group_id = group_id
+
+    def duplicate_scan_items(self, collection_key: str | None = None) -> list[dict]:
+        return self._reader.get_duplicate_scan_items(
+            collection_key=collection_key, group_id=self._group_id,
+        )
 
     # -- items ------------------------------------------------------------
 
@@ -303,6 +311,10 @@ class ApiBackend:
 
     def __init__(self, zot):
         self._zot = zot
+
+    def duplicate_scan_items(self, collection_key: str | None = None) -> None:
+        # HTTP scans must retain the caller's request/count ceiling.
+        return None
 
     # -- items ------------------------------------------------------------
 

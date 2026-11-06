@@ -39,10 +39,10 @@ from zotero_mcp.tools import _helpers
 # Accessed as _helpers.X so that monkeypatch/mock on the module attribute works.
 CROSSREF_TYPE_MAP = _helpers.CROSSREF_TYPE_MAP
 
-# Shared by add_from_file and attach_file. URL attach mode is PDF-only.
-# .json stays out: _SOURCE_TYPE_BY_EXT merges this set last, and `add x.json`
-# must remain a CSL-JSON import (#703).
-_ATTACH_ALLOWED_EXTS = {".pdf", ".epub", ".djvu", ".doc", ".docx", ".odt", ".rtf",
+# New-item document imports only. Existing-item attachments accept any regular
+# file; URL attach mode remains PDF-only. Keep .json out so `add x.json`
+# remains a CSL-JSON import (#703).
+_FILE_IMPORT_EXTS = {".pdf", ".epub", ".djvu", ".doc", ".docx", ".odt", ".rtf",
                         ".md", ".yaml", ".yml"}
 
 
@@ -1951,7 +1951,7 @@ def add_by_doi(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     supplemental: EmbeddedMetadata | None = None,
@@ -2271,7 +2271,7 @@ def _add_from_embedded_metadata(
     ctx: Context,
     *,
     read_zot=None,
-    if_exists: str = "duplicate",
+    if_exists: str = "file",
 ) -> str:
     """Create an item from a page's own citation meta tags.
 
@@ -2374,7 +2374,7 @@ def add_by_url(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     page_check: Literal["always", "thin_only"] = "always",
@@ -2556,7 +2556,7 @@ def add_by_url(
 
 
 def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto",
-                  read_zot=None, if_exists="duplicate",
+                  read_zot=None, if_exists="file",
                   create_missing_collections=False):
     """Add an arXiv paper by ID. Internal helper for add_by_url.
 
@@ -2962,7 +2962,7 @@ def add_by_isbn(
     isbn: str | list[str],
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -3617,28 +3617,32 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
     through here, so "merge everything that qualifies" and "show me what
     qualifies" can never disagree about what a group is.
     """
-    items = []
-    start = 0
-    page_size = 100
-    while True:
-        if collection_key:
-            batch = zot.collection_items(collection_key, start=start, limit=page_size)
-        else:
-            batch = zot.items(start=start, limit=page_size)
-        if not batch:
-            break
-        items.extend(batch)
-        if len(batch) < page_size:
-            break
-        start += page_size
-        if len(items) > _DUP_SCAN_MAX_ITEMS:
-            break
+    items = _library.get_library_backend(zot).duplicate_scan_items(collection_key)
+    if items is None:
+        # Only SQLite can enumerate without an HTTP request/count ceiling.
+        # The API path (including an unavailable-SQLite fallback) stays bounded.
+        items = []
+        start = 0
+        page_size = 100
+        while True:
+            if collection_key:
+                batch = zot.collection_items(collection_key, start=start, limit=page_size)
+            else:
+                batch = zot.items(start=start, limit=page_size)
+            if not batch:
+                break
+            items.extend(batch)
+            if len(batch) < page_size:
+                break
+            start += page_size
+            if len(items) > _DUP_SCAN_MAX_ITEMS:
+                break
 
-    if len(items) > _DUP_SCAN_MAX_ITEMS:
-        return {}, (
-            f"Library has {len(items)} items — too large for duplicate scan. "
-            "Please scope by collection_key to reduce the search."
-        )
+        if len(items) > _DUP_SCAN_MAX_ITEMS:
+            return {}, (
+                f"Library has {len(items)} items — too large for duplicate scan. "
+                "Please scope by collection_key to reduce the search."
+            )
 
     wanted = {"doi", "title"} if method == "both" else {method}
 
@@ -3670,9 +3674,9 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
         "unattended. "
         "collection_key: optional 8-character key to restrict scanning "
         "to one collection; otherwise scans the whole active library. "
-        "LIBRARY SIZE CAP: refuses to scan a library with > 5,000 items "
-        "(the whole-library scan is O(n²) on titles) — on larger "
-        "libraries you MUST pass collection_key to narrow the scope. "
+        "LIBRARY SIZE CAP: API scans refuse libraries with > 5,000 items; "
+        "pass collection_key to narrow the scope. Local SQLite scans have "
+        "no item-count ceiling and work with Zotero closed. "
         "limit: max groups per call (default 50, max 500). "
         "offset: 0-based index of the first group returned (default 0). "
         "Group order is stable, so page a library with more groups than "
@@ -4769,7 +4773,7 @@ def add_from_file(
     item_type: str = "document",
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -4801,7 +4805,7 @@ def add_from_file(
             return f"Error: {e}"
 
         ext = os.path.splitext(file_path)[1].lower()
-        allowed_exts = _ATTACH_ALLOWED_EXTS
+        allowed_exts = _FILE_IMPORT_EXTS
         if ext not in allowed_exts:
             return f"Error: Unsupported file type '{ext}'. Allowed: {', '.join(sorted(allowed_exts))}"
 
@@ -4974,7 +4978,7 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
         filepath,
         item_key,
         ctx,
-        content_type=_helpers._guess_content_type(display_name),
+        content_type=_helpers._guess_content_type(display_name) or "application/octet-stream",
     )
     if not ok:
         return (
@@ -4991,7 +4995,7 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
 def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
     """Create a LINKED-file child attachment (records the path, copies nothing).
 
-    Mirrors Zotero's "Add Link to File": the PDF stays where it is and
+    Mirrors Zotero's "Add Link to File": the file stays where it is and
     Zotero stores the absolute path with linkMode='linked_file'. Goes through
     the local API so no bytes are uploaded and no cloud quota is consumed.
     """
@@ -5014,7 +5018,7 @@ def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
         template["path"] = file_path
         template["title"] = display_name
         template["contentType"] = (
-            _helpers._guess_content_type(display_name) or "application/pdf"
+            _helpers._guess_content_type(file_path) or "application/octet-stream"
         )
         template["parentItem"] = item_key
         result = write_zot.create_items([template])
@@ -5037,7 +5041,7 @@ def _attach_linked_file(write_zot, item_key, display_name, file_path, ctx):
         "Attach a file to an EXISTING regular item (not an attachment or "
         "note). To create a new item from a file, use "
         "zotero_add_item(source=<path>). Give exactly one of file_path "
-        "(absolute: .pdf, .epub, .djvu, .doc, .docx, .odt, .rtf) or url (a "
+        "(absolute; any regular file, no symlinks or .lnk) or url (a "
         "direct PDF link, downloaded by the server). filename: overrides the "
         "stored name. link_mode: 'import' (default) uploads a copy, which "
         "counts against Zotero storage unless WebDAV is set up; 'linked' "
@@ -5098,11 +5102,8 @@ def attach_file(
             if not os.path.isfile(file_path):
                 return f"Error: File not found: {file_path}"
             ext = os.path.splitext(file_path)[1].lower()
-            if ext not in _ATTACH_ALLOWED_EXTS:
-                return (
-                    f"Error: Unsupported file type '{ext}'. "
-                    f"Allowed: {', '.join(sorted(_ATTACH_ALLOWED_EXTS))}"
-                )
+            if ext == ".lnk":
+                return "Error: Windows shortcuts (.lnk) cannot be attached."
             if filename and not filename.lower().endswith(ext):
                 # Mirror the URL branch's .pdf enforcement: an override
                 # without the source's extension would strip it from the
@@ -5767,7 +5768,7 @@ def add_by_bibtex(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -5865,7 +5866,7 @@ def add_by_pmid(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -5908,7 +5909,7 @@ def add_by_csl_json(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     *,
     ctx: Context
@@ -6007,12 +6008,12 @@ _ADD_SOURCE_TYPES = ("doi", "url", "isbn", "pmid", "bibtex", "csl_json", "file")
 _BIBTEX_EXTS = {".bib", ".bibtex"}
 _CSL_JSON_EXTS = {".json", ".csljson"}
 
-# Extension -> source_type. Document extensions come from the attachment
-# allow-list so the two stay in sync.
+# Extension -> source_type. Document imports keep their own extension set;
+# accepting arbitrary attachments must not override BibTeX/CSL-JSON routing.
 _SOURCE_TYPE_BY_EXT = {
     **{e: "bibtex" for e in _BIBTEX_EXTS},
     **{e: "csl_json" for e in _CSL_JSON_EXTS},
-    **{e: "file" for e in _ATTACH_ALLOWED_EXTS},
+    **{e: "file" for e in _FILE_IMPORT_EXTS},
 }
 
 # A BibTeX entry header, possibly preceded by comments/whitespace.
@@ -6186,9 +6187,9 @@ def detect_source_type(source: str) -> str:
         "overrides a missed title. collections: keys, names or 'Parent/Child' "
         "paths, checked before anything is created "
         "(create_missing_collections=True makes missing ones). if_exists: "
-        "'duplicate' (default) always creates; 'file' reuses an item with the "
-        "same DOI/ISBN/URL, adding missing collections and tags; 'skip' "
-        "leaves a match alone. attach_mode: 'auto' (default) attaches an "
+        "'file' (default) reuses an item with the same DOI/arXiv ID/ISBN/URL, "
+        "adding missing collections and tags; 'duplicate' always creates; "
+        "'skip' leaves a match alone. attach_mode: 'auto' (default) attaches an "
         "open-access PDF, 'linked_url' links it, 'none' skips, 'required' "
         "fails without one."
     )
@@ -6201,7 +6202,7 @@ def add_item(
     collections: list[str] | str | None = None,
     tags: list[str] | str | None = None,
     attach_mode: str = "auto",
-    if_exists: Literal["duplicate", "file", "skip"] = "duplicate",
+    if_exists: Literal["duplicate", "file", "skip"] = "file",
     create_missing_collections: bool = False,
     title: str | None = None,
     *,

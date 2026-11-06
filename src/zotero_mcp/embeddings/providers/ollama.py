@@ -40,13 +40,29 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
     DEFAULT_REQUEST_BATCH_SIZE = 64
     default_request_batch_size = DEFAULT_REQUEST_BATCH_SIZE
 
+    # EmbeddingGemma (v1 and v2) is trained with task-instruction prefixes and
+    # retrieves noticeably worse without them, but Ollama's /api/embed sends the
+    # text verbatim. These are the "SearchQuery" / "Document" prompts from the
+    # google/embeddinggemma-2 model card; "title: none" is the card's form for
+    # documents whose title is not passed separately (zotero-mcp's document
+    # text already contains the title inline).
+    GEMMA_QUERY_PREFIX = "task: search result | query: "
+    GEMMA_DOC_PREFIX = "title: none | text: "
+    # Tokens reserved for the prefix so truncation leaves room for it
+    # (longest prefix is ~8 tokens; reserve double for tokenizer variance).
+    GEMMA_PREFIX_TOKEN_BUDGET = 16
+
     def __init__(self, model_name: str = "qwen3-embedding", base_url: str | None = None,
                  url: str | None = None, timeout: int | None = None,
                  request_batch_size: int | None = None,
                  rate_limit_rps: float | None = None,
                  max_parallel_requests: int | None = None,
                  max_retries: int | None = None,
-                 tokens_per_minute: float | None = None):
+                 tokens_per_minute: float | None = None,
+                 query_instruction: str | None = None):
+        if query_instruction is not None and not isinstance(query_instruction, str):
+            raise ValueError("query_instruction must be a string or null")
+        self.query_instruction = (query_instruction or "").strip()
         # ``url`` is ChromaDB's built-in spelling of ``base_url``; accept both
         # so a config written by either class rebuilds here (issue #382).
         resolved_base_url = (
@@ -65,6 +81,26 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
         )
         # Mirror the attribute under the built-in's name as well.
         self.url = self.base_url
+        if self._is_embeddinggemma():
+            self.max_input_tokens = type(self).max_input_tokens - self.GEMMA_PREFIX_TOKEN_BUDGET
+
+    def _is_embeddinggemma(self) -> bool:
+        """True for any EmbeddingGemma tag, e.g. ``embeddinggemma-2:270m-bf16-text``."""
+        return "embeddinggemma" in (getattr(self, "model_name", "") or "").lower()
+
+    def _gemma_prefixed(self, prefix: str, text: str) -> str:
+        """Prepend ``prefix`` for EmbeddingGemma models; identity for others."""
+        return f"{prefix}{text}" if self._is_embeddinggemma() else text
+
+    def _prepare_document(self, text: str) -> str:
+        return self._gemma_prefixed(self.GEMMA_DOC_PREFIX, text)
+
+    def _prepare_query(self, text: str) -> str:
+        # Runs after the base class's query truncation, as for Gemini v2.
+        instruction = getattr(self, "query_instruction", "")
+        if instruction:
+            return f"Instruct: {instruction}\nQuery: {text}"
+        return self._gemma_prefixed(self.GEMMA_QUERY_PREFIX, text)
 
     @staticmethod
     def name() -> str:
@@ -82,6 +118,7 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
             # Carrying both spellings makes the config valid for both classes.
             "url": self.base_url,
             "timeout": self.timeout,
+            "query_instruction": getattr(self, "query_instruction", ""),
             # Extra keys are ignored by the built-in (it reads only
             # url/model_name/timeout via .get()), so carrying ours is safe.
             **self._common_config(),
@@ -98,6 +135,7 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
             max_parallel_requests=config.get("max_parallel_requests"),
             max_retries=config.get("max_retries"),
             tokens_per_minute=config.get("tokens_per_minute"),
+            query_instruction=config.get("query_instruction"),
         )
 
     def _embed_batch(self, texts: list[str], is_query: bool = False) -> list[list[float]]:

@@ -154,6 +154,7 @@ zotero-cli open --annotation ANN01            # jump to an annotation and select
 # Annotating a PDF — boxes to aim at, then a checked plan written in one run
 zotero-cli --json layout ATTACH01 --pages 3-9            # figure, table and equation boxes
 zotero-cli annotations create --attachment-key ATTACH01 --page 4 --text "exact words" --color yellow
+zotero-cli annotations create --attachment-key ATTACH01 --page 5 --text "exact words" --underline
 zotero-cli annotations create --attachment-key ATTACH01 --page 3 --rect 0.32,0.09,0.36,0.41 --comment "Figure 1"
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl --dry-run   # where each highlight lands
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl             # write them all
@@ -178,6 +179,12 @@ zotero-cli plugin --reveal
 zotero-cli batch --item-keys ABC123,DEF456 --add-tags screened
 zotero-cli batch --query "machine learning" --add-tags survey --limit 100
 ```
+
+`attach --file` accepts any existing regular file, including VTT transcripts,
+TXT files and images. Symlinks and Windows `.lnk` shortcuts are rejected. Unknown
+file types use `application/octet-stream`; storage does not imply preview or
+full-text indexing support. `--url` remains PDF-only. `add` keeps its existing
+document-import formats and parses `.json` / `.bib` as citation data.
 
 For metadata without a dedicated `edit` flag, repeat `--field NAME=VALUE` using Zotero's field names. Values stay strings; only the first `=` separates the name from the value, and `--field extra=` clears Extra. Generic assignments override matching named flags; the last assignment to the same name wins. Fields use the same item-type schema validation as other edits: unknown names fail, and fields unavailable on the item's type are reported as skipped.
 
