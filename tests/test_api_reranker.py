@@ -359,6 +359,7 @@ def test_full_passage_hits_share_a_total_budget(monkeypatch, tmp_path):
     one = _run_tool(monkeypatch, tmp_path, None, full_passage=True)
     monkeypatch.setattr(semantic_search, "create_semantic_search", lambda *a, **kw: ManyHits(None))
     from conftest import DummyContext
+
     from zotero_mcp.tools import search as search_module
 
     many = search_module.semantic_search(query="q", limit=50, full_passage=True, ctx=DummyContext())

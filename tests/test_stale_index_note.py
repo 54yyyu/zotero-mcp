@@ -6,8 +6,8 @@ reused for a minute. No status call is needed first (#783).
 """
 
 import pytest
-
 from conftest import DummyContext
+
 from zotero_mcp import client as _client
 from zotero_mcp.tools import search as search_module
 
