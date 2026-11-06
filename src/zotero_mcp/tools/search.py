@@ -31,23 +31,23 @@ _last_presearch_sync_ts: float = 0.0
 _presearch_sync_lock = _threading.Lock()
 
 
-def _maybe_fire_presearch_sync(search) -> None:
+def _maybe_fire_presearch_sync(search) -> bool:
     """Schedule a background semantic-search DB update if auto-update is due.
 
     Runs in a daemon thread so the current tool call returns immediately.
     Intentionally swallows exceptions — a failed background sync must never
-    surface as a search-tool error to the user.
+    surface as a search-tool error to the user. Returns whether it started one.
     """
     global _last_presearch_sync_ts
     try:
         if not search.should_update_database():
-            return
+            return False
     except Exception:
-        return
+        return False
     now = _time.monotonic()
     with _presearch_sync_lock:
         if now - _last_presearch_sync_ts < _PRESEARCH_SYNC_MIN_INTERVAL:
-            return
+            return False
         _last_presearch_sync_ts = now
 
     def _run():
@@ -62,6 +62,57 @@ def _maybe_fire_presearch_sync(search) -> None:
         target=contextvars.copy_context().run, args=(_run,),
         daemon=True, name="zmcp-presearch-sync",
     ).start()
+    return True
+
+
+#: How long a library version read for the stale-index note is reused.
+_LIBRARY_VERSION_TTL = 60.0
+_library_versions: dict[int, tuple[float, int | None]] = {}
+
+
+def _library_version_check(search, group_id: int):
+    """Start reading the library version through the search's own client;
+    returns a function that gives it (or None). The read is one request, run
+    while the search embeds its query, and reused for a minute, a failed or
+    slow read too, so a Zotero that does not answer costs one wait a minute."""
+    cached = _library_versions.get(group_id)
+    if cached and _time.monotonic() - cached[0] < _LIBRARY_VERSION_TTL:
+        return lambda: cached[1]
+    box: dict[str, int] = {}
+
+    def _read():
+        try:
+            version = search.zotero_client.last_modified_version()
+            if isinstance(version, int):
+                box["version"] = version
+        except Exception as e:
+            _search_logger.debug(f"Library version read failed: {e}")
+
+    thread = _threading.Thread(target=_read, daemon=True, name="zmcp-library-version")
+    thread.start()
+
+    def result() -> int | None:
+        thread.join(1.0)
+        version = box.get("version")
+        _library_versions[group_id] = (_time.monotonic(), version)
+        return version
+
+    return result
+
+
+def _stale_index_note(search, library_version: int | None) -> str | None:
+    """One line when the library changed after the index's last update."""
+    load = getattr(search, "_load_last_sync_version", None)
+    if library_version is None or load is None:
+        return None
+    indexed = load()
+    if not isinstance(indexed, int) or not indexed or library_version <= indexed:
+        return None
+    return (
+        "Note: the library has changed since the index was last updated "
+        f"(version {library_version}, index at {indexed}); "
+        "zotero_update_search_database adds the changes."
+    )
 
 
 #: How long the client-side advanced-search walk may run before it returns a
@@ -1489,10 +1540,18 @@ def semantic_search(
 
         # Fire-and-forget: if auto-update is due, kick off a background sync
         # so subsequent searches see fresh library state. Never blocks here.
-        _maybe_fire_presearch_sync(search)
+        syncing = _maybe_fire_presearch_sync(search)
+        # Is the index behind the library? Only for the active library, and
+        # not while the sync just started catches it up.
+        version_check = (
+            _library_version_check(search, group_id)
+            if not syncing and group_id is not None and group_id == _client.get_active_group_id()
+            else None
+        )
 
         # Perform search
         results = search.search(query=query, limit=limit, filters=filters, group_id=group_id)
+        stale_note = _stale_index_note(search, version_check()) if version_check else None
 
         if results.get("error"):
             message = f"Semantic search error: {results['error']}"
@@ -1503,7 +1562,8 @@ def semantic_search(
         search_results = results.get("results", [])
 
         if not search_results:
-            return f"No semantically similar items found for query: '{query}'"
+            message = f"No semantically similar items found for query: '{query}'"
+            return f"{message}\n\n{stale_note}" if stale_note else message
 
         # Format results as markdown
         output = [f"# Semantic Search Results for '{query}'", ""]
@@ -1594,6 +1654,8 @@ def semantic_search(
                     output.append(f"**Error:** {error}")
                 output.append("")
 
+        if stale_note:
+            output.append(stale_note)
         return "\n".join(output)
 
     except Exception as e:
