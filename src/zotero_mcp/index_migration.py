@@ -206,14 +206,20 @@ def status_note(migration: dict[str, Any], update_command: str) -> list[str]:
 
     ``migration`` is the ``migration`` entry of the collection status (see
     ``chroma_client.read_migration_estimate``); ``update_command`` is how the
-    caller's users run update-db.
+    caller's users run update-db. Step 4 adds ``--fulltext`` unless no waiting
+    item was indexed with full text, as migrate-index's own report does:
+    without it the update leaves those items waiting for their text.
+
+    Says nothing about whether the run is billed: the settings can't tell a
+    paid service from a free one.
     """
     items = migration.get("items_needing_articles")
     tokens = migration.get("estimated_tokens")
-    those = f"{items:,} items" if items is not None else "every item with passages"
+    update = update_command if migration.get("fulltext") is False else f"{update_command} --fulltext"
+    those = f"{items:,} items have" if items is not None else "some items have"
     lines = [
         "This index was built by an earlier version: its passages are in the article-level "
-        f"ChromaDB collection, and {those} have passages but no article record.",
+        f"ChromaDB collection, and {those} passages but no article record.",
         "Search keeps working as it does now until you migrate. Migrating gives articles their own "
         "ChromaDB collection, so article searches stop loading every passage.",
         "To migrate:",
@@ -221,17 +227,18 @@ def status_note(migration: dict[str, Any], update_command: str) -> list[str]:
         "uses this index; an older version would put passages back in the article-level collection.",
         "  2. zotero-mcp migrate-index --dry-run   (shows what would change)",
         "  3. zotero-mcp migrate-index             (moves the existing vectors; embeds nothing, takes seconds)",
-        f"  4. {update_command}   (embeds an article record for each of those items)",
+        f"  4. {update}   (embeds an article record for each of those items; "
+        "add the options you usually use)",
     ]
-    cost = "Only step 4 costs money" if migration.get("paid") else (
-        "Only step 4 embeds anything, so only it could cost money (not with this local model)"
-    )
+    billed = "With a paid embedding API that is billed."
     if tokens is not None and items is not None:
+        cap = migration.get("max_tokens")
+        limit = f", and at most {cap:,} tokens an item" if cap else ""
         lines.append(
-            f"{cost}: about {tokens:,} tokens for {items:,} items. That is an estimate, from the "
-            f"length of each item's indexed text at about {migration['chars_per_token']:g} characters "
-            f"a token, and at most {migration['max_tokens']:,} tokens an item."
+            f"Only step 4 embeds anything: about {tokens:,} tokens for {items:,} items. That is an "
+            f"estimate, from the length of each item's indexed text at about "
+            f"{migration['chars_per_token']:g} characters a token{limit}. {billed}"
         )
     else:
-        lines.append(f"{cost}; how many tokens it embeds could not be estimated.")
+        lines.append(f"Only step 4 embeds anything; how many tokens could not be estimated. {billed}")
     return lines

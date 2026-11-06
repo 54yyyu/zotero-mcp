@@ -1074,44 +1074,50 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
 
 def article_token_budget(
     embedding_model: str, embedding_config: dict[str, Any] | None = None
-) -> tuple[float, int, bool]:
-    """(characters per token, tokens an article record is cut to, whether a paid API embeds it).
+) -> tuple[float, int | None]:
+    """(characters per token, tokens an article record is cut to, or None if unknown).
 
     Read from the settings, without building the embedding function: the
     figures each provider's function uses (``chars_per_token`` and
-    ``max_input_tokens`` in ``embeddings/providers``, the Batch API estimates
-    in ``openai_batch`` and ``gemini_batch``). Only for estimates.
+    ``max_input_tokens`` in ``embeddings/providers``). Gemini counts 3.5
+    characters a token here, as its Batch API estimate does, though its
+    truncation assumes 4. A sentence-transformers model's limit is its own
+    ``max_seq_length``, unknown without loading it. Only for estimates.
     """
     config = embedding_config or {}
     model_name = str(config.get("model_name") or "")
     if embedding_model == "openai":
-        budget = (3.0, 8000, not config.get("base_url"))
+        budget: tuple[float, int | None] = (3.0, 8000)
     elif embedding_model == "gemini":
-        budget = (3.5, 7980 if "gemini-embedding-2" in model_name else 2000, True)
+        budget = (3.5, 7980 if "gemini-embedding-2" in model_name else 2000)
     elif embedding_model == "ollama":
-        budget = (4.0, 8000, False)
+        budget = (4.0, 8000)
     elif embedding_model == "default":
-        budget = (4.0, 256, False)
-    else:  # sentence-transformers: the model's max_seq_length, commonly 512
-        budget = (4.0, 512, False)
+        budget = (4.0, 256)
+    else:
+        budget = (4.0, None)
     if embedding_model in ("openai", "ollama") and config.get("max_input_tokens"):
-        budget = (budget[0], int(config["max_input_tokens"]), budget[2])
+        budget = (budget[0], int(config["max_input_tokens"]))
     return budget
 
 
 # For each item's first passage in a segment: does the item have an article
-# record there, and how long is its text? The last passage ends where the text
-# ends (or where max_chunks_per_item stopped, past which an article record is
-# cut anyway). Index seeks only: chunk_index has an index, ids are unique.
+# record there, how long is its text, and was it full text? The last passage
+# ends where the text ends (or where max_chunks_per_item stopped, past which an
+# article record is cut anyway). Index seeks only: chunk_index has an index,
+# ids are unique, and metadata is keyed by (id, key).
 _UNMIGRATED_ITEMS_SQL = """
 SELECT
     EXISTS (SELECT 1 FROM embeddings b WHERE b.segment_id = :segment AND b.embedding_id = f.key),
     (SELECT c.int_value FROM embeddings l
      JOIN embedding_metadata c ON c.id = l.id AND c.key = 'char_end'
-     WHERE l.segment_id = :segment AND l.embedding_id = f.key || '#' || (f.n_chunks - 1))
+     WHERE l.segment_id = :segment AND l.embedding_id = f.key || '#' || (f.n_chunks - 1)),
+    f.fulltext
 FROM (
     SELECT substr(e.embedding_id, 1, instr(e.embedding_id, '#') - 1) AS key,
-           (SELECT n.int_value FROM embedding_metadata n WHERE n.id = e.id AND n.key = 'n_chunks') AS n_chunks
+           (SELECT n.int_value FROM embedding_metadata n WHERE n.id = e.id AND n.key = 'n_chunks') AS n_chunks,
+           (SELECT coalesce(h.bool_value, h.int_value) FROM embedding_metadata h
+            WHERE h.id = e.id AND h.key = 'has_fulltext') AS fulltext
     FROM embedding_metadata m JOIN embeddings e ON e.id = m.id
     WHERE m.key = 'chunk_index' AND m.int_value = 0 AND e.segment_id = :segment
       AND instr(e.embedding_id, '#') > 0
@@ -1119,8 +1125,8 @@ FROM (
 """
 
 
-def _unmigrated_items(con: sqlite3.Connection, segment: str) -> list[tuple[int, int | None]]:
-    """``(has an article record, text length or None)`` per item with a first passage."""
+def _unmigrated_items(con: sqlite3.Connection, segment: str) -> list[tuple[int, int | None, int | None]]:
+    """``(has an article record, text length or None, full text flag)`` per item with a first passage."""
     return con.execute(_UNMIGRATED_ITEMS_SQL, {"segment": segment}).fetchall()
 
 
@@ -1139,20 +1145,23 @@ def read_migration_estimate(
     over the provider's characters per token (as ``batch_common.estimate_tokens``
     counts), cut to the tokens an article record is truncated to. An item
     whose first or last passage is missing counts at the average of the others.
+    ``fulltext`` says whether any of those items was indexed with full text, so
+    the update needs ``--fulltext``: without it the gap fill leaves them waiting.
 
-    Reads SQLite only, by index seeks: about one per item. ``items_with_passages``
-    and the estimate are None when ChromaDB's tables can't be read for them.
+    Reads SQLite only, by index seeks: about one per item. Never raises: what
+    could not be read is None, so status goes on without it.
     """
-    chars_per_token, max_tokens, paid = article_token_budget(embedding_model, embedding_config)
     result: dict[str, Any] = {
-        "paid": paid,
-        "chars_per_token": chars_per_token,
-        "max_tokens": max_tokens,
+        "chars_per_token": None,
+        "max_tokens": None,
+        "fulltext": None,
         "items_needing_articles": None,
         "items_with_passages": None,
         "estimated_tokens": None,
     }
     try:
+        chars_per_token, max_tokens = article_token_budget(embedding_model, embedding_config)
+        result.update(chars_per_token=chars_per_token, max_tokens=max_tokens)
         db = Path(persist_directory) / "chroma.sqlite3"
         con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
         try:
@@ -1175,23 +1184,24 @@ def read_migration_estimate(
                 all_items = None
         finally:
             con.close()
-    except sqlite3.Error as e:
-        logger.warning(f"Could not estimate what update-db embeds after migrate-index: {e}")
-        return result
 
-    with_article = sum(1 for has_article, _length in rows if has_article)
-    lengths = [length for has_article, length in rows if not has_article and length is not None]
-    if all_items is None:
-        needing = sum(1 for has_article, _length in rows if not has_article)
-    else:
-        needing = max(0, all_items - article_records)
-    tokens = [min(max(1, math.ceil(length / chars_per_token)), max_tokens) for length in lengths]
-    average = sum(tokens) / len(tokens) if tokens else max_tokens
-    result.update(
-        items_needing_articles=needing,
-        items_with_passages=needing + with_article,
-        estimated_tokens=sum(tokens) + round(average * max(0, needing - len(tokens))),
-    )
+        waiting = [(length, fulltext) for has_article, length, fulltext in rows if not has_article]
+        lengths = [length for length, _fulltext in waiting if length is not None]
+        if all_items is None:
+            needing = len(waiting)
+        else:
+            needing = max(0, all_items - article_records)
+        cap = max_tokens if max_tokens is not None else float("inf")
+        tokens = [min(max(1, math.ceil(length / chars_per_token)), cap) for length in lengths]
+        average = sum(tokens) / len(tokens) if tokens else (max_tokens or 0)
+        result.update(
+            fulltext=any(fulltext == 1 for _length, fulltext in waiting),
+            items_needing_articles=needing,
+            items_with_passages=needing + len(rows) - len(waiting),
+            estimated_tokens=int(sum(tokens) + round(average * max(0, needing - len(tokens)))),
+        )
+    except Exception as e:
+        logger.warning(f"Could not estimate what update-db embeds after migrate-index: {e}")
     return result
 
 
@@ -1308,6 +1318,11 @@ def read_collection_status(
     env_model = os.getenv("ZOTERO_EMBEDDING_MODEL")
     if env_model and embedding_model in (None, "default"):
         embedding_model = env_model
+    # As create_chroma_client does, so the CLI's client and this agree.
+    try:
+        embedding_config = merge_env_config(embedding_model, embedding_config) or {}
+    except Exception as e:
+        logger.warning(f"Could not read embedding settings from the environment: {e}")
 
     if persist_directory is None:
         persist_directory = str(resolve_chroma_dir(configured_dir))
