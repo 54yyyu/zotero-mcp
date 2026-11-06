@@ -25,7 +25,6 @@ from .batch_common import (
     _json_dumps,  # noqa: F401 — re-exported for provider-symmetric callers/tests
     _jsonable,
     _object_attr,
-    _private_chmod,
     _utc_now,  # noqa: F401 — re-export
     estimate_tokens,  # noqa: F401 — re-export
     read_jsonl,  # noqa: F401 — re-exported so callers/tests can stay provider-symmetric
@@ -137,15 +136,26 @@ def newest_run_path(config_path: str | None = None) -> str | None:
     return batch_common.newest_run_path(get_openai_batch_root(config_path))
 
 
-def newest_manifest_for_group(config_path: str | None = None, group_id: int | None = None) -> dict[str, Any] | None:
-    """Newest OpenAI run submitted against ``group_id``, or ``None``."""
-    return batch_common.newest_manifest_for_group(get_openai_batch_root(config_path), group_id)
+def manifests_for_group(config_path: str | None = None, group_id: int | None = None) -> list[dict[str, Any]]:
+    """Every OpenAI run submitted against ``group_id``, newest first."""
+    return [
+        batch_common.ensure_states(manifest, ADAPTER)
+        for manifest in batch_common.manifests_for_group(get_openai_batch_root(config_path), group_id)
+    ]
 
 
-def find_manifest(config_path: str | None = None, batch_id: str | None = None) -> dict[str, Any]:
-    """Find the newest manifest, or the manifest that contains a batch ID."""
+def find_manifest(
+    config_path: str | None = None, batch_id: str | None = None, group_id: int | None = None, is_current=None
+) -> dict[str, Any]:
+    """Find the manifest containing a batch ID, or else the run to work on
+    (see :func:`batch_common.find_manifest`)."""
     manifest = batch_common.find_manifest(
-        get_openai_batch_root(config_path), batch_id=batch_id, provider_label="OpenAI batch"
+        get_openai_batch_root(config_path),
+        batch_id=batch_id,
+        provider_label="OpenAI batch",
+        group_id=group_id,
+        adapter=ADAPTER,
+        is_current=is_current,
     )
     return batch_common.ensure_states(manifest, ADAPTER)
 
@@ -191,9 +201,7 @@ def content_to_text(content: Any) -> str:
 def download_file_text(client: Any, file_id: str, output_path: Path) -> str:
     content = client.files.content(file_id)
     text = content_to_text(content)
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write(text)
-    _private_chmod(output_path)
+    batch_common.write_text_atomic(output_path, text)
     return text
 
 
@@ -248,6 +256,7 @@ class OpenAIBatchAdapter:
     default_max_enqueued_tokens = OPENAI_BATCH_MAX_ENQUEUED_TOKENS
     chars_per_token = OPENAI_CHARS_PER_TOKEN
     uses_error_file = True
+    completion_window_hours = 24  # OPENAI_BATCH_COMPLETION_WINDOW
 
     def create_client(self, embedding_config: dict[str, Any] | None) -> Any:
         return create_openai_client(embedding_config)
@@ -312,6 +321,7 @@ def submit_embedding_batches(
     client: Any | None = None,
     max_enqueued_tokens: int | None = None,
     max_requests: int = OPENAI_BATCH_MAX_REQUESTS,
+    scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Upload JSONL files and create one or more OpenAI embedding batches.
 
@@ -331,6 +341,7 @@ def submit_embedding_batches(
         client=client,
         max_enqueued_tokens=max_enqueued_tokens,
         max_requests=max_requests,
+        scope=scope,
     )
 
 
@@ -339,10 +350,14 @@ def refresh_manifest_status(
     embedding_config: dict[str, Any] | None,
     batch_ids: set[str] | None = None,
     client: Any | None = None,
+    persist: bool = True,
+    mark_lost: bool = True,
+    recheck_lost: bool = False,
 ) -> dict[str, Any]:
     """Retrieve current OpenAI status for selected batches and persist it."""
     return batch_common.refresh_manifest_status(
-        ADAPTER, manifest, embedding_config, batch_ids=batch_ids, client=client
+        ADAPTER, manifest, embedding_config, batch_ids=batch_ids, client=client, persist=persist,
+        mark_lost=mark_lost, recheck_lost=recheck_lost,
     )
 
 

@@ -30,17 +30,28 @@ _PRESEARCH_SYNC_MIN_INTERVAL = 60.0
 _last_presearch_sync_ts: float = 0.0
 _presearch_sync_lock = _threading.Lock()
 
+# While a batch run is unfinished the sync only collects, and this often: a
+# batch can finish any time in its day-long window, well before the next
+# scheduled update, and each check is a status call per unfinished chunk.
+_PRESEARCH_COLLECT_MIN_INTERVAL = 3600.0
+_last_presearch_collect_ts: float = float("-inf")
+
 
 def _maybe_fire_presearch_sync(search) -> None:
-    """Schedule a background semantic-search DB update if auto-update is due.
+    """Schedule background semantic-search work if auto-update asks for any.
+
+    With a batch run unfinished that means collecting its results, at most
+    hourly, and never a new submission. Otherwise it means an update, when one
+    is due. Auto-update off means neither.
 
     Runs in a daemon thread so the current tool call returns immediately.
     Intentionally swallows exceptions — a failed background sync must never
     surface as a search-tool error to the user.
     """
-    global _last_presearch_sync_ts
+    global _last_presearch_sync_ts, _last_presearch_collect_ts
     try:
-        if not search.should_update_database():
+        update_due = search.should_update_database()
+        if not update_due and not search.auto_update_enabled():
             return
     except Exception:
         return
@@ -50,13 +61,46 @@ def _maybe_fire_presearch_sync(search) -> None:
             return
         _last_presearch_sync_ts = now
 
+    try:
+        collect_only = search.has_unfinished_batch_run()
+    except Exception as e:
+        _search_logger.debug(f"Background pre-search sync could not read batch runs: {e}")
+        return
+    if collect_only:
+        with _presearch_sync_lock:
+            if now - _last_presearch_collect_ts < _PRESEARCH_COLLECT_MIN_INTERVAL:
+                return
+            _last_presearch_collect_ts = now
+    elif not update_due:
+        return
+
+    # Neither ever replaces the index with a finished rebuild. In this thread a
+    # search would see the part-filled index with no notice, and the thread dies
+    # with the process, which can leave the index unreadable (#747). The batch
+    # notice tells the user to run batch-import; startup's update, which runs in
+    # its own process, can land it too.
     def _run():
         try:
-            search.update_database(extract_fulltext=_utils.is_local_mode())
+            if collect_only:
+                search.collect_batch_results(allow_rebuild_import=False, update_due=update_due)
+            else:
+                search.update_database(extract_fulltext=_utils.is_local_mode(), allow_rebuild_import=False)
         except Exception as e:
             _search_logger.debug(f"Background pre-search sync failed: {e}")
 
     _threading.Thread(target=_run, daemon=True, name="zmcp-presearch-sync").start()
+
+
+def _index_note(search) -> str | None:
+    """One line about a stuck batch run, for the output of a search."""
+    try:
+        from zotero_mcp.config_light import batch_notice_line
+
+        notice = search.batch_notice()
+        line = batch_notice_line(notice) if isinstance(notice, dict) else None
+    except Exception:
+        return None
+    return f"**Index note:** {line}" if line else None
 
 
 #: How long the client-side advanced-search walk may run before it returns a
@@ -1530,12 +1574,17 @@ def semantic_search(
             return f"Semantic search error: {results['error']}"
 
         search_results = results.get("results", [])
+        index_note = _index_note(search)
 
         if not search_results:
-            return f"No semantically similar items found for query: '{query}'"
+            empty = f"No semantically similar items found for query: '{query}'"
+            return f"{empty}\n\n{index_note}" if index_note else empty
 
         # Format results as markdown
         output = [f"# Semantic Search Results for '{query}'", ""]
+        if index_note:
+            output.append(index_note)
+            output.append("")
         if search_all_libraries:
             output.append("*Scope: all indexed libraries.*")
             output.append("")
@@ -1691,9 +1740,30 @@ def update_search_database(
         # Format results
         output = ["# Database Update Results", ""]
 
+        collect = stats.get("batch_collect")
+        if collect:
+            if collect["runs"]:
+                output.append(
+                    f"**Unfinished batch runs checked:** {len(collect['runs'])} "
+                    f"({collect['imported_items']} embeddings imported, "
+                    f"{collect['submitted_chunks']} waiting chunks submitted)"
+                )
+            output.extend(f"**Still waiting:** {note}" for note in collect.get("waiting", []))
+            output.extend(f"**Collecting batch results:** {error}" for error in collect["errors"])
+        if stats.get("batch_deferred"):
+            output.append(f"**Deferred:** {stats['batch_deferred']}")
+        if stats.get("batch_discard_warning"):
+            output.append(f"**Warning:** {stats['batch_discard_warning']}")
+
         if stats.get("error"):
             output.append(f"**Error:** {stats['error']}")
-        else:
+        elif stats.get("batch_submitted"):
+            output.append(
+                f"**Batch submitted:** run {stats.get('batch_run_id')}, "
+                f"{stats.get('submitted_items', 0)} records. The next update imports the results."
+            )
+            output.append(f"**Duration:** {stats.get('duration', 'Unknown')}")
+        elif not stats.get("batch_deferred"):
             output.append(f"**Total items:** {stats.get('total_items', 0)}")
             output.append(f"**Processed:** {stats.get('processed_items', 0)}")
             output.append(f"**Added:** {stats.get('added_items', 0)}")
@@ -1813,6 +1883,16 @@ def get_search_database_status(*, ctx: Context) -> str:
         frequency = update_config.get('update_frequency', 'manual')
         if frequency.startswith('every_') and update_config.get('update_days'):
             output.append(f"**Update Interval:** Every {update_config['update_days']} days")
+
+        from zotero_mcp.config_light import load_batch_notice
+
+        notice = load_batch_notice(str(config_path), str(_client.get_active_group_id()))
+        if notice:
+            output.append("")
+            output.append("## Batch Runs")
+            output.extend(f"**Note:** {note}" for note in notice.get("notes", []))
+            if notice.get("deferred"):
+                output.append(f"**Update deferred:** {notice['deferred']}")
 
         return "\n".join(output)
 

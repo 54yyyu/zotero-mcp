@@ -54,6 +54,43 @@ def load_update_config(config_path: str | None) -> dict[str, Any]:
     return config
 
 
+def batch_notice_path(config_path: str) -> str:
+    """Where the last batch collect error and deferral reason are kept."""
+    return os.path.join(os.path.dirname(os.path.abspath(config_path)), "batch_notices.json")
+
+
+def load_batch_notice(config_path: str | None, library_key: str) -> dict[str, Any]:
+    """What a background batch collect or a deferred update left for the user.
+
+    Background runs have nobody watching their output, so this is how a stuck
+    run gets told. ``{}`` when there is nothing to say, or nothing readable.
+    """
+    if not config_path:
+        return {}
+    try:
+        with open(batch_notice_path(config_path), encoding="utf-8") as f:
+            notice = json.load(f).get(str(library_key))
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return notice if isinstance(notice, dict) else {}
+
+
+def batch_notice_line(notice: dict[str, Any]) -> str | None:
+    """One line for the output of a search, or None with nothing to say."""
+    messages = [*notice.get("notes", []), *([notice["deferred"]] if notice.get("deferred") else [])]
+    if not messages:
+        return None
+    first = " ".join(str(messages[0]).split())
+    if len(first) > 160:
+        first = first[:157] + "..."
+    return f"{first} See zotero_get_search_database_status."
+
+
+def auto_update_enabled(update_config: dict[str, Any]) -> bool:
+    """Did the user ask for automatic updates, whether or not one is due now?"""
+    return bool(update_config.get("auto_update", False)) and update_config.get("update_frequency", "manual") != "manual"
+
+
 def should_update(update_config: dict[str, Any]) -> bool:
     """Decide whether an auto-update is due from ``update_config`` alone.
 
