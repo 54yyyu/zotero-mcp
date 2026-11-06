@@ -206,6 +206,22 @@ def test_a_kept_item_stays_until_its_write_succeeds_then_is_given_up(build, tmp_
     assert not fourth.get("retry_given_up")
 
 
+def test_a_given_up_item_missing_a_level_is_not_filled_on_every_run(build, tmp_path):
+    """Its first passages got written, its article never did: a gap the cap must cover."""
+    zotero = FakeZotero({"AAA": LONG, "CCC": f"{LONG} {POISON}"})
+    build(zotero).update_database()
+    build(zotero).update_database()
+    third = build(zotero).update_database()
+    assert _saved(tmp_path)["retry_item_keys_given_up"] == ["CCC"]
+    assert third.get("retry_given_up")
+
+    search = build(zotero)
+    search.update_database()
+
+    assert search.chroma_client.embedded == []
+    assert _saved(tmp_path)["retry_item_keys_given_up"] == ["CCC"]
+
+
 def test_a_given_up_item_is_written_again_when_it_changes(build, tmp_path):
     zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
     build(zotero).update_database()

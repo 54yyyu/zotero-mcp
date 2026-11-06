@@ -2646,6 +2646,10 @@ class ZoteroSemanticSearch:
         levels = {SEARCH_ARTICLES, SEARCH_PASSAGES} if self._chunking_enabled and not batch else {SEARCH_ARTICLES}
         for key in retry_keys:
             gaps[key] = set(levels)
+        # An item given up on waits for its next change in Zotero, or the gap
+        # fill would pay for the records that keep failing on every run.
+        for key in self.update_config.get("retry_item_keys_given_up") or []:
+            gaps.pop(key, None)
         return gaps
 
     def _settle_retry_keys(self, *, written: set[str], failed: set[str], keep_failed: bool) -> list[str]:
