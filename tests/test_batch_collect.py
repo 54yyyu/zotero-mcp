@@ -2408,3 +2408,61 @@ def test_t7_a_plain_run_past_the_window_still_does_not_defer(iso):
     stats = iso.new_search().update_database()
 
     assert not stats.get("batch_deferred")
+
+
+def _two_file_run(env, *, records_per_file=1):
+    """A run of two files, both sent, each holding ``records_per_file`` records."""
+    return openai_batch.submit_embedding_batches(
+        records=[
+            {"id": f"R{i}", "document": "x" * 150, "metadata": {"item_key": f"R{i}", "group_id": 0}}
+            for i in range(2 * records_per_file)
+        ],
+        model_name="text-embedding-3-small",
+        embedding_config={"api_key": "test"},
+        config_path=str(env.config_path),
+        client=env.provider,
+        target_sync_version=20,
+        group_id=0,
+        max_enqueued_tokens=100_000,
+        max_requests=records_per_file,
+        scope={"limited": False, "since_version": 10},
+    )
+
+
+def test_t7_batch_import_gives_up_a_cancelled_file_and_keeps_its_ids(iso):
+    _set_version(iso, 10)
+    run = _two_file_run(iso)
+    iso.provider.statuses["batch-1"] = "cancelled"
+    iso.provider.statuses["batch-2"] = "completed"
+
+    stats = iso.new_search()._import_batch("openai")
+
+    manifest = openai_batch.load_manifest(Path(run["manifest_path"]))
+    assert manifest["batches"][0].get("abandoned"), "someone stopped it; it is not sent again"
+    assert manifest["failed_ids"] == ["R0"], "kept for a retry"
+    assert stats["batches_abandoned"] == 1
+    assert _indexed(iso) == {"R1"}
+    assert iso.provider.created == ["batch-1", "batch-2"]
+    assert not batch_common.run_is_unfinished(manifest, openai_batch.ADAPTER)
+    assert _versions(iso)["0"] == 20, "the run has landed"
+    assert iso.new_search().update_config["retry_item_keys"] == ["R0"], "the next update embeds it"
+
+
+def test_t7_a_cancelled_files_unfinished_rows_are_not_sent_again(iso):
+    run = _two_file_run(iso, records_per_file=2)
+    iso.provider.statuses["batch-1"] = "cancelled"
+    iso.provider.statuses["batch-2"] = "in_progress"
+    iso.provider.expired_with_output = True
+    batch = run["batches"][0]
+    batch_common.output_path_for(batch).write_text(json.dumps({
+        "custom_id": "R0",
+        "response": {"status_code": 200, "body": {"data": [{"embedding": [0.1, 0.2, 0.3]}]}},
+    }) + "\n")
+
+    iso.new_search()._import_batch("openai")
+
+    manifest = openai_batch.load_manifest(Path(run["manifest_path"]))
+    assert len(manifest["batches"]) == 2, "no retry file for the rows someone cancelled"
+    assert manifest["failed_ids"] == ["R1"]
+    assert manifest["batches"][0]["imported_at"]
+    assert _indexed(iso) == {"R0"}

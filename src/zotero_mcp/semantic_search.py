@@ -6091,8 +6091,12 @@ class ZoteroSemanticSearch:
             # A failed or expired file goes round again, or is given up on so
             # the rest of the run can land. Not for named batches, which don't
             # carry the run forward, nor for a run taken over by a newer one.
+            # A cancelled file is given up on when the user asks for the import;
+            # an unattended collect leaves that to them.
             if not selected_ids and not taken_over:
-                _requeued, abandoned = batch_common.requeue_failed_batches(adapter, manifest)
+                _requeued, abandoned = batch_common.requeue_failed_batches(
+                    adapter, manifest, give_up_cancelled=_collect_run is None
+                )
                 stats["batches_abandoned"] = abandoned
 
             if manifest.get("force_full_rebuild"):
@@ -6344,8 +6348,9 @@ class ZoteroSemanticSearch:
 
                 # Rows with no vector go round again on their own, which also
                 # covers an expired batch's unfinished rows. A named-batch import
-                # does not carry the run forward, and a superseded run's items
-                # belong to the newer one.
+                # does not carry the run forward, a superseded run's items
+                # belong to the newer one, and a cancelled file's rows were
+                # stopped by someone: those are kept for a retry instead.
                 unfinished = [
                     records[doc_id]
                     for doc_id in records
@@ -6353,7 +6358,8 @@ class ZoteroSemanticSearch:
                 ]
                 landed_keys.update(doc_id.split("#", 1)[0] for doc_id in ids)
                 unlanded_keys.update(record["id"].split("#", 1)[0] for record in unfinished)
-                if selected_ids or superseded_by:
+                cancelled = batch_common._entry_state(adapter, batch) == batch_common.STATE_CANCELLED
+                if selected_ids or superseded_by or cancelled:
                     batch_common.add_failed_ids(manifest, [record["id"] for record in unfinished])
                 else:
                     batch_common.add_retry_batch(

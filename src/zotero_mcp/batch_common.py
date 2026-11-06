@@ -459,6 +459,18 @@ def entry_will_requeue(adapter: BatchAdapter, batch: dict[str, Any]) -> bool:
     )
 
 
+def entry_was_cancelled(adapter: BatchAdapter, batch: dict[str, Any]) -> bool:
+    """A chunk cancelled at the provider with nothing to import, still to
+    settle. 'batch-import' gives it up (:func:`requeue_failed_batches`)."""
+    return bool(
+        batch.get("batch_id")
+        and not batch.get("lost")
+        and not is_settled(batch)
+        and _entry_state(adapter, batch) == STATE_CANCELLED
+        and not entry_has_results(adapter, batch)
+    )
+
+
 def _entry_is_dead(adapter: BatchAdapter, batch: dict[str, Any]) -> bool:
     """Nothing can ever be imported from this chunk, and it won't be sent again."""
     if batch.get("lost"):
@@ -658,20 +670,26 @@ def add_failed_ids(manifest: dict[str, Any], ids: list[str]) -> None:
             failed.append(doc_id)
 
 
-def requeue_failed_batches(adapter: BatchAdapter, manifest: dict[str, Any]) -> tuple[int, int]:
+def requeue_failed_batches(
+    adapter: BatchAdapter, manifest: dict[str, Any], give_up_cancelled: bool = False
+) -> tuple[int, int]:
     """Park failed or expired files to be submitted again, or give up on them.
 
     A file with results to import is left for the import, which retries only
-    the rows that failed. Returns ``(requeued, abandoned)``. Cancelled files
-    stay as they are, since someone cancelled them. A manifest with no
+    the rows that failed. Returns ``(requeued, abandoned)``. A cancelled file
+    is never sent again, since someone cancelled it. With
+    ``give_up_cancelled`` (an import the user asked for), one with nothing to
+    import is given up on, and its ids are kept for a retry like any file
+    given up on; otherwise it stays as it is. A manifest with no
     enqueued-token budget predates throttling and could never submit the file.
     """
     requeued = abandoned = 0
     for batch in manifest.get("batches", []):
-        if not entry_will_requeue(adapter, batch):
+        cancelled = give_up_cancelled and entry_was_cancelled(adapter, batch)
+        if not cancelled and not entry_will_requeue(adapter, batch):
             continue
         attempts = int(batch.get("attempts") or 1)
-        if attempts >= MAX_BATCH_ATTEMPTS or manifest.get("max_enqueued_tokens") is None:
+        if cancelled or attempts >= MAX_BATCH_ATTEMPTS or manifest.get("max_enqueued_tokens") is None:
             batch["abandoned"] = True
             add_failed_ids(manifest, [record["id"] for record in read_jsonl(Path(batch["records_path"]))])
             abandoned += 1
