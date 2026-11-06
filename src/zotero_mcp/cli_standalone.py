@@ -974,10 +974,12 @@ def cmd_db(args):
         print(f"- Frequency: {uc.get('update_frequency', 'manual')}")
         print(f"- Last update: {uc.get('last_update', 'Never')}")
         print(f"- Should update: {status.get('should_update', False)}")
-        from zotero_mcp.config_light import describe_api_failure
+        from zotero_mcp.config_light import describe_api_failure, describe_given_up
 
         if api_failure := describe_api_failure(uc):
             print(f"- Last embedding API failure: {api_failure}")
+        if given_up := describe_given_up(uc):
+            print(f"- Items given up on: {given_up}")
         print(f"- OpenAI Batch API: {'active' if bc.get('active') else 'inactive'}")
         print(f"- Passage chunking: {_format_chunking_status(status)}")
         from zotero_mcp.index_staleness import status_lines

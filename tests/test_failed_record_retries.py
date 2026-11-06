@@ -544,3 +544,57 @@ def test_a_kept_item_without_text_is_dropped_by_a_batch_run(build, batch, tmp_pa
     _land(batch, zotero, chunking=False)
 
     assert _saved(tmp_path)["retry_item_keys"] == []
+
+
+# --- items given up on reach whoever looks next --------------------------------
+
+
+def test_items_given_up_by_a_background_run_reach_the_search_note_until_they_change(build, tmp_path):
+    """The server's background update throws its stats away; the notice keeps the news."""
+    from zotero_mcp.config_light import batch_notice_line
+    from zotero_mcp.tools.search import _index_note
+
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    build(zotero).update_database()
+    _poison(zotero, "BBB")
+    build(zotero).update_database()
+    zotero.changed = set()
+    build(zotero).update_database()
+    assert not build(zotero).batch_notice().get("given_up")
+
+    build(zotero).update_database()  # the third failed run: BBB is given up on
+
+    search = build(zotero)
+    notice = search.batch_notice()
+    assert "BBB" in notice["given_up"]
+    assert "change in Zotero" in notice["given_up"]
+    assert "BBB" in batch_notice_line(notice)
+    assert "BBB" in _index_note(search)
+
+    build(zotero).update_database()  # gives nothing more up, and keeps the notice
+    assert "BBB" in build(zotero).batch_notice()["given_up"]
+
+    zotero.version += 1
+    zotero.changed = {"BBB"}
+    zotero.abstracts["BBB"] = "Fixed in Zotero."
+    build(zotero).update_database()
+
+    assert _saved(tmp_path)["retry_item_keys_given_up"] == []
+    assert not build(zotero).batch_notice()
+
+
+def test_items_given_up_by_a_collect_reach_the_notice_once(build, batch, tmp_path):
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    build(zotero, chunking=False).update_database()
+    _set_update_config(tmp_path, retry_item_keys=["BBB"], retry_item_attempts={"BBB": 2})
+    batch.search(zotero, chunking=False).update_database(use_batch=True)
+
+    for _ in range(6):
+        batch.fake.finish_all(fail={"BBB"})
+        batch.search(zotero, chunking=False).update_database()
+        if not any(job.status == "in_progress" for job in batch.fake.jobs.values()):
+            break
+
+    notice = build(zotero, chunking=False).batch_notice()
+    assert "BBB" in notice["given_up"]
+    assert not any("Gave up" in note for note in notice.get("notes", []))

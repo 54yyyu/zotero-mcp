@@ -77,7 +77,11 @@ def load_batch_notice(config_path: str | None, library_key: str) -> dict[str, An
 
 def batch_notice_line(notice: dict[str, Any]) -> str | None:
     """One line for the output of a search, or None with nothing to say."""
-    messages = [*notice.get("notes", []), *([notice["deferred"]] if notice.get("deferred") else [])]
+    messages = [
+        *notice.get("notes", []),
+        *([notice["deferred"]] if notice.get("deferred") else []),
+        *([notice["given_up"]] if notice.get("given_up") else []),
+    ]
     if not messages:
         return None
     first = " ".join(str(messages[0]).split())
@@ -193,6 +197,22 @@ def background_update_due(update_config: dict[str, Any]) -> bool:
     unchanged, so status still reports whether an update is due.
     """
     return should_update(update_config) and api_failure_backoff_until(update_config) is None
+
+
+def describe_given_up(update_config: dict[str, Any]) -> str | None:
+    """One status line for the items given up on after failed embedding runs, or None.
+
+    Such an item is missing from the index, or from one level of it, and no
+    update tries it again until it changes in Zotero.
+    """
+    keys = update_config.get("retry_item_keys_given_up")
+    if not isinstance(keys, list) or not keys:
+        return None
+    shown = ", ".join(str(key) for key in keys[:3]) + (f" and {len(keys) - 3} more" if len(keys) > 3 else "")
+    return (
+        f"{len(keys)} ({shown}). Their records kept failing to embed, so updates skip them; "
+        "each is tried again when it changes in Zotero, and the log shows the embedding error."
+    )
 
 
 def describe_api_failure(update_config: dict[str, Any]) -> str | None:

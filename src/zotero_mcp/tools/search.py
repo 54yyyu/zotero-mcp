@@ -1949,10 +1949,12 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append(f"**Frequency:** {update_config.get('update_frequency', 'manual')}")
         output.append(f"**Last Update:** {update_config.get('last_update', 'Never')}")
         output.append(f"**Should Update Now:** {should_update(update_config)}")
-        from zotero_mcp.config_light import describe_api_failure
+        from zotero_mcp.config_light import describe_api_failure, describe_given_up
 
         if api_failure := describe_api_failure(update_config):
             output.append(f"**Last Embedding API Failure:** {api_failure}")
+        if given_up := describe_given_up(update_config):
+            output.append(f"**Items Given Up On:** {given_up}")
 
         frequency = update_config.get('update_frequency', 'manual')
         if frequency.startswith('every_') and update_config.get('update_days'):
@@ -1961,7 +1963,8 @@ def get_search_database_status(*, ctx: Context) -> str:
         from zotero_mcp.config_light import load_batch_notice
 
         notice = load_batch_notice(str(config_path), str(_client.get_active_group_id()))
-        if notice:
+        # Items given up on have their own line under Update Configuration.
+        if notice.get("notes") or notice.get("deferred"):
             output.append("")
             output.append("## Batch Runs")
             output.extend(f"**Note:** {note}" for note in notice.get("notes", []))

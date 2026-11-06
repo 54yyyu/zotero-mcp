@@ -4568,6 +4568,8 @@ class ZoteroSemanticSearch:
             if given_up:
                 stats["retry_given_up"] = self._given_up_message(given_up)
                 _report(f"  {stats['retry_given_up']}\n")
+            # The server's background update throws its stats away.
+            self._note_given_up(announce=bool(given_up))
             if stats.get("deletion_skipped_reason") or (
                 retry_fail and not keep_failed and failed_keys - kept_before
             ):
@@ -5565,6 +5567,8 @@ class ZoteroSemanticSearch:
         group_id = self._pinned_group_id()
         adapter = _batch_adapter(provider)
         errors: list[str] = []
+        given_up_notes: list[str] = []
+        gave_up = False
         try:
             self._finish_promotions(provider, group_id)
             runs = self._unfinished_batch_runs(provider, group_id)
@@ -5621,7 +5625,9 @@ class ZoteroSemanticSearch:
                 if failed_rows:
                     errors.append(f"run {run_id}: {failed_rows} item(s) came back without an embedding")
                 if result.get("retry_given_up"):
-                    errors.append(f"run {run_id}: {result['retry_given_up']}")
+                    gave_up = True
+                    given_up_notes.append(f"run {run_id}: {result['retry_given_up']}")
+                    errors.append(given_up_notes[-1])
             batches = run.get("batches", [])
             if batch_common.run_is_unfinished(run, adapter):
                 if past_window:
@@ -5660,7 +5666,9 @@ class ZoteroSemanticSearch:
         except Exception:
             still_blocking = True
         keep_deferred = self.batch_notice(group_id).get("deferred") if still_blocking else None
-        self._save_batch_notice(notes=errors, deferred=keep_deferred)
+        # Items given up on get a notice of their own, which outlives this collect.
+        self._save_batch_notice(notes=[e for e in errors if e not in given_up_notes], deferred=keep_deferred)
+        self._note_given_up(announce=gave_up)
 
         if not summary["runs"] and not errors:
             return
@@ -5707,7 +5715,27 @@ class ZoteroSemanticSearch:
             return
         self._save_batch_notice(notes=notes, deferred=deferred, library_key=str(group_id))
 
-    def _save_batch_notice(self, notes: Any = _KEEP, deferred: Any = _KEEP, library_key: str | None = None) -> None:
+    def _note_given_up(self, announce: bool) -> None:
+        """Keep the notice about items given up on in step with ``retry_item_keys_given_up``.
+
+        ``announce`` says this run gave items up: the notice then names every
+        item given up on. An existing notice follows the list as it shrinks,
+        and goes once the items have changed in Zotero and been written. Items
+        given up on before this notice existed are left to the status line.
+        """
+        keys = list(self.update_config.get("retry_item_keys_given_up") or [])
+        if not keys:
+            self._save_batch_notice(given_up=None)
+        elif announce or self.batch_notice(self._pinned_group_id()).get("given_up"):
+            self._save_batch_notice(given_up=self._given_up_message(keys))
+
+    def _save_batch_notice(
+        self,
+        notes: Any = _KEEP,
+        deferred: Any = _KEEP,
+        library_key: str | None = None,
+        given_up: Any = _KEEP,
+    ) -> None:
         """Keep what a background run has to tell, for whoever looks next.
 
         A background run's stats go nowhere. Written only when something changed,
@@ -5732,8 +5760,12 @@ class ZoteroSemanticSearch:
                 "notes": old.get("notes", []) if notes is self._KEEP else notes,
                 "deferred": old.get("deferred") if deferred is self._KEEP else deferred,
             }
+            # Items given up on, from either path; see _note_given_up.
+            kept_given_up = old.get("given_up") if given_up is self._KEEP else given_up
+            if kept_given_up:
+                new["given_up"] = kept_given_up
             comparable = {key: value for key, value in old.items() if key != "updated_at"}
-            if not new["notes"] and not new["deferred"]:
+            if not new["notes"] and not new["deferred"] and not new.get("given_up"):
                 if library_key not in notices:
                     return
                 notices.pop(library_key)
