@@ -283,8 +283,10 @@ def test_no_note_on_an_unmigrated_index(build):
 
 
 @pytest.fixture()
-def tool_output(monkeypatch):
+def tool_output(monkeypatch, tmp_path):
     """The MCP tool's text for a search that returns these results and this note."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     from zotero_mcp import client as client_module
     from zotero_mcp.tools import search as search_tool
 

@@ -42,6 +42,9 @@ N = 30
 @pytest.fixture()
 def config(tmp_path, monkeypatch):
     """A populated index, a config pointing at it, and worker mode switched on."""
+    # The worker inherits this environment, so it never sees the real home.
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     persist = tmp_path / "chroma_db"
     client = chromadb.PersistentClient(path=str(persist), settings=Settings(anonymized_telemetry=False))
     client.create_collection("zotero_library").add(
