@@ -240,7 +240,7 @@ Passage chunking also indexes each item as several overlapping passages, in a se
 
 After turning it on, run `zotero-mcp update-db --fulltext` once in local mode (`ZOTERO_LOCAL=true`). With the web API, where `--fulltext` is not available, run `zotero-mcp update-db`, which uses the text Zotero has already extracted. It adds the passages and keeps the article vectors you already have, with no `--force-rebuild` and no re-embedding of articles. It works the same on the realtime and Batch API paths.
 
-A realtime update writes every article record before any passage, so article search covers a long run's items early. A changed item has no passages from the moment its new article record is written until its new passages are, and passage search misses it meanwhile; a run stopped in between leaves the rest to the next update.
+An update writes every article record before any passage, so article search covers a long run's items early; a Batch API run sends its article records in its first files. A changed item has no passages from the moment its new article record is written until its new passages are, and passage search misses it meanwhile (article search still finds it). A realtime run stopped in between leaves the rest to the next update. On the Batch API path a large run's passage files can land days after its article files, so a changed item can be missing from passage search for days.
 
 Passages and articles live in two ChromaDB collections in the same index directory, `zotero_library_passages` and `zotero_library`, so an article search never loads passage vectors into memory. With chunking off, an item that changes loses its passages, and they are added back when chunking is next on.
 
