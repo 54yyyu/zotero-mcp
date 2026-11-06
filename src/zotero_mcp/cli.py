@@ -1628,7 +1628,7 @@ def main():
                     mcp, args.host, allow_unauthenticated=args.allow_unauthenticated,
                 )
         except ValueError as e:
-            server_parser.error(str(e))
+            parser.error(str(e))
         # Re-apply the toolset profile now that the transport is known. The
         # import-time call in server.py assumed stdio; an HTTP transport also
         # needs the ChatGPT connector tools. setup_zotero_environment() runs
