@@ -288,9 +288,11 @@ def tool_output(monkeypatch):
     from zotero_mcp import client as client_module
     from zotero_mcp.tools import search as search_tool
 
-    def _run(results, note):
+    def _run(results, note, load_note=None):
         fake = MagicMock()
-        fake.search.return_value = {"results": results, "level": "passages", "level_note": note}
+        fake.search.return_value = {
+            "results": results, "level": "passages", "level_note": note, "load_note": load_note,
+        }
         monkeypatch.setattr(semantic_search, "create_semantic_search", lambda *a, **k: fake)
         monkeypatch.setattr(search_tool, "_maybe_fire_presearch_sync", lambda *a, **k: None)
         monkeypatch.setattr(client_module, "get_active_group_id", lambda: None, raising=False)
@@ -417,3 +419,64 @@ def test_a_client_double_without_levels_still_searches():
     search._chunking_config = {"enabled": True}
 
     assert search._resolve_search_level(None) == (None, True, None, None)
+
+
+# --- a passage search that had to load the passage ChromaDB collection first ---
+
+
+def _slow_first_load(search, seconds, reloaded=True):
+    real = search.chroma_client.search
+
+    def search_and_report(*args, **kwargs):
+        results = real(*args, **kwargs)
+        results["passage_load"] = {"seconds": seconds, "reloaded": reloaded, "idle_minutes": 10}
+        return results
+
+    search.chroma_client.search = search_and_report
+
+
+def test_a_slow_passage_reload_is_explained(build):
+    search = build(chunking=True, articles=["ART"], passages=["PAS#0"])
+    _slow_first_load(search, 42.4)
+
+    result = search.search("q", level="passages")
+
+    assert _keys(result) == ["PAS"]
+    note = result["load_note"]
+    assert "took 42 s" in note
+    assert "passage ChromaDB collection" in note
+    assert "10 minutes without a passage search" in note
+    assert "semantic_search.idle_unload_minutes" in note
+
+
+def test_a_slow_first_passage_load_is_explained(build):
+    search = build(chunking=True, articles=["ART"], passages=["PAS#0"])
+    _slow_first_load(search, 12.0, reloaded=False)
+
+    note = search.search("q", level="passages")["load_note"]
+
+    assert "took 12 s" in note
+    assert "loaded into memory first" in note
+    assert "semantic_search.idle_unload_minutes" in note
+
+
+def test_a_quick_passage_load_needs_no_explanation(build):
+    search = build(chunking=True, articles=["ART"], passages=["PAS#0"])
+    _slow_first_load(search, 1.5)
+
+    assert search.search("q", level="passages")["load_note"] is None
+
+
+def test_tool_prints_why_the_search_was_slow(tool_output):
+    hit = {"item_key": "A", "similarity_score": 0.5, "matched_text": "text", "zotero_item": {"data": {"title": "T"}}}
+
+    text = tool_output([hit], None, load_note="This search took 42 s because ...")
+
+    assert "This search took 42 s because ..." in text
+
+
+def test_tool_prints_why_the_search_was_slow_when_nothing_was_found(tool_output):
+    text = tool_output([], None, load_note="This search took 42 s because ...")
+
+    assert "No semantically similar items" in text
+    assert "This search took 42 s because ..." in text

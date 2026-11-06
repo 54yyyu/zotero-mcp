@@ -750,6 +750,34 @@ def best_snippet(query: str, text: str, width: int = 320) -> tuple[str, int]:
     return snippet, best_start
 
 
+# A search slower than this looks like a hang, so the result says why.
+SLOW_PASSAGE_LOAD_SECONDS = 5.0
+
+
+def _passage_load_note(load: dict | None) -> str | None:
+    """Why a passage search was slow, from the worker's ``passage_load`` report, or None."""
+    if not load or load.get("seconds", 0) < SLOW_PASSAGE_LOAD_SECONDS:
+        return None
+    seconds = f"{load['seconds']:.0f}"
+    minutes = f"{load.get('idle_minutes', 0):g}"
+    setting = (
+        "set semantic_search.idle_unload_minutes in config.json "
+        "(0 keeps it loaded until the server exits)"
+    )
+    if load.get("reloaded"):
+        return (
+            f"This search took {seconds} s because the passage ChromaDB collection had to be "
+            f"loaded into memory again: it is freed after {minutes} minutes without a passage "
+            f"search or index update. Passage searches are fast while it stays loaded. To keep "
+            f"it loaded longer, {setting}."
+        )
+    return (
+        f"This search took {seconds} s because the passage ChromaDB collection had to be "
+        f"loaded into memory first. Passage searches are fast while it stays loaded; it is "
+        f"freed after {minutes} minutes without one. To change that, {setting}."
+    )
+
+
 def _drop_missing_documents(results: dict) -> int:
     """Remove hits whose document text is gone, keeping the parallel lists aligned.
 
@@ -5499,6 +5527,9 @@ class ZoteroSemanticSearch:
             results = self.chroma_client.search(
                 query_texts=[query], n_results=fetch_limit, where=where, **search_kwargs
             )
+            load_note = _passage_load_note(
+                results.pop("passage_load", None) if isinstance(results, dict) else None
+            )
 
             _drop_missing_documents(results)
 
@@ -5541,6 +5572,7 @@ class ZoteroSemanticSearch:
                 "rerank": rerank_info,
                 "level": search_level,
                 "level_note": level_note,
+                "load_note": load_note,
             }
 
         except EmbeddingAPIUnreachable as e:
