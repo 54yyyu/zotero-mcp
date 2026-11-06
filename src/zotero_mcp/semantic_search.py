@@ -135,11 +135,29 @@ def _is_superseded(current: dict[str, Any], newest: dict[str, Any] | None, adapt
     return bool(newest) and batch_common.run_covers(newest, current, adapter)
 
 
-def _deferred_message(run: dict[str, Any], run_count: int, batch: bool, window_hours: int) -> str:
-    """What a user is told when an update has to wait behind an unfinished run."""
+def _deferred_message(
+    run: dict[str, Any], run_count: int, batch: bool, window_hours: int, fill_days: int | None = None
+) -> str:
+    """What a user is told when an update has to wait behind an unfinished run.
+
+    ``fill_days`` is given when ``run`` adds missing records and is past the
+    provider's window: it holds updates up that many days from its last
+    activity, and only the user can move it on.
+    """
     others = f" (and {run_count - 1} older one(s))" if run_count > 1 else ""
     what = "submitting a new batch" if batch else "updating the index"
     run_id = run.get("run_id")
+    if fill_days is not None:
+        return (
+            f"Not {what}: batch run {run_id}{others} for this library is still adding records "
+            "missing from the index. A new run would not include them, so they would be left out. "
+            "The sync version stays where it is, so these changes go in after that run has "
+            f"finished, or {fill_days} days after its last activity, when it stops holding up "
+            "updates. It is past the provider's window, so nothing more happens to it on its own: "
+            "'zotero-mcp batch-import' sends its waiting chunks and imports what is ready, "
+            "'zotero-mcp update-db --auto-loop' waits for it to finish and then updates, and "
+            f"'zotero-mcp batch-abandon --run-id {run_id}' gives it up."
+        )
     return (
         f"Not {what}: batch run {run_id}{others} for this library is still unfinished, and going "
         "ahead would pay for its items again or leave it stranded. The sync version stays where "
@@ -147,7 +165,8 @@ def _deferred_message(run: dict[str, Any], run_count: int, batch: bool, window_h
         f"provider's window, {window_hours} hours after its last chunk went out, when it stops "
         "holding up updates. Check it with "
         "'zotero-mcp batch-status'; 'zotero-mcp update-db' or 'zotero-mcp batch-import' collects "
-        f"it, and 'zotero-mcp batch-abandon --run-id {run_id}' gives it up."
+        "it, 'zotero-mcp update-db --auto-loop' waits for it to finish and then updates, and "
+        f"'zotero-mcp batch-abandon --run-id {run_id}' gives it up."
     )
 
 
@@ -2949,11 +2968,10 @@ class ZoteroSemanticSearch:
                 if batch_common.run_is_unfinished(run, _batch_adapter(name))
             ]
         for run in candidates:
-            try:
-                created = datetime.fromisoformat(str(run.get("created_at")).replace("Z", "+00:00"))
-            except ValueError:
-                continue
-            if created < cutoff:
+            # From the last thing it did: a throttled run sends its chunks
+            # over days, and an import or a resend shows it is still moving.
+            active = batch_common.last_activity(run)
+            if active is None or active < cutoff:
                 continue
             return run
         return None
@@ -3995,12 +4013,7 @@ class ZoteroSemanticSearch:
                 elif blocking:
                     stats["batch_provider"] = collect_provider
                     stats["batch_mode"] = batch_enabled
-                    stats["batch_deferred"] = _deferred_message(
-                        blocking[-1],
-                        len(blocking),
-                        batch_enabled,
-                        _batch_adapter(collect_provider).completion_window_hours + batch_common.WINDOW_MARGIN_HOURS,
-                    )
+                    stats["batch_deferred"] = self._deferral(collect_provider, blocking, batch_enabled)
                     self._save_batch_notice(deferred=stats["batch_deferred"])
                     logger.warning(stats["batch_deferred"])
                     _report(f"\n{stats['batch_deferred']}\n")
@@ -5402,13 +5415,38 @@ class ZoteroSemanticSearch:
         """Unfinished runs that make an update wait, oldest first.
 
         Not one past the provider's window: nothing more is coming from it unless
-        someone asks, and it can't be allowed to hold updates up for good.
+        someone asks, and it can't be allowed to hold updates up for good. A run
+        that fills missing records holds them up longer, for
+        ``BATCH_RUN_BLOCKS_FILL_DAYS`` after its last activity: no new run would
+        cover its fill (:func:`batch_common.run_covers`), and with the fill held
+        back meanwhile (:meth:`_unfinished_batch_run`), it would be left behind.
         """
         adapter = _batch_adapter(provider)
         return [
             run for run in self._unfinished_batch_runs(provider, group_id)
-            if not batch_common.run_past_window(run, adapter)
+            if not batch_common.run_past_window(run, adapter) or self._fill_still_holds(run)
         ]
+
+    def _deferral(self, provider: str, blocking: list[dict[str, Any]], batch: bool) -> str:
+        """The deferral message for runs from :meth:`_blocking_batch_runs`, naming the newest."""
+        adapter = _batch_adapter(provider)
+        run = blocking[-1]
+        held_for_fill = batch_common.run_past_window(run, adapter)
+        return _deferred_message(
+            run,
+            len(blocking),
+            batch,
+            adapter.completion_window_hours + batch_common.WINDOW_MARGIN_HOURS,
+            fill_days=self.BATCH_RUN_BLOCKS_FILL_DAYS if held_for_fill else None,
+        )
+
+    def _fill_still_holds(self, run: dict[str, Any]) -> bool:
+        """Is this a fill run whose last activity is recent enough to hold up a new run?"""
+        if not batch_common.run_has_level_fill(run):
+            return False
+        active = batch_common.last_activity(run)
+        cutoff = datetime.now(timezone.utc) - timedelta(days=self.BATCH_RUN_BLOCKS_FILL_DAYS)
+        return active is not None and active >= cutoff
 
     def _batch_notes(self, provider: str, group_id: int, skip_rebuilds: bool = False) -> list[str]:
         """What needs a decision from the user, whatever this pass could do.
@@ -5859,12 +5897,7 @@ class ZoteroSemanticSearch:
                         batch_enabled = self._resolve_batch_mode()[0]
                     except Exception:
                         batch_enabled = False
-                    stats["batch_deferred"] = _deferred_message(
-                        blocking[-1],
-                        len(blocking),
-                        batch_enabled,
-                        _batch_adapter(provider).completion_window_hours + batch_common.WINDOW_MARGIN_HOURS,
-                    )
+                    stats["batch_deferred"] = self._deferral(provider, blocking, batch_enabled)
                     self._save_batch_notice(deferred=stats["batch_deferred"])
             finally:
                 self._run_group_id = None

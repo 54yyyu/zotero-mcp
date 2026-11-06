@@ -299,6 +299,62 @@ def run_will_never_land(manifest: dict[str, Any], adapter: BatchAdapter | None =
     )
 
 
+# What a records file says about fills, by (path, mtime, size): a run's files
+# are read again on every update, and they can be large.
+_FILL_SCAN_CACHE: dict[tuple[str, int, int], bool] = {}
+
+
+def _records_have_level_fill(path: Path) -> bool:
+    """Does this records file hold a record that fills a missing level?
+
+    Each line is one record written by :func:`write_jsonl`, and only fill
+    records carry the ``"level_fill"`` key. A quote inside a document is
+    escaped, so the quoted key can't turn up inside a value.
+    """
+    try:
+        stat = path.stat()
+    except OSError:
+        return False
+    key = (str(path), stat.st_mtime_ns, stat.st_size)
+    if key not in _FILL_SCAN_CACHE:
+        found = False
+        try:
+            with open(path, "rb") as f:
+                found = any(b'"level_fill"' in line for line in f)
+        except OSError:
+            pass
+        _FILL_SCAN_CACHE[key] = found
+    return _FILL_SCAN_CACHE[key]
+
+
+def run_has_level_fill(manifest: dict[str, Any]) -> bool:
+    """Does this run carry records that fill a level missing from the index?
+
+    Such records are for items that haven't changed, which a run cut from
+    library changes doesn't have. A manifest from before ``has_level_fill``
+    was written is read from the records files of its chunks still to land;
+    an imported chunk's files are gone, and its records are in the index.
+    """
+    if "has_level_fill" in manifest:
+        return bool(manifest["has_level_fill"])
+    return any(
+        _records_have_level_fill(Path(batch["records_path"]))
+        for batch in manifest.get("batches", [])
+        if batch.get("records_path") and not is_settled(batch)
+    )
+
+
+def last_activity(manifest: dict[str, Any]) -> datetime | None:
+    """When this run last did something on record: created, a chunk sent or
+    imported, or the index reset for it. ``None`` when nothing is readable."""
+    stamps = [manifest.get("created_at"), manifest.get("reset_at")]
+    for batch in manifest.get("batches", []):
+        stamps.extend((batch.get("submitted_at"), batch.get("imported_at")))
+    parsed = [_parse_stamp(stamp) for stamp in stamps if stamp]
+    parsed = [stamp for stamp in parsed if stamp]
+    return max(parsed) if parsed else None
+
+
 def run_covers(newer: dict[str, Any], older: dict[str, Any], adapter: BatchAdapter | None = None) -> bool:
     """Does ``newer`` embed everything ``older`` was submitted for?
 
@@ -317,6 +373,9 @@ def run_covers(newer: dict[str, Any], older: dict[str, Any], adapter: BatchAdapt
     A run that will never land covers nothing (:func:`run_will_never_land`):
     abandoned, or with ``adapter`` given, dead. Otherwise an older run's paid
     results would be dropped for a newer run that never delivers them.
+
+    Nor does a run without fill records cover one with them
+    (:func:`run_has_level_fill`), unless it is a rebuild.
     """
     if newer.get("run_id") == older.get("run_id") or newer.get("group_id") != older.get("group_id"):
         return False
@@ -331,6 +390,11 @@ def run_covers(newer: dict[str, Any], older: dict[str, Any], adapter: BatchAdapt
     if not set(older.get("retry_keys") or []) <= set(newer.get("retry_keys") or []):
         # Items kept for a retry are rewritten whatever changed, so only a run
         # carrying them too covers them; otherwise they are paid for twice.
+        return False
+    if not run_has_level_fill(newer) and run_has_level_fill(older):
+        # Its fill records are for items that haven't changed, so a newer run
+        # cut from changes doesn't have them. One that fills gaps itself was cut
+        # with the older fill still missing from the index, and has it.
         return False
     if "since_version" not in newer and "since_version" not in older:
         return True
@@ -751,7 +815,8 @@ def submit_embedding_batches(
         # while the batch was running (#393).
         "group_id": group_id,
         "max_enqueued_tokens": max_enqueued_tokens,
-        # Records filling a gap are not covered by a newer incremental run.
+        # Records filling a gap: a newer run without any doesn't cover this
+        # one (run_covers), and the run holds up new ones for longer.
         "has_level_fill": any(record.get("level_fill") for record in records),
         "manifest_path": str(run_dir / "manifest.json"),
         "batches": [],

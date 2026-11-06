@@ -7,7 +7,7 @@ embedding function runs: vectors arrive precomputed from the fake provider.
 
 import json
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -2260,3 +2260,130 @@ def test_r3_4_batch_abandon_takes_yes(capsys):
         with pytest.raises(SystemExit):
             cli_main()
     assert "--yes" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Task 7: the run lifecycle for runs that fill missing records
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def iso(env, tmp_path, monkeypatch):
+    """``env`` with HOME pointed at the test's own directory."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    return env
+
+
+def _ago(**delta):
+    return (datetime.now(timezone.utc) - timedelta(**delta)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _fill_run(env, *, fill=True, created_at=None, records=2, since=10, target=10, budget=None):
+    """A run that fills a missing level of items already in the index."""
+    manifest = openai_batch.submit_embedding_batches(
+        records=[
+            {
+                "id": f"F{i}", "document": "x" * 150, "metadata": {"item_key": f"F{i}", "group_id": 0},
+                **({"level_fill": True} if fill else {}),
+            }
+            for i in range(records)
+        ],
+        model_name="text-embedding-3-small",
+        embedding_config={"api_key": "test"},
+        config_path=str(env.config_path),
+        client=env.provider,
+        target_sync_version=target,
+        group_id=0,
+        max_enqueued_tokens=budget,
+        scope={"limited": False, "since_version": since},
+    )
+    if created_at:
+        manifest["created_at"] = created_at
+        for entry in manifest["batches"]:
+            if entry.get("submitted_at"):
+                entry["submitted_at"] = created_at
+        openai_batch.save_manifest(manifest)
+    return manifest
+
+
+def test_t7_a_newer_incremental_run_does_not_cover_an_older_fill(iso):
+    older = _fill_run(iso)
+    newer = {"run_id": "new", "group_id": 0, "limited": False, "since_version": 10}
+
+    assert not batch_common.run_covers(newer, older), "the newer run has none of its fill records"
+    assert batch_common.run_covers({**newer, "has_level_fill": True}, older), "it fills what is still missing"
+    assert batch_common.run_covers({**newer, "force_full_rebuild": True}, older)
+    assert batch_common.run_covers(newer, _fill_run(iso, fill=False))
+
+
+def test_t7_a_manifest_without_the_fill_flag_is_read_from_its_records(iso):
+    fill = _fill_run(iso)
+    fill.pop("has_level_fill")
+    plain = _fill_run(iso, fill=False)
+    plain.pop("has_level_fill")
+    newer = {"run_id": "new", "group_id": 0, "limited": False, "since_version": 10}
+
+    assert batch_common.run_has_level_fill(fill)
+    assert not batch_common.run_has_level_fill(plain)
+    assert not batch_common.run_covers(newer, fill)
+    assert batch_common.run_covers(newer, plain)
+
+
+def test_t7_the_fill_hold_counts_from_the_last_activity_not_the_start(iso):
+    run = _fill_run(iso, created_at=_ago(days=20))
+    search = iso.new_search()
+    search._run_group_id = 0
+
+    assert search._unfinished_batch_run() is None, "nothing has happened for 20 days"
+
+    run["batches"][0]["submitted_at"] = _ago(days=2)
+    openai_batch.save_manifest(run)
+
+    assert search._unfinished_batch_run() == run["run_id"], "a chunk went out 2 days ago"
+
+
+def test_t7_a_fill_run_past_the_window_still_defers_a_new_run(iso, capsys):
+    from zotero_mcp.cli import _print_update_stats
+
+    _set_version(iso, 10)
+    run = _fill_run(iso, created_at=_ago(days=3))
+    iso.zotero.add("CCC", 11)
+    asked = []
+    for name in ("items", "item", "item_versions", "last_modified_version"):
+        real = getattr(iso.zotero, name)
+        setattr(iso.zotero, name, lambda *a, _n=name, _r=real, **k: asked.append(_n) or _r(*a, **k))
+
+    stats = iso.new_search().update_database()
+
+    assert stats["batch_deferred"], "a new run would strand its fill"
+    assert run["run_id"] in stats["batch_deferred"]
+    assert "batch-import" in stats["batch_deferred"]
+    assert "--auto-loop" in stats["batch_deferred"]
+    assert asked == [], "deferred before the item fetch and the deletion pass"
+    assert iso.provider.created == ["batch-1"]
+    assert _versions(iso)["0"] == 10
+    _print_update_stats(stats)
+    out = capsys.readouterr().out
+    assert "deferred" in out and run["run_id"] in out
+
+
+def test_t7_a_fill_run_stops_deferring_14_days_after_its_last_activity(iso):
+    _set_version(iso, 10)
+    _fill_run(iso, created_at=_ago(days=15))
+    iso.zotero.add("CCC", 11)
+
+    stats = iso.new_search().update_database()
+
+    assert not stats.get("batch_deferred")
+    assert stats["batch_submitted"]
+
+
+def test_t7_a_plain_run_past_the_window_still_does_not_defer(iso):
+    _set_version(iso, 10)
+    _fill_run(iso, fill=False, created_at=_ago(days=3))
+    iso.zotero.add("CCC", 11)
+
+    stats = iso.new_search().update_database()
+
+    assert not stats.get("batch_deferred")
