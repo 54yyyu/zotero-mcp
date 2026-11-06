@@ -227,6 +227,40 @@ def _prompt_positive_int(label: str, default: int, minimum: int = 1) -> int:
         print(f"Please enter a number of at least {minimum}")
 
 
+def _prompt_text(label: str, current: str | None, blank_means: str) -> str | None:
+    """Ask for a string; Enter keeps ``current``, ``-`` clears it.
+
+    Returns the value to store, or None for "use the default".
+    """
+    if current:
+        raw = input(f"{label} [{current}] (Enter keeps it, '-' resets to default): ").strip()
+        if raw == "":
+            return current
+        return None if raw == "-" else raw
+    raw = input(f"{label} (leave blank for {blank_means}): ").strip()
+    return raw or None
+
+
+def _prompt_secret(label: str, current: str | None) -> str:
+    """Ask for a secret without echoing; Enter keeps ``current`` if there is one."""
+    if current:
+        raw = getpass.getpass(f"{label} (hidden, Enter keeps the stored key): ").strip()
+        return raw or current
+    return getpass.getpass(f"{label} (hidden): ").strip()
+
+
+def _prompt_choice(label: str, valid: list[str], default: str | None) -> str:
+    """Ask for one of ``valid``; Enter picks ``default`` when there is one."""
+    suffix = f" [{default}]" if default else ""
+    while True:
+        raw = input(f"{label}{suffix}: ").strip()
+        if raw == "" and default:
+            return default
+        if raw in valid:
+            return raw
+        print("Please enter " + ", ".join(valid[:-1]) + f", or {valid[-1]}")
+
+
 def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool) -> dict:
     """Ask whether to index documents as overlapping passages.
 
@@ -332,11 +366,16 @@ def setup_semantic_search(
     print("3. Gemini - Better quality, requires API key")
     print("4. Ollama - Local embeddings via Ollama API")
 
-    while True:
-        choice = input("\nChoose embedding model (1-4): ").strip()
-        if choice in ["1", "2", "3", "4"]:
-            break
-        print("Please enter 1, 2, 3, or 4")
+    prev = existing_semantic_config or {}
+    prev_model = prev.get("embedding_model")
+    prev_embedding = prev.get("embedding_config") or {}
+    default_choice = {"default": "1", "openai": "2", "gemini": "3", "ollama": "4"}.get(prev_model)
+    print()
+    choice = _prompt_choice("Choose embedding model (1-4)", ["1", "2", "3", "4"], default_choice)
+    # Stored values carry over only when the provider is unchanged: an OpenAI
+    # key must never be offered to Gemini.
+    def same(provider: str) -> bool:
+        return prev_model == provider
 
     config = {}
 
@@ -352,11 +391,9 @@ def setup_semantic_search(
         print("1. text-embedding-3-small (recommended, faster)")
         print("2. text-embedding-3-large (higher quality, slower)")
 
-        while True:
-            model_choice = input("Choose OpenAI model (1-2): ").strip()
-            if model_choice in ["1", "2"]:
-                break
-            print("Please enter 1 or 2")
+        prev_name = prev_embedding.get("model_name") if same("openai") else None
+        default_model_choice = {"text-embedding-3-small": "1", "text-embedding-3-large": "2"}.get(prev_name)
+        model_choice = _prompt_choice("Choose OpenAI model (1-2)", ["1", "2"], default_model_choice)
 
         if model_choice == "1":
             config["embedding_config"] = {"model_name": "text-embedding-3-small"}
@@ -364,14 +401,18 @@ def setup_semantic_search(
             config["embedding_config"] = {"model_name": "text-embedding-3-large"}
 
         # Get API key
-        api_key = getpass.getpass("Enter your OpenAI API key (hidden): ").strip()
+        api_key = _prompt_secret(
+            "Enter your OpenAI API key", prev_embedding.get("api_key") if same("openai") else None
+        )
         if api_key:
             config["embedding_config"]["api_key"] = api_key
         else:
             print("Warning: No API key provided. Set OPENAI_API_KEY environment variable.")
 
         # Get optional base URL
-        base_url = input("Enter custom OpenAI base URL (leave blank for default): ").strip()
+        base_url = _prompt_text(
+            "Custom OpenAI base URL", prev_embedding.get("base_url") if same("openai") else None, "default"
+        )
         if base_url:
             config["embedding_config"]["base_url"] = base_url
             print(f"Using custom OpenAI base URL: {base_url}")
@@ -404,14 +445,18 @@ def setup_semantic_search(
         config["embedding_config"] = {"model_name": "gemini-embedding-001"}
 
         # Get API key
-        api_key = getpass.getpass("Enter your Gemini API key (hidden): ").strip()
+        api_key = _prompt_secret(
+            "Enter your Gemini API key", prev_embedding.get("api_key") if same("gemini") else None
+        )
         if api_key:
             config["embedding_config"]["api_key"] = api_key
         else:
             print("Warning: No API key provided. Set GEMINI_API_KEY environment variable.")
 
         # Get optional base URL
-        base_url = input("Enter custom Gemini base URL (leave blank for default): ").strip()
+        base_url = _prompt_text(
+            "Custom Gemini base URL", prev_embedding.get("base_url") if same("gemini") else None, "default"
+        )
         if base_url:
             config["embedding_config"]["base_url"] = base_url
             print(f"Using custom Gemini base URL: {base_url}")
@@ -437,10 +482,14 @@ def setup_semantic_search(
 
     elif choice == "4":
         config["embedding_model"] = "ollama"
-        model_name = input("Enter Ollama embedding model name (default: qwen3-embedding): ").strip()
-        config["embedding_config"] = {"model_name": model_name or "qwen3-embedding"}
+        current_name = (prev_embedding.get("model_name") if same("ollama") else None) or "qwen3-embedding"
+        model_name = input(f"Ollama embedding model name [{current_name}]: ").strip()
+        config["embedding_config"] = {"model_name": model_name or current_name}
 
-        base_url = input("Enter Ollama base URL (leave blank for http://localhost:11434): ").strip()
+        base_url = _prompt_text(
+            "Ollama base URL", prev_embedding.get("base_url") if same("ollama") else None,
+            "http://localhost:11434",
+        )
         if base_url:
             config["embedding_config"]["base_url"] = base_url
             print(f"Using custom Ollama base URL: {base_url}")
@@ -455,11 +504,14 @@ def setup_semantic_search(
     print("3. Daily - Automatically update once per day")
     print("4. Every N days - Automatically update every N days")
 
-    while True:
-        update_choice = input("\nChoose update frequency (1-4): ").strip()
-        if update_choice in ["1", "2", "3", "4"]:
-            break
-        print("Please enter 1, 2, 3, or 4")
+    prev_update = prev.get("update_config") or {}
+    prev_freq = str(prev_update.get("update_frequency") or "")
+    default_update = (
+        {"manual": "1", "startup": "2", "daily": "3"}.get(prev_freq)
+        or ("4" if prev_freq.startswith("every_") else None)
+    )
+    print()
+    update_choice = _prompt_choice("Choose update frequency (1-4)", ["1", "2", "3", "4"], default_update)
 
     update_config = {}
 
@@ -483,14 +535,11 @@ def setup_semantic_search(
         }
         print("Database will be updated once per day.")
     elif update_choice == "4":
-        while True:
-            try:
-                days = int(input("Enter number of days between updates: ").strip())
-                if days > 0:
-                    break
-                print("Please enter a positive number")
-            except ValueError:
-                print("Please enter a valid number")
+        prev_days = prev_update.get("update_days")
+        days = _prompt_positive_int(
+            "Number of days between updates",
+            prev_days if isinstance(prev_days, int) and prev_days > 0 else 7,
+        )
 
         update_config = {
             "auto_update": True,

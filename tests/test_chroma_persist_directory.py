@@ -139,3 +139,68 @@ def test_setup_chunking_warns_about_embeddings_and_memory(monkeypatch, capsys):
     assert "large library" in out
     assert "memory" in out
     assert "up to 600,000 embeddings per 10,000 items" in out
+
+
+def _openai_existing(**extra):
+    cfg = {
+        "embedding_model": "openai",
+        "embedding_config": {"model_name": "text-embedding-3-large", "api_key": "sk-old",
+                             "base_url": "https://proxy.example/v1"},
+        "openai_batch": {"enabled": False},
+        "update_config": {"auto_update": True, "update_frequency": "every_5", "update_days": 5},
+    }
+    cfg.update(extra)
+    return cfg
+
+
+def test_setup_enter_keeps_every_previous_value(monkeypatch):
+    prompts = []
+    # n = change config; then Enter at every prompt.
+    it = iter(["n"] + [""] * 20)
+
+    def fake_input(*args):
+        prompts.append(args[0] if args else "")
+        return next(it)
+
+    monkeypatch.setattr(builtins, "input", fake_input)
+    monkeypatch.setattr(setup_helper.getpass, "getpass", lambda *a: "")
+    config, _ = setup_helper.setup_semantic_search(_openai_existing())
+
+    assert config["embedding_model"] == "openai"
+    assert config["embedding_config"] == {
+        "model_name": "text-embedding-3-large",
+        "api_key": "sk-old",
+        "base_url": "https://proxy.example/v1",
+    }
+    assert config["update_config"]["update_frequency"] == "every_5"
+    assert config["update_config"]["update_days"] == 5
+    assert config["openai_batch"] == {"enabled": False}
+
+
+def test_setup_can_change_just_the_update_schedule(monkeypatch):
+    # Enter on model, model choice, URL, batch; "1" = manual updates.
+    it = iter(["n", "", "", "", "", "1"] + [""] * 10)
+    monkeypatch.setattr(builtins, "input", lambda *a: next(it))
+    monkeypatch.setattr(setup_helper.getpass, "getpass", lambda *a: "")
+    config, _ = setup_helper.setup_semantic_search(_openai_existing())
+
+    assert config["embedding_config"]["api_key"] == "sk-old"
+    assert config["update_config"]["update_frequency"] == "manual"
+
+
+def test_setup_does_not_offer_one_providers_key_to_another(monkeypatch):
+    seen = []
+    it = iter(["n", "3", "", "", "3"] + [""] * 10)
+    monkeypatch.setattr(builtins, "input", lambda *a: next(it))
+
+    def fake_getpass(prompt=""):
+        seen.append(prompt)
+        return ""
+
+    monkeypatch.setattr(setup_helper.getpass, "getpass", fake_getpass)
+    config, _ = setup_helper.setup_semantic_search(_openai_existing())
+
+    assert config["embedding_model"] == "gemini"
+    assert "api_key" not in config["embedding_config"]
+    assert "Enter keeps" not in seen[0]
+    assert "base_url" not in config["embedding_config"]
