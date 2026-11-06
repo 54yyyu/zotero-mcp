@@ -703,3 +703,26 @@ def test_cli_status_prints_freshness(monkeypatch, tmp_path, capsys, which):
     out = _run_cli_status(monkeypatch, tmp_path, capsys, which)
     assert "Index freshness: STALE" in out
     assert "update" in out
+
+
+def test_a_run_whose_only_remaining_chunk_was_given_up_is_not_reported(tmp_path):
+    # batch-import gave the file up after its retries; nothing is left to import.
+    cfg = _config(tmp_path, {"0": 1})
+    _manifest(tmp_path, "openai", "run-g", [
+        {"batch_id": "b1", "status": "completed", "imported_at": "2026-11-02T00:00:00Z"},
+        {"batch_id": "b2", "status": "failed", "abandoned": True},
+    ])
+    assert st.unfinished_batch_runs(cfg, group_id=0) == []
+
+
+def test_a_given_up_chunk_counts_neither_as_left_nor_as_dead(tmp_path):
+    cfg = _config(tmp_path, {"0": 1})
+    _manifest(tmp_path, "openai", "run-h", [
+        {"batch_id": "b1", "status": "completed", "imported_at": "2026-11-02T00:00:00Z"},
+        {"batch_id": "b2", "status": "failed", "abandoned": True},
+        {"batch_id": "b3", "status": "in_progress"},
+    ])
+    found = st.unfinished_batch_runs(cfg, group_id=0)
+    assert found[0]["dead"] == 0
+    text = "\n".join(st.format_unfinished_batches(found))
+    assert "1 of 3" in text and "cannot be imported" not in text

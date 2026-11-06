@@ -330,6 +330,12 @@ def _recorded_state(provider: str, entry: dict[str, Any]) -> str:
     return str(state or "")
 
 
+def _settled(batch: dict[str, Any]) -> bool:
+    """Imported, or given up on after its retries: nothing more to import
+    (``batch_common.is_settled``, without importing it)."""
+    return bool(batch.get("imported_at") or batch.get("abandoned"))
+
+
 def _newest_open_run(ours: list[dict[str, Any]], run_covers: Any) -> dict[str, Any] | None:
     """Newest of one library's runs (newest first) that still has chunks to
     import, is not given up on, and is not covered by a newer run.
@@ -341,7 +347,7 @@ def _newest_open_run(ours: list[dict[str, Any]], run_covers: Any) -> dict[str, A
     for index, manifest in enumerate(ours):
         if manifest.get("abandoned_at"):
             continue
-        if all(b.get("imported_at") for b in manifest.get("batches", [])):
+        if all(_settled(b) for b in manifest.get("batches", [])):
             continue
         if any(run_covers(newer, manifest) for newer in ours[:index]):
             continue
@@ -376,7 +382,7 @@ def unfinished_batch_runs(config_path: str | None, group_id: int | None = None) 
             if manifest is None:
                 continue
         entries = manifest.get("batches", [])
-        pending = [b for b in entries if not b.get("imported_at")]
+        pending = [b for b in entries if not _settled(b)]
         if entries and pending:
             found.append(
                 {
