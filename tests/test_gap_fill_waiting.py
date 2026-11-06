@@ -434,6 +434,23 @@ def test_a_run_stopped_by_an_unreachable_api_keeps_the_waiting_list(build, tmp_p
     assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
 
 
+def test_a_run_deferred_by_an_unfinished_batch_run_keeps_the_waiting_list(build, tmp_path, monkeypatch):
+    zotero = FakeZotero({"AAA": LONG})
+    _park(build, zotero)
+    zotero.version = 6
+    zotero.changed = {"AAA"}
+
+    search = _batch(build(zotero, chunking=True))
+    monkeypatch.setattr(
+        search, "_blocking_batch_runs", lambda provider, group_id: [{"run_id": "run-1", "group_id": group_id}]
+    )
+    monkeypatch.setattr(search, "_deferral", lambda provider, runs, batch: "Waiting for batch run run-1.")
+    stats = search.update_database()
+
+    assert stats.get("batch_deferred")
+    assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
+
+
 # --- full scans of a split index -----------------------------------------------------
 
 
