@@ -1657,6 +1657,8 @@ def update_search_database(
 
         if stats.get("error"):
             output.append(f"**Error:** {stats['error']}")
+        elif stats.get("skipped_message"):
+            output.append(stats["skipped_message"])
         else:
             output.append(f"**Total items:** {stats.get('total_items', 0)}")
             output.append(f"**Processed:** {stats.get('processed_items', 0)}")

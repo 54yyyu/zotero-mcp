@@ -3183,6 +3183,28 @@ class ZoteroSemanticSearch:
             if batch_max_requests is not None:
                 throttle["batch_max_requests"] = batch_max_requests
 
+            # A new run would be cut from the same sync version as an
+            # unfinished one, so it pays again for the same items, and the
+            # older run's parked chunks are never sent. Background syncs hit
+            # this every startup or once a day; wait for the import instead.
+            # A force rebuild, asked for by name, still goes ahead.
+            if batch_enabled and not force_full_rebuild:
+                waiting = batch_common.unfinished_run(
+                    batch_common.get_batch_root(active_batch_provider, self.config_path),
+                    self._pinned_group_id(),
+                    _batch_adapter(active_batch_provider),
+                )
+                if waiting:
+                    stats["skipped_reason"] = "batch_run_unfinished"
+                    stats["skipped_message"] = (
+                        f"Batch run {waiting.get('run_id')} for this library is unfinished, "
+                        "so no new batch was submitted. Run 'zotero-mcp batch-import' to "
+                        "collect it; the changes since then go out on the next update."
+                    )
+                    _report(f"\n{stats['skipped_message']}\n")
+                    stats["duration"] = str(datetime.now() - start_time)
+                    return stats
+
             # The Batch API path builds one item-level record per item
             # (_prepare_index_records) and has no chunking step, so a config
             # asking for passage chunking silently produced a truncated,

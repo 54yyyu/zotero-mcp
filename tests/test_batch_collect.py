@@ -247,3 +247,60 @@ def test_submitting_a_batch_saves_last_update_but_not_the_sync_version(env):
     assert datetime.fromisoformat(section["update_config"]["last_update"]) >= before
     assert not section.get("last_sync_versions", {}).get("0"), "nothing is indexed yet"
     assert env.new_search().should_update_database() is False
+
+
+# ---------------------------------------------------------------------------
+# An unfinished run holds new submissions for its library
+# ---------------------------------------------------------------------------
+
+
+def _set_frequency(env, frequency):
+    config = json.loads(env.config_path.read_text())
+    config["semantic_search"]["update_config"]["update_frequency"] = frequency
+    env.config_path.write_text(json.dumps(config))
+
+
+def test_startup_syncs_do_not_resubmit_while_a_run_is_unfinished(env, presearch):
+    # "startup" is due on every server start whatever last_update says.
+    _set_frequency(env, "startup")
+    presearch()
+    env.zotero.add("CCC", version=11)
+
+    presearch(after_seconds=61)
+    stats = env.new_search().update_database()
+
+    assert env.provider.created == ["batch-1"]
+    assert stats["skipped_reason"] == "batch_run_unfinished"
+    assert "batch-import" in stats["skipped_message"]
+
+
+def test_after_the_import_the_next_update_submits_the_new_changes(env):
+    env.new_search().update_database()
+    env.zotero.add("CCC", version=11)
+    env.provider.finish_all()
+
+    env.new_search()._import_batch("openai")
+    stats = env.new_search().update_database()
+
+    assert env.provider.created == ["batch-1", "batch-2"]
+    assert stats["submitted_items"] == 1
+
+
+def test_a_force_rebuild_still_goes_ahead(env):
+    env.new_search().update_database()
+
+    env.new_search().update_database(force_full_rebuild=True)
+
+    assert env.provider.created == ["batch-1", "batch-2"]
+
+
+def test_a_run_older_than_the_hold_no_longer_holds(env):
+    stats = env.new_search().update_database()
+    manifest_path = stats["batch_manifest"]
+    manifest = json.loads(open(manifest_path).read())
+    manifest["created_at"] = "2020-01-01T00:00:00.000000Z"
+    open(manifest_path, "w").write(json.dumps(manifest))
+
+    env.new_search().update_database()
+
+    assert env.provider.created == ["batch-1", "batch-2"]
