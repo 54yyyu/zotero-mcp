@@ -526,6 +526,8 @@ def _print_update_stats(stats: dict) -> None:
     print(f"- Skipped: {stats.get('skipped_items', 0)}")
     print(f"- Errors: {stats.get('errors', 0)}")
     print(f"- Duration: {stats.get('duration', 'Unknown')}")
+    if stats.get("retry_given_up"):
+        print(f"- WARNING: {stats['retry_given_up']}")
     if stats.get("batch_submitted"):
         print(f"- Batch run: {stats.get('batch_run_id')}")
         print(f"- Manifest: {stats.get('batch_manifest')}")

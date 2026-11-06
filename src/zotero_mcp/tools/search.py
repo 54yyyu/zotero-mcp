@@ -1782,6 +1782,8 @@ def update_search_database(
             output.append(f"**Deferred:** {stats['batch_deferred']}")
         if stats.get("batch_discard_warning"):
             output.append(f"**Warning:** {stats['batch_discard_warning']}")
+        if stats.get("retry_given_up"):
+            output.append(f"**Warning:** {stats['retry_given_up']}")
 
         if stats.get("error"):
             output.append(f"**Error:** {stats['error']}")

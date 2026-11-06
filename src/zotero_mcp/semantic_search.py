@@ -1352,6 +1352,13 @@ class ZoteroSemanticSearch:
     _held_text: _HeldText | None = None
     # Items whose old passages could not be deleted in the article pass, set per run.
     _undropped_passages: set[str] = frozenset()
+    # Items this run writes that were kept for a retry or given up on, set per
+    # run by update_database, and items whose records could not be built.
+    _retry_keys_in_run: set[str] = frozenset()
+    _unprepared_keys: set[str] = frozenset()
+    # Runs in a row an item's records may fail to embed before it is given up
+    # on until it next changes in Zotero.
+    RETRY_ITEM_MAX_ATTEMPTS = 3
     # How long an unfinished batch run stops gap fills; a run left this long has
     # been forgotten, and its results may be gone.
     BATCH_RUN_BLOCKS_FILL_DAYS = 14
@@ -2618,30 +2625,92 @@ class ZoteroSemanticSearch:
 
         Enabling chunking leaves every item without passages, and a migration
         leaves every item without an article record. Neither shows up as a
-        library change, so the sync watermark cannot find them.
+        library change, so the sync watermark cannot find them. Nor does an
+        item kept for a retry (``retry_item_keys``), on any index.
         """
-        if limit is not None or force_rebuild or not self._separate_passages():
+        if limit is not None or force_rebuild:
             return {}
+        retry_keys = list(self.update_config.get("retry_item_keys") or [])
+        if not self._separate_passages():
+            # One level, chosen by the setting; only a kept item is due.
+            return {key: {SEARCH_ARTICLES} for key in retry_keys}
         articles, passages = self.chroma_client.item_keys_by_level()
         gaps: dict[str, set[str]] = {key: {SEARCH_ARTICLES} for key in passages - articles}
         # The Batch API path cannot make passages yet (#416).
         if self._chunking_enabled and not batch:
             for key in articles - passages:
                 gaps[key] = {SEARCH_PASSAGES}
-        # Records a forced rebuild's batch run gave up on. An item with none at
-        # all would not show up above.
-        wants_passages = self._chunking_enabled and not batch
-        still_missing = []
-        for key in self.update_config.get("retry_item_keys") or []:
-            missing = set() if key in articles else {SEARCH_ARTICLES}
-            if wants_passages and key not in passages:
-                missing.add(SEARCH_PASSAGES)
-            if missing:
-                gaps[key] = missing
-                still_missing.append(key)
-        if "retry_item_keys" in self.update_config:
-            self.update_config["retry_item_keys"] = still_missing
+        # Items whose records failed to embed. They get every level again,
+        # whatever they have: a changed item whose write failed still has its
+        # old records. The key goes once the write succeeds (_settle_retry_keys).
+        levels = {SEARCH_ARTICLES, SEARCH_PASSAGES} if self._chunking_enabled and not batch else {SEARCH_ARTICLES}
+        for key in retry_keys:
+            gaps[key] = set(levels)
         return gaps
+
+    def _settle_retry_keys(self, *, written: set[str], failed: set[str], keep_failed: bool) -> list[str]:
+        """Update the items kept for a retry once a write has finished.
+
+        ``written`` items got all their records: they are no longer kept, nor
+        given up on. A ``failed`` item counts one more failed run; with
+        ``keep_failed`` it is kept even if it was not before (a split index, or
+        a rebuild), otherwise only an item already kept is counted. After
+        ``RETRY_ITEM_MAX_ATTEMPTS`` failed runs it is given up on until it next
+        changes in Zotero, so a record that can never be embedded is not paid
+        for on every run. Returns the items given up on now.
+        """
+        config = self.update_config
+        kept = set(config.get("retry_item_keys") or [])
+        attempts = {key: int(n) for key, n in (config.get("retry_item_attempts") or {}).items()}
+        given_up = list(config.get("retry_item_keys_given_up") or [])
+        newly_given_up: list[str] = []
+        for key in sorted(failed):
+            if key not in kept and not keep_failed:
+                continue
+            # A key kept before attempts were counted has failed once already.
+            count = attempts.get(key, 1 if key in kept else 0) + 1
+            if count >= self.RETRY_ITEM_MAX_ATTEMPTS:
+                kept.discard(key)
+                attempts.pop(key, None)
+                if key not in given_up:
+                    given_up.append(key)
+                newly_given_up.append(key)
+            else:
+                kept.add(key)
+                attempts[key] = count
+        for key in written - failed:
+            kept.discard(key)
+            attempts.pop(key, None)
+        given_up = [key for key in given_up if key not in kept and key not in written - failed]
+        if kept or "retry_item_keys" in config:
+            config["retry_item_keys"] = sorted(kept)
+        if attempts or "retry_item_attempts" in config:
+            config["retry_item_attempts"] = {key: attempts[key] for key in sorted(attempts) if key in kept}
+        if given_up or "retry_item_keys_given_up" in config:
+            config["retry_item_keys_given_up"] = given_up
+        return newly_given_up
+
+    def _failed_records_note(self, manifest: dict[str, Any], failed_ids: list[str], covered: bool) -> str:
+        """What an import says about a landed run's records that have no embedding."""
+        count = len(failed_ids)
+        if covered:
+            return f"{count} record(s) have no embedding; a later run covers their items."
+        if manifest.get("reset_at") or self._separate_passages():
+            return f"{count} record(s) still have no embedding after retries; the next update-db embeds them again."
+        return (
+            f"{count} record(s) still have no embedding after retries. The sync version stays put, so the "
+            "next update submits every change since that version again, including chunks already imported."
+        )
+
+    @classmethod
+    def _given_up_message(cls, keys: list[str]) -> str:
+        """What the user is told about items given up on."""
+        shown = ", ".join(keys[:10]) + (f" and {len(keys) - 10} more" if len(keys) > 10 else "")
+        return (
+            f"Gave up on {len(keys)} item(s) whose records failed to embed in "
+            f"{cls.RETRY_ITEM_MAX_ATTEMPTS} runs: {shown}. They are not tried again until they "
+            "change in Zotero; the log shows the embedding error."
+        )
 
     def _get_gap_items_from_api(
         self,
@@ -3387,6 +3456,8 @@ class ZoteroSemanticSearch:
             except Exception as e:
                 logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
                 stats["errors"] += 1
+                if isinstance(self._unprepared_keys, set) and item.get("key"):
+                    self._unprepared_keys.add(item["key"])
 
         return records, stats
 
@@ -3441,6 +3512,15 @@ class ZoteroSemanticSearch:
             group_id=self._pinned_group_id(),
             **submit_kwargs,
         )
+        # Items kept for a retry, or given up on, that this run writes: the
+        # import drops them once the run lands (_promote_run).
+        submitted = {record["id"].split("#", 1)[0] for record in records}
+        retry_keys = sorted(
+            key for key in submitted if key in self._retry_keys_in_run and key not in self._unprepared_keys
+        )
+        if retry_keys:
+            manifest["retry_keys"] = retry_keys
+            module.save_manifest(manifest)
         stats["batch_provider"] = provider
         stats["batch_submitted"] = True
         stats["batch_run_id"] = manifest["run_id"]
@@ -4156,7 +4236,19 @@ class ZoteroSemanticSearch:
                     f"{len(waiting)} indexed items need their full text to add the missing records; "
                     f"{_waiting_for_text_hint(include_fulltext)}\n"
                 )
-            self._level_fill_keys = {item["key"] for item in all_items if item.get("_index_levels")}
+            # Items kept for a retry, or given up on, that this run writes. A
+            # kept item is rewritten in full, so it is no level fill.
+            due = {
+                *(self.update_config.get("retry_item_keys") or []),
+                *(self.update_config.get("retry_item_keys_given_up") or []),
+            }
+            self._retry_keys_in_run = {item["key"] for item in all_items if item.get("key") in due}
+            self._unprepared_keys = set()
+            self._level_fill_keys = {
+                item["key"]
+                for item in all_items
+                if item.get("_index_levels") and item["key"] not in self._retry_keys_in_run
+            }
 
             if batch_enabled:
                 stats["batch_mode"] = True
@@ -4185,6 +4277,13 @@ class ZoteroSemanticSearch:
                 # there is nothing to import: then it moves now, or every later
                 # run would fetch the same changes again.
                 self.update_config["last_update"] = datetime.now().isoformat()
+                if stats.get("batch_nothing_to_embed"):
+                    # Kept items with no text to embed have nothing left to write.
+                    self._settle_retry_keys(
+                        written=set(self._retry_keys_in_run) - self._unprepared_keys,
+                        failed=set(),
+                        keep_failed=False,
+                    )
                 if (
                     stats.get("batch_nothing_to_embed")
                     and target_sync_version is not None
@@ -4364,6 +4463,7 @@ class ZoteroSemanticSearch:
 
             # Retry any documents that failed during the main run
             retry_fail = 0
+            failed_keys: set[str] = set()
             if _failed_docs:
                 try:
                     sys.stderr.write(f"\r{' ' * _term_width(120)}\r")
@@ -4400,6 +4500,7 @@ class ZoteroSemanticSearch:
                         raise
                     except Exception as e2:
                         retry_fail += 1
+                        failed_keys.add(doc_id.split("#", 1)[0])
                         if parent is not None:
                             still_failing.add(parent)
                         logger.error(f"Retry failed for {doc_id}: {e2}")
@@ -4437,13 +4538,24 @@ class ZoteroSemanticSearch:
             # Likewise when items still failed after the retry (#610): in
             # incremental mode they would never appear in a later
             # item_versions(since=...) result, so they would stay unindexed.
-            # Trade-off: an item that always fails keeps the watermark back
-            # on every run. Persisting failed keys instead is a follow-up.
+            # A split index keeps those items for a retry instead, so the
+            # changes the run did write are not bought again on every run.
+            # An unmigrated index keeps holding the watermark.
             self.update_config["last_update"] = datetime.now().isoformat()
             written = stats["added_items"] + stats["updated_items"] + stats["recovered_items"]
             if api_answered or written:
                 self.update_config.pop("last_api_failure", None)
-            if stats.get("deletion_skipped_reason") or retry_fail:
+            keep_failed = self._separate_passages()
+            failed_keys |= self._unprepared_keys & set(self._retry_keys_in_run)
+            given_up = self._settle_retry_keys(
+                written=set(self._retry_keys_in_run) - failed_keys,
+                failed=failed_keys,
+                keep_failed=keep_failed,
+            )
+            if given_up:
+                stats["retry_given_up"] = self._given_up_message(given_up)
+                _report(f"  {stats['retry_given_up']}\n")
+            if stats.get("deletion_skipped_reason") or (retry_fail and not keep_failed):
                 self._save_update_config()
             else:
                 self._save_update_config(
@@ -4498,6 +4610,8 @@ class ZoteroSemanticSearch:
             if self._held_text is not None:
                 self._held_text.close()
                 self._held_text = None
+            self._retry_keys_in_run = frozenset()
+            self._unprepared_keys = frozenset()
             # Release the update flock on every exit path. Paired with the
             # __enter__ call above; the "not acquired" branch releases
             # separately before its early return, so this finally only runs
@@ -4604,6 +4718,8 @@ class ZoteroSemanticSearch:
             except Exception as e:
                 logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
                 stats["errors"] += 1
+                if isinstance(self._unprepared_keys, set) and item.get("key"):
+                    self._unprepared_keys.add(item["key"])
 
         # Which items already existed (drives added-vs-updated). Stale
         # passages are pruned only after the new ones are written
@@ -5354,7 +5470,7 @@ class ZoteroSemanticSearch:
             ):
                 self._promote_run(provider, run, _run_replaced_index(run))
 
-    def _promote_run(self, provider: str, manifest: dict[str, Any], rebuilt_now: bool) -> None:
+    def _promote_run(self, provider: str, manifest: dict[str, Any], rebuilt_now: bool) -> list[str]:
         """A whole run has landed: move the sync version of its library.
 
         Of the library the batch was submitted against, not whichever library
@@ -5364,20 +5480,26 @@ class ZoteroSemanticSearch:
         replaced the whole ChromaDB collection: the sync version has to say what
         the collection now holds, or the changes between the two versions would
         be missing for good, and 0 when that is unknown.
+
+        Returns the items given up on now (:meth:`_settle_retry_keys`).
         """
         self.update_config["last_update"] = datetime.now().isoformat()
         group_id = manifest.get("group_id")
         library_key = None if group_id is None else str(group_id)
         target = manifest.get("target_sync_version")
         failed_ids = manifest.get("failed_ids") or []
-        if failed_ids and (manifest.get("reset_at") or self._separate_passages()):
+        failed_keys = {doc_id.split("#", 1)[0] for doc_id in failed_ids}
+        keep_failed = bool(failed_ids) and bool(manifest.get("reset_at") or self._separate_passages())
+        given_up = self._settle_retry_keys(
+            written=set(manifest.get("retry_keys") or []) - failed_keys,
+            failed=failed_keys,
+            keep_failed=keep_failed,
+        )
+        if keep_failed:
             # Records that never got an embedding. Holding the watermark would
             # pay for this run's other items again every run, and after a
             # forced rebuild the old one described a collection that is gone.
-            # Move on, and remember these for the gap fill.
-            retry_keys = set(self.update_config.get("retry_item_keys") or [])
-            retry_keys.update(doc_id.split("#", 1)[0] for doc_id in failed_ids)
-            self.update_config["retry_item_keys"] = sorted(retry_keys)
+            # Move on: the items are kept for a retry (_settle_retry_keys).
             rebuilt_now = rebuilt_now or bool(manifest.get("reset_at"))
         elif failed_ids:
             # An unmigrated index has no gap fill, so the watermark stays, as
@@ -5390,6 +5512,7 @@ class ZoteroSemanticSearch:
         self._save_update_config(last_sync_version=target, library_key=library_key)
         manifest["promoted_at"] = datetime.now().isoformat()
         _batch_module(provider).save_manifest(manifest)
+        return given_up
 
     def _collect_unfinished_batches(
         self,
@@ -6137,11 +6260,8 @@ class ZoteroSemanticSearch:
             # stays where it is until the whole run has landed.
             if all(batch_common.is_settled(batch) for batch in all_batches):
                 failed_ids = manifest.get("failed_ids") or []
-                if failed_ids:
-                    stats["errors"].append({"error": (
-                        f"{len(failed_ids)} record(s) still have no embedding after retries; "
-                        "the next update-db embeds them again"
-                    )})
+                given_up: list[str] = []
+                covered = bool(superseded_by) or overtaken_at is not None or self._predates_reset(manifest)
                 if superseded_by:
                     # The newer run was cut from this same watermark and will
                     # advance it when it lands; doing it here would skip
@@ -6159,11 +6279,15 @@ class ZoteroSemanticSearch:
                     # target says nothing about what the index holds now.
                     and not self._predates_reset(manifest)
                 ):
-                    self._promote_run(
+                    given_up = self._promote_run(
                         provider,
                         manifest,
                         _run_replaced_index(manifest) and stats["batches_imported"] > 0,
                     )
+                if failed_ids and not {doc_id.split("#", 1)[0] for doc_id in failed_ids} <= set(given_up):
+                    stats["errors"].append({"error": self._failed_records_note(manifest, failed_ids, covered)})
+                if given_up:
+                    stats["errors"].append({"error": self._given_up_message(given_up)})
             return stats
         finally:
             # The user acted on this run, so a note asking them to (from a
