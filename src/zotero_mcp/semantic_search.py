@@ -6429,7 +6429,9 @@ class ZoteroSemanticSearch:
                     followed = [
                         doc_id for doc_id in ids if records[doc_id].get("passages_follow")
                     ]
-                    if not superseded_by:
+                    # A run taken over by a newer one or by a sync sends no more
+                    # chunks, and the passages stored now are newer than its own.
+                    if not taken_over:
                         for doc_id in followed:
                             self._drop_unlike_passages(doc_id, records[doc_id]["passages_follow"])
                     stats["imported_items"] += len(ids)

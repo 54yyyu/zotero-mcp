@@ -534,3 +534,31 @@ def test_an_article_landing_keeps_the_cached_text_for_its_passages(env, monkeypa
 
     _land(env, search)
     assert "AAA" in evicted
+
+
+def test_an_overtaken_run_landing_by_id_keeps_the_newer_passages(env, monkeypatch, tmp_path):
+    """A newer sync wrote these passages; the run's own may never be sent."""
+    search = _changed_run(env, monkeypatch, tmp_path)
+    newer = [f"Newer passage {n} of AAA." for n in range(5)]
+    search.chroma_client.upsert_embeddings(
+        documents=newer,
+        metadatas=[{"item_key": "AAA", "parent_item_key": "AAA", "chunk_index": n, "n_chunks": 5}
+                   for n in range(5)],
+        ids=[f"AAA#{n}" for n in range(5)],
+        embeddings=[[1.0, 0.0]] * 5,
+    )
+    config = json.loads(Path(env.config).read_text())
+    config["semantic_search"]["last_sync_versions"] = {"0": 7}
+    config["semantic_search"]["last_sync_version"] = 7
+    Path(env.config).write_text(json.dumps(config))
+    _finish_where(env, lambda i: "#" not in i)
+    article_jobs = [
+        job_id for job_id, job in env.fake.jobs.items()
+        if job.status == "completed" and all("#" not in i for i in env.fake.ids_in(job_id))
+    ]
+
+    search = env.build(FakeZotero({}), chunking=True)
+    stats = search._import_batch("openai", batch_ids=article_jobs)
+
+    assert stats["imported_items"] >= 1
+    assert sorted(_passage_texts(search, "AAA")) == sorted(newer)
