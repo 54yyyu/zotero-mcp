@@ -88,20 +88,16 @@ class OllamaEmbeddingFunction(RemoteEmbeddingFunction):
         """True for any EmbeddingGemma tag, e.g. ``embeddinggemma-2:270m-bf16-text``."""
         return "embeddinggemma" in (getattr(self, "model_name", "") or "").lower()
 
+    def _gemma_prefixed(self, prefix: str, text: str) -> str:
+        """Prepend ``prefix`` for EmbeddingGemma models; identity for others."""
+        return f"{prefix}{text}" if self._is_embeddinggemma() else text
+
     def _prepare_document(self, text: str) -> str:
-        """Prepend EmbeddingGemma's document prompt; identity for other models."""
-        if self._is_embeddinggemma():
-            return f"{self.GEMMA_DOC_PREFIX}{text}"
-        return text
+        return self._gemma_prefixed(self.GEMMA_DOC_PREFIX, text)
 
     def _prepare_query(self, text: str) -> str:
-        """Prepend EmbeddingGemma's search-query prompt; identity for other models.
-
-        Runs after the base class's query truncation, as for Gemini v2.
-        """
-        if self._is_embeddinggemma():
-            return f"{self.GEMMA_QUERY_PREFIX}{text}"
-        return text
+        # Runs after the base class's query truncation, as for Gemini v2.
+        return self._gemma_prefixed(self.GEMMA_QUERY_PREFIX, text)
 
     @staticmethod
     def name() -> str:
