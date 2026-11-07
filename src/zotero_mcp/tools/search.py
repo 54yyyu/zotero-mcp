@@ -373,7 +373,9 @@ def _search_items_via_backend(zot, query: str, qmode: str, limit: int,
         "results, not more. For topic discovery, use zotero_semantic_search "
         "instead; for tag filtering use zotero_search_by_tag. "
         "If a query finds nothing, this tool automatically falls back to "
-        "simplified queries and then semantic search. "
+        "simplified queries and then semantic search; fallback=False skips "
+        "that and reports a miss at once, e.g. to check whether a known "
+        "paper is already in the library. "
         "query: required substring. qmode: 'titleCreatorYear' (default) "
         "matches only title/authors/year; 'everything' also searches "
         "abstract. item_type: '-attachment' (default) excludes attachments; "
@@ -400,6 +402,7 @@ def search_items(
     collection_key: str | None = None,
     include_subcollections: bool = False,
     search_all_libraries: bool = False,
+    fallback: bool = True,
     *,
     ctx: Context
 ) -> str:
@@ -425,6 +428,12 @@ def search_items(
             of the active one (#163). Requires the SQLite backend; each result
             is labelled with the library it came from. Cannot be combined with
             collection_key, which names a collection inside one library.
+        fallback: When the query finds nothing, retry with simplified
+            queries, full-text search and semantic search (default True).
+            False returns "No items found" right after the first search; a
+            miss then takes about as long as a hit instead of running the
+            whole cascade (up to CASCADE_TIMEOUT seconds, and the semantic
+            index loads its embedding model).
         ctx: MCP context
 
     Returns:
@@ -507,7 +516,7 @@ def search_items(
                     ctx.info("Search took too long — returning best results found so far")
                 return _timed_out
 
-            if not items and query.strip():
+            if fallback and not items and query.strip():
                 ctx.info("No results with original query, trying fallback strategies...")
                 words = query.strip().split()
 

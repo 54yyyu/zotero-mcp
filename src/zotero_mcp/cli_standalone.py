@@ -284,7 +284,8 @@ def cmd_search(args):
         result = search_mod.search_items(
             query=args.query, qmode=args.qmode, limit=args.limit,
             collection_key=getattr(args, "collection", None),
-            search_all_libraries=getattr(args, "all_libraries", False), ctx=ctx,
+            search_all_libraries=getattr(args, "all_libraries", False),
+            fallback=not getattr(args, "no_fallback", False), ctx=ctx,
         )
 
     if _reports_failure(result):
@@ -1535,6 +1536,10 @@ def build_parser() -> argparse.ArgumentParser:
                           "the active one, labelling each result with its "
                           "library (items, advanced and semantic modes). "
                           "Requires the SQLite backend (the default in local mode).")
+    s_p.add_argument("--no-fallback", action="store_true",
+                     help="Items mode: when the query finds nothing, report it "
+                          "at once instead of retrying with simplified queries, "
+                          "full-text and semantic search.")
     s_p.add_argument("--detail", choices=["keys_only", "summary", "full"],
                      default="summary",
                      help="How much of each item --json returns (no effect on "

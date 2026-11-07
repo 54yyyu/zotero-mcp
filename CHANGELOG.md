@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`zotero_search_items` takes `fallback=False`, and `zotero-cli search` takes `--no-fallback`**, to report a miss at once. When a query finds nothing, the tool retries with simplified queries, full-text search and semantic search before answering, which can take up to `CASCADE_TIMEOUT` (60 s) and loads the semantic index. Checking whether a known paper is in the library is the common case where that cascade is not wanted: in a local library, a miss took about 40 s against about 4 s for a hit, and several such calls in a row wait for each other on the API lock. Default unchanged.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added
