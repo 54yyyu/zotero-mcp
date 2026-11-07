@@ -583,6 +583,26 @@ def test_items_given_up_by_a_background_run_reach_the_search_note_until_they_cha
     assert not build(zotero).batch_notice()
 
 
+def test_a_given_up_item_deleted_from_zotero_leaves_the_notice(build, tmp_path):
+    """A deleted item never changes again, so the notice would otherwise stay on every search."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    build(zotero).update_database()
+    _poison(zotero, "BBB")
+    build(zotero).update_database()
+    zotero.changed = set()
+    build(zotero).update_database()
+    build(zotero).update_database()
+    assert "BBB" in build(zotero).batch_notice()["given_up"]
+
+    del zotero.abstracts["BBB"]
+    zotero.version += 1
+    stats = build(zotero).update_database()
+
+    assert stats["deleted_items"] == 1
+    assert _saved(tmp_path)["retry_item_keys_given_up"] == []
+    assert not build(zotero).batch_notice()
+
+
 def test_items_given_up_by_a_collect_reach_the_notice_once(build, batch, tmp_path):
     zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
     build(zotero, chunking=False).update_database()

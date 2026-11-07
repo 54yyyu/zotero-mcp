@@ -3659,6 +3659,9 @@ class ZoteroSemanticSearch:
                     bare_keys = [k for k in to_delete_keys if k in stored_ids]
                     if bare_keys:
                         self.chroma_client.delete_documents(bare_keys)
+                    # A deleted item can't change in Zotero again, so it must
+                    # not stay kept for a retry or listed as given up on.
+                    self._settle_retry_keys(written=set(to_delete_keys), failed=set(), keep_failed=False)
                     stats["deleted_items"] = len(to_delete_keys)
                     try:
                         sys.stderr.write(f"\nDeleted {len(to_delete_keys)} items no longer present in Zotero.\n")
