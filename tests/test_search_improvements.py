@@ -1,5 +1,8 @@
 """Tests for search improvements: normalization, variant generation, fallback cascade."""
 
+import sys
+import types
+
 import pytest
 from unittest.mock import MagicMock, patch
 from conftest import DummyContext, FakeZotero, skip_on_ci
@@ -402,6 +405,44 @@ class TestFallbackCascade:
         result = search_module.search_items(query="Nonexistent 9999", ctx=ctx)
 
         assert "No items found" in result
+
+    def test_no_fallback_reports_a_miss_after_the_first_search(self, monkeypatch):
+        # Strategy 2 (author only) would find "Brewer"; fallback=False must stop before it.
+        items = [{"key": "X6", "data": {"title": "Author Find", "itemType": "journalArticle",
+                                         "creators": [], "date": "2020", "tags": []}}]
+        fake_zot = self._setup(monkeypatch, {"Brewer": items})
+        queried = []
+        record = fake_zot.add_parameters
+
+        def recording_add_params(**kwargs):
+            queried.append(kwargs.get("q"))
+            record(**kwargs)
+
+        fake_zot.add_parameters = recording_add_params
+        semantic = types.ModuleType("zotero_mcp.semantic_search")
+
+        def semantic_must_not_run(*args, **kwargs):
+            raise AssertionError("semantic search ran with fallback=False")
+
+        semantic.create_semantic_search = semantic_must_not_run
+        monkeypatch.setitem(sys.modules, "zotero_mcp.semantic_search", semantic)
+
+        result = search_module.search_items(query="Brewer 2011", fallback=False,
+                                            ctx=DummyContext())
+
+        assert "No items found" in result
+        assert set(queried) == {"Brewer 2011"}
+
+    def test_no_fallback_still_returns_direct_hits(self, monkeypatch):
+        items = [{"key": "X7", "data": {"title": "Direct Find", "itemType": "journalArticle",
+                                         "creators": [], "date": "2011", "tags": []}}]
+        self._setup(monkeypatch, {"Brewer 2011": items})
+
+        result = search_module.search_items(query="Brewer 2011", fallback=False,
+                                            ctx=DummyContext())
+
+        assert "Direct Find" in result
+        assert "Note:" not in result
 
     def test_fallback_note_includes_verification_guidance(self, monkeypatch):
         items = [{"key": "X4", "data": {"title": "Paper A", "itemType": "journalArticle",
