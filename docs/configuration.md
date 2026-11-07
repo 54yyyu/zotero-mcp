@@ -265,7 +265,7 @@ Extracted text is reliable for prose and unreliable for math and tables. `zotero
 
 By default each item is indexed as one vector: title, authors, abstract and any full text joined and cut at the embedding model's input limit. The default model, all-MiniLM-L6-v2, reads 256 tokens (about 1,000 characters), so with `update-db --fulltext` the body of a PDF is extracted but never embedded and only the start of each item is searchable. `zotero-mcp update-db --fulltext` and `zotero-mcp db-status` say so when this applies.
 
-Passage chunking indexes each item as several overlapping passages instead, so search can match anywhere in a paper and return the matching passage with its page. It is off by default. These keys live under `semantic_search.chunking`:
+Passage chunking also indexes each item as several overlapping passages, in a separate collection, so search can match anywhere in a paper and return the matching passage with its page. The one-vector article record stays: articles suit finding works on a topic, and passages suit finding where something is done or stated. It is off by default. These keys live under `semantic_search.chunking`:
 
 ```json
 {
@@ -282,12 +282,16 @@ Passage chunking indexes each item as several overlapping passages instead, so s
 
 | Key | Default | What it does |
 |---|---|---|
-| `enabled` | `false` | Index passages instead of one vector per item. |
+| `enabled` | `false` | Index passages as well as one vector per item. Semantic search uses passages by default when this is on and articles when it is off. |
 | `chunk_size` | `1500` | Target passage length in characters. |
 | `overlap` | `200` | Characters shared between neighbouring passages. |
 | `max_chunks_per_item` | `20` | Passages kept per item. Text past the last passage is not indexed. |
 
-Chunking only applies to items indexed after you turn it on, so run `zotero-mcp update-db --fulltext --force-rebuild` once. It is not applied on the Batch API path.
+After turning it on, run `zotero-mcp update-db --fulltext` once in local mode (`ZOTERO_LOCAL=true`). With the web API, where `--fulltext` is not available, run `zotero-mcp update-db`, which uses the text Zotero has already extracted. It adds the passages and keeps the article vectors you already have, with no `--force-rebuild` and no re-embedding of articles. It is not applied on the Batch API path.
+
+An update writes every article record before any passage, so article search covers a long run's items early. A changed item has no passages from the moment its new article record is written until its new passages are, and passage search misses it meanwhile; a run stopped in between leaves the rest to the next update.
+
+Passages and articles live in two collections in the same index directory, `zotero_library_passages` and `zotero_library`, so an article search never loads passage vectors into memory. With chunking off, an item that changes loses its passages, and they are added back when chunking is next on.
 
 A passage longer than the model can read would lose its tail, so `chunk_size` is lowered to fit: about 85% of the model's token limit, at 4 characters per token (3 for OpenAI). For the default model that is roughly 870 characters per passage whatever `chunk_size` says. Models with a larger limit keep your `chunk_size`, and the change is logged once at info level.
 

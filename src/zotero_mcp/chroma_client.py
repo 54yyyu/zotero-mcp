@@ -72,8 +72,11 @@ class ChromaClient:
     :meth:`separate_passages` is False for it and every id stays there.
     """
 
-    #: Whether writes go to the collection their id belongs to.
-    route_passages = False
+    #: Whether writes go to the collection their id belongs to. repair-db turns
+    #: this off to rebuild an unmigrated index in the shape it found it.
+    route_passages = True
+    _passage_collection = None
+    _unmigrated: bool | None = None
 
     def __init__(self,
                  collection_name: str = "zotero_library",
@@ -268,6 +271,10 @@ class ChromaClient:
         if chunks and passages is not None:
             groups.append((passages, chunks))
         return groups
+
+    def item_keys_by_level(self) -> tuple[set[str], set[str]]:
+        """Item keys with an article record, and item keys with passages, from SQLite."""
+        return read_item_keys_by_level(self.persist_directory, self.collection_name)
 
     def _collection_for_level(self, level: str):
         return self._passages() if level == PASSAGES and self.separate_passages() else self.collection
@@ -659,6 +666,28 @@ class ChromaClient:
         except Exception:
             return set()
 
+    def item_group_ids(self, item_keys: list[str]) -> dict[str, int]:
+        """The library (``group_id``) of each indexed item in ``item_keys`` that has one.
+
+        Read from the item's article record, or its first passage. Items
+        without a recorded library are left out, and so is everything on a
+        read failure: callers treat a missing entry as "don't know".
+        """
+        groups: dict[str, int] = {}
+        try:
+            ids = [doc_id for key in item_keys for doc_id in (key, f"{key}#0")]
+            for collection, part in self._group_existing(ids):
+                for start in range(0, len(part), 5000):
+                    result = collection.get(ids=part[start:start + 5000], include=["metadatas"])
+                    for doc_id, meta in zip(result.get("ids", []), result.get("metadatas") or []):
+                        group_id = (meta or {}).get("group_id")
+                        if group_id is not None:
+                            groups.setdefault(doc_id.split("#", 1)[0], int(group_id))
+            return groups
+        except Exception as e:
+            logger.debug(f"Error reading item libraries: {e}")
+            return {}
+
     def get_all_ids(self, where: dict[str, Any] | None = None) -> set[str]:
         """Return every id currently stored in the collection.
 
@@ -1011,6 +1040,54 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
         passage_collection_id=passage_id,
     )
     return layout
+
+
+def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tuple[set[str], set[str]]:
+    """Item keys with an article record and with all their passages, read-only from SQLite.
+
+    An item with only some of its passages does not count: a failure part way
+    through writing them would otherwise stay hidden for as long as the item
+    does not change. Records carry ``n_chunks``, so missing ones can be counted.
+    Listing ids through ChromaDB would load both vector indexes for this.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return set(), set()
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        articles = {
+            row[0]
+            for row in con.execute(
+                """
+                SELECT e.embedding_id
+                FROM embeddings e
+                JOIN segments s ON e.segment_id = s.id
+                JOIN collections c ON s.collection = c.id
+                WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id NOT LIKE '%#%'
+                """,
+                (collection_name,),
+            )
+        }
+        found: dict[str, int] = {}
+        expected: dict[str, int] = {}
+        for doc_id, n_chunks in con.execute(
+            """
+            SELECT e.embedding_id, m.int_value
+            FROM embeddings e
+            JOIN segments s ON e.segment_id = s.id
+            JOIN collections c ON s.collection = c.id
+            LEFT JOIN embedding_metadata m ON m.id = e.id AND m.key = 'n_chunks'
+            WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id LIKE '%#%'
+            """,
+            (passage_collection_name(collection_name),),
+        ):
+            key = doc_id.split("#", 1)[0]
+            found[key] = found.get(key, 0) + 1
+            if n_chunks is not None:
+                expected[key] = n_chunks
+    finally:
+        con.close()
+    return articles, {key for key, count in found.items() if count >= expected.get(key, 1)}
 
 
 def read_collection_status(

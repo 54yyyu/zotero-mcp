@@ -87,6 +87,7 @@ def test_writes_go_to_the_collection_their_id_belongs_to(client):
 
 def test_with_routing_off_everything_stays_in_one_collection(directory):
     client = ChromaClient(collection_name=NAME, persist_directory=directory)
+    client.route_passages = False
     assert client.separate_passages() is False
 
     _write(client, ["AAA", "BBB#0"], [_meta("AAA"), _passage_meta("BBB", 0, 1)])
@@ -98,6 +99,7 @@ def test_with_routing_off_everything_stays_in_one_collection(directory):
 def test_index_with_passages_in_the_article_collection_keeps_writing_there(directory):
     """An unmigrated chunked index goes on working as it does today."""
     legacy = ChromaClient(collection_name=NAME, persist_directory=directory)
+    legacy.route_passages = False
     _write(legacy, ["AAA#0"], [_passage_meta("AAA", 0, 1)])
 
     client = ChromaClient(collection_name=NAME, persist_directory=directory)

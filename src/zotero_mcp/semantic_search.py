@@ -17,9 +17,11 @@ import sys
 import threading
 import time
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from pyzotero.zotero_errors import ResourceNotFoundError
 
 try:
     import tiktoken
@@ -120,6 +122,25 @@ def _is_superseded(current: dict[str, Any], newest: dict[str, Any] | None) -> bo
     if newest.get("group_id") != current.get("group_id"):
         return False
     return bool(newest.get("force_full_rebuild")) or not current.get("force_full_rebuild")
+
+
+def _waiting_for_text_hint(include_fulltext: bool) -> str:
+    """Say how the items waiting for full text get filled, in the mode this run is in.
+
+    ``update-db --fulltext`` reads the local database, so outside local mode it
+    only errors; there the items are filled from the text Zotero has extracted.
+    """
+    if is_local_mode():
+        return "run 'zotero-mcp update-db --fulltext' to add them."
+    if include_fulltext:
+        return (
+            "an update adds each one once Zotero has extracted its text "
+            "('zotero-mcp update-db --fulltext' does this in local mode)."
+        )
+    return (
+        "updates run without full text, so they stay out until "
+        "semantic_search.include_fulltext is turned on."
+    )
 
 
 def _report(message: str) -> None:
@@ -445,6 +466,65 @@ _STREAM_SENTINEL = object()
 _STREAM_COMMIT_THRESHOLD = 200
 
 
+class _HeldText:
+    """Items' full text kept on disk between the article pass and the passage pass.
+
+    A run writing both levels embeds every article record before any passage.
+    Holding each item's text in memory until its passages are written would
+    keep the whole library's text in memory for the run, so the article pass
+    moves it to a private temporary directory and the passage pass reads it
+    back, one slice at a time. No file is parsed twice either way. Text that
+    can't be written to disk stays in memory.
+    """
+
+    _KEY = "_held_fulltext"
+
+    def __init__(self) -> None:
+        self._dir: Any = None
+        self._count = 0
+        self._closed = False
+
+    def hold(self, item: dict[str, Any]) -> None:
+        data = item.get("data") or {}
+        text = data.get("fulltext") or ""
+        if not text or self._closed:
+            # After close, a pipeline thread still finishing must not leave
+            # a new directory behind: the text stays in memory.
+            return
+        try:
+            if self._dir is None:
+                import tempfile
+
+                self._dir = tempfile.TemporaryDirectory(prefix="zotero-mcp-text-")
+            self._count += 1
+            path = Path(self._dir.name) / f"{self._count}.txt"
+            path.write_text(text, encoding="utf-8")
+        except OSError as e:
+            logger.debug(f"Keeping the text of {item.get('key')} in memory: {e}")
+            return
+        item[self._KEY] = str(path)
+        data["fulltext"] = ""
+
+    def restore(self, item: dict[str, Any]) -> None:
+        path = item.pop(self._KEY, None)
+        if path:
+            item.setdefault("data", {})["fulltext"] = Path(path).read_text(encoding="utf-8")
+            Path(path).unlink(missing_ok=True)
+
+    @staticmethod
+    def release(item: dict[str, Any]) -> None:
+        """Drop the text again once the item's passages are built."""
+        data = item.get("data") or {}
+        if data.get("fulltext"):
+            data["fulltext"] = ""
+
+    def close(self) -> None:
+        self._closed = True
+        if self._dir is not None:
+            self._dir.cleanup()
+            self._dir = None
+
+
 def _split_prepared_into_requests(prepared: dict[str, Any], request_batch_size: int):
     """Yield ``(documents, metadatas, ids, item_keys)`` request-sized payloads.
 
@@ -565,6 +645,27 @@ def split_into_passages(
         # Guarantee forward progress even when overlap is large.
         start = new_start if new_start > start else end
     return passages
+
+
+def _same_moment(first: Any, second: Any) -> bool:
+    """Whether two Zotero timestamps are the same time, whichever format each is in.
+
+    The local database gives ``2026-07-02 01:01:48`` and the API gives
+    ``2026-07-02T01:01:48Z``, both UTC, so comparing the text would make every
+    item indexed one way look changed to the other.
+    """
+    if first == second:
+        return True
+
+    def parse(value: Any) -> datetime | None:
+        try:
+            parsed = datetime.fromisoformat(str(value).strip().replace(" ", "T").replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    a, b = parse(first), parse(second)
+    return a is not None and a == b
 
 
 def _attachment_priority_changed(existing_metadata: dict, current_tag: str) -> bool:
@@ -1234,6 +1335,22 @@ class ZoteroSemanticSearch:
         logger.warning(message)
         _report(f"\nWarning: {message}\n")
 
+    # Set per run by update_database; see _prune_stale_chunks.
+    _drop_passages_on_write = False
+    # The gaps a local scan should keep items for, set per run by update_database.
+    _scan_gaps: dict[str, set[str]] = {}
+    # Items a run only adds a missing level to, set per run by update_database.
+    _level_fill_keys: set[str] = frozenset()
+    # Text kept between the article and passage passes, set per run by update_database.
+    _held_text: _HeldText | None = None
+    # Items whose old passages could not be deleted in the article pass, set per run.
+    _undropped_passages: set[str] = frozenset()
+    # A gap fill waiting for full text Zotero did not have is asked for it again
+    # after this many days, doubling after each answer without text, up to the
+    # cap. Zotero indexes PDFs some time after they are added.
+    GAP_TEXT_RECHECK_FIRST_DAYS = 1
+    GAP_TEXT_RECHECK_MAX_DAYS = 30
+
     # Share of the model's input limit a passage may fill. Characters per token
     # is an estimate, and the head of a passage is cut off if it overshoots.
     CHUNK_FIT_MARGIN = 0.85
@@ -1282,7 +1399,7 @@ class ZoteroSemanticSearch:
             f"Full text is being indexed as one vector per item, and {model} takes only "
             f"{int(max_tokens)} tokens, so only the first ~{int(max_tokens)} tokens of each "
             "item (usually the abstract) are searchable. Enable semantic_search.chunking in "
-            "config.json and rebuild with --force-rebuild to index whole papers."
+            "config.json and run update-db again to index whole papers."
         )
 
     def _load_reranker_config(self) -> dict[str, Any]:
@@ -2298,6 +2415,22 @@ class ZoteroSemanticSearch:
                                     should_extract = False
                                     skipped_existing += 1
 
+                        if not should_extract and it.key in self._scan_gaps:
+                            action = self._scan_gap_action(
+                                existing_metadata or {}, self._scan_gaps[it.key]
+                            )
+                            it._index_levels = self._scan_gaps[it.key]
+                            skipped_existing -= 1
+                            if action == "extract":
+                                should_extract = True
+                            else:
+                                # Extraction already failed and nothing changed:
+                                # index what metadata there is, as the first run
+                                # did, instead of parsing that file again.
+                                it._fulltext_attempted = True
+                                extracted += 1
+                                items_to_process.append(it)
+
                         if should_extract:
                             # Defer the parse itself — see phase 2b.
                             if not getattr(it, "fulltext", None):
@@ -2439,6 +2572,8 @@ class ZoteroSemanticSearch:
                         api_item["data"]["attachmentKeys"] = att
                     if (prio := getattr(item, "_attachment_priority", None)) is not None:
                         api_item["data"]["attachmentPriority"] = prio
+                    if (levels := getattr(item, "_index_levels", None)) is not None:
+                        api_item["_index_levels"] = levels
 
                     # Add notes if available
                     if item.notes:
@@ -2453,6 +2588,277 @@ class ZoteroSemanticSearch:
             logger.error(f"Error reading from local database: {e}")
             logger.info("Falling back to API...")
             return self._get_items_from_api(limit)
+
+    @staticmethod
+    def _scan_gap_action(existing_metadata: dict[str, Any], gap: set[str] | None) -> str | None:
+        """What a scan does with an up-to-date item that lacks a level, or None."""
+        if not gap:
+            return None
+        return "metadata_only" if existing_metadata.get("has_fulltext") == "failed" else "extract"
+
+    def _find_index_gaps(
+        self, *, limit: int | None, force_rebuild: bool, batch: bool = False
+    ) -> dict[str, set[str]]:
+        """Items that lack a level this index should have: ``{key: {levels}}``.
+
+        Enabling chunking leaves every item without passages, and a migration
+        leaves every item without an article record. Neither shows up as a
+        library change, so the sync watermark cannot find them.
+        """
+        if limit is not None or force_rebuild or not self._separate_passages():
+            return {}
+        articles, passages = self.chroma_client.item_keys_by_level()
+        gaps: dict[str, set[str]] = {key: {SEARCH_ARTICLES} for key in passages - articles}
+        # The Batch API path cannot make passages yet (#416).
+        if self._chunking_enabled and not batch:
+            for key in articles - passages:
+                gaps[key] = {SEARCH_PASSAGES}
+        return gaps
+
+    def _get_gap_items_from_api(
+        self,
+        gaps: dict[str, set[str]],
+        *,
+        already_fetched: set[str],
+        library_keys: set[str] | None,
+        include_fulltext: bool,
+    ) -> list[dict[str, Any]]:
+        """Fetch the items in ``gaps`` that belong to this library, marked with what they lack.
+
+        Items of other libraries wait for a run against their own library, and
+        with the library's keys unknown there is nothing to go on this run.
+        """
+        if library_keys is None:
+            return []
+        waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
+        skipped = self._still_waiting_for_text(include_fulltext)
+        items: list[dict[str, Any]] = []
+        for key in sorted(gaps):
+            if key in already_fetched or key in skipped:
+                continue
+            if key not in library_keys:
+                # Another library's item: its own library's run asks about it.
+                continue
+            if not include_fulltext:
+                # No run without text can fill this; don't fetch the item to find out.
+                existing = self.chroma_client.get_document_metadata(key) or {}
+                if existing.get("has_fulltext") and existing.get("has_fulltext") != "failed":
+                    waiting.add(key)
+                    continue
+            try:
+                item = self.zotero_client.item(key)
+            except Exception as e:
+                logger.debug(f"item({key}) failed while filling index gaps: {e}")
+                self._note_unanswered_recheck(key, waiting)
+                continue
+            if not item or item.get("data", {}).get("itemType") in _NON_INDEXED_ITEM_TYPES:
+                self._note_unanswered_recheck(key, waiting)
+                continue
+            item["_index_levels"] = gaps[key]
+            items.append(item)
+        if include_fulltext and items:
+            self._attach_web_fulltext(items)
+        self._tag_group_id(items)
+        self.update_config["gaps_waiting_for_text"] = sorted(waiting)
+        return self._without_fills_lacking_text(items)
+
+    @staticmethod
+    def _local_time(value: Any) -> datetime | None:
+        """A stored ISO time as naive local time, or None when it can't be read."""
+        try:
+            moment = datetime.fromisoformat(str(value))
+            if moment.tzinfo is not None:
+                moment = moment.astimezone().replace(tzinfo=None)
+        except (TypeError, ValueError, OverflowError, OSError):
+            return None
+        return moment
+
+    @staticmethod
+    def _check_count(check: Any) -> int:
+        """How many times Zotero answered a waiting item without text; 0 if unreadable."""
+        try:
+            return max(int(check.get("checks") or 0), 0) if isinstance(check, dict) else 0
+        except (TypeError, ValueError, OverflowError):
+            return 0
+
+    def _text_checks(self) -> dict[str, Any]:
+        checks = self.update_config.get("gaps_text_checked")
+        return dict(checks) if isinstance(checks, dict) else {}
+
+    @classmethod
+    def _text_recheck_due(cls, check: Any, now: datetime) -> bool:
+        """Whether a waiting item with the stored ``check`` may be asked for its text again.
+
+        ``at`` and ``checks`` record Zotero's answers without text, and set the
+        backoff. ``tried_at`` records a try that got no answer (a failed
+        request): it doesn't lengthen the backoff, but the item isn't tried
+        again for a day. A record that can't be read is due, and so is one
+        stamped in the future, which no run could have written.
+        """
+        if not isinstance(check, dict):
+            return True
+        tried = cls._local_time(check.get("tried_at"))
+        if tried is not None and timedelta(0) <= now - tried < timedelta(days=cls.GAP_TEXT_RECHECK_FIRST_DAYS):
+            return False
+        at = cls._local_time(check.get("at"))
+        if at is None or at > now:
+            return True
+        checks = max(cls._check_count(check), 1)
+        wait = min(cls.GAP_TEXT_RECHECK_FIRST_DAYS * 2 ** min(checks - 1, 16), cls.GAP_TEXT_RECHECK_MAX_DAYS)
+        return now - at >= timedelta(days=wait)
+
+    def _note_unanswered_recheck(self, key: str, waiting: set[str]) -> None:
+        """Record that a waiting item was due but this run got no answer about its text."""
+        if key not in waiting:
+            return
+        checks = self._text_checks()
+        previous = checks.get(key) if isinstance(checks.get(key), dict) else {}
+        checks[key] = {**previous, "tried_at": datetime.now().isoformat()}
+        self.update_config["gaps_text_checked"] = checks
+
+    def _still_waiting_for_text(self, include_fulltext: bool) -> set[str]:
+        """Waiting items this run leaves alone.
+
+        A run without full text can't fill any of them. A run with it asks
+        Zotero again for each item whose backoff has run out.
+        """
+        waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
+        if not include_fulltext:
+            return waiting
+        checks = self._text_checks()
+        now = datetime.now()
+        not_due = {key for key in waiting if not self._text_recheck_due(checks.get(key), now)}
+        return not_due | self._other_library_keys(waiting - not_due)
+
+    def _other_library_keys(self, keys: set[str]) -> set[str]:
+        """Those of ``keys`` the index records as another library's items.
+
+        The waiting list is shared by every library in the index. This run
+        can't ask Zotero about another library's item, so it neither counts
+        it as work nor touches its record: that library's own run does.
+        """
+        if not keys:
+            return set()
+        lookup = getattr(self.chroma_client, "item_group_ids", None)
+        groups = lookup(sorted(keys)) if lookup else {}
+        if not isinstance(groups, dict):
+            return set()
+        own = self._pinned_group_id()
+        return {key for key, group_id in groups.items() if group_id != own}
+
+    def _without_fills_lacking_text(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Drop fills that would write metadata-only records for an item with full text.
+
+        The item's other level was built from its full text, which this run
+        does not have, say because the text came from a local ``--fulltext``
+        run. Filling from metadata would close the gap for good with a record
+        that cannot match the body of the paper. The gap stays, and the item
+        goes on the waiting list: runs without full text leave it alone, and
+        runs with full text ask Zotero again once its backoff runs out
+        (``_text_recheck_due``). A failed request parks nothing.
+        """
+        kept: list[dict[str, Any]] = []
+        waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
+        for item in items:
+            data = item.get("data", {})
+            key = item.get("key")
+            if item.get("_index_levels") and not (data.get("fulltext") or "").strip():
+                existing = self.chroma_client.get_document_metadata(key) or {}
+                if existing.get("has_fulltext") and existing.get("has_fulltext") != "failed":
+                    if data.get("fulltext_fetch_failed"):
+                        # A failed fetch says nothing about the text: the
+                        # item is left for the next run, not parked.
+                        self._note_unanswered_recheck(key, waiting)
+                        continue
+                    waiting.add(key)
+                    if data.get("fulltext_attempted"):
+                        # Zotero answered, without text: wait longer next time.
+                        checks = self._text_checks()
+                        checks[key] = {
+                            "at": datetime.now().isoformat(),
+                            "checks": self._check_count(checks.get(key)) + 1,
+                        }
+                        self.update_config["gaps_text_checked"] = checks
+                    continue
+            if key in waiting and (data.get("fulltext") or "").strip():
+                waiting.discard(key)
+                checks = self._text_checks()
+                checks.pop(key, None)
+                self.update_config["gaps_text_checked"] = checks
+            kept.append(item)
+        self.update_config["gaps_waiting_for_text"] = sorted(waiting)
+        if not self._text_checks():
+            self.update_config.pop("gaps_text_checked", None)
+        return kept
+
+    def _narrow_full_scan_to_changes(
+        self, items: list[dict[str, Any]], gaps: dict[str, set[str]]
+    ) -> list[dict[str, Any]]:
+        """Keep only what a full scan of a split index actually has to embed.
+
+        With no sync watermark, the API scan fetches everything and would embed
+        every level of every item, though most are indexed and unchanged. An
+        unchanged item keeps just its gap, if it has one.
+        """
+        kept: list[dict[str, Any]] = []
+        for item in items:
+            data = item.get("data", {})
+            existing = self.chroma_client.get_document_metadata(item.get("key", ""))
+            if not existing or not _same_moment(existing.get("date_modified"), data.get("dateModified")):
+                kept.append(item)
+                continue
+            # New text for an item indexed without it: never indexed with
+            # text, or "failed" (asked, none then). Attaching a PDF doesn't
+            # change the item, so this is where its text comes in.
+            if (data.get("fulltext") or "").strip() and existing.get("has_fulltext") is not True:
+                kept.append(item)
+                continue
+            if item.get("key") in gaps:
+                item["_index_levels"] = gaps[item["key"]]
+                kept.append(item)
+        return self._without_fills_lacking_text(kept)
+
+    def _keep_current_articles(
+        self, items: list[dict[str, Any]], gaps: dict[str, set[str]]
+    ) -> None:
+        """Changed items whose article record is already current get only their passages.
+
+        A run stopped between the article and passage passes leaves the sync
+        version where it was, so the next run fetches the same changes again.
+        Its article records were written; an item that has one for its
+        current version, written from the same text, and no passages needs
+        only those. Anything else is rewritten in full, as before.
+        """
+        for item in items:
+            key = item.get("key", "")
+            if gaps.get(key) != {SEARCH_PASSAGES} or item.get("_index_levels"):
+                continue
+            data = item.get("data", {})
+            existing = self.chroma_client.get_document_metadata(key)
+            if not existing or "parent_item_key" in existing:
+                continue
+            if not _same_moment(existing.get("date_modified"), data.get("dateModified")):
+                continue
+            # Written from the same text: with full text both times, or without.
+            if bool((data.get("fulltext") or "").strip()) != (existing.get("has_fulltext") is True):
+                continue
+            item["_index_levels"] = gaps[key]
+
+    def _unfinished_batch_run(self) -> str | None:
+        """Run id of a batch run for this library that has not finished landing.
+
+        Its results include records a gap check would see as missing, and
+        paying for them again would also supersede the run. The same rule
+        that holds back new submissions (:func:`batch_common.unfinished_run`).
+        """
+        group_id = self._pinned_group_id()
+        for name in _BATCH_MODULES:
+            run = batch_common.unfinished_run(
+                batch_common.get_batch_root(name, self.config_path), group_id, _batch_adapter(name)
+            )
+            if run:
+                return str(run.get("run_id"))
+        return None
 
     def _parse_creators_string(self, creators_str: str) -> list[dict[str, str]]:
         """
@@ -2493,12 +2899,24 @@ class ZoteroSemanticSearch:
             (text, source) where source is ``web-api:attachment:<key>``. Empty
             strings mean no fulltext is available for this item.
         """
+        text, source, _failed = self._fetch_fulltext_checked(item_key)
+        return text, source
+
+    def _fetch_fulltext_checked(self, item_key: str) -> tuple[str, str, bool]:
+        """``_fetch_fulltext_via_web_api``, plus whether a request failed on the way.
+
+        No text after a failed request says nothing about the item: the text
+        may well be there. Zotero's 404 for an attachment without text is an
+        answer, not a failure.
+        """
         try:
             children = _paginate(self.zotero_client.children, item_key) or []
+        except ResourceNotFoundError:
+            children = []
         except Exception as e:
             logger.debug(f"children({item_key}) failed: {e}")
-            children = []
-        return self._fulltext_from_attachments(
+            return "", "", True
+        return self._fulltext_from_attachments_checked(
             [self._pdf_attachment_key(child) for child in children]
         )
 
@@ -2514,20 +2932,31 @@ class ZoteroSemanticSearch:
 
     def _fulltext_from_attachments(self, attachment_keys: list[str | None]) -> tuple[str, str]:
         """Zotero's extracted text for the first of ``attachment_keys`` that has any."""
+        text, source, _failed = self._fulltext_from_attachments_checked(attachment_keys)
+        return text, source
+
+    def _fulltext_from_attachments_checked(
+        self, attachment_keys: list[str | None]
+    ) -> tuple[str, str, bool]:
+        """``_fulltext_from_attachments``, plus whether a request failed on the way."""
+        failed = False
         for child_key in attachment_keys:
             if not child_key:
                 continue
             try:
                 resp = self.zotero_client.fulltext_item(child_key)
+            except ResourceNotFoundError:
+                continue
             except Exception as e:
                 logger.debug(f"fulltext_item({child_key}) failed: {e}")
+                failed = True
                 continue
             text = str(resp.get("content", "") or "") if isinstance(resp, dict) else (
                 resp if isinstance(resp, str) else ""
             )
             if text.strip():
-                return text, f"web-api:attachment:{child_key}"
-        return "", ""
+                return text, f"web-api:attachment:{child_key}", False
+        return "", "", failed
 
     # For a whole-library pass over at least this many items, one paged listing
     # of the attachments is cheaper than asking for each item's children.
@@ -2593,15 +3022,18 @@ class ZoteroSemanticSearch:
             # attachments only (the parent probe was a request per item that
             # always came back empty).
             if pdf_keys is not None:
-                text, source = self._fulltext_from_attachments(pdf_keys.get(key, []))
+                text, source, failed = self._fulltext_from_attachments_checked(pdf_keys.get(key, []))
             else:
-                text, source = self._fetch_fulltext_via_web_api(key)
+                text, source, failed = self._fetch_fulltext_checked(key)
             if text:
                 data["fulltext"] = text
                 data["fulltextSource"] = source
                 fetched += 1
             else:
                 data["fulltext_attempted"] = True
+                if failed:
+                    # A gap fill must not take this as "Zotero has no text".
+                    data["fulltext_fetch_failed"] = True
             if idx % 25 == 0 or idx == total:
                 try:
                     sys.stderr.write(f"\r  Fulltext: {idx}/{total} items checked, {fetched} with text")
@@ -2803,18 +3235,43 @@ class ZoteroSemanticSearch:
             return None
         return target_sync_version
 
-    def _build_item_records(self, item: dict[str, Any], *, chunking: bool) -> list[dict[str, Any]]:
+    def _separate_passages(self) -> bool:
+        """Whether this index keeps passages in their own collection."""
+        check = getattr(self.chroma_client, "separate_passages", None)
+        return bool(check) and check() is True
+
+    def _levels_to_write(self, item: dict[str, Any]) -> tuple[bool, bool]:
+        """``(article record, passage records)`` an item should get in this run.
+
+        An item in the index's gap list needs only what it lacks; anything else
+        gets every level the settings call for. An unmigrated index has one
+        level, chosen by the setting, as it always did.
+        """
+        chunking = self._chunking_enabled
+        if not self._separate_passages():
+            return not chunking, chunking
+        levels = item.get("_index_levels")
+        if levels:
+            return SEARCH_ARTICLES in levels, SEARCH_PASSAGES in levels
+        return True, chunking
+
+    def _build_item_records(
+        self, item: dict[str, Any], *, chunking: bool, article: bool | None = None
+    ) -> list[dict[str, Any]]:
         """Build the index records of one item, without embedding or writing them.
 
         The one place an item becomes ``{"id", "document", "metadata"}`` records,
         for the realtime and the Batch API paths alike. With ``chunking``, one
         record per overlapping passage (``<item_key>#<n>``), so search can return
         a grounded quote and long PDFs stay searchable past the single-vector
-        truncation limit; without it, one record under the item key.
+        truncation limit. With ``article``, which defaults to the opposite of
+        ``chunking``, one record under the item key, first.
 
         Returns ``[]`` for an item with no key or no text. A failure raises with
         nothing returned, so an item contributes all of its records or none.
         """
+        if article is None:
+            article = not chunking
         item_key = item.get("key", "")
         if not item_key:
             return []
@@ -2831,13 +3288,16 @@ class ZoteroSemanticSearch:
         if not doc_text.strip():
             return []
 
-        if not chunking:
+        records: list[dict[str, Any]] = []
+        if article:
             # Truncate to fit the configured embedding model's token limit
-            return [{
+            records.append({
                 "id": item_key,
                 "document": self.chroma_client.truncate_text(doc_text),
                 "metadata": metadata,
-            }]
+            })
+        if not chunking:
+            return records
 
         passages = split_into_passages(
             doc_text,
@@ -2846,7 +3306,6 @@ class ZoteroSemanticSearch:
             int(self._chunking_config.get("max_chunks_per_item", 20)),
         )
         section_marks = _section_offsets(doc_text) if passages else []
-        records: list[dict[str, Any]] = []
         for ci, (chunk_text, c0, c1) in enumerate(passages):
             cmeta = dict(metadata)
             cmeta["parent_item_key"] = item_key
@@ -2909,7 +3368,11 @@ class ZoteroSemanticSearch:
 
         if not records:
             stats["batch_submitted"] = False
-            stats["batch_error"] = f"No documents were prepared for {label} Batch API submission"
+            if prepare_stats["errors"]:
+                stats["batch_error"] = f"No documents were prepared for {label} Batch API submission"
+            else:
+                # Nothing changed that needs a record: no batch to wait for.
+                stats["batch_nothing_to_embed"] = True
             return stats
 
         ids = [record["id"] for record in records]
@@ -3381,6 +3844,50 @@ class ZoteroSemanticSearch:
                 except Exception:
                     pass
 
+            # Pick up a layout changed by another process (a migration) before
+            # deciding where this run writes.
+            layout_of = getattr(self.chroma_client, "index_layout", None)
+            layout = layout_of() if layout_of else None
+            if not isinstance(layout, dict):
+                layout = {}
+            self._drop_passages_on_write = (
+                self._separate_passages()
+                and not self._chunking_enabled
+                and bool(layout.get("passage_records"))
+            )
+            index_gaps = self._find_index_gaps(
+                limit=limit, force_rebuild=force_full_rebuild, batch=batch_enabled
+            )
+            # Items that only a run with their full text can fill. What is no
+            # longer a gap is forgotten, but only by a run that looked for
+            # every gap: a limited run, a rebuild and (until it can make
+            # passages) a batch run don't, and would forget items still waiting.
+            if (
+                limit is None
+                and not force_full_rebuild
+                and not batch_enabled
+                and self._separate_passages()
+            ):
+                waiting_for_text = [
+                    key for key in self.update_config.get("gaps_waiting_for_text") or [] if key in index_gaps
+                ]
+                if "gaps_waiting_for_text" in self.update_config:
+                    self.update_config["gaps_waiting_for_text"] = waiting_for_text
+                if "gaps_text_checked" in self.update_config:
+                    self.update_config["gaps_text_checked"] = {
+                        key: check for key, check in self._text_checks().items() if key in waiting_for_text
+                    }
+            if index_gaps and (unfinished_run := self._unfinished_batch_run()):
+                _report(
+                    f"Batch run {unfinished_run} has not finished, so missing records are left "
+                    "for now. Run 'zotero-mcp batch-import' to carry it forward.\n"
+                )
+                index_gaps = {}
+            self._scan_gaps = index_gaps
+            # Waiting items count as work only when this run may ask for their text.
+            left_alone = self._still_waiting_for_text(include_fulltext_via_api)
+            has_fillable_gaps = len(index_gaps) > len(left_alone & set(index_gaps))
+
             target_sync_version: int | None = None
             all_items: list[dict[str, Any]] = []
             if use_incremental:
@@ -3404,7 +3911,7 @@ class ZoteroSemanticSearch:
                 use_incremental = False
                 last_sync_version = 0
 
-            if use_incremental and target_sync_version == last_sync_version:
+            if use_incremental and target_sync_version == last_sync_version and not has_fillable_gaps:
                 # No changes since last sync; skip ingest but still touch last_update
                 try:
                     sys.stderr.write(
@@ -3428,6 +3935,16 @@ class ZoteroSemanticSearch:
                     include_fulltext=include_fulltext_via_api,
                 )
                 self._run_deletion_pass(stats, current_library_keys, allow_mass_deletion)
+                self._keep_current_articles(all_items, index_gaps)
+                gap_items = self._get_gap_items_from_api(
+                    index_gaps,
+                    already_fetched={item.get("key") for item in all_items},
+                    library_keys=current_library_keys,
+                    include_fulltext=include_fulltext_via_api,
+                )
+                if gap_items:
+                    _report(f"Adding the records missing from {len(gap_items)} indexed items.\n")
+                    all_items.extend(gap_items)
             else:
                 # Full scan: bootstrap or forced rebuild.
                 # Capture the library version BEFORE scanning so any changes
@@ -3449,6 +3966,18 @@ class ZoteroSemanticSearch:
                     force_rebuild=force_full_rebuild,
                     include_fulltext_via_api=include_fulltext_via_api,
                 )
+                # A full scan of a split index that already holds records
+                # embeds only changes and gaps. Without a sync version (a
+                # stopped rebuild, a migrated index, a reset watermark) it
+                # would otherwise pay for every record of the library again.
+                if (
+                    not extract_fulltext
+                    and not force_full_rebuild
+                    and limit is None
+                    and self._separate_passages()
+                    and (layout.get("article_records", 0) or layout.get("passage_records", 0))
+                ):
+                    all_items = self._narrow_full_scan_to_changes(all_items, index_gaps)
                 # The local-extraction scan may lag behind the API version
                 # captured above (immutable sqlite reads skip WAL contents);
                 # only promote the watermark if the snapshot was complete.
@@ -3481,6 +4010,12 @@ class ZoteroSemanticSearch:
 
             stats["total_items"] = len(all_items)
             logger.info(f"Found {stats['total_items']} items to process")
+            if waiting := self.update_config.get("gaps_waiting_for_text"):
+                _report(
+                    f"{len(waiting)} indexed items need their full text to add the missing records; "
+                    f"{_waiting_for_text_hint(include_fulltext)}\n"
+                )
+            self._level_fill_keys = {item["key"] for item in all_items if item.get("_index_levels")}
 
             if batch_enabled:
                 stats["batch_mode"] = True
@@ -3504,9 +4039,27 @@ class ZoteroSemanticSearch:
                 # This run did its work, so an auto-update is not due again
                 # until its next turn. Without this, should_update stayed true
                 # until an import and every search could pay for the same
-                # changes again. The sync version waits for the import.
+                # changes again. The sync version waits for the import, unless
+                # there is nothing to import: then it moves now, or every later
+                # run would fetch the same changes again.
                 self.update_config["last_update"] = datetime.now().isoformat()
-                self._save_update_config()
+                if (
+                    stats.get("batch_nothing_to_embed")
+                    and target_sync_version is not None
+                    and not force_full_rebuild
+                ):
+                    self._save_update_config(
+                        last_sync_version=target_sync_version,
+                        library_key=str(self._run_group_id),
+                    )
+                else:
+                    self._save_update_config()
+                if stats.get("batch_nothing_to_embed"):
+                    _report("  Nothing needs embedding; no batch was submitted.\n")
+                    end_time = datetime.now()
+                    stats["duration"] = str(end_time - start_time)
+                    stats["end_time"] = end_time.isoformat()
+                    return stats
                 batch_ids = ", ".join(stats.get("batch_ids", []))
                 _report(
                     f"  Submitted {batch_label} embedding batch"
@@ -3594,28 +4147,66 @@ class ZoteroSemanticSearch:
                 and hasattr(self.chroma_client, "upsert_embeddings")
             )
 
-            if use_streaming:
-                logger.info(
-                    f"Streaming index: {max_parallel} parallel embedding requests"
-                )
-                self._stream_index_items(
-                    all_items,
-                    force_full_rebuild,
-                    stats,
-                    _failed_docs,
-                    embedding_function,
-                    max_parallel,
-                    _report_item_progress,
-                )
+            # On a split index every article record is embedded before any
+            # passage, so article-level search is complete early in a long
+            # run. A run stopped between the passes leaves only passages to
+            # write; the sync version stays where it was, and the gap fill
+            # finds items with an article record and no passages.
+            passage_items = (
+                [item for item in all_items if self._levels_to_write(item)[1]]
+                if self._separate_passages()
+                else []
+            )
+            if passage_items:
+                passes = [
+                    (SEARCH_ARTICLES, all_items, frozenset(item["key"] for item in passage_items)),
+                    (SEARCH_PASSAGES, passage_items, frozenset()),
+                ]
+                self._held_text = _HeldText()
+                self._undropped_passages = set()
             else:
-                for i in range(0, len(all_items), batch_size):
-                    batch = all_items[i : i + batch_size]
+                passes = [(None, all_items, frozenset())]
+            accounted: set[str] = set()
+
+            for level, pass_items, keep_cached in passes:
+                if level == SEARCH_PASSAGES:
+                    seen_items = 0
+                    total = len(pass_items)
+                    _report(
+                        f"\r{' ' * _term_width(120)}\r"
+                        f"  Article records written. Writing passages for {total} items...\n"
+                    )
+                if use_streaming:
+                    logger.info(
+                        f"Streaming index: {max_parallel} parallel embedding requests"
+                    )
+                    self._stream_index_items(
+                        pass_items,
+                        force_full_rebuild,
+                        stats,
+                        _failed_docs,
+                        embedding_function,
+                        max_parallel,
+                        _report_item_progress,
+                        level=level,
+                        keep_cached=keep_cached,
+                        accounted_keys=accounted,
+                    )
+                    continue
+                for i in range(0, len(pass_items), batch_size):
+                    batch = pass_items[i : i + batch_size]
 
                     # Show per-item progress within this batch
                     for item in batch:
                         _report_item_progress(item)
 
-                    batch_stats = self._process_item_batch(batch, force_full_rebuild, _failed_docs)
+                    if level is None:
+                        batch_stats = self._process_item_batch(batch, force_full_rebuild, _failed_docs)
+                    else:
+                        batch_stats = self._process_item_batch(
+                            batch, force_full_rebuild, _failed_docs,
+                            level=level, keep_cached=keep_cached, accounted=accounted,
+                        )
 
                     stats["processed_items"] += batch_stats["processed"]
                     stats["added_items"] += batch_stats["added"]
@@ -3639,6 +4230,8 @@ class ZoteroSemanticSearch:
                 import time as _retry_time
 
                 _retry_time.sleep(1)  # Brief pause before retry
+                # Articles first here too.
+                _failed_docs.sort(key=lambda failed: "parent_item_key" in failed[1])
 
                 retry_ok = 0
                 # Items whose passages all got written, and items with any
@@ -3731,6 +4324,14 @@ class ZoteroSemanticSearch:
             return stats
         finally:
             self._run_group_id = None
+            self._drop_passages_on_write = False
+            self._scan_gaps = {}
+            self._level_fill_keys = frozenset()
+            # The server keeps one instance: the next run starts without these.
+            self._undropped_passages = frozenset()
+            if self._held_text is not None:
+                self._held_text.close()
+                self._held_text = None
             # Release the update flock on every exit path. Paired with the
             # __enter__ call above; the "not acquired" branch releases
             # separately before its early return, so this finally only runs
@@ -3749,6 +4350,7 @@ class ZoteroSemanticSearch:
         self,
         items: list[dict[str, Any]],
         force_rebuild: bool = False,
+        level: str | None = None,
     ) -> dict[str, Any]:
         """Build the documents for ``items`` and classify them existing-vs-new.
 
@@ -3767,10 +4369,17 @@ class ZoteroSemanticSearch:
         documents each entry in ``item_keys_order`` contributed — so a caller
         can split the batch on item boundaries without re-deriving them from
         the ids.
+
+        ``level`` limits the slice to one level, for a run that writes every
+        article record before any passage: ``SEARCH_ARTICLES`` skips items that
+        get no article record (the passage pass counts them) and moves the text
+        of items still to get passages to disk; ``SEARCH_PASSAGES`` reads it
+        back and counts only items the article pass did not.
         """
         stats = {"processed": 0, "skipped": 0, "errors": 0}
 
         chunking = self._chunking_enabled
+        separate = self._separate_passages()
 
         documents: list[str] = []
         metadatas: list[dict[str, Any]] = []
@@ -3782,11 +4391,32 @@ class ZoteroSemanticSearch:
         # can slice the flat lists back into whole items.
         item_doc_counts: list[int] = []
 
+        held = self._held_text
         for item in items:
             try:
-                records = self._build_item_records(item, chunking=chunking)
+                article, passages = self._levels_to_write(item)
+                counts = True
+                if level == SEARCH_ARTICLES:
+                    if not article:
+                        continue
+                    hold = passages
+                    passages = False
+                    records = self._build_item_records(item, chunking=False, article=True)
+                    if hold and held is not None:
+                        held.hold(item)
+                elif level == SEARCH_PASSAGES:
+                    counts = not article
+                    if held is not None:
+                        held.restore(item)
+                    try:
+                        records = self._build_item_records(item, chunking=passages, article=False)
+                    finally:
+                        _HeldText.release(item)
+                else:
+                    records = self._build_item_records(item, chunking=passages, article=article)
                 if not records:
-                    stats["skipped"] += 1
+                    if counts:
+                        stats["skipped"] += 1
                     continue
 
                 documents.extend(record["document"] for record in records)
@@ -3794,7 +4424,8 @@ class ZoteroSemanticSearch:
                 ids.extend(record["id"] for record in records)
                 item_keys_order.append(item["key"])
                 item_doc_counts.append(len(records))
-                stats["processed"] += 1
+                if counts:
+                    stats["processed"] += 1
 
             except Exception as e:
                 logger.error(f"Error processing item {item.get('key', 'unknown')}: {e}")
@@ -3806,7 +4437,12 @@ class ZoteroSemanticSearch:
         existing_item_keys: set[str] = set()
         if documents and not force_rebuild:
             with self._chroma_call_lock:
-                if chunking:
+                if separate:
+                    # An item is indexed if it has a record at either level.
+                    probe_ids = item_keys_order + [f"{k}#0" for k in item_keys_order]
+                    found = self.chroma_client.get_existing_ids(probe_ids)
+                    existing_item_keys = {doc_id.split("#", 1)[0] for doc_id in found}
+                elif chunking:
                     probe_ids = [f"{k}#0" for k in item_keys_order]
                     existing_chunk0 = self.chroma_client.get_existing_ids(probe_ids)
                     existing_item_keys = {cid.split("#", 1)[0] for cid in existing_chunk0}
@@ -3832,6 +4468,9 @@ class ZoteroSemanticSearch:
         embedding_function: Any,
         max_parallel: int,
         report_progress: Any,
+        level: str | None = None,
+        keep_cached: frozenset[str] = frozenset(),
+        accounted_keys: set[str] | None = None,
     ) -> None:
         """Index ``all_items`` with preparation, embedding and commits overlapped.
 
@@ -3844,7 +4483,8 @@ class ZoteroSemanticSearch:
 
         Mutates ``stats`` and ``failed_docs`` in place, exactly as the
         synchronous path does, so the caller's end-of-run retry pass is shared
-        between both paths.
+        between both paths. ``level``, ``keep_cached`` and ``accounted_keys``
+        are as in :meth:`_process_item_batch`.
         """
         slice_size = _realtime_slice_size(max_parallel)
         request_batch_size = (
@@ -3889,9 +4529,14 @@ class ZoteroSemanticSearch:
                     for item in slice_items:
                         report_progress(item)
 
-                    prepared = self._prepare_and_classify_slice(
-                        slice_items, force_rebuild
-                    )
+                    if level is None:
+                        prepared = self._prepare_and_classify_slice(
+                            slice_items, force_rebuild
+                        )
+                    else:
+                        prepared = self._prepare_and_classify_slice(
+                            slice_items, force_rebuild, level=level
+                        )
                     prep = prepared["prep_stats"]
                     bump("processed_items", prep["processed"])
                     bump("skipped_items", prep["skipped"])
@@ -3944,7 +4589,8 @@ class ZoteroSemanticSearch:
         write_ids: list[str] = []
         write_vectors: list[Any] = []
         write_keys: dict[str, bool] = {}
-        accounted_keys: set[str] = set()
+        if accounted_keys is None:
+            accounted_keys = set()
 
         def flush() -> None:
             nonlocal write_docs, write_metas, write_ids, write_vectors, write_keys
@@ -3956,6 +4602,10 @@ class ZoteroSemanticSearch:
                         write_docs, write_metas, write_ids, write_vectors
                     )
                     self._prune_stale_chunks(write_metas)
+                    if level == SEARCH_ARTICLES:
+                        self._drop_replaced_passages(
+                            [k for k, existed in write_keys.items() if existed and k in keep_cached]
+                        )
             except Exception as exc:
                 logger.warning(f"Batch upsert failed ({exc}), saving for retry")
                 record_failures(write_docs, write_metas, write_ids)
@@ -3970,9 +4620,8 @@ class ZoteroSemanticSearch:
                 # an item's extracted text has done its job once its embedding
                 # is persisted, so evict per commit rather than at the end.
                 try:
-                    fulltext_cache.evict_many(
-                        list(write_keys), config_path=self.config_path
-                    )
+                    if done := [k for k in write_keys if k not in keep_cached]:
+                        fulltext_cache.evict_many(done, config_path=self.config_path)
                 except Exception as exc:
                     logger.debug(f"Fulltext cache eviction failed: {exc}")
             finally:
@@ -4059,6 +4708,38 @@ class ZoteroSemanticSearch:
                     pass
             time.sleep(0.05)
 
+    def _drop_replaced_passages(self, item_keys: list[str]) -> None:
+        """Delete the old passages of items whose new article record was just written.
+
+        Their new passages follow in the passage pass. A run stopped before
+        then leaves each item with an article and no passages, which the gap
+        fill finds; old passages left in place would describe the item before
+        its change, and hide it from the gap fill for good.
+        """
+        if not hasattr(self.chroma_client, "prune_item_chunks") or not item_keys:
+            return
+        for item_key in item_keys:
+            self.chroma_client.prune_item_chunks(item_key, 0)
+        # The delete logs its errors and goes on, so check that it happened.
+        try:
+            left = {doc_id.split("#", 1)[0] for doc_id in self.chroma_client.get_existing_ids(
+                [f"{item_key}#0" for item_key in item_keys]
+            )}
+        except Exception as e:
+            logger.debug(f"Could not check the deleted passages: {e}")
+            left = set(item_keys)
+        for item_key in sorted(left):
+            logger.warning(
+                f"Could not delete the old passages of {item_key} from the ChromaDB collection; "
+                "they stay until its new passages are written."
+            )
+            self._note_undropped_passages(item_key)
+
+    def _note_undropped_passages(self, item_key: str) -> None:
+        """Remember an item whose old passages are still stored after its new article."""
+        if isinstance(self._undropped_passages, set):
+            self._undropped_passages.add(item_key)
+
     def _prune_stale_chunks(self, metadatas: list[dict[str, Any]]) -> None:
         """Drop each just-written item's passages past its new ``n_chunks``.
 
@@ -4070,6 +4751,21 @@ class ZoteroSemanticSearch:
         """
         if not hasattr(self.chroma_client, "prune_item_chunks"):
             return
+        if self._drop_passages_on_write:
+            # Chunking is off, so an item written now has no current passages.
+            # Left in place they would stay searchable by level, and hide the
+            # item from the gap fill when chunking comes back on.
+            # An item only getting its missing article record has not changed,
+            # and those passages have been paid for.
+            scopes = {
+                m["item_key"]: m.get("group_id")
+                for m in metadatas
+                if m.get("item_key")
+                and "parent_item_key" not in m
+                and m["item_key"] not in self._level_fill_keys
+            }
+            for item_key, group_id in scopes.items():
+                self.chroma_client.delete_item_chunks(item_key, group_id=group_id)
         counts = {
             m["parent_item_key"]: m["n_chunks"]
             for m in metadatas
@@ -4083,6 +4779,9 @@ class ZoteroSemanticSearch:
         items: list[dict[str, Any]],
         force_rebuild: bool = False,
         _failed_docs: list | None = None,
+        level: str | None = None,
+        keep_cached: frozenset[str] = frozenset(),
+        accounted: set[str] | None = None,
     ) -> dict[str, int]:
         """Prepare a batch of items and hand it to ChromaDB for embedding.
 
@@ -4096,8 +4795,16 @@ class ZoteroSemanticSearch:
         mid-run. Without this, the retry path at update_database:839-865 is
         dead code — a NameError raised here would crash the whole reindex,
         making every transient ChromaDB error fatal instead of recoverable.
+
+        ``level``, ``keep_cached`` and ``accounted`` serve a run written in two
+        passes: the level this pass writes, the items whose cached text the
+        passage pass still needs, and the items already counted as added or
+        updated.
         """
-        prepared = self._prepare_and_classify_slice(items, force_rebuild)
+        if level is None:
+            prepared = self._prepare_and_classify_slice(items, force_rebuild)
+        else:
+            prepared = self._prepare_and_classify_slice(items, force_rebuild, level=level)
         prep_stats = prepared["prep_stats"]
         stats = {
             "processed": prep_stats["processed"],
@@ -4119,7 +4826,15 @@ class ZoteroSemanticSearch:
                 with self._chroma_call_lock:
                     self.chroma_client.upsert_documents(documents, metadatas, ids)
                     self._prune_stale_chunks(metadatas)
+                    if level == SEARCH_ARTICLES:
+                        self._drop_replaced_passages(
+                            [k for k in item_keys_order if k in existing_item_keys and k in keep_cached]
+                        )
                 for k in item_keys_order:
+                    if accounted is not None:
+                        if k in accounted:
+                            continue
+                        accounted.add(k)
                     if k in existing_item_keys:
                         stats["updated"] += 1
                     else:
@@ -4130,7 +4845,8 @@ class ZoteroSemanticSearch:
                 # roughly proportional to what is still un-embedded, instead
                 # of growing to the size of the whole library.
                 try:
-                    fulltext_cache.evict_many(item_keys_order, config_path=self.config_path)
+                    if done := [k for k in item_keys_order if k not in keep_cached]:
+                        fulltext_cache.evict_many(done, config_path=self.config_path)
                 except Exception as e:
                     logger.debug(f"Fulltext cache eviction failed: {e}")
             except Exception as e:

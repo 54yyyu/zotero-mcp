@@ -33,6 +33,7 @@ class FakeCollection:
 
 def _client(store):
     client = object.__new__(ChromaClient)
+    client.route_passages = False
     client.collection = FakeCollection(store)
     return client
 

@@ -266,7 +266,7 @@ def test_fulltext_without_chunking_warns_when_model_limit_is_small(monkeypatch, 
     assert stats["fulltext_truncated"] is True
     err = capsys.readouterr().err
     assert "only the first ~256 tokens of each item" in err
-    assert "--force-rebuild" in err
+    assert "run update-db again" in err
     assert err.count("Full text is being indexed as one vector per item") == 1
 
 

@@ -133,6 +133,7 @@ def test_pruning_passages_keeps_the_article_record(both):
 
 def test_pruning_an_unmigrated_index_still_drops_the_bare_record(directory):
     legacy = ChromaClient(collection_name=NAME, persist_directory=directory)
+    legacy.route_passages = False
     _write(
         legacy,
         ["AAA", "AAA#0", "AAA#1"],
@@ -156,6 +157,7 @@ def test_reset_empties_both_collections(both, directory):
 
 def test_reset_turns_an_unmigrated_index_into_a_split_one(directory):
     legacy = ChromaClient(collection_name=NAME, persist_directory=directory)
+    legacy.route_passages = False
     _write(legacy, ["AAA#0"], [_passage_meta("AAA", 0, 1)])
     client = ChromaClient(collection_name=NAME, persist_directory=directory)
     client.route_passages = True
