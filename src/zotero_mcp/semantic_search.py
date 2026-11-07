@@ -134,6 +134,25 @@ def _deferred_message(run: dict[str, Any], run_count: int, batch: bool, window_h
     )
 
 
+def _waiting_for_text_hint(include_fulltext: bool) -> str:
+    """Say how the items waiting for full text get filled, in the mode this run is in.
+
+    ``update-db --fulltext`` reads the local database, so outside local mode it
+    only errors; there the items are filled from the text Zotero has extracted.
+    """
+    if is_local_mode():
+        return "run 'zotero-mcp update-db --fulltext' to add them."
+    if include_fulltext:
+        return (
+            "an update adds each one once Zotero has extracted its text "
+            "('zotero-mcp update-db --fulltext' does this in local mode)."
+        )
+    return (
+        "updates run without full text, so they stay out until "
+        "semantic_search.include_fulltext is turned on."
+    )
+
+
 def _report(message: str) -> None:
     """Write a progress message to stderr, never failing the caller.
 
@@ -4105,7 +4124,7 @@ class ZoteroSemanticSearch:
             if waiting := self.update_config.get("gaps_waiting_for_text"):
                 _report(
                     f"{len(waiting)} indexed items need their full text to add the missing records; "
-                    "run 'zotero-mcp update-db --fulltext' to add them.\n"
+                    f"{_waiting_for_text_hint(include_fulltext)}\n"
                 )
             self._level_fill_keys = {item["key"] for item in all_items if item.get("_index_levels")}
 

@@ -338,7 +338,7 @@ def test_a_fill_without_full_text_waits_for_a_run_that_has_it(build, capsys):
     search.update_database()
 
     assert search.chroma_client.embedded == []
-    assert "--fulltext" in capsys.readouterr().err
+    assert "need their full text" in capsys.readouterr().err
     assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
 
 

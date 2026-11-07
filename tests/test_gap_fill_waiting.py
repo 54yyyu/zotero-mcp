@@ -540,3 +540,39 @@ def test_a_batch_run_saves_what_it_learned_about_waiting_items(build, tmp_path):
     search.update_database(use_batch=True)
 
     assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
+
+
+# --- the waiting-list message fits the mode ------------------------------------------
+
+
+def test_web_mode_message_does_not_send_the_user_to_fulltext(build, capsys):
+    """'update-db --fulltext' errors outside local mode, so the message can't ask for it."""
+    zotero = FakeZotero({"AAA": LONG})
+    _park(build, zotero)
+    capsys.readouterr()
+
+    build(zotero, chunking=True, fulltext=True).update_database()
+    err = capsys.readouterr().err
+    assert "need their full text" in err
+    assert "once Zotero has extracted its text" in err
+    assert "run 'zotero-mcp update-db --fulltext'" not in err
+
+
+def test_web_mode_message_without_fulltext_names_the_setting(build, capsys):
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    _park(build, zotero)
+    zotero.version = 6
+    zotero.changed = {"BBB"}
+    capsys.readouterr()
+
+    build(zotero, chunking=True).update_database()
+    err = capsys.readouterr().err
+    assert "need their full text" in err
+    assert "semantic_search.include_fulltext" in err
+    assert "run 'zotero-mcp update-db --fulltext'" not in err
+
+
+def test_local_mode_message_still_points_at_fulltext(monkeypatch):
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+    assert semantic_search._waiting_for_text_hint(True) == "run 'zotero-mcp update-db --fulltext' to add them."
+    assert semantic_search._waiting_for_text_hint(False) == "run 'zotero-mcp update-db --fulltext' to add them."
