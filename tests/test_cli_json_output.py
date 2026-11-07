@@ -311,6 +311,22 @@ class TestSearchCommand:
         assert payload["data"]["count"] == 1
         assert payload["data"]["items"][0]["key"] == "ABCD1234"
 
+    @pytest.mark.parametrize("argv, expected", [
+        (["search", "x"], True),
+        (["search", "--no-fallback", "x"], False),
+    ])
+    def test_no_fallback_flag_reaches_search_items(self, argv, expected, capsys):
+        args = build_parser().parse_args(argv)
+        search_mod = MagicMock()
+        search_mod.search_items.return_value = "# Results\n"
+
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"), \
+             patch("zotero_mcp.cli_standalone._import_tools",
+                   return_value=(search_mod, MagicMock(), MagicMock(), MagicMock(), MagicMock())):
+            cmd_search(args)
+
+        assert search_mod.search_items.call_args.kwargs["fallback"] is expected
+
     def test_markdown_mode_is_untouched(self, capsys):
         args = _args(mode="items", query="x", qmode="titleCreatorYear", limit=10,
                      collection=None, json_out=False)
