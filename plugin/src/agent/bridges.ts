@@ -29,6 +29,27 @@ export async function locateBridge(spawner: Spawner, env: Record<string, string>
   return found.version === spec.version ? found : null;
 }
 
+const LOCATE_CODEX_SCRIPT =
+  'const fs=require("fs"),path=require("path"),{createRequire}=require("module");' +
+  'try{const p=createRequire(process.argv[1]).resolve("@openai/codex/package.json");' +
+  'const pkg=JSON.parse(fs.readFileSync(p,"utf8"));' +
+  'const bin=typeof pkg.bin==="string"?pkg.bin:pkg.bin.codex;' +
+  'const entry=path.resolve(path.dirname(p),bin);fs.accessSync(entry);' +
+  'console.log(JSON.stringify(entry))}catch(e){}';
+
+/** The Codex launcher resolved from the installed bridge, including nested npm dependencies. Run it with node, not a platform-specific shim. */
+export async function locateBundledCodexCli(spawner: Spawner, env: Record<string, string>, node: string, bridge: BridgeLocation): Promise<string | null> {
+  try {
+    const r = await spawner.run(node, ["-e", LOCATE_CODEX_SCRIPT, bridge.entry], { env, timeoutMs: 15_000 });
+    const line = r.stdout.trim().split("\n").pop();
+    if (r.code !== 0 || !line) return null;
+    const entry: unknown = JSON.parse(line);
+    return typeof entry === "string" ? entry : null;
+  } catch {
+    return null;
+  }
+}
+
 const inflight = new Map<string, Promise<BridgeLocation>>();
 
 interface EnsureBridgeOpts {
