@@ -1249,7 +1249,9 @@ def cmd_attach(args):
     _s, _r, _a, write_mod, _c = _import_tools()
     _out(args, "attach", text=write_mod.attach_file(
         item_key=args.item_key, file_path=args.file, url=args.url,
-        filename=args.filename, ctx=_ctx(args),
+        filename=args.filename,
+        link_mode="linked" if getattr(args, "link", False) else "import",
+        ctx=_ctx(args),
     ))
 
 
@@ -1842,9 +1844,12 @@ def build_parser() -> argparse.ArgumentParser:
     # attach
     at_p = sub.add_parser("attach", help="Attach a file or link a URL to an item")
     at_p.add_argument("item_key")
-    at_p.add_argument("--file", help="Path to a local file to upload")
+    at_p.add_argument("--file", help="Path to a local file to upload (or to link in place, with --link)")
     at_p.add_argument("--url", help="URL to attach as a link")
     at_p.add_argument("--filename", help="Override the stored filename")
+    at_p.add_argument("--link", action="store_true",
+                      help="With --file: link the file where it is instead of uploading a copy "
+                           "(Zotero's 'Add Link to File'; uses no cloud storage)")
 
     # delete
     del_p = sub.add_parser("delete", help="Delete an item, collection or annotation")

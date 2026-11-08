@@ -158,6 +158,7 @@ zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl        
 
 # Attachments, deletion, bibliographies
 zotero-cli attach ABC123 --file /path/to/paper.pdf
+zotero-cli attach ABC123 --file /path/to/paper.pdf --link   # link in place, nothing uploaded
 zotero-cli delete item ABC123
 zotero-cli export --item-keys ABC123,DEF456 --style apa
 zotero-cli export --collection COLL01 --format bibtex
