@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`zotero_search_items` could list the same results in a different order after a server restart.** The query variants it searches (as typed, ASCII-folded, dashes as spaces, umlauts expanded) were collected in a set, whose iteration order for strings depends on the per-process hash seed, and the API search path lists each variant's hits in variant order. The variants now come in a fixed order, the query as typed first.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added
