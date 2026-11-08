@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Importing the semantic search module no longer loads tiktoken's `cl100k_base` encoding.** That took about 0.1 s (or a download, when the file was not cached yet) for a helper only the tests call, and on Windows the module is imported on the main thread before the server answers its first request (#485). The encoding is now loaded on first use.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added

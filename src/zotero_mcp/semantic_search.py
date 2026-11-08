@@ -23,11 +23,8 @@ from typing import Any
 
 try:
     import tiktoken
-
-    _tokenizer = tiktoken.get_encoding("cl100k_base")
 except Exception:
     tiktoken = None
-    _tokenizer = None
 
 
 from . import batch_common, fulltext_cache, gemini_batch, openai_batch
@@ -343,17 +340,37 @@ def _acquire_update_lock(lock_path: Path):
             fd.close()
 
 
+# Loaded on first use, not at import. get_encoding() parses ~100k BPE ranks
+# (0.1-0.25 s), or downloads them when they are not cached yet, and this
+# module is imported on the main thread before the server answers its first
+# request on Windows (#485) — for a tokenizer that only _truncate_to_tokens
+# uses. False records a failed load so it is not retried on every call.
+_tokenizer = None
+
+
+def _get_tokenizer():
+    """The cl100k_base encoding, or None when tiktoken cannot provide it."""
+    global _tokenizer
+    if _tokenizer is None:
+        try:
+            _tokenizer = tiktoken.get_encoding("cl100k_base") if tiktoken else False
+        except Exception:
+            _tokenizer = False
+    return _tokenizer or None
+
+
 def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
     """Truncate text to fit within embedding model token limit.
 
     Uses tiktoken for accurate token counting when available,
     falls back to conservative character-based estimation.
     """
-    if _tokenizer is not None:
-        tokens = _tokenizer.encode(text, disallowed_special=())
+    tokenizer = _get_tokenizer()
+    if tokenizer is not None:
+        tokens = tokenizer.encode(text, disallowed_special=())
         if len(tokens) > max_tokens:
             tokens = tokens[:max_tokens]
-            text = _tokenizer.decode(tokens)
+            text = tokenizer.decode(tokens)
     else:
         # Fallback: conservative char limit (~1.5 chars/token for non-Latin scripts)
         max_chars = max_tokens * 2
