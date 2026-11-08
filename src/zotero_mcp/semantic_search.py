@@ -480,6 +480,49 @@ def warmup_reranker(config_path: str | None = None) -> bool:
         return False
 
 
+#: Embedding functions whose model runs in this process; the others call an API.
+_IN_PROCESS_EMBEDDINGS = frozenset({"huggingface", "default"})
+
+
+def preload_embedding_model(config_path: str | None = None) -> bool:
+    """Load the configured embedding model now rather than at the first search.
+
+    Opt-in (``ZOTERO_MCP_PRELOAD_EMBEDDINGS``, see ``cli.serve``). The first
+    ``zotero_semantic_search`` of a process otherwise imports torch and
+    sentence-transformers, loads the model and runs its first encode, about
+    12 s of an 18-20 s first search with a local Qwen3 model. This builds the
+    same semantic search the tool builds (ChromaDB, the collection, the
+    embedding function and so its model) and embeds one short string, which
+    is where the first encode's one-time setup (CUDA, an ONNX session)
+    happens. Nothing is written to the index.
+
+    Only a model that runs in this process is loaded and exercised; with an
+    API provider there is nothing to load, and a warm-up embedding would cost
+    a request. With ``idle_unload_minutes`` set, ChromaDB and the embedding
+    function live in the worker process, which starts at the first semantic
+    call and exits when idle, so nothing is loaded here either. The
+    HuggingFace provider keeps its model for the process (#726), so the first
+    search reuses the one loaded here.
+
+    Returns ``True`` if a local model was loaded. Never raises.
+    """
+    try:
+        from .chroma_worker import WorkerChromaClient
+
+        search = create_semantic_search(config_path)
+        if isinstance(search.chroma_client, WorkerChromaClient):
+            return False
+        embedding_function = search.chroma_client.embedding_function
+        name = getattr(embedding_function, "name", None)
+        if not callable(name) or name() not in _IN_PROCESS_EMBEDDINGS:
+            return False
+        embedding_function(["warm-up"])
+        return True
+    except Exception as e:
+        logger.warning(f"Embedding model preload failed: {e}")
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Passage-level chunking (Tier-1 grounded retrieval)
 # ---------------------------------------------------------------------------

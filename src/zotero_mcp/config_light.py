@@ -136,3 +136,17 @@ def semantic_search_configured(config_path: str | None) -> bool:
             return bool(json.load(f).get("semantic_search"))
     except Exception:
         return False
+
+
+#: Opt-in switch for loading the embedding model when the server starts.
+PRELOAD_EMBEDDINGS_ENV = "ZOTERO_MCP_PRELOAD_EMBEDDINGS"
+
+
+def embedding_preload_requested(environ: dict[str, str] | None = None) -> bool:
+    """Whether ``ZOTERO_MCP_PRELOAD_EMBEDDINGS`` asks for the preload in ``cli.serve``.
+
+    Off unless set to 1, true, yes or on: the preload costs every server
+    start the model's memory and some CPU, whether or not it ever searches.
+    """
+    value = (os.environ if environ is None else environ).get(PRELOAD_EMBEDDINGS_ENV, "")
+    return value.strip().lower() in {"1", "true", "yes", "on"}

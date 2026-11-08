@@ -360,6 +360,25 @@ def _warmup_reranker_in_background() -> None:
     threading.Thread(target=_run, daemon=True, name="zmcp-reranker-warmup").start()
 
 
+def _embedding_preload_wanted() -> bool:
+    """``ZOTERO_MCP_PRELOAD_EMBEDDINGS`` is on and semantic search is set up.
+
+    Decided from the environment and the config file alone, so a server that
+    preloads nothing imports nothing for it.
+    """
+    try:
+        from zotero_mcp.config_light import (
+            embedding_preload_requested,
+            semantic_search_configured,
+        )
+
+        return embedding_preload_requested() and semantic_search_configured(
+            str(_semantic_config_path(None))
+        )
+    except Exception:
+        return False
+
+
 def _read_stdin_through_a_duplicate_descriptor() -> bool:
     """Serve stdio from a copy of descriptor 0, and point descriptor 0 at NUL (#485).
 
@@ -407,6 +426,56 @@ def _read_stdin_through_a_duplicate_descriptor() -> bool:
         errors=getattr(original, "errors", None) or "strict",
     )
     return True
+
+
+def _preload_embeddings_after_initialize(mcp) -> None:
+    """Load the embedding model in the background once the server has answered.
+
+    A middleware starts the preload thread right after the first ``initialize``
+    response, so the client never waits for it and the thread does not compete
+    with the server's own startup. The first ``zotero_semantic_search`` then
+    finds the imports done and, with a provider that keeps its model for the
+    process, the model loaded. A search that arrives while the preload runs
+    waits for the same imports instead of starting them.
+
+    On Windows over stdio the background import is safe only because stdin no
+    longer sits on descriptor 0 (:func:`_read_stdin_through_a_duplicate_descriptor`,
+    which ``serve`` applies wherever semantic search is set up, as the preload
+    requires); without it the preload hung until the next request (#485).
+    """
+    import threading
+    import time
+
+    from fastmcp.server.middleware import Middleware
+
+    started = threading.Event()
+
+    def _run() -> None:
+        t0 = time.perf_counter()
+        try:
+            from zotero_mcp.semantic_search import preload_embedding_model
+        except Exception:
+            return  # semantic extra not installed
+        try:
+            if preload_embedding_model(str(_semantic_config_path(None))):
+                print(
+                    f"Embedding model preloaded in {time.perf_counter() - t0:.1f} s.",
+                    file=sys.stderr,
+                )
+        except Exception:
+            pass  # best-effort: never let the preload break serving
+
+    class _StartPreloadAfterInitialize(Middleware):
+        async def on_initialize(self, context, call_next):
+            result = await call_next(context)
+            if not started.is_set():
+                started.set()
+                threading.Thread(
+                    target=_run, daemon=True, name="zmcp-embedding-preload"
+                ).start()
+            return result
+
+    mcp.add_middleware(_StartPreloadAfterInitialize())
 
 
 def _format_chunking_status(status: dict) -> str:
@@ -1630,6 +1699,10 @@ def main():
         # worker thread can attempt it (#485). Must precede the warmup thread.
         _preimport_semantic_search_on_main_thread()
         _warmup_reranker_in_background()
+        # Opt-in: load the embedding model once the server has answered its
+        # first request (ZOTERO_MCP_PRELOAD_EMBEDDINGS).
+        if _embedding_preload_wanted():
+            _preload_embeddings_after_initialize(mcp)
         if transport == "stdio":
             mcp.run(transport="stdio")
         elif transport == "streamable-http":
