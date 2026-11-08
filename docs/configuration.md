@@ -105,6 +105,12 @@ Environment variables set in the shell you launch a client from (for example `cl
 - `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
 - `OLLAMA_EMBEDDING_MODEL`: Ollama embedding model name (qwen3-embedding by default)
 - `OLLAMA_BASE_URL`: Ollama server URL (default: http://localhost:11434)
+- `ZOTERO_MCP_PRELOAD_EMBEDDINGS=1`: Load the embedding model in the background as soon
+  as the server has answered its first request, so the first `zotero_semantic_search`
+  does not wait for torch, sentence-transformers and the model. Off by default, since the
+  model's memory is then taken at every start. Only local models (HuggingFace, `default`)
+  are loaded, API providers get no request, and with `idle_unload_minutes` set nothing is
+  loaded (the model lives in the worker)
 - `ZOTERO_DB_PATH`: Custom `zotero.sqlite` path (optional). When unset, the
   database is located automatically: a data directory configured in Zotero's
   preferences (read from the profile's `prefs.js`) is tried first, then the
