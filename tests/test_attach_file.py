@@ -615,6 +615,60 @@ class TestAttachFileLinked:
         assert fake.created == []
         assert "already present" in result and "LINK0001" in result
 
+    def test_rerun_dedupes_against_a_linked_child_as_the_api_returns_it(
+        self, monkeypatch, dummy_ctx
+    ):
+        # Zotero's JSON for a linked_file attachment carries `path` and no
+        # `filename`/`md5`, so the dedupe has to recognise it by its path.
+        fake = FakeZoteroForAttach()
+        fake._children["ITEM1"] = [
+            {
+                "key": "LINK0002",
+                "data": {
+                    "itemType": "attachment",
+                    "linkMode": "linked_file",
+                    "title": "Smith 2020.pdf",
+                    "path": "/Users/test/pdfs/smith-2020.pdf",
+                },
+            }
+        ]
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        result = server.attach_file(
+            item_key="ITEM1",
+            file_path="/Users/test/smith-2020.pdf",
+            link_mode="linked",
+            ctx=dummy_ctx,
+        )
+
+        assert fake.created == []
+        assert "already present" in result and "LINK0002" in result
+
+    def test_a_linked_child_with_another_name_does_not_block(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        fake._children["ITEM1"] = [
+            {
+                "key": "LINK0003",
+                "data": {
+                    "itemType": "attachment",
+                    "linkMode": "linked_file",
+                    "path": "attachments:other\\jones-2019.pdf",
+                },
+            }
+        ]
+        _patch_write_client(monkeypatch, fake)
+        _patch_path_valid(monkeypatch)
+
+        server.attach_file(
+            item_key="ITEM1",
+            file_path="/Users/test/smith-2020.pdf",
+            link_mode="linked",
+            ctx=dummy_ctx,
+        )
+
+        assert len(fake.created) == 1
+
     def test_requires_file_path_not_url(self, monkeypatch, dummy_ctx):
         fake = FakeZoteroForAttach()
         _patch_write_client(monkeypatch, fake)
