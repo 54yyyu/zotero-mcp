@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **With pyzotero 1.14.0 to 1.15.1, every local API request took two seconds longer than it needed to on Windows.** Those releases address the local server as `localhost`, which resolves to `::1` first, while Zotero listens on 127.0.0.1 only; Windows gives up on the closed IPv6 port after about two seconds, and the local server closes the connection after every response, so every request paid it (2.05 s for `items(limit=1)`, against 44 ms). The local client's transport now dials 127.0.0.1 for a request addressed to `localhost`, keeping its URL and `Host` header, and falls back to `localhost` when nothing answers there. Attachment uploads take the same route: pyzotero sends the file's bytes with its HTTP library's own `post()`, to a URL Zotero builds from the `Host` header. pyzotero 1.15.2 and later address 127.0.0.1 themselves, so nothing changes with them.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added

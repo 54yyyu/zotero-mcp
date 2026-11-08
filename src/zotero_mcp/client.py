@@ -219,6 +219,130 @@ _LOCAL_WRITE_TIMEOUT = 120.0
 # outcome instead of the transport dying first.
 _LOCAL_AUTHORIZE_TIMEOUT = 55.0
 
+#: The address Zotero's local server binds. It listens on the IPv4 loopback
+#: only, while pyzotero addresses it as ``localhost`` — which resolves to
+#: ``::1`` first wherever IPv6 is enabled. On Windows a connection to a closed
+#: port is not refused at once: TCP retries the SYN and gives up after about
+#: two seconds, and only then falls back to 127.0.0.1. Every local API request
+#: paid that, because the HTTP/1.0 server closes the connection after each
+#: response, so nothing was ever reused: ~2.05 s per request against ~30 ms
+#: when connecting to 127.0.0.1 directly.
+_LOCAL_LOOPBACK_HOST = "127.0.0.1"
+
+# When a request to 127.0.0.1 failed to connect but ``localhost`` worked,
+# something other than Zotero's usual IPv4 listener is answering; requests go
+# straight to the name until this monotonic deadline instead of paying a
+# failed attempt each. Time-limited so a one-off failure (Zotero restarting
+# between the two attempts) cannot slow the rest of the session down.
+_loopback_shortcut_disabled_until = 0.0
+_LOOPBACK_SHORTCUT_RETRY_AFTER = 300.0
+
+
+@functools.cache
+def _loopback_transport_class(http: ModuleType) -> type:
+    """An HTTP/1.1 transport that reaches ``localhost`` over 127.0.0.1.
+
+    Built per HTTP library, because pyzotero may use httpx or httpx2 and the
+    transport has to come from the same one (see :func:`_pyzotero_httpx`).
+
+    Only the TCP destination changes. The request keeps its URL and its
+    ``Host: localhost:23119`` header, so Zotero sees exactly what it saw when
+    the connection fell back to 127.0.0.1 by itself, and the response's
+    ``request`` — the one pyzotero quotes in its error messages — is the
+    caller's own, untouched. If nothing answers on 127.0.0.1 the request is
+    sent to ``localhost`` as before, so a server listening elsewhere still
+    works and a stopped Zotero fails with the same error as before; when the
+    name answers where the address did not, the next requests skip the
+    shortcut for a while (``_LOOPBACK_SHORTCUT_RETRY_AFTER``).
+    """
+
+    class LoopbackHTTPTransport(http.HTTPTransport):
+        def handle_request(self, request):
+            global _loopback_shortcut_disabled_until
+            if (
+                request.url.host != "localhost"
+                or time.monotonic() < _loopback_shortcut_disabled_until
+            ):
+                return super().handle_request(request)
+            direct = http.Request(
+                request.method,
+                request.url.copy_with(host=_LOCAL_LOOPBACK_HOST),
+                headers=request.headers,
+                stream=request.stream,
+                extensions=request.extensions,
+            )
+            try:
+                return super().handle_request(direct)
+            except (http.ConnectError, http.ConnectTimeout):
+                pass
+            response = super().handle_request(request)
+            _loopback_shortcut_disabled_until = (
+                time.monotonic() + _LOOPBACK_SHORTCUT_RETRY_AFTER
+            )
+            return response
+
+    return LoopbackHTTPTransport
+
+
+class _LoopbackUploadHTTP:
+    """pyzotero's HTTP library as its upload code sees it, posting over 127.0.0.1.
+
+    Step 2 of pyzotero's file upload sends the file's bytes with the library's
+    module-level ``post()`` rather than the instance's client (so that the
+    instance's API headers never reach S3), to the URL the server returned in
+    step 1. Zotero's local server builds that URL from the request's ``Host``
+    header, so it names ``localhost``, and every upload paid the two seconds
+    that :func:`_loopback_transport_class` saves every other request.
+
+    Every attribute is the real module's, so pyzotero's ``except`` clauses and
+    status codes are unchanged. Only ``post()`` differs, and only for a URL
+    naming ``localhost`` with the options pyzotero passes: it goes through a
+    one-off client with the loopback transport, which keeps the URL, the
+    headers and the timeout and falls back to ``localhost`` the same way. Any
+    other URL (S3, for the web API) or option goes to the real ``post()``.
+    Like every other local request, the upload ignores proxy environment
+    variables, as an explicit transport does (pyzotero 1.16 turns them off
+    for the local upload itself, with ``trust_env=False``).
+    """
+
+    _CLIENT_OPTIONS = frozenset({"timeout", "trust_env"})
+    _REQUEST_OPTIONS = frozenset({"files", "data", "content", "headers", "params", "json"})
+
+    def __init__(self, http: ModuleType):
+        self._http = http
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._http, name)
+
+    def post(self, url: Any, **kwargs: Any) -> Any:
+        http = self._http
+        if http.URL(url).host != "localhost" or not (
+            kwargs.keys() <= self._CLIENT_OPTIONS | self._REQUEST_OPTIONS
+        ):
+            return http.post(url, **kwargs)
+        client_options = {k: kwargs.pop(k) for k in self._CLIENT_OPTIONS if k in kwargs}
+        transport = _loopback_transport_class(http)(http1=True, http2=False)
+        with http.Client(transport=transport, **client_options) as client:
+            return client.post(url, **kwargs)
+
+
+def _route_pyzotero_uploads_over_loopback(http: ModuleType) -> None:
+    """Point pyzotero's upload code at :class:`_LoopbackUploadHTTP` (idempotent).
+
+    The upload module looks its HTTP library up as a module global at call
+    time, so replacing that global is the only way in short of copying
+    pyzotero's upload step. Only the global that holds *http* — the library
+    pyzotero is built against, see :func:`_pyzotero_httpx` — is replaced.
+    """
+    try:
+        from pyzotero import _upload as upload_module
+    except ImportError:
+        return
+    for name in ("httpx2", "httpx"):
+        if getattr(upload_module, name, None) is http:
+            setattr(upload_module, name, _LoopbackUploadHTTP(http))
+            return
+
 
 def _make_local_http_client(timeout: float = _LOCAL_READ_TIMEOUT) -> Any:
     """Return an HTTP client pinned to HTTP/1.1 for the local Zotero server.
@@ -239,10 +363,17 @@ def _make_local_http_client(timeout: float = _LOCAL_READ_TIMEOUT) -> Any:
     The explicit timeout is load-bearing, not tidying: see the comment on the
     constants above. Connect stays short because the server is on loopback —
     if it isn't listening we want to know immediately, not in two minutes.
+
+    The transport connects to 127.0.0.1 rather than resolving ``localhost``;
+    see :data:`_LOCAL_LOOPBACK_HOST` for why that is worth two seconds a
+    request on Windows. The one request pyzotero sends without this client,
+    an attachment's bytes, is routed the same way here too
+    (:func:`_route_pyzotero_uploads_over_loopback`).
     """
     http = _pyzotero_httpx()
+    _route_pyzotero_uploads_over_loopback(http)
     return http.Client(
-        transport=http.HTTPTransport(http1=True, http2=False),
+        transport=_loopback_transport_class(http)(http1=True, http2=False),
         follow_redirects=True,
         timeout=http.Timeout(timeout, connect=5.0),
     )
