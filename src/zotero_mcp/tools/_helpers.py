@@ -2270,7 +2270,8 @@ def _file_md5(path):
 def _find_child_attachment(write_zot, parent_key, filename=None, file_md5=None):
     """First child of ``parent_key`` stored as ``filename`` or hashing to ``file_md5``.
 
-    Either criterion matching returns the child dict; ``None`` criteria are
+    ``filename`` also matches a linked-file child by the last component of its
+    ``path``. Either criterion matching returns the child dict; ``None`` criteria are
     skipped (a child without an ``md5`` field never matches ``file_md5=None``).
     Paginates past the API's default page size and ignores trashed children
     (``deleted`` flag), so a match beyond the first page isn't missed and a
@@ -2288,9 +2289,20 @@ def _find_child_attachment(write_zot, parent_key, filename=None, file_md5=None):
             continue
         if filename is not None and data.get("filename") == filename:
             return kid
+        # A linked-file child has no ``filename`` or ``md5`` in the API's JSON,
+        # only the ``path`` it points at (absolute, or ``attachments:``-relative).
+        if filename is not None and _path_basename(data.get("path")) == filename:
+            return kid
         if file_md5 is not None and data.get("md5") == file_md5:
             return kid
     return None
+
+
+def _path_basename(path):
+    """Last component of a Zotero attachment ``path`` (either separator), or None."""
+    if not path or not isinstance(path, str):
+        return None
+    return re.split(r"[\\/]", path)[-1] or None
 
 
 def _attachment_filename_exists(write_zot, parent_key, filename):
