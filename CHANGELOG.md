@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **On Windows, the first semantic search with a local embedding model hung over stdio until another request arrived** (#485). The thread blocked in the stdio server's read of stdin holds the C runtime's lock on descriptor 0, and the OpenBLAS DLL that numpy and scipy bundle touches descriptor 0 while it initialises, so importing sentence-transformers (which imports scipy.linalg and scikit-learn) waited for the next message on stdin. The main-thread pre-import of ChromaDB covers numpy only because it runs before the server reads stdin. On Windows over stdio, with semantic search set up, the server now reads the MCP stream through a duplicate descriptor and points descriptor 0 at NUL. With a local Qwen3 model the first search went from no answer (until a second request released both) to 7.4 s.
+
 ## [0.15.2] - 2026-10-31
 
 ### Added

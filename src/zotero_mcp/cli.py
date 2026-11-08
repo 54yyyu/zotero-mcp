@@ -360,6 +360,55 @@ def _warmup_reranker_in_background() -> None:
     threading.Thread(target=_run, daemon=True, name="zmcp-reranker-warmup").start()
 
 
+def _read_stdin_through_a_duplicate_descriptor() -> bool:
+    """Serve stdio from a copy of descriptor 0, and point descriptor 0 at NUL (#485).
+
+    The cause of #485, measured: on Windows the thread blocked in the stdio
+    server's read of stdin holds the C runtime's lock on descriptor 0, and
+    the OpenBLAS DLL that numpy and scipy bundle touches descriptor 0 while it
+    initialises. Loading it therefore waits until the next message arrives on
+    stdin, whichever thread loads it, holding the loader lock meanwhile. With
+    a thread blocked on a pipe read, ``import numpy``, ``import scipy.linalg``
+    and ``import sklearn`` hung until killed (60 s), on a worker thread and on
+    the main thread alike; with the read going through a duplicate descriptor
+    and descriptor 0 on NUL they took 0.1, 0.3 and 0.6 s. A duplicate alone
+    is not enough: it shares the pipe's file object, and the load still waits.
+
+    The main-thread pre-import of ChromaDB (and numpy) avoids this only
+    because it runs before the server reads stdin. The first semantic search
+    with a local model still imports sentence-transformers, which imports
+    scipy.linalg and scikit-learn, while the server is reading: with a local
+    Qwen3 model over stdio it did not answer until another request came in
+    (none in 30 s; a request sent then released both, 4.6 s later). With
+    stdin moved off descriptor 0 it answered in 7.4 s.
+
+    Called before anything reads stdin. Returns ``False``, leaving stdin as it
+    was, when the descriptors cannot be rearranged.
+    """
+    import io
+
+    try:
+        original = sys.stdin
+        duplicate = os.dup(original.fileno())
+    except (AttributeError, OSError, ValueError):
+        return False
+    try:
+        nul = os.open(os.devnull, os.O_RDONLY)
+        try:
+            os.dup2(nul, 0)
+        finally:
+            os.close(nul)
+    except OSError:
+        os.close(duplicate)
+        return False
+    sys.stdin = io.TextIOWrapper(
+        open(duplicate, "rb"),
+        encoding=getattr(original, "encoding", None) or "utf-8",
+        errors=getattr(original, "errors", None) or "strict",
+    )
+    return True
+
+
 def _format_chunking_status(status: dict) -> str:
     """Describe what the next indexing run will actually do about chunking.
 
@@ -1565,6 +1614,14 @@ def main():
         except UnknownToolsetError as e:
             print(f"❌ {e}")
             sys.exit(1)
+        # Windows over stdio, with semantic search set up: read stdin through
+        # a duplicate descriptor, so that loading sentence-transformers' native
+        # libraries while the server waits for a message does not hang (#485).
+        # Before anything reads stdin or starts a thread.
+        if transport == "stdio" and _should_preimport_semantic(
+            sys.platform, str(_semantic_config_path(None))
+        ):
+            _read_stdin_through_a_duplicate_descriptor()
         # If the reranker is enabled, warm it up in the background so the first
         # semantic search doesn't pay the ~tens-of-seconds model load inside the
         # request path and time out (issue #283). Daemon thread: never blocks
