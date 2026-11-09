@@ -75,6 +75,12 @@ describe("Codex login detection", () => {
     assert.match(status.reason!, /login check.*terminated/i);
   });
 
+  it("counts a configured API key as signed in (#785)", async () => {
+    const status = await detect(fakeBridgeDir(["codex"]), 'echo "API key configured - sk-proj-***"');
+    assert.equal(status.available, true, status.reason ?? "");
+    assert.equal(status.account, "API key");
+  });
+
   it("recognizes both Gecko's negative exit code and Node's null signal result", async () => {
     for (const code of [-9, null]) {
       const spawner: Spawner = {
