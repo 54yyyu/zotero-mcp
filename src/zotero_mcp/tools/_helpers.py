@@ -33,6 +33,7 @@ from pyzotero.errors import (
 )
 
 from zotero_mcp import client as _client
+from zotero_mcp import strict_sqlite as _strict_sqlite
 from zotero_mcp import utils as _utils
 from zotero_mcp.extract import pdf_page_count
 from zotero_mcp.identifiers import (
@@ -185,12 +186,24 @@ def write_unavailable_message(op_description: str = "write operations") -> str:
     )
     if _client.probe_local_server_id():
         return f"{header}\n\nTwo options:\n{authorize}\n{web}"
+    if _client.local_server_unreachable():
+        # Zotero is closed: saying its build lacks the write API (below)
+        # sends the user after an upgrade they may not need (#744).
+        return (
+            f"{header}\n\nZotero is not running (nothing listening on "
+            f"127.0.0.1:23119). Start Zotero, then one of:\n{authorize}\n{web}"
+        )
     return (
         f"{header}\n\nThis Zotero build does not expose the local write API "
         f"(that needs Zotero 10 or newer), so:\n"
         f"{web.replace('  2.', '  -')}\n"
         f"{authorize.replace('  1.', '  -')}"
     )
+
+
+# A write needs the current version from the store it writes to, and SQLite can
+# lag it. Local versions also have no relation to web versions (see below).
+_WRITE_READS = "reads made for a write"
 
 
 def resolve_write_client(ctx=None, *, op_description: str = "write operations"):
@@ -211,7 +224,7 @@ def resolve_write_client(ctx=None, *, op_description: str = "write operations"):
     # just before it landed (local_db._wal_snapshot_path).
     note_local_write()
     if not _utils.is_local_mode():
-        zot = _client.get_zotero_client()
+        zot = _strict_sqlite.exempt(_client.get_zotero_client(), _WRITE_READS)
         return zot, zot, "web"
 
     local_write_zot = _client.get_local_write_client()
@@ -222,12 +235,14 @@ def resolve_write_client(ctx=None, *, op_description: str = "write operations"):
         # would write that mapping back to whatever id the switch-library tool
         # reported (the SQLite libraryID, typically 1) and every write would
         # go to a library that does not exist locally.
+        _strict_sqlite.exempt(local_write_zot, _WRITE_READS)
         return local_write_zot, local_write_zot, "local"
 
     web_zot = _client.get_web_zotero_client()
     if web_zot is not None:
         apply_library_override(web_zot, _client.get_active_library())
-        return _client.get_zotero_client(), web_zot, "hybrid"
+        _strict_sqlite.exempt(web_zot, _WRITE_READS)
+        return _strict_sqlite.exempt(_client.get_zotero_client(), _WRITE_READS), web_zot, "hybrid"
 
     raise ValueError(write_unavailable_message(op_description))
 
@@ -613,7 +628,8 @@ def _get_bibliography_client(ctx=None):
     or the top-level ``format=bibtex`` export) works against the local API with
     no credentials at all, so every mode can now use its normal client.
     """
-    return _client.get_zotero_client()
+    # Rendering needs Zotero's citation engine and translators; SQLite has neither.
+    return _strict_sqlite.exempt(_client.get_zotero_client(), "citation rendering")
 
 
 def fetch_trashed_collections(zot) -> list[dict]:
@@ -1032,11 +1048,15 @@ def _normalize_item_tags(value):
     return normalized
 
 
-def _resolve_collection_names(zot, names, ctx=None):
-    """Resolve collection names to keys (case-insensitive)."""
+def _resolve_collection_names(zot, names, ctx=None, collections=None):
+    """Resolve collection names to keys (case-insensitive).
+
+    ``collections`` is an already-fetched list (a backend's
+    ``list_collections()``); without it they are paged from ``zot``.
+    """
     if not names:
         return []
-    all_collections = _paginate(zot.collections)
+    all_collections = collections if collections is not None else _paginate(zot.collections)
     results = []
     for name in names:
         name_lower = name.lower()
@@ -1994,8 +2014,8 @@ def _guess_content_type(filename):
     """Guess a Zotero ``contentType`` from a filename's extension.
 
     Covers the file types ``add_from_file`` accepts (PDF, EPUB, DJVU, plus a
-    few common extras). Returns ``None`` when there is no useful guess so the
-    caller can leave the field unset and let Zotero fall back.
+    few common extras), then falls back to Python's MIME database for other
+    attachments. Returns ``None`` when there is no useful guess.
     """
     if not filename:
         return None
@@ -2006,12 +2026,13 @@ def _guess_content_type(filename):
         "djvu": "image/vnd.djvu",
         "html": "text/html",
         "txt": "text/plain",
+        "vtt": "text/vtt",
         **{e.lstrip("."): t for e, t in _TEXT_ATTACHMENT_TYPES.items()},
         "doc": "application/msword",
         "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "rtf": "application/rtf",
         "odt": "application/vnd.oasis.opendocument.text",
-    }.get(ext)
+    }.get(ext) or mimetypes.guess_type(filename)[0]
 
 
 def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx, content_type=None):
@@ -2051,9 +2072,10 @@ def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx, conten
     attachment_version = next(iter(success_versions.values()), None)
 
     try:
-        _webdav.upload_attachment_to_webdav(attachment_key=attachment_key, file_path=file_path)
+        uploaded = _webdav.upload_attachment_to_webdav(
+            attachment_key=attachment_key, file_path=file_path
+        )
         ctx.info(f"WebDAV PUT: {attachment_key}.zip uploaded")
-        return f" (uploaded to WebDAV as {attachment_key}.zip)" + _cloud_only_note(write_zot)
     except Exception as e:
         ctx.info(f"WebDAV PUT failed for {attachment_key}: {e}")
         # A failed PUT leaves the shell with no file bytes — an orphan that
@@ -2072,6 +2094,28 @@ def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx, conten
                 f"attachment {attachment_key} exists but has no file bytes on WebDAV "
                 f"and could not be deleted: {del_err})"
             )
+    md5_hex, mtime_ms = uploaded
+    _record_file_on_shell(write_zot, attachment_key, md5_hex, mtime_ms, ctx)
+    return f" (uploaded to WebDAV as {attachment_key}.zip)" + _cloud_only_note(write_zot)
+
+
+def _record_file_on_shell(write_zot, attachment_key, md5_hex, mtime_ms, ctx):
+    """Write the uploaded file's md5 and mtime onto the attachment shell.
+
+    The desktop client does the same after its own WebDAV sync. Without them the
+    record looks like an attachment with no file, to a reader and to
+    _find_child_attachment's md5 match. Best effort: the file is on WebDAV
+    either way.
+    """
+
+    def _set_file(item):
+        item["data"]["md5"] = md5_hex
+        item["data"]["mtime"] = int(mtime_ms)
+
+    try:
+        _update_item_with_version_retry(write_zot, attachment_key, _set_file, ctx)
+    except Exception as e:
+        ctx.info(f"Could not record md5/mtime on {attachment_key}: {e}")
 
 
 def _extract_attachment_key(attach_result):
@@ -2270,7 +2314,8 @@ def _file_md5(path):
 def _find_child_attachment(write_zot, parent_key, filename=None, file_md5=None):
     """First child of ``parent_key`` stored as ``filename`` or hashing to ``file_md5``.
 
-    Either criterion matching returns the child dict; ``None`` criteria are
+    ``filename`` also matches a linked-file child by the last component of its
+    ``path``. Either criterion matching returns the child dict; ``None`` criteria are
     skipped (a child without an ``md5`` field never matches ``file_md5=None``).
     Paginates past the API's default page size and ignores trashed children
     (``deleted`` flag), so a match beyond the first page isn't missed and a
@@ -2288,9 +2333,20 @@ def _find_child_attachment(write_zot, parent_key, filename=None, file_md5=None):
             continue
         if filename is not None and data.get("filename") == filename:
             return kid
+        # A linked-file child has no ``filename`` or ``md5`` in the API's JSON,
+        # only the ``path`` it points at (absolute, or ``attachments:``-relative).
+        if filename is not None and _path_basename(data.get("path")) == filename:
+            return kid
         if file_md5 is not None and data.get("md5") == file_md5:
             return kid
     return None
+
+
+def _path_basename(path):
+    """Last component of a Zotero attachment ``path`` (either separator), or None."""
+    if not path or not isinstance(path, str):
+        return None
+    return re.split(r"[\\/]", path)[-1] or None
 
 
 def _attachment_filename_exists(write_zot, parent_key, filename):

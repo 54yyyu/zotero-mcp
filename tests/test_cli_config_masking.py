@@ -7,8 +7,17 @@ GOOGLE_API_KEY were printed in full.
 import argparse
 import json
 
+import pytest
+
 from zotero_mcp import cli_standalone
 from zotero_mcp.cli import obfuscate_config_for_display
+
+
+@pytest.mark.parametrize("token", ["short", "long-test-token-value", None, 123, {"secret": "value"}])
+def test_http_auth_token_is_fully_masked(token):
+    config = {"ZOTERO_MCP_AUTH_TOKEN": token}
+    assert obfuscate_config_for_display(config) == {"ZOTERO_MCP_AUTH_TOKEN": "********"}
+    assert config["ZOTERO_MCP_AUTH_TOKEN"] == token
 
 
 def test_provider_api_keys_are_masked():

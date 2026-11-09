@@ -12,12 +12,12 @@ The MCP server sends every enabled tool's name, description and JSON parameter s
 
 | Route | Tokens in context | When it is paid |
 |---|---:|---|
-| MCP, default profile (41 tools) | 16,815 | every request |
-| MCP, `ZOTERO_MCP_TOOLSETS=none` (34 tools) | 14,317 | every request |
-| MCP, `ZOTERO_MCP_TOOLSETS=all` (53 tools) | 20,942 | every request |
+| MCP, default profile (38 tools) | 7,939 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=none` (31 tools) | 6,863 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=all` (50 tools) | 11,225 | every request |
 | CLI skill, frontmatter only | 98 | always |
 | CLI skill, body loaded | 2,400 | once the skill fires |
-| CLI skill + full command reference | 6,158 | worst case |
+| CLI skill + full command reference | 6,582 | worst case |
 
 That is the *fixed* cost only. It does not measure task success, output size, or how many round trips each route takes to finish a job — a cheaper surface that gets the answer wrong is not cheaper. Numbers are `cl100k_base` tokens and are re-measured, not estimated; `tests/test_context_cost_claim.py` fails if the relationship stops holding.
 
@@ -133,6 +133,8 @@ zotero-cli get tags
 # Semantic search database
 zotero-cli db update
 zotero-cli db update --fulltext --force-rebuild
+zotero-cli db update --batch --auto-loop    # same flags as zotero-mcp update-db
+zotero-cli db batch-status                  # reads the configured provider's batches (or --provider)
 zotero-cli db status
 
 # Library and duplicates
@@ -152,12 +154,14 @@ zotero-cli open --annotation ANN01            # jump to an annotation and select
 # Annotating a PDF — boxes to aim at, then a checked plan written in one run
 zotero-cli --json layout ATTACH01 --pages 3-9            # figure, table and equation boxes
 zotero-cli annotations create --attachment-key ATTACH01 --page 4 --text "exact words" --color yellow
+zotero-cli annotations create --attachment-key ATTACH01 --page 5 --text "exact words" --underline
 zotero-cli annotations create --attachment-key ATTACH01 --page 3 --rect 0.32,0.09,0.36,0.41 --comment "Figure 1"
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl --dry-run   # where each highlight lands
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl             # write them all
 
 # Attachments, deletion, bibliographies
 zotero-cli attach ABC123 --file /path/to/paper.pdf
+zotero-cli attach ABC123 --file /path/to/paper.pdf --link   # link in place, nothing uploaded
 zotero-cli delete item ABC123
 zotero-cli export --item-keys ABC123,DEF456 --style apa
 zotero-cli export --collection COLL01 --format bibtex
@@ -177,6 +181,12 @@ zotero-cli batch --item-keys ABC123,DEF456 --add-tags screened
 zotero-cli batch --query "machine learning" --add-tags survey --limit 100
 ```
 
+`attach --file` accepts any existing regular file, including VTT transcripts,
+TXT files and images. Symlinks and Windows `.lnk` shortcuts are rejected. Unknown
+file types use `application/octet-stream`; storage does not imply preview or
+full-text indexing support. `--url` remains PDF-only. `add` keeps its existing
+document-import formats and parses `.json` / `.bib` as citation data.
+
 For metadata without a dedicated `edit` flag, repeat `--field NAME=VALUE` using Zotero's field names. Values stay strings; only the first `=` separates the name from the value, and `--field extra=` clears Extra. Generic assignments override matching named flags; the last assignment to the same name wins. Fields use the same item-type schema validation as other edits: unknown names fail, and fields unavailable on the item's type are reported as skipped.
 
 An annotation plan (`plan.jsonl`) is one JSON object per line: `{"page": 4, "text": "exact words", "comment": "...", "color": "yellow"}` for a highlight, or `{"page": 3, "rect": "x,y,w,h", "comment": "..."}` for a box. Colors take Zotero's names: yellow, red, green, blue, purple, magenta, orange, gray.
@@ -194,3 +204,7 @@ Add `-v` anywhere to see progress messages (e.g., which API calls are made):
 ```bash
 zotero-cli -v search "CRISPR"
 ```
+
+## Finding a flag
+
+`zotero-cli --help` and `zotero-cli <command> --help` show the options of `zotero-cli`. The server's own commands (`serve`, `setup`, `update-db`, `batch-status`, `repair-db` and the rest) have a single reference: `zotero-mcp help` prints every command with every option, and `zotero-mcp help update-db` shows one command.

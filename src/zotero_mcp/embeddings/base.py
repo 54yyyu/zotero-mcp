@@ -44,6 +44,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
+from urllib.parse import urlsplit
 
 from zotero_mcp.embeddings.ratelimit import AdaptiveRateLimiter
 from zotero_mcp.utils import install_hint
@@ -68,6 +69,41 @@ COMMON_CONFIG_KEYS = (
     "max_retries",
     "tokens_per_minute",
 )
+
+
+class EmbeddingAPIUnreachable(RuntimeError):
+    """The embedding API could not be reached, or refused the request.
+
+    Raised for connection errors, timeouts, 401 and 403 once retries are
+    spent. Carries the host only, never the URL or the key, so the message
+    is safe to show.
+    """
+
+    def __init__(self, provider: str, host: str, reason: str):
+        self.provider = provider
+        self.host = host
+        self.reason = reason
+        super().__init__(str(self))
+
+    def __str__(self) -> str:
+        # Rebuilt rather than taken from args: ChromaDB appends " in upsert."
+        # and the like to a passing exception's args.
+        if self.host in ("localhost", "127.0.0.1", "::1"):
+            hint = "Check that the local server (for example Ollama) is running."
+        elif self.reason == "HTTP 401":
+            hint = "Check the API key."
+        else:
+            hint = (
+                "Check your network connection; if this API only accepts "
+                "requests from a particular network, connect to it or its VPN."
+            )
+        return f"Could not reach the embedding API at {self.host} ({self.reason}). {hint}"
+
+    def __reduce__(self):
+        # The ChromaDB worker process (idle_unload_minutes) sends exceptions
+        # back pickled; the default reduction would call __init__ with the
+        # message alone.
+        return (type(self), (self.provider, self.host, self.reason))
 
 
 def _safe_int(value: Any) -> int | None:
@@ -157,9 +193,18 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
     - ``truncate_queries`` — whether :meth:`embed_query_text` truncates before
       preparing the text. Only Gemini needs this, because its query path
       bypasses the indexing pipeline's own truncation.
+    - ``default_api_host`` — the host named in an "unreachable" message when
+      no ``base_url`` is configured.
     """
 
     default_request_batch_size: int | None = None
+    default_api_host: str | None = None
+    #: Retries for :meth:`check_reachable` and for a query that cannot reach
+    #: the API, so either is reported in seconds, not after the full backoff.
+    probe_max_retries = 1
+    #: Estimated tokens one request may carry, or None if only the document
+    #: count limits it. See :meth:`_split_into_requests`.
+    max_request_tokens: int | None = None
     default_tokens_per_minute: float | None = None
     max_parallel_requests_default = 1
     max_retries_default = 5
@@ -278,15 +323,7 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
             getattr(self, "request_batch_size", None) or self.default_request_batch_size
         )
 
-        if batch_size:
-            sub_batches = [
-                prepared[i : i + batch_size] for i in range(0, len(prepared), batch_size)
-            ]
-        else:
-            # A falsy request_batch_size means "the whole input in one
-            # request", but an empty input must still issue zero requests
-            # rather than one empty one.
-            sub_batches = [prepared] if prepared else []
+        sub_batches = self._split_into_requests(prepared, batch_size)
 
         if not sub_batches:
             return []
@@ -312,6 +349,47 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
             embeddings.extend(chunk or [])
         return embeddings
 
+    def _split_into_requests(self, texts: list, batch_size: int | None) -> list[list]:
+        """Split ``texts`` into requests, limited by count and by estimated tokens.
+
+        A falsy ``batch_size`` means no count limit. An empty input gives no
+        requests rather than one empty one. A document over the token limit
+        goes out alone, where the provider can reject it without taking others
+        down with it.
+        """
+        token_limit = self.max_request_tokens
+        requests: list[list] = []
+        current: list = []
+        current_tokens = 0
+        for text in texts:
+            tokens = self._estimate_request_tokens(text) if token_limit else 0
+            over_count = bool(batch_size) and len(current) >= batch_size
+            over_tokens = bool(token_limit) and current_tokens + tokens > token_limit
+            if current and (over_count or over_tokens):
+                requests.append(current)
+                current, current_tokens = [], 0
+            current.append(text)
+            current_tokens += tokens
+        if current:
+            requests.append(current)
+        return requests
+
+    def _estimate_request_tokens(self, text: Any) -> int:
+        """A document's share of a request's token limit, without tokenizing it.
+
+        Tokenizing every document here would be expensive on PDF text (see
+        ``OpenAIEmbeddingFunction.truncate``), and neither of OpenAI's two
+        checks needs it. This is the larger of two bounds, so a request within
+        the limit passes both:
+
+        - It counts UTF-8 bytes / 4, however few real tokens they are.
+        - It counts real tokens. A token is at least one byte, and documents
+          reaching this point are truncated to the input limit, so the smaller
+          of those two can't be below the real count.
+        """
+        data = len(str(text).encode("utf-8"))
+        return max(min(data, getattr(self, "max_input_tokens", data)), data // 4 + 1)
+
     def embed_query_text(self, text: str) -> list[float]:
         """Embed one query string through the same limiter and retry path.
 
@@ -323,12 +401,47 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
             text = self.truncate(text, getattr(self, "max_input_tokens", 8000))
         return self._embed_with_retry([self._prepare_query(text)], is_query=True)[0]
 
+    def api_host(self) -> str:
+        """The API's host name, without scheme, port, path or credentials."""
+        base_url = getattr(self, "base_url", None)
+        if base_url:
+            text = str(base_url)
+            hostname = urlsplit(text if "//" in text else f"//{text}").hostname
+            if hostname:
+                return hostname
+        return self.default_api_host or "the configured embedding API"
+
+    def check_reachable(self) -> None:
+        """Embed one short string to find out whether the API answers at all.
+
+        Raises :class:`EmbeddingAPIUnreachable` when it cannot be reached or
+        refuses the request. Any other error is only logged and left to the
+        run itself, which handles it as before.
+        """
+        try:
+            self._embed_with_retry(
+                [self._prepare_document("zotero-mcp connectivity check")], probe=True
+            )
+        except EmbeddingAPIUnreachable:
+            raise
+        except Exception as exc:
+            logger.warning(f"Embedding API check failed, continuing: {exc}")
+
     def _embed_with_retry(
-        self, texts: list[str], is_query: bool = False
+        self, texts: list[str], is_query: bool = False, probe: bool = False
     ) -> list[list[float]]:
-        """acquire -> _embed_batch -> on_success, or on_throttle and retry."""
+        """acquire -> _embed_batch -> on_success, or on_throttle and retry.
+
+        For a query or the ``probe`` request, an error
+        :meth:`_unreachable_reason` recognises is retried at most
+        ``probe_max_retries`` times and then raised as
+        :class:`EmbeddingAPIUnreachable`. Document requests during a run keep
+        their errors and the full retry budget.
+        """
         limiter = self._get_limiter()
         max_retries = getattr(self, "max_retries", self.max_retries_default) or 0
+        if probe:
+            max_retries = min(max_retries, self.probe_max_retries)
         # A rough estimate, not a token count: enough to pace the TPM bucket
         # without paying tiktoken's per-request CPU cost. Text reaching here
         # has already been truncated upstream.
@@ -346,10 +459,16 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
                 response = self._embed_batch(texts, is_query=is_query)
             except Exception as exc:
                 retryable, retry_after = self._classify_error(exc)
-                if retryable and attempt < max_retries:
+                reason = self._unreachable_reason(exc) if (is_query or probe) else None
+                budget = min(max_retries, self.probe_max_retries) if reason else max_retries
+                if retryable and attempt < budget:
                     limiter.wait(limiter.on_throttle(retry_after))
                     attempt += 1
                     continue
+                if reason:
+                    name = getattr(self, "name", None)
+                    provider = name() if callable(name) else type(self).__name__
+                    raise EmbeddingAPIUnreachable(provider, self.api_host(), reason) from exc
                 raise
 
             http_ms = (time.monotonic() - started) * 1000.0
@@ -456,3 +575,12 @@ class RemoteEmbeddingFunction(BaseEmbeddingFunction):
         succeed. Providers override this with their SDK's exception types.
         """
         return False, None
+
+    def _unreachable_reason(self, exc: Exception) -> str | None:
+        """A short reason if ``exc`` means the API cannot be reached, else None.
+
+        One of "connection failed", "timed out", "HTTP 401", "HTTP 403", never
+        the exception's own text, which may carry a URL. The default
+        recognises nothing; providers override.
+        """
+        return None

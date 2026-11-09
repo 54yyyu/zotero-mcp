@@ -583,7 +583,7 @@ def _tag_condition(operation: str, value: str) -> tuple[str, list]:
 # reading the caller wanted, decline the query and let them fall back.
 _TAG_WILDCARDS = ("%", "*")
 
-# ` OR ` as documented by `zotero_search_by_tag`, and `||` as Zotero's own
+# ` OR ` as documented for `zotero_search_items(tag=...)`, and `||` as Zotero's own
 # API spells it. Uppercase only: "or" is an ordinary word inside a tag name.
 _TAG_OR_SEPARATOR = re.compile(r"\s+OR\s+|\|\|")
 
@@ -591,7 +591,7 @@ _TAG_OR_SEPARATOR = re.compile(r"\s+OR\s+|\|\|")
 def _tag_dsl_condition(entries: list[str]) -> tuple[str, list] | None:
     """Compile the `tag=` boolean DSL into one SQL fragment.
 
-    The syntax is the one `zotero_search_by_tag` documents and pyzotero
+    The syntax is the one `zotero_search_items(tag=...)` documents and pyzotero
     forwards to Zotero's `tag` parameter: entries are ANDed, ` OR ` (or
     Zotero's own `||` spelling) disjoins within an entry, and a leading `-`
     on a term excludes it.
@@ -2740,7 +2740,7 @@ class LocalZoteroReader:
         like_params: list = []
         if not variants:
             # A blank query is a *filter-only* search — "every item carrying
-            # this tag" — which is exactly what zotero_search_by_tag asks for
+            # this tag" — which is exactly what a tag-only zotero_search_items asks for
             # and which this backend can answer perfectly well. It is only
             # unanswerable with nothing else to filter on, since that would
             # quietly mean "return the whole library".
@@ -3081,6 +3081,68 @@ class LocalZoteroReader:
             if parent_key is not None:
                 result[parent_key].append(item)
         return result
+
+    def get_duplicate_scan_items(
+        self,
+        *,
+        collection_key: str | None = None,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> list[dict]:
+        """All regular items needed for duplicate grouping and keeper ranking.
+
+        The projection includes the abstract and creation date used by auto
+        merge. Read the raw title field, matching metadata_match_keys' existing
+        API policy. No per-item hydration or item-ID parameter list is needed,
+        so this also works above SQLite's bound-variable limit.
+        """
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return []
+        placeholders = ",".join("?" * len(lib_ids))
+        collection_sql, collection_params = "", []
+        if collection_key:
+            collection = conn.execute(
+                f"SELECT collectionID FROM collections WHERE key = ? "
+                f"AND libraryID IN ({placeholders})",
+                [collection_key] + list(lib_ids),
+            ).fetchone()
+            if collection is None:
+                raise ValueError(f"Collection '{collection_key}' not found in the active library.")
+            collection_sql = " AND i.itemID IN (SELECT itemID FROM collectionItems WHERE collectionID = ?)"
+            collection_params = [collection[0]]
+        rows = conn.execute(
+            """SELECT i.key, it.typeName AS itemType, i.dateAdded, i.dateModified,
+                      title_val.value AS title, doi_val.value AS DOI,
+                      abstract_val.value AS abstractNote, date_val.value AS date
+               FROM items i JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+            """
+            + _plain_field_join("title", "title")
+            + _plain_field_join("doi", "DOI")
+            + _plain_field_join("abstract", "abstractNote")
+            + _plain_field_join("date", "date")
+            + f""" WHERE i.libraryID IN ({placeholders})
+                   AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+                   AND it.typeName NOT IN ('attachment', 'note', 'annotation')
+            """
+            + collection_sql
+            + " ORDER BY i.dateModified DESC, i.itemID",
+            list(lib_ids) + collection_params,
+        ).fetchall()
+        return [
+            {
+                "key": row["key"],
+                "data": {
+                    "key": row["key"], "itemType": row["itemType"],
+                    "title": row["title"] or "", "DOI": row["DOI"] or "",
+                    "abstractNote": row["abstractNote"] or "",
+                    "date": _api_date_field(row["date"] or ""),
+                    "dateAdded": _api_timestamp(row["dateAdded"]),
+                    "dateModified": _api_timestamp(row["dateModified"]),
+                },
+            }
+            for row in rows
+        ]
 
     def list_items_of_type(
         self,

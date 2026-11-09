@@ -381,6 +381,42 @@ class TestAddItemDispatch:
 
 class TestAddItemSharedArguments:
 
+    @pytest.mark.parametrize("source_type,target", [
+        ("doi", "add_by_doi"),
+        ("url", "add_by_url"),
+        ("isbn", "add_by_isbn"),
+        ("pmid", "add_by_pmid"),
+        ("bibtex", "add_by_bibtex"),
+        ("csl_json", "add_by_csl_json"),
+        ("file", "add_from_file"),
+    ])
+    def test_omitted_if_exists_reuses_on_every_route(self, monkeypatch, source_type, target):
+        forwarded = {}
+
+        def record(**kwargs):
+            forwarded.update(kwargs)
+            return "dispatched"
+
+        monkeypatch.setattr(write, target, record)
+        result = write.add_item(source="input", source_type=source_type, ctx=DummyContext())
+
+        assert result == "dispatched"
+        assert forwarded["if_exists"] == "file"
+
+    @pytest.mark.parametrize("mode", ["duplicate", "skip"])
+    def test_explicit_if_exists_overrides_default(self, calls, mode):
+        write.add_item(source="10.1145/3708319", if_exists=mode, ctx=DummyContext())
+        assert calls["kwargs"]["if_exists"] == mode
+
+    def test_mcp_schema_advertises_reuse_default(self):
+        import asyncio
+
+        from zotero_mcp import server
+
+        tools = asyncio.run(server.mcp.list_tools())
+        tool = next(tool for tool in tools if tool.name == "zotero_add_item")
+        assert tool.parameters["properties"]["if_exists"]["default"] == "file"
+
     def test_shared_args_reach_the_adder(self, calls):
         write.add_item(
             source="10.1145/3708319",

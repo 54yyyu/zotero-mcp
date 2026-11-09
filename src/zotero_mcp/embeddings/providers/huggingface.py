@@ -46,7 +46,11 @@ class HuggingFaceEmbeddingFunction(BaseEmbeddingFunction):
     collection's config (see OpenAIEmbeddingFunction for details).
     """
 
-    def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-0.6B"):
+    def __init__(self, model_name: str = "Qwen/Qwen3-Embedding-0.6B",
+                 query_instruction: str | None = None):
+        if query_instruction is not None and not isinstance(query_instruction, str):
+            raise ValueError("query_instruction must be a string or null")
+        self.query_instruction = (query_instruction or "").strip()
         self.model_name = model_name
         self.model = _load_model(model_name)
 
@@ -60,6 +64,7 @@ class HuggingFaceEmbeddingFunction(BaseEmbeddingFunction):
     def get_config(self) -> dict[str, Any]:
         return {
             "model_name": self.model_name,
+            "query_instruction": getattr(self, "query_instruction", ""),
             # ChromaDB's built-in "huggingface" EF requires api_key_env_var in
             # addition to model_name and asserts without it. Persisting the key
             # keeps the config buildable by either class (issue #382); our own
@@ -71,7 +76,14 @@ class HuggingFaceEmbeddingFunction(BaseEmbeddingFunction):
     def build_from_config(config: dict[str, Any]) -> "HuggingFaceEmbeddingFunction":
         return HuggingFaceEmbeddingFunction(
             model_name=config.get("model_name", "Qwen/Qwen3-Embedding-0.6B"),
+            query_instruction=config.get("query_instruction"),
         )
+
+    def embed_query_text(self, text: str) -> list[float]:
+        """Apply an optional instruction to queries without changing documents."""
+        instruction = getattr(self, "query_instruction", "")
+        query = f"Instruct: {instruction}\nQuery: {text}" if instruction else text
+        return self.__call__([query])[0]
 
     def __call__(self, input: Documents) -> Embeddings:
         """Generate embeddings using HuggingFace model."""

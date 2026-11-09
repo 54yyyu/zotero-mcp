@@ -173,6 +173,7 @@ def _ollama_ef_factory(config: dict[str, Any]) -> Any:
             model_name=config.get("model_name", "qwen3-embedding"),
             base_url=config.get("base_url"),
             timeout=config.get("timeout"),
+            query_instruction=config.get("query_instruction"),
             request_batch_size=config.get("request_batch_size"),
             **_remote_pacing_kwargs(config),
         ),
@@ -183,6 +184,7 @@ def _ollama_ef_factory(config: dict[str, Any]) -> Any:
 def _huggingface_ef_factory(config: dict[str, Any]) -> Any:
     return HuggingFaceEmbeddingFunction(
         model_name=config.get("model_name", "Qwen/Qwen3-Embedding-0.6B"),
+        query_instruction=config.get("query_instruction"),
     )
 
 

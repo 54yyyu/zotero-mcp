@@ -38,6 +38,7 @@ import threading
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
+from zotero_mcp import strict_sqlite as _strict_sqlite
 from zotero_mcp import utils as _utils
 from pyzotero.zotero_errors import ResourceNotFoundError
 
@@ -82,6 +83,9 @@ class LibraryBackend(Protocol):
     def find_by_citation_key(self, citekey: str) -> dict | None: ...
     def recent_items(self, *, limit: int = 10, collection_key: str | None = None) -> list[dict]: ...
     def top_items(self, *, limit: int = 100) -> list[dict]: ...
+    def duplicate_scan_items(self, collection_key: str | None = None) -> list[dict] | None:
+        """Unbounded local scan, or None to request the caller's bounded API path."""
+        ...
     def list_items(
         self,
         item_type: str | None = None,
@@ -163,6 +167,11 @@ class SqliteBackend:
     def __init__(self, reader, group_id: int):
         self._reader = reader
         self._group_id = group_id
+
+    def duplicate_scan_items(self, collection_key: str | None = None) -> list[dict]:
+        return self._reader.get_duplicate_scan_items(
+            collection_key=collection_key, group_id=self._group_id,
+        )
 
     # -- items ------------------------------------------------------------
 
@@ -303,6 +312,10 @@ class ApiBackend:
 
     def __init__(self, zot):
         self._zot = zot
+
+    def duplicate_scan_items(self, collection_key: str | None = None) -> None:
+        # HTTP scans must retain the caller's request/count ceiling.
+        return None
 
     # -- items ------------------------------------------------------------
 
@@ -571,6 +584,8 @@ class FallbackBackend:
             try:
                 return target(*args, **kwargs)
             except UnsupportedByBackend as exc:
+                if _strict_sqlite.is_active():
+                    raise _strict_sqlite.declined(attr, exc) from exc
                 logger.debug("SQLite cannot answer %s (%s); asking the API", attr, exc)
                 return getattr(self._api_backend(), attr)(*args, **kwargs)
 
@@ -612,6 +627,9 @@ def get_library_backend(zot=None) -> LibraryBackend:
                 SqliteBackend(reader, _client.get_active_group_id()),
                 lambda: ApiBackend(zot if zot is not None else _client.get_zotero_client()),
             )
+
+    if _strict_sqlite.is_active():
+        raise _strict_sqlite.no_database()
 
     return ApiBackend(zot if zot is not None else _client.get_zotero_client())
 

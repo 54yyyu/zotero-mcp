@@ -107,6 +107,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--attachment-key` -- **required**
  - `--page` -- **required**
  - `--text` -- Exact text to highlight
+ - `--underline` -- Underline --text instead of highlighting it
  - `--rect` -- Area box x,y,width,height, normalized 0-1; `zotero-cli layout` prints boxes for figures and tables
  - `--note` -- Sticky note centered at x,y, normalized 0-1; its text is --comment
  - `--comment`
@@ -117,8 +118,8 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 ### `annotations batch`
 
  - `--attachment-key` -- **required** -- Attachment for lines that do not name their own
- - `--file` -- default `-` -- JSON Lines (or a JSON array) of {page, text|rect|note, comment, color, tags}; - reads stdin
- - `--dry-run` -- Locate every highlight and report what it would cover, without writing
+ - `--file` -- default `-` -- JSON Lines (or a JSON array) of {page, text|rect|note, underline, comment, color, tags}; - reads stdin
+ - `--dry-run` -- Locate every highlight and underline and report what it would cover, without writing
 
 ## `layout`
 
@@ -295,23 +296,34 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 
 ### `db update`
 
- - `--force-rebuild`
- - `--limit`
- - `--fulltext`
- - `--allow-mass-deletion`
- - `--config-path`
- - `--db-path`
+ - `--force-rebuild` -- Force complete rebuild of the database
+ - `--limit` -- Limit number of items to process (for testing; does not advance the sync watermark)
+ - `--fulltext` -- Extract fulltext content from local Zotero database (slower but more comprehensive)
+ - `--allow-mass-deletion` -- One-run opt-in when the deletion pass would remove a large share of the library's indexed documents (e.g. after intentionally purging the library)
+ - `--config-path` -- Path to semantic search configuration file
+ - `--db-path` -- Path to Zotero database file (zotero.sqlite), overrides config
+ - `--extraction-workers` -- Parse N attachments in parallel during --fulltext (default: semantic_search.extraction.workers, or 1 for sequential). Capped at the CPU count
+ - `--clear-fulltext-cache` -- Discard the transient extracted-fulltext cache before running, forcing every attachment to be re-parsed
+ - `--batch` / `--no-batch` -- mutually exclusive
+ - `--batch-provider` -- one of `openai`, `gemini` -- Batch provider to use with --batch (default: inferred from the configured embedding model)
+ - `--batch-max-tokens` -- Cap estimated tokens enqueued with the provider at once; chunks beyond it are held back; batch-import and --auto-loop submit them as earlier ones finish
+ - `--batch-max-requests` -- Cap requests per uploaded batch file
+ - `--auto-loop` -- After submitting, keep polling, importing completed batches and submitting held-back chunks until the run finishes
+ - `--poll-interval` -- default `60` -- Seconds between --auto-loop polls (default: 60)
  - `--openai-batch` / `--no-openai-batch` -- mutually exclusive
+ - `--gemini-batch` / `--no-gemini-batch` -- mutually exclusive
 
 ### `db batch-status`
 
- - `--batch-id`
- - `--config-path`
+ - `--batch-id` -- Specific batch ID to inspect; can be repeated
+ - `--provider` -- one of `openai`, `gemini` -- Which provider's manifests to read (default: inferred from config)
+ - `--config-path` -- Path to semantic search configuration file
 
 ### `db batch-import`
 
- - `--batch-id`
- - `--config-path`
+ - `--batch-id` -- Specific batch ID to import; can be repeated. Importing by id never submits pending chunks; run batch-import without ids to resume a throttled run
+ - `--provider` -- one of `openai`, `gemini` -- Which provider's manifests to read (default: inferred from config)
+ - `--config-path` -- Path to semantic search configuration file
 
 ### `db status`
 
@@ -349,9 +361,10 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 ## `attach`
 
  - `<item_key>`
- - `--file` -- Path to a local file to upload
+ - `--file` -- Path to a local file to upload (or to link in place, with --link)
  - `--url` -- URL to attach as a link
  - `--filename` -- Override the stored filename
+ - `--link` -- With --file: link the file where it is instead of uploading a copy (Zotero's 'Add Link to File'; uses no cloud storage)
 
 ## `delete`
 

@@ -67,6 +67,7 @@ class GeminiEmbeddingFunction(RemoteEmbeddingFunction):
     # text — matching this class's original single-string query method, which
     # truncated first and only then prepended the v2 prefix.
     truncate_queries = True
+    default_api_host = "generativelanguage.googleapis.com"
 
     def __init__(self, model_name: str = "gemini-embedding-001", api_key: str | None = None,
                  base_url: str | None = None, request_batch_size: int | None = None,
@@ -218,3 +219,29 @@ class GeminiEmbeddingFunction(RemoteEmbeddingFunction):
             # fall back to the limiter's own exponential backoff.
             return True, None
         return False, None
+
+    def _unreachable_reason(self, exc: Exception) -> str | None:
+        """Connection errors, timeouts, 401 and 403 mean "API unreachable".
+
+        google-genai sends requests through httpx, or httpx2 when installed;
+        their exception classes are separate, so both are checked.
+        """
+        import importlib
+
+        for module_name in ("httpx", "httpx2"):
+            try:
+                module = importlib.import_module(module_name)
+            except ImportError:
+                continue
+            if isinstance(exc, module.TimeoutException):
+                return "timed out"
+            if isinstance(exc, module.ConnectError):
+                return "connection failed"
+        try:
+            from google.genai import errors
+        except ImportError:
+            return None
+        code = getattr(exc, "code", None)
+        if isinstance(exc, errors.APIError) and code in (401, 403):
+            return f"HTTP {code}"
+        return None

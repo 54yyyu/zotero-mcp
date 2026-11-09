@@ -11,6 +11,7 @@ from zotero_mcp.cli_standalone import (
     build_parser,
     cmd_add,
     cmd_annotations,
+    cmd_attach,
     cmd_edit,
     cmd_notes,
     cmd_search,
@@ -38,9 +39,10 @@ class TestCLIContext:
         ctx.warning("watch out")
         assert "watch out" in capsys.readouterr().err
 
-    def test_error_always_prints(self, capsys):
+    def test_error_prints_when_flushed(self, capsys):
         ctx = CLIContext(verbose=False)
         ctx.error("boom")
+        ctx.flush_errors()
         assert "boom" in capsys.readouterr().err
 
 
@@ -621,7 +623,7 @@ class TestCmdAdd:
         assert call_kwargs["create_missing_collections"] is True
 
     def test_add_doi_default_if_exists_is_file(self):
-        """The CLI defaults to convergent behavior; MCP keeps 'duplicate'."""
+        """The CLI and MCP both default to convergent behavior."""
         args = self._args(subcommand="doi", doi="10.1234/test",
                           attach_mode="auto")
         mock_write = self._run(args)
@@ -682,3 +684,42 @@ class TestCmdAdd:
         call_kwargs = mock_write.add_by_csl_json.call_args.kwargs
         assert call_kwargs["file_path"] == "/tmp/refs.json"
         assert call_kwargs["csl_json"] is None
+
+
+class TestCmdAttach:
+    """`attach --link` reaches attach_file(link_mode="linked"); without it the
+    upload default is untouched. Autospec means a kwarg the tool lacks fails here."""
+
+    def _run(self, argv):
+        mock_write = MagicMock()
+        mock_write.attach_file = create_autospec(
+            write_tools.attach_file, return_value="ok")
+        args = build_parser().parse_args(["attach", *argv])
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
+            with patch("zotero_mcp.cli_standalone._import_tools",
+                       return_value=(MagicMock(), MagicMock(), MagicMock(),
+                                     mock_write, MagicMock())):
+                cmd_attach(args)
+        return mock_write.attach_file.call_args.kwargs
+
+    def test_default_still_uploads(self):
+        kwargs = self._run(["ABCD2345", "--file", "/tmp/paper.pdf"])
+        assert kwargs["link_mode"] == "import"
+        assert kwargs["file_path"] == "/tmp/paper.pdf"
+
+    def test_link_flag_links_in_place(self):
+        kwargs = self._run(["ABCD2345", "--file", "/tmp/paper.pdf", "--link"])
+        assert kwargs["link_mode"] == "linked"
+        assert kwargs["file_path"] == "/tmp/paper.pdf"
+        assert kwargs["url"] is None
+
+    def test_link_flag_forwards_filename_as_title(self):
+        kwargs = self._run(["ABCD2345", "--file", "/tmp/paper.pdf", "--link",
+                            "--filename", "Smith 2020"])
+        assert kwargs["link_mode"] == "linked"
+        assert kwargs["filename"] == "Smith 2020"
+
+    def test_link_flag_defaults_to_false_in_parser(self):
+        parser = build_parser()
+        assert parser.parse_args(["attach", "ABCD2345", "--file", "x.pdf"]).link is False
+        assert parser.parse_args(["attach", "ABCD2345", "--file", "x.pdf", "--link"]).link is True

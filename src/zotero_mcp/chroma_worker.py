@@ -63,6 +63,61 @@ class WorkerExited(RuntimeError):
     """The worker process ended in the middle of a call."""
 
 
+class _EmbeddingFunctionProxy:
+    """The worker's embedding function as the server's indexing code reads it.
+
+    Indexing reads settings off ``client.embedding_function`` (how many
+    requests to run in parallel, characters per token) and, when it runs
+    parallel requests, calls it from its own threads. Forwarded by name the
+    attribute would be a callable that runs in the worker, one request at a
+    time and without those settings. So settings are read from the worker's
+    function, which stays the only place a local model is loaded, and calls
+    run here on a copy built from the same model name and config: embedding
+    holds no index memory, and API providers are cheap to build. A provider
+    that loads a local model has no parallel requests, so is never called here.
+
+    The server's copy and the worker's have separate rate limiters, so a
+    search overlapping an update can slightly exceed ``tokens_per_minute``.
+    """
+
+    def __init__(self, client: WorkerChromaClient):
+        self._client = client
+        self._local = None
+        self._lock = threading.Lock()
+
+    def __getattr__(self, name: str):
+        if name.startswith("_"):
+            raise AttributeError(name)
+        value = self._client._request(("efattr", name))[1]
+        self.__dict__[name] = value  # one round trip per setting, as WorkerChromaClient does
+        return value
+
+    def _function(self):
+        with self._lock:
+            if self._local is None:
+                from zotero_mcp.embeddings import registry
+
+                self._local = registry.create_embedding_function(
+                    self._client.embedding_model, self._client.embedding_config
+                )
+        return self._local
+
+    def __call__(self, documents):
+        return self._function()(documents)
+
+    def check_reachable(self) -> None:
+        """The update's API check, on the server's copy (see the class doc).
+
+        Asked of the worker's function first, so a local model is never
+        loaded here: only remote providers have ``probe_max_retries``.
+        """
+        if getattr(self, "probe_max_retries", None) is None:
+            return
+        function = self._function()
+        if check := getattr(type(function), "check_reachable", None):
+            check(function)
+
+
 class WorkerChromaClient:
     """Stands in for :class:`ChromaClient`, running each call in the worker process.
 
@@ -168,6 +223,13 @@ class WorkerChromaClient:
                 return
             yield value
 
+    @property
+    def embedding_function(self) -> _EmbeddingFunctionProxy:
+        proxy = self.__dict__.get("_embedding_function")
+        if proxy is None:
+            proxy = self.__dict__["_embedding_function"] = _EmbeddingFunctionProxy(self)
+        return proxy
+
     def __getattr__(self, name: str):
         if name.startswith("_"):
             raise AttributeError(name)
@@ -249,6 +311,8 @@ def _serve(config_path: str | None, requests: BinaryIO, replies: BinaryIO) -> No
             if kind == "getattr":
                 value = getattr(client, name)
                 reply = ("callable", None) if callable(value) else ("ok", value)
+            elif kind == "efattr":
+                reply = ("ok", getattr(client.embedding_function, name))
             elif kind == "call":
                 value = getattr(client, name)(*message[2], **message[3])
                 if hasattr(value, "__next__"):
@@ -266,7 +330,9 @@ def _serve(config_path: str | None, requests: BinaryIO, replies: BinaryIO) -> No
                 raise ValueError(f"unknown request {kind!r}")
         except BaseException as e:  # noqa: BLE001 - every failure goes back to the caller
             try:
-                pickle.dumps(e)
+                # Some exceptions (the OpenAI SDK's, say) pickle but cannot be
+                # unpickled; the caller would get a TypeError, not the error.
+                pickle.loads(pickle.dumps(e))
             except Exception:
                 e = RuntimeError(f"{type(e).__name__}: {e}")
             reply = ("error", e)

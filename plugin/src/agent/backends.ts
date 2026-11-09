@@ -106,21 +106,28 @@ interface LoginProbe {
   /** undefined = the CLI cannot tell. */
   loggedIn?: boolean;
   account?: string;
+  /** A failed check is not evidence that the user is signed out. */
+  reason?: string;
 }
 
 /** `claude auth status` prints JSON; `codex login status` prints a sentence. pi has no login of its own. */
-export async function probeLogin(spawner: Spawner, env: Record<string, string>, id: BackendId, cliPath: string): Promise<LoginProbe> {
+export async function probeLogin(spawner: Spawner, env: Record<string, string>, id: BackendId, cliPath: string, cliArgs: string[] = []): Promise<LoginProbe> {
   try {
     if (id === "claude-code") {
-      const r = await spawner.run(cliPath, ["auth", "status"], { env, timeoutMs: 15_000 });
+      const r = await spawner.run(cliPath, [...cliArgs, "auth", "status"], { env, timeoutMs: 15_000 });
       const s = JSON.parse(r.stdout) as { loggedIn?: boolean; subscriptionType?: string; authMethod?: string };
       if (typeof s.loggedIn !== "boolean") return {};
       const plan = s.subscriptionType ? `Claude ${s.subscriptionType[0]!.toUpperCase()}${s.subscriptionType.slice(1)}` : undefined;
       return s.loggedIn ? { loggedIn: true, ...(plan ? { account: plan } : s.authMethod ? { account: s.authMethod } : {}) } : { loggedIn: false };
     }
     if (id === "codex") {
-      const r = await spawner.run(cliPath, ["login", "status"], { env, timeoutMs: 15_000 });
+      const r = await spawner.run(cliPath, [...cliArgs, "login", "status"], { env, timeoutMs: 15_000 });
+      if (r.code === null || r.code < 0) {
+        return { loggedIn: false, reason: `Codex login check was terminated (exit code ${r.code ?? "unknown"}). Run \`codex login status\` in a terminal to diagnose.` };
+      }
       const text = `${r.stdout}\n${r.stderr}`;
+      // Newer Codex reports an API key as "API key configured - sk-…" rather than "Logged in using an API key" (#785).
+      if (r.code === 0 && /api key configured/i.test(text)) return { loggedIn: true, account: "API key" };
       if (r.code === 0 && /logged in/i.test(text)) {
         const via = /using (.+)/i.exec(text)?.[1]?.trim();
         return { loggedIn: true, ...(via ? { account: via } : {}) };

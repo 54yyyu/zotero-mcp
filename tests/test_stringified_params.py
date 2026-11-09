@@ -90,14 +90,16 @@ class TestKnownInstances:
         annotation = dict(typing.get_type_hints(tool.fn))["conditions"]
         assert _accepts_bare_str(annotation)
 
-    def test_advanced_search_promises_string_input_in_its_description(
+    def test_advanced_search_advertises_string_input_in_its_schema(
         self, registered_tools
     ):
-        """The description and the annotation have to agree. They did not:
-        the description said "also accepts a JSON string" while the signature
-        made that impossible."""
+        """What the tool advertises and what it accepts have to agree. They did
+        not: the description said "also accepts a JSON string" while the
+        signature made that impossible. The published schema now carries the
+        string branch itself."""
         tool = self._tool(registered_tools, "zotero_advanced_search")
-        assert "JSON string" in (tool.description or "")
+        branches = tool.parameters["properties"]["conditions"]["anyOf"]
+        assert {"type": "string"} in branches
 
     def test_create_annotation_rect_accepts_a_json_string(self, registered_tools):
         tool = self._tool(registered_tools, "zotero_create_annotation")

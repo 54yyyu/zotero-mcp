@@ -31,6 +31,13 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
     DEFAULT_REQUEST_BATCH_SIZE = 64
     default_request_batch_size = DEFAULT_REQUEST_BATCH_SIZE
 
+    # OpenAI refuses a request above 300,000 tokens, and 64 documents at the
+    # input limit are 512,000. It checks this twice, measured against the live
+    # API in November 2026: UTF-8 bytes / 4, then real tokens. The estimate
+    # bounds both (see _estimate_request_tokens), so this margin is only there
+    # in case OpenAI's count differs slightly from cl100k_base.
+    max_request_tokens = 290_000
+
     # Tokens per minute the limiter paces against when nothing else supplies a
     # ceiling. text-embedding-3-small is 1,000,000 TPM on Tier 1 and higher on
     # later tiers, so this leaves 5% headroom against the *lowest* tier, which
@@ -54,6 +61,7 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
     # tokenizes far worse than prose, and overestimating cost merely paces a
     # little conservatively, while underestimating it earns 429s.
     chars_per_token = 3
+    default_api_host = "api.openai.com"
 
     def __init__(self, model_name: str = "text-embedding-3-small", api_key: str | None = None,
                  base_url: str | None = None, request_batch_size: int | None = None,
@@ -246,6 +254,22 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
         if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError)):
             return True, None
         return False, None
+
+    def _unreachable_reason(self, exc: Exception) -> str | None:
+        """Connection errors, timeouts, 401 and 403 mean "API unreachable"."""
+        try:
+            import openai
+        except ImportError:
+            return None
+
+        # APITimeoutError subclasses APIConnectionError, so test it first.
+        if isinstance(exc, openai.APITimeoutError):
+            return "timed out"
+        if isinstance(exc, openai.APIConnectionError):
+            return "connection failed"
+        if isinstance(exc, openai.APIStatusError) and exc.status_code in (401, 403):
+            return f"HTTP {exc.status_code}"
+        return None
 
     @staticmethod
     def _parse_retry_after(exc: Exception) -> float | None:

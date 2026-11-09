@@ -272,13 +272,16 @@ class FakeZoteroForBatch(FakeZoteroForExtra):
     def __init__(self, items):
         super().__init__(items)
         self.params = {}
+        self.searches = []
 
     def add_parameters(self, **kwargs):
         self.params = kwargs
 
     def items(self, **kwargs):
-        if kwargs:
+        # A by-key fetch (itemKey=...) is not a search; record searches only.
+        if kwargs and "itemKey" not in kwargs:
             self.params = kwargs
+            self.searches.append(kwargs)
         return list(self._items.values())
 
 

@@ -3,7 +3,7 @@
 import type { AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, Spawner, StartOpts } from "../types.ts";
 import { AcpClient } from "./acp.ts";
 import { BACKEND_IDS, backendOf, findCli, probeLogin, type BackendSpec } from "./backends.ts";
-import { ensureBridge, locateBridge } from "./bridges.ts";
+import { ensureBridge, locateBridge, locateBundledCodexCli } from "./bridges.ts";
 import { bridgeEnv, dirnameOf, findBinary, nodeEval, stripApiKeys, withPathFirst } from "./env.ts";
 import { AcpAgentSession } from "./session.ts";
 
@@ -116,8 +116,17 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
           if (spec.cli && !cli) return { ...base, available: false, reason: spec.cli.hint };
           const installed = await locateBridge(spawner, nodeEnv, node, bridgeDir, spec).catch(() => null);
           if (!installed && !npm) return { ...base, available: false, reason: `npm was not found, so the ${spec.label} bridge cannot be installed. Install Node.js (it includes npm).` };
-          const login = cli ? await probeLogin(spawner, env, id, cli) : {};
-          if (login.loggedIn === false) return { ...base, available: false, reason: `${spec.label} is not signed in. ${spec.cli?.hint ?? ""}`.trim() };
+          let login = cli ? await probeLogin(spawner, env, id, cli) : {};
+          // A system Codex can be killed by the OS while the bridge's own version still works.
+          // Only a successful probe of that installed dependency may override the failed check.
+          if (id === "codex" && login.reason && installed) {
+            const bundled = await locateBundledCodexCli(spawner, nodeEnv, node, installed);
+            if (bundled) {
+              const fallback = await probeLogin(spawner, nodeEnv, id, node, [bundled]);
+              if (fallback.loggedIn === true) login = fallback;
+            }
+          }
+          if (login.loggedIn === false) return { ...base, available: false, reason: login.reason ?? `${spec.label} is not signed in. ${spec.cli?.hint ?? ""}`.trim() };
           return { ...base, available: true, ...(login.account ? { account: login.account } : {}) };
         }),
       );

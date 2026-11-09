@@ -7,7 +7,6 @@ import uuid
 from typing import Literal
 
 import requests
-from fastmcp.exceptions import ToolError
 from pyzotero.zotero_errors import ResourceNotFoundError
 
 from zotero_mcp import client as _client
@@ -15,7 +14,7 @@ from zotero_mcp import library as _library
 from zotero_mcp import note_html as _note_html
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
-from zotero_mcp._context import Context
+from zotero_mcp._context import Context, ToolError
 from zotero_mcp.better_bibtex_client import get_color_category
 from zotero_mcp.client import with_zotero_api_lock
 from zotero_mcp.tools import _helpers
@@ -212,22 +211,13 @@ def _get_note_write_client(op_description: str):
 @mcp.tool(
     name="zotero_get_annotations",
     description=(
-        "Get annotations (highlights and attached notes on PDF/EPUB "
-        "attachments) for a specific item or across the active Zotero "
-        "library. item_key: pass the parent item key OR an attachment key — "
-        "both work; attachment-to-parent resolution is automatic. ALWAYS "
-        "pass item_key when you know which item you want; calling without "
-        "it returns every annotation in the library (potentially thousands). "
-        "use_pdf_extraction=True falls back to direct PDF parsing when the "
-        "Zotero API has no stored annotation record — useful for "
-        "annotations made outside Zotero desktop. limit: cap on annotations "
-        "returned; None (default) returns all. format='markdown' (default) "
-        "returns a readable list; format='json' returns normalized records "
-        "with stable keys for downstream scripts and other MCP tools. "
-        "Uses Better BibTeX when Zotero desktop is running locally, "
-        "otherwise the Zotero web API. "
-        "Example: zotero_get_annotations(item_key='ABC12345') → every "
-        "highlight/note on that paper."
+        "Get PDF/EPUB annotations (highlights and their comments) for one "
+        "item, or for the whole active library when item_key is omitted (can "
+        "be thousands, so pass item_key when you know it). item_key: the "
+        "parent item or an attachment. use_pdf_extraction=True parses the PDF "
+        "itself when Zotero has no stored annotations (e.g. ones made in "
+        "another reader). limit: default all. format: 'markdown' (default) or "
+        "'json' (normalized records)."
     )
 )
 @with_zotero_api_lock
@@ -524,14 +514,8 @@ def get_annotations(
             annotations = better_bibtex_annotations + zotero_api_annotations + pdf_annotations
 
         else:
-            # Retrieve all annotations in the library. No backend operation
-            # covers an unfiltered library-wide annotation listing, so this
-            # stays on the API client.
             limit = _helpers._normalize_limit(limit, default=100)
-            # Use _paginate helper instead of inline manual pagination
-            annotations = _helpers._paginate(
-                _api_client().items, max_items=limit, itemType="annotation"
-            )
+            annotations = backend.list_items("annotation", limit=limit)
 
         # Handle no annotations found
         if not annotations:
@@ -712,8 +696,7 @@ def get_notes(
         if item_key:
             notes = backend.get_children([item_key], item_type="note").get(item_key, [])[:limit]
         else:
-            zot = _client.get_zotero_client()
-            notes = _helpers._paginate(zot.items, max_items=limit, itemType="note")
+            notes = backend.list_items("note", limit=limit)
 
         if not notes and item_key:
             # `item_key` may name a note itself rather than its parent. A note
@@ -1096,21 +1079,13 @@ def search_notes(
 @mcp.tool(
     name="zotero_get_notes",
     description=(
-        "Read notes from the active Zotero library. "
-        "Omit query to LIST notes: with item_key, that item's child notes; "
-        "without it, notes library-wide (capped by limit). "
-        "Pass query to SEARCH note and annotation text instead — "
-        "case-insensitive substring over the stripped-text body, "
-        "library-wide, so query and item_key cannot be combined. "
-        "limit: max results (default 20). "
-        "truncate=True (default) shortens long bodies for display; pass "
-        "False for complete content (list mode only). "
-        "raw_html=True returns a note's original HTML instead of stripped "
-        "text — use it when you intend to edit and round-trip via "
-        "zotero_manage_note(action='update'). "
-        "Scope: active library only (zotero_switch_library to change). "
-        "Example: zotero_get_notes(item_key='ABC12345', raw_html=True); "
-        "zotero_get_notes(query='mindfulness')."
+        "Read notes in the active library. Without query it LISTS notes: an "
+        "item's child notes with item_key, else notes library-wide. With "
+        "query it SEARCHES note and annotation text (case-insensitive "
+        "substring, library-wide, so not with item_key). limit: default 20. "
+        "truncate=False returns whole bodies (list mode). raw_html=True "
+        "returns the note's HTML, for editing and passing back to "
+        "zotero_manage_note(action='update')."
     )
 )
 def get_notes_tool(
@@ -1147,25 +1122,16 @@ def get_notes_tool(
 @mcp.tool(
     name="zotero_manage_note",
     description=(
-        "Create, update, or trash a Zotero note. "
-        "item_key: the PARENT item's key for action='create', the NOTE's "
-        "own key for 'update' and 'delete' (zotero_get_notes finds it). "
-        "create: needs note_text — Markdown with $math$, plus <u> <s> <sub> "
-        "<sup> <mark> <span style=\"color:red\"> (or background-color), "
-        "converted to note HTML; HTML input is sanitized. "
-        "note_title becomes a heading; tags optional. "
-        "update: needs note_text (Markdown or HTML, as for create). "
-        "append=False (default) REPLACES the whole body, append=True adds "
-        "to the end. To keep existing formatting, fetch "
-        "with zotero_get_notes(raw_html=True), edit that HTML, and pass it "
-        "back whole. "
-        "delete: moves the note to the Trash — recoverable; emptying the "
-        "Trash is manual in Zotero. Notes only, not items/collections/"
-        "attachments. "
-        "Requires a writable library: local writes (Zotero 10+, via "
-        "zotero_authorize_local_writes) or a web API key. "
-        "Example: (action='create', item_key='ABC12345', "
-        "note_title='Reading notes', note_text='<p>Key claim ...</p>')."
+        "Create, update or trash a note. item_key: the PARENT item for "
+        "action='create'; the NOTE's own key for 'update' and 'delete' "
+        "(zotero_get_notes finds it). note_text: Markdown with $math$ plus "
+        "<u> <s> <sub> <sup> <mark> <span style=\"color:red\"> (or "
+        "background-color), or note HTML (sanitized). note_title becomes a "
+        "heading and tags are optional (create). update REPLACES the body "
+        "unless append=True; to keep formatting, edit the HTML from "
+        "zotero_get_notes(raw_html=True) and pass it back whole. delete moves "
+        "the note to the Trash (recoverable). Notes only: other items go "
+        "through zotero_delete_item."
     )
 )
 def manage_note(
@@ -1396,27 +1362,18 @@ def delete_note(
 @mcp.tool(
     name="zotero_create_annotation",
     description=(
-        "Create an annotation on a PDF attachment (EPUB: highlights only). "
-        "Exactly one mode per call: text= HIGHLIGHTS selectable "
-        "text; rect= draws an AREA box over a figure, table, or other "
-        "non-text region (PDF only); note=[x, y] places a STICKY NOTE "
-        "centered on that normalized point, its text in comment (PDF "
-        "only). Passing several or none is an error. "
-        "attachment_key: the PDF/EPUB attachment key, NOT the parent item "
-        "key (zotero_get_item_children finds it). "
-        "page: 1-indexed page (EPUB: 1-indexed chapter). "
-        "text: exact text to highlight, matched against the text layer — "
-        "scanned/image-only PDFs will not match. "
-        "rect: [x, y, width, height] normalized to [0, 1], with (0, 0) at "
-        "the page's top-left; width/height are page-relative and the box "
-        "must fit the page. Call zotero_get_page_layout first and reuse a "
-        "detected region's bbox instead of guessing coordinates. "
-        "comment, color (hex, default '#ffd400'), tags: optional. "
-        "Requires PyMuPDF (the [pdf] extra) and a writable library: "
-        "local writes (Zotero 10+) or a web API key. "
-        "Examples: (attachment_key='NHZFE5A7', page=4, text='working "
-        "memory'); (attachment_key='NHZFE5A7', page=7, rect=[0.15, 0.22, "
-        "0.6, 0.35], comment='Figure 3')."
+        "Annotate a PDF (EPUB: highlights and underlines only). One mode per "
+        "call: text= highlights that exact text (underline=True underlines it), "
+        "matched against the text layer (scanned PDFs will not match); rect=[x, y, width, height] draws an area box "
+        "over a figure or table; note=[x, y] places a sticky note at that "
+        "point, its text in comment. rect and note are PDF only, normalized "
+        "0-1 from the page's top-left: take boxes from zotero_get_page_layout "
+        "instead of guessing. attachment_key: the attachment, NOT the parent "
+        "item (zotero_get_item_children lists it). page: 1-indexed (EPUB: "
+        "chapter). comment, color (hex, default '#ffd400') and tags are "
+        "optional. Needs PyMuPDF (the [pdf] extra). Example: "
+        "(attachment_key='NHZFE5A7', page=7, rect=[0.15, 0.22, 0.6, 0.35], "
+        "comment='Figure 3')."
     )
 )
 def create_annotation(
@@ -1428,6 +1385,7 @@ def create_annotation(
     color: str = "#ffd400",
     tags: list[str] | str | None = None,
     note: list[float] | str | None = None,
+    underline: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -1439,6 +1397,9 @@ def create_annotation(
     call carrying both is ambiguous rather than additive.
     """
     has_text = text is not None and text != ""
+
+    if underline and not has_text:
+        return "Error: underline applies to text; pass text= with the exact words to underline."
 
     if note is not None:
         if rect is not None or has_text:
@@ -1503,6 +1464,7 @@ def create_annotation(
         comment=comment,
         color=color,
         tags=tags,
+        underline=underline,
         ctx=ctx,
     )
 
@@ -1515,11 +1477,12 @@ def _create_highlight_annotation(
     comment: str | None = None,
     color: str = "#ffd400",
     tags: list[str] | str | None = None,
+    underline: bool = False,
     *,
     ctx: Context
 ) -> str:
     """
-    Create a highlight annotation on a PDF or EPUB attachment.
+    Create a highlight or underline annotation on a PDF or EPUB attachment.
 
     Args:
         attachment_key: Attachment key (e.g., "NHZFE5A7")
@@ -1527,19 +1490,21 @@ def _create_highlight_annotation(
         text: Exact text to highlight (used to find coordinates/CFI)
         comment: Optional comment on the annotation
         color: Highlight color in hex format (default: "#ffd400" yellow)
+        underline: Underline the text instead of highlighting it
         ctx: MCP context
 
     Returns:
         Confirmation message with the new annotation key
     """
-    spec = {"page": page, "text": text, "comment": comment, "color": color, "tags": tags}
+    spec = {"page": page, "text": text, "comment": comment, "color": color, "tags": tags,
+            "underline": underline}
     (result,) = create_annotations(attachment_key, [spec], ctx=ctx, allow_epub=True)
     if not result["ok"]:
         return result["error"]
 
     location = "Chapter" if result["file_type"] == "epub" else "Page"
     response = [
-        "Successfully created highlight annotation",
+        f"Successfully created {result['type']} annotation",
         "",
         f"**Annotation Key:** {result['annotation_key']}",
         f"**{location}:** {result['page_label']}",
@@ -1625,7 +1590,8 @@ def create_annotations(
 ) -> list[dict]:
     """Create highlights and area boxes on one attachment, written together.
 
-    Each spec is ``{"page", "text"}`` for a highlight or
+    Each spec is ``{"page", "text"}`` for a highlight (with
+    ``"underline": true``, an underline) or
     ``{"page", "rect": [x, y, width, height]}`` for an area box, or
     ``{"page", "note": [x, y], "comment"}`` for a sticky note, with optional
     ``comment``, ``color`` and ``tags``.
@@ -1642,7 +1608,7 @@ def create_annotations(
     Returns:
         One dict per spec, in order: ``index`` (1-based), ``page``, ``type``,
         ``ok``, and either ``error`` or ``annotation_key`` (not in a dry run),
-        ``page_label``, ``file_type`` and, for highlights, ``page_found``
+        ``page_label``, ``file_type`` and, for highlights and underlines, ``page_found``
         (PDF) or ``chapter_found`` (EPUB).
     """
     results = [
@@ -1771,6 +1737,11 @@ def _annotation_payload(
     text, rect, note = spec.get("text"), spec.get("rect"), spec.get("note")
     if sum(v is not None and v != "" for v in (text, rect, note)) > 1:
         return None, {"error": "Error: pass only one of text (highlight), rect (area box) or note (sticky note)"}
+    underline = spec.get("underline", False)
+    if not isinstance(underline, bool):
+        return None, {"error": f"Error: underline must be true or false. Got: {underline!r}"}
+    if underline and not text:
+        return None, {"error": "Error: underline applies to text; give the exact words to underline"}
 
     tags = spec.get("tags")
     tag_list = _helpers._normalize_str_list_input(tags, "tags") if tags is not None else []
@@ -1855,7 +1826,7 @@ def _annotation_payload(
         # EPUB sort index is "spine index|character offset"; Zotero's own
         # EPUB annotations leave pageLabel empty, and navigation needs that.
         payload = annotation(
-            "highlight",
+            "underline" if underline else "highlight",
             annotationText=text,
             annotationSortIndex=f"{chapter:05d}|{char_position:08d}",
             annotationPosition=position["annotation_position"],
@@ -1872,7 +1843,7 @@ def _annotation_payload(
     page_found = position["pageIndex"] + 1
     label = label_of(page_found)
     payload = annotation(
-        "highlight",
+        "underline" if underline else "highlight",
         annotationText=text,
         annotationSortIndex=position["sort_index"],
         annotationPosition=build_annotation_position(position["pageIndex"], position["rects"]),
@@ -1889,7 +1860,7 @@ def _spec_type(spec: dict) -> str:
         return "area"
     if spec.get("note") is not None:
         return "note"
-    return "highlight"
+    return "underline" if spec.get("underline") is True else "highlight"
 
 
 def _rect_error(x, y, width, height) -> str | None:
@@ -2086,6 +2057,14 @@ def detect_layouts(
     return layouts, filename, None
 
 
+def _download_clients():
+    """(local API client, web API client) for fetching an attachment's file."""
+    web_client = _client.get_web_zotero_client()
+    if web_client:
+        _helpers.apply_library_override(web_client, _client.get_active_library())
+    return _client.get_local_zotero_client(), web_client
+
+
 def _fetch_attachment_file(
     attachment_key: str,
     tmpdir: str,
@@ -2105,32 +2084,32 @@ def _fetch_attachment_file(
         message and ``file_path`` is None when the attachment is missing, of
         the wrong type, or could not be fetched.
     """
-    local_client = _client.get_local_zotero_client()
-    web_client = _client.get_web_zotero_client()
-    if web_client:
-        _helpers.apply_library_override(web_client, _client.get_active_library())
-
-    if meta_client is None:
-        if web_client is not None:
-            meta_client = web_client
-        else:
-            override = _client.get_active_library() or {}
-            library_type = override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
-            meta_client = (
-                _client.get_zotero_client()
-                if _utils.is_local_mode() and library_type.startswith("group")
-                else local_client
-            )
-    if meta_client is None:
-        return None, "", "", (
-            "Error: No Zotero client configured.\n\n"
-            "Configure either local Zotero (with 'Allow other applications "
-            "on this computer to communicate with Zotero' enabled) or Web "
-            "API credentials:\n" + _WEB_API_ENV_VARS
-        )
+    # In local mode zotero.sqlite answers both questions, the attachment's
+    # metadata and where its file is, so the API clients are built only when
+    # the file is not on this machine. A writer passes meta_client and keeps
+    # the API path.
+    from_sqlite = meta_client is None and _utils.is_local_mode()
+    if not from_sqlite:
+        local_client, web_client = _download_clients()
+        if meta_client is None:
+            # Not local mode, so a group library is reached through the web client.
+            meta_client = web_client if web_client is not None else local_client
+            if meta_client is None:
+                return None, "", "", (
+                    "Error: No Zotero client configured.\n\n"
+                    "Configure either local Zotero (with 'Allow other applications "
+                    "on this computer to communicate with Zotero' enabled) or Web "
+                    "API credentials:\n" + _WEB_API_ENV_VARS
+                )
 
     try:
-        attachment_data = meta_client.item(attachment_key).get("data", {})
+        if from_sqlite:
+            item = _library.get_library_backend().get_item(attachment_key)
+            if item is None:
+                raise LookupError("not in zotero.sqlite")
+        else:
+            item = meta_client.item(attachment_key)
+        attachment_data = item.get("data", {})
         if attachment_data.get("itemType") != "attachment":
             return None, "", "", f"Error: Item {attachment_key} is not an attachment"
         content_type = attachment_data.get("contentType", "")
@@ -2143,6 +2122,12 @@ def _fetch_attachment_file(
         filename = attachment_data.get("filename", f"{attachment_key}.{file_type}")
     except Exception as e:
         return None, "", "", f"Error: No attachment found with key: {attachment_key} ({e})"
+
+    if from_sqlite:
+        local_path = _library.attachment_path_for(attachment_key)
+        if local_path is not None and local_path.stat().st_size > 0:
+            return str(local_path), filename, file_type, None
+        local_client, web_client = _download_clients()
 
     file_path, error_message = _download_attachment_for_processing(
         attachment_key,
@@ -2160,25 +2145,15 @@ def _fetch_attachment_file(
 @mcp.tool(
     name="zotero_get_page_layout",
     description=(
-        "Detect candidate figure/table regions on a PDF page and return "
-        "their normalized bounding boxes, so area annotations can be placed "
-        "on detected content instead of guessed positions. ALWAYS call this "
-        "before zotero_create_annotation's area mode unless exact "
-        "coordinates are already known. Returns each region's bounding box "
-        "(x, y, width, height in [0, 1]), source "
-        "(image/drawing/table/merged), associated caption (e.g. 'Figure 3: "
-        "...'), confidence level, and a ready-to-paste "
-        "zotero_create_annotation call. "
-        "Note: detection is geometric — boxes cover the graphical core of a "
-        "figure/table; text labels inside figures or unruled table headers "
-        "may fall outside the box. Confidence reflects caption matching, "
-        "not box completeness. "
-        "attachment_key: PDF attachment key — NOT the parent item key (use "
-        "zotero_get_item_children to find attachments). "
-        "page: 1-indexed page number (page 1 is the first page). "
-        "Scope: PDFs only — EPUB attachments are NOT supported. Read-only: "
-        "works in both local and web API modes. "
-        "Example: zotero_get_page_layout(attachment_key='NHZFE5A7', page=7)."
+        "Detect figure, table and display-equation regions on one PDF page "
+        "and return their boxes (x, y, width, height, normalized 0-1), each "
+        "with its caption or equation number, a confidence and a ready-made "
+        "zotero_create_annotation call. Use it before an area annotation "
+        "instead of guessing coordinates. Boxes cover the graphic itself: "
+        "labels inside a figure or unruled table headers can fall outside, "
+        "and confidence reflects caption matching, not box completeness. "
+        "attachment_key: the PDF attachment, NOT the parent item "
+        "(zotero_get_item_children lists it). page: 1-indexed. PDFs only."
     )
 )
 def get_page_layout(
