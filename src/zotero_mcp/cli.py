@@ -585,6 +585,8 @@ def _normalize_help_args(argv: list[str]) -> list[str]:
 
 def _print_write_capabilities(caps):
     """Print the write configuration, key masked."""
+    from zotero_mcp.client import describe_file_route
+
     labels = {
         "local": "local API (writes go straight to the running Zotero)",
         "hybrid": "hybrid (local reads, writes through the Zotero web API)",
@@ -609,6 +611,9 @@ def _print_write_capabilities(caps):
         if not caps["local_write_enabled"]:
             print("Local writes:          disabled via ZOTERO_LOCAL_WRITE")
     print(f"Web API credentials:   {'set' if caps['has_web_credentials'] else 'not set'}")
+    route = describe_file_route(caps)
+    if route:
+        print(f"File storage:          {route}")
 
 
 def cmd_authorize_local(args):

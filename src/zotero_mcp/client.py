@@ -40,6 +40,7 @@ from zotero_mcp.utils import (
 from zotero_mcp.webdav import (
     WebDAVNotConfiguredError,
     download_attachment_from_webdav,
+    get_webdav_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -736,6 +737,22 @@ def get_write_capabilities(probe: bool = True) -> dict[str, Any]:
     else:
         mode = "none"
 
+    # Where an uploaded file ends up. Web-API writes go to WebDAV when it is
+    # configured (_webdav_first_attach), except for a group library, whose
+    # files always live in Zotero Storage; local writes hand the file to the
+    # running Zotero, which syncs it by its own settings.
+    library_type = _active_library_override.get("library_type") or os.getenv("ZOTERO_LIBRARY_TYPE", "user")
+    if mode == "local":
+        file_route = "local"
+    elif mode == "none":
+        file_route = None
+    elif library_type.startswith("group"):
+        file_route = "zotero_storage_group"
+    elif get_webdav_config():
+        file_route = "webdav"
+    else:
+        file_route = "zotero_storage"
+
     return {
         "mode": mode,
         "local_mode": local_mode,
@@ -746,7 +763,18 @@ def get_write_capabilities(probe: bool = True) -> dict[str, Any]:
         "local_key_source": source,
         "local_key_remember": _local_key_remembered(),
         "has_web_credentials": has_web,
+        "file_route": file_route,
     }
+
+
+def describe_file_route(caps: dict[str, Any]) -> str | None:
+    """One line on where uploaded files go, for get_write_capabilities() output."""
+    return {
+        "webdav": "WebDAV (uploads go straight there, not to Zotero Storage)",
+        "zotero_storage": "Zotero Storage (counts against your storage quota)",
+        "zotero_storage_group": "Zotero Storage (group library: counts against the group owner's quota)",
+        "local": "Zotero desktop (it stores and syncs files by its own settings)",
+    }.get(caps.get("file_route"))
 
 
 def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) -> str:

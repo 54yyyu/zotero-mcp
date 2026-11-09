@@ -175,6 +175,9 @@ def write_capabilities(*, ctx: Context) -> str:
     lines.append(
         f"- Web API credentials: {'set' if caps['has_web_credentials'] else 'not set'}"
     )
+    route = _client.describe_file_route(caps)
+    if route:
+        lines.append(f"- File storage: {route}")
 
     if caps["mode"] == "none":
         lines += ["", "**To enable writes:**"]

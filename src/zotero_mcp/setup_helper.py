@@ -597,7 +597,88 @@ def load_semantic_search_config(semantic_config_path: Path) -> dict:
         return {}
 
 
-def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None, library_id=None, library_type="user", semantic_config=None):
+WEBDAV_KEYS = ("ZOTERO_WEBDAV_URL", "ZOTERO_WEBDAV_USERNAME", "ZOTERO_WEBDAV_PASSWORD")
+
+
+def _webdav_values(env) -> dict | None:
+    """The three WebDAV settings in *env*, or None unless all are set (as webdav.py reads them)."""
+    from zotero_mcp.webdav import _PLACEHOLDER_PREFIX
+
+    values = {key: str(env.get(key) or "").strip() for key in WEBDAV_KEYS}
+    if all(v and not v.startswith(_PLACEHOLDER_PREFIX) for v in values.values()):
+        return values
+    return None
+
+
+def _existing_webdav(config_paths) -> dict | None:
+    """WebDAV settings already in a config that this setup rewrites, so a re-run can keep them."""
+    for path in config_paths:
+        try:
+            with open(path) as f:
+                cfg = json.load(f)
+            env = cfg.get("client_env") or cfg.get("mcpServers", {}).get("zotero", {}).get("env") or {}
+            found = _webdav_values(env)
+        except Exception:
+            continue
+        if found:
+            return found
+    return None
+
+
+def _zotero_folder_url(address: str) -> str:
+    """The folder Zotero keeps its files in, from the address in Zotero's sync settings.
+
+    Zotero's settings take the server address and add zotero/ to it; the upload writes
+    <KEY>.zip straight into the folder it is given, so it needs that folder.
+    """
+    url = address.strip().rstrip("/")
+    if "://" not in url:  # Zotero's settings pick the scheme in a separate menu
+        url = "https://" + url
+    return url + "/zotero/"
+
+
+def setup_webdav(existing: dict | None, offer: bool) -> dict | None:
+    """Ask about WebDAV file sync; return the three ZOTERO_WEBDAV_* settings, or None.
+
+    With *offer* (web mode, personal library), complete settings in the environment are
+    taken as they are, without asking. Otherwise settings already in the config are
+    offered for keeping, so a re-run keeps them, and with *offer* it then asks for new
+    ones. End of input keeps what exists and otherwise means no WebDAV.
+    """
+    from_env = _webdav_values(os.environ) if offer else None
+    if from_env:
+        print(f"\nUsing WebDAV settings from the environment: {from_env['ZOTERO_WEBDAV_URL']}")
+        return from_env
+    try:
+        if existing:
+            answer = input(
+                f"\nKeep the WebDAV settings already in your config "
+                f"({existing['ZOTERO_WEBDAV_URL']})? [Y/n]: "
+            )
+            if answer.strip().lower() in ("", "y", "yes"):
+                return existing
+        if not offer:
+            return None
+        answer = input(
+            "\nDo you sync attachment files over WebDAV "
+            "(Zotero settings → Sync → File Syncing)? [y/N]: "
+        )
+        if answer.strip().lower() not in ("y", "yes"):
+            return None
+        address = input("WebDAV address, as in Zotero's settings (e.g. https://dav.example.com): ").strip()
+        username = input("WebDAV username: ").strip()
+        password = getpass.getpass("WebDAV password (hidden, input not echoed): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return existing
+    if not (address and username and password):
+        print("WebDAV not set: it needs the address, the username and the password.")
+        return None
+    url = _zotero_folder_url(address)
+    print(f"Files will go to: {url}")
+    return {"ZOTERO_WEBDAV_URL": url, "ZOTERO_WEBDAV_USERNAME": username, "ZOTERO_WEBDAV_PASSWORD": password}
+
+
+def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None, library_id=None, library_type="user", semantic_config=None, webdav=None):
     """Update Claude Desktop config to add zotero-mcp."""
     # Create directory if it doesn't exist
     config_dir = config_path.parent
@@ -633,6 +714,8 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
             env_settings["ZOTERO_LIBRARY_ID"] = library_id
         if library_type:
             env_settings["ZOTERO_LIBRARY_TYPE"] = library_type
+    if webdav:
+        env_settings.update(webdav)
 
     # Add semantic search settings if provided
     if semantic_config:
@@ -680,7 +763,7 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
     return config_path
 
 
-def _write_standalone_config(local: bool, api_key: str, library_id: str, library_type: str, semantic_config: dict, no_claude: bool = False) -> Path:
+def _write_standalone_config(local: bool, api_key: str, library_id: str, library_type: str, semantic_config: dict, no_claude: bool = False, webdav: dict | None = None) -> Path:
     """Write a central config file used by semantic search and provide client env."""
     cfg_dir = Path.home() / ".config" / "zotero-mcp"
     from zotero_mcp.utils import ensure_private_dir
@@ -714,6 +797,8 @@ def _write_standalone_config(local: bool, api_key: str, library_id: str, library
             client_env["ZOTERO_LIBRARY_ID"] = library_id
         if library_type:
             client_env["ZOTERO_LIBRARY_TYPE"] = library_type
+    if webdav:
+        client_env.update(webdav)
 
     full["client_env"] = client_env
 
@@ -817,6 +902,14 @@ def main(cli_args=None):
             except (EOFError, KeyboardInterrupt):
                 api_key = None
 
+    # WebDAV file sync. Setup rebuilds the env section of the configs below, so
+    # settings already in them are offered for keeping in any mode.
+    rewritten = [semantic_config_path] if args.no_claude else config_paths
+    webdav = setup_webdav(
+        _existing_webdav(rewritten),
+        offer=not use_local and library_type == "user",
+    )
+
     # Configure semantic search if not skipped
     if not args.skip_semantic_search:
         # if there is already a semantic search configuration in the config file:
@@ -840,6 +933,10 @@ def main(cli_args=None):
         print(f"  API Key: {_obfuscate_sensitive(api_key)}")
         print(f"  Library ID: {library_id or 'Not provided'}")
         print(f"  Library Type: {library_type}")
+    if webdav:
+        print(f"  WebDAV: {webdav['ZOTERO_WEBDAV_URL']} (user {webdav['ZOTERO_WEBDAV_USERNAME']})")
+    elif not use_local:
+        print("  WebDAV: not used")
 
     # Use the potentially updated semantic config
     semantic_config = existing_semantic_config
@@ -853,7 +950,8 @@ def main(cli_args=None):
                 library_id=library_id,
                 library_type=library_type,
                 semantic_config=semantic_config,
-                no_claude=args.no_claude
+                no_claude=args.no_claude,
+                webdav=webdav,
             )
             print("\nSetup complete (standalone/web mode)!")
             print(f"Config saved to: {cfg_path}")
@@ -872,6 +970,10 @@ def main(cli_args=None):
                     if display_env.get("ZOTERO_API_KEY"):
                         display_env["ZOTERO_API_KEY"] = _obfuscate_sensitive(
                             display_env["ZOTERO_API_KEY"]
+                        )
+                    if display_env.get("ZOTERO_WEBDAV_PASSWORD"):
+                        display_env["ZOTERO_WEBDAV_PASSWORD"] = _obfuscate_sensitive(
+                            display_env["ZOTERO_WEBDAV_PASSWORD"]
                         )
                 print("Client environment (single-line JSON):")
                 print(json.dumps(display_env, separators=(',', ':')))
@@ -894,7 +996,8 @@ def main(cli_args=None):
                     api_key=api_key,
                     library_id=library_id,
                     library_type=library_type,
-                    semantic_config=semantic_config
+                    semantic_config=semantic_config,
+                    webdav=webdav,
                 )
                 if result:
                     updated_paths.append(result)

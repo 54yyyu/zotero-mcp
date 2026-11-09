@@ -19,6 +19,8 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 
 Generate an API key at [zotero.org/settings/security](https://www.zotero.org/settings/security#applications). `ZOTERO_LIBRARY_ID` is your numeric **userID**, shown on that same page (for a group library, use the group's ID and also set `ZOTERO_LIBRARY_TYPE=group`).
 
+If you sync your personal library's attachment files over WebDAV, setup also asks for its address and login, so that files you attach go to your WebDAV server instead of counting against your Zotero Storage quota. `zotero-mcp setup-info` shows where files will go.
+
 <a id="local-write-support"></a>
 
 ## Local write support (Zotero 10+)
@@ -87,7 +89,7 @@ rather than opening a dialog that can't help.
   discovered automatically)
 - `ZOTERO_LOCAL_WRITE`: `auto` (default) or `false` to force writes onto the web API even
   when a local key exists
-- `ZOTERO_WEBDAV_URL`: Optional WebDAV folder URL for direct attachment downloads in remote mode
+- `ZOTERO_WEBDAV_URL`: Optional WebDAV folder that holds your Zotero files, as a full URL including `https://`: the address in Zotero's File Syncing settings followed by `/zotero/`. When set, attachments added to your personal library through the web API are written to it directly rather than to Zotero Storage (group libraries always use Zotero Storage), and attachments are downloaded from it in remote mode. `zotero-mcp setup --no-local` asks for this and the two settings below
 - `ZOTERO_WEBDAV_USERNAME`: Optional WebDAV username
 - `ZOTERO_WEBDAV_PASSWORD`: Optional WebDAV password
 
