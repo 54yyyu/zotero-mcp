@@ -1863,3 +1863,45 @@ class TestUpdateItemFieldsParam:
         data = fake.update_calls[0]["data"]
         assert data["title"] == "New"
         assert {t["tag"] for t in data["tags"]} == {"keep", "added"}
+
+
+def _attachment(link_mode, path):
+    data = {"key": "ATTA1234", "version": 5, "itemType": "attachment",
+            "parentItem": "ABCD1234", "linkMode": link_mode, "title": "paper.pdf",
+            "accessDate": "", "url": "", "note": "", "contentType": "application/pdf",
+            "charset": "", "tags": [], "collections": [], "relations": {}}
+    if path is not None:
+        data["path"] = path
+    return {"key": "ATTA1234", "version": 5, "data": data}
+
+
+class TestUpdateItemLinkedFilePath:
+    """#798: a linked file's path can be corrected with update_item."""
+
+    def test_path_on_a_linked_file_is_written(self, monkeypatch):
+        fake = FakeZoteroForUpdate(items=[_attachment("linked_file", "/mnt/d/p/paper.pdf")])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ATTA1234",
+            fields={"path": "attachments:p/paper.pdf"},
+            ctx=DummyContext(),
+        )
+
+        assert fake.update_calls[0]["data"]["path"] == "attachments:p/paper.pdf"
+        assert "attachments:p/paper.pdf" in result
+
+    def test_path_on_a_stored_file_is_not_written(self, monkeypatch):
+        fake = FakeZoteroForUpdate(items=[_attachment("imported_file", None)])
+        monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client",
+                            lambda ctx: (fake, fake))
+
+        result = server.update_item(
+            item_key="ATTA1234",
+            fields={"path": "/tmp/paper.pdf"},
+            ctx=DummyContext(),
+        )
+
+        assert all("path" not in c["data"] for c in fake.update_calls)
+        assert "path" in result

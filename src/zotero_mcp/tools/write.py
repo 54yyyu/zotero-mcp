@@ -3142,6 +3142,9 @@ def _known_field_names() -> set[str]:
     for fields in _schema.get_table().get("itemTypes", {}).values():
         names.update(fields.keys())
         names.update(fields.values())
+    # A linked file's path is item data rather than a schema field; update_item
+    # accepts it on linked_file attachments only (#798).
+    names.add("path")
     return names
 
 
@@ -3396,6 +3399,8 @@ def update_item(
             actual = _schema.resolve_field(item_type, field)
             param_name = _UPDATE_ITEM_API_TO_PARAM.get(field, field)
             is_valid = actual in known_fields if known_fields else actual in data
+            if actual == "path":
+                is_valid = data.get("linkMode") == "linked_file"
             if not is_valid:
                 skipped.append(param_name)
                 continue
