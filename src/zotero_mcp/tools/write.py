@@ -3142,6 +3142,9 @@ def _known_field_names() -> set[str]:
     for fields in _schema.get_table().get("itemTypes", {}).values():
         names.update(fields.keys())
         names.update(fields.values())
+    # A linked file's path is item data rather than a schema field; update_item
+    # accepts it on linked_file attachments only (#798).
+    names.add("path")
     return names
 
 
@@ -3396,6 +3399,8 @@ def update_item(
             actual = _schema.resolve_field(item_type, field)
             param_name = _UPDATE_ITEM_API_TO_PARAM.get(field, field)
             is_valid = actual in known_fields if known_fields else actual in data
+            if actual == "path":
+                is_valid = data.get("linkMode") == "linked_file"
             if not is_valid:
                 skipped.append(param_name)
                 continue
@@ -4956,7 +4961,8 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
         data = existing.get("data", {}) or {}
         existing_key = existing.get("key") or data.get("key")
         key_note = f" (key `{existing_key}`)" if existing_key else ""
-        existing_name = data.get("filename")
+        # A linked child has no filename, only the path it points at.
+        existing_name = data.get("filename") or _helpers._path_basename(data.get("path"))
         if existing_name == display_name:
             msg = (
                 f"Attachment already present on `{item_key}`: {display_name}"
@@ -4971,6 +4977,32 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
         return (
             f"Identical file (same MD5) already attached to `{item_key}` as "
             f"'{existing_name}'{key_note} — '{display_name}' not re-uploaded."
+        )
+    # WebDAV users: write the file to WebDAV directly, as zotero_add_item does.
+    # The default path below uploads to Zotero Storage first and copies to
+    # WebDAV afterwards, so an account over its Zotero Storage quota gets a
+    # 413 for every attach and pyzotero leaves an empty attachment shell on
+    # the item. _webdav_first_attach returns None when WebDAV is not
+    # configured and for local or group clients, which keep the default path.
+    webdav_suffix = _helpers._webdav_first_attach(
+        write_zot,
+        display_name,
+        filepath,
+        item_key,
+        ctx,
+        content_type=_helpers._guess_content_type(display_name),
+    )
+    if webdav_suffix is not None:
+        if webdav_suffix.lstrip().startswith("(WARNING"):
+            return (
+                f"Error: upload of '{display_name}' to `{item_key}` failed:{webdav_suffix}"
+            )
+        m = re.search(r"\bas ([A-Z0-9]{8})\.zip\b", webdav_suffix)
+        key_note = f" (key `{m.group(1)}`)" if m else ""
+        return (
+            f"File attached to `{item_key}`: {display_name}{key_note}{webdav_suffix}\n\n"
+            "_Note: To include this item in semantic search, run "
+            "zotero_update_search_database._"
         )
     ok, suffix, attachment_key = _helpers._attach_and_verify(
         write_zot,

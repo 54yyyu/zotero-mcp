@@ -361,9 +361,10 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 ## `attach`
 
  - `<item_key>`
- - `--file` -- Path to a local file to upload
+ - `--file` -- Path to a local file to upload (or to link in place, with --link)
  - `--url` -- URL to attach as a link
  - `--filename` -- Override the stored filename
+ - `--link` -- With --file: link the file where it is instead of uploading a copy (Zotero's 'Add Link to File'; uses no cloud storage)
 
 ## `delete`
 

@@ -2072,9 +2072,10 @@ def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx, conten
     attachment_version = next(iter(success_versions.values()), None)
 
     try:
-        _webdav.upload_attachment_to_webdav(attachment_key=attachment_key, file_path=file_path)
+        uploaded = _webdav.upload_attachment_to_webdav(
+            attachment_key=attachment_key, file_path=file_path
+        )
         ctx.info(f"WebDAV PUT: {attachment_key}.zip uploaded")
-        return f" (uploaded to WebDAV as {attachment_key}.zip)" + _cloud_only_note(write_zot)
     except Exception as e:
         ctx.info(f"WebDAV PUT failed for {attachment_key}: {e}")
         # A failed PUT leaves the shell with no file bytes — an orphan that
@@ -2093,6 +2094,28 @@ def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx, conten
                 f"attachment {attachment_key} exists but has no file bytes on WebDAV "
                 f"and could not be deleted: {del_err})"
             )
+    md5_hex, mtime_ms = uploaded
+    _record_file_on_shell(write_zot, attachment_key, md5_hex, mtime_ms, ctx)
+    return f" (uploaded to WebDAV as {attachment_key}.zip)" + _cloud_only_note(write_zot)
+
+
+def _record_file_on_shell(write_zot, attachment_key, md5_hex, mtime_ms, ctx):
+    """Write the uploaded file's md5 and mtime onto the attachment shell.
+
+    The desktop client does the same after its own WebDAV sync. Without them the
+    record looks like an attachment with no file, to a reader and to
+    _find_child_attachment's md5 match. Best effort: the file is on WebDAV
+    either way.
+    """
+
+    def _set_file(item):
+        item["data"]["md5"] = md5_hex
+        item["data"]["mtime"] = int(mtime_ms)
+
+    try:
+        _update_item_with_version_retry(write_zot, attachment_key, _set_file, ctx)
+    except Exception as e:
+        ctx.info(f"Could not record md5/mtime on {attachment_key}: {e}")
 
 
 def _extract_attachment_key(attach_result):
@@ -2291,7 +2314,8 @@ def _file_md5(path):
 def _find_child_attachment(write_zot, parent_key, filename=None, file_md5=None):
     """First child of ``parent_key`` stored as ``filename`` or hashing to ``file_md5``.
 
-    Either criterion matching returns the child dict; ``None`` criteria are
+    ``filename`` also matches a linked-file child by the last component of its
+    ``path``. Either criterion matching returns the child dict; ``None`` criteria are
     skipped (a child without an ``md5`` field never matches ``file_md5=None``).
     Paginates past the API's default page size and ignores trashed children
     (``deleted`` flag), so a match beyond the first page isn't missed and a
@@ -2309,9 +2333,20 @@ def _find_child_attachment(write_zot, parent_key, filename=None, file_md5=None):
             continue
         if filename is not None and data.get("filename") == filename:
             return kid
+        # A linked-file child has no ``filename`` or ``md5`` in the API's JSON,
+        # only the ``path`` it points at (absolute, or ``attachments:``-relative).
+        if filename is not None and _path_basename(data.get("path")) == filename:
+            return kid
         if file_md5 is not None and data.get("md5") == file_md5:
             return kid
     return None
+
+
+def _path_basename(path):
+    """Last component of a Zotero attachment ``path`` (either separator), or None."""
+    if not path or not isinstance(path, str):
+        return None
+    return re.split(r"[\\/]", path)[-1] or None
 
 
 def _attachment_filename_exists(write_zot, parent_key, filename):
