@@ -4961,7 +4961,8 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
         data = existing.get("data", {}) or {}
         existing_key = existing.get("key") or data.get("key")
         key_note = f" (key `{existing_key}`)" if existing_key else ""
-        existing_name = data.get("filename")
+        # A linked child has no filename, only the path it points at.
+        existing_name = data.get("filename") or _helpers._path_basename(data.get("path"))
         if existing_name == display_name:
             msg = (
                 f"Attachment already present on `{item_key}`: {display_name}"

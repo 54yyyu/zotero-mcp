@@ -1219,3 +1219,16 @@ class TestAttachFileWebDAV:
         (created,) = fake.created
         assert created["linkMode"] == "linked_file"
         assert "Linked file attached" in result
+
+
+def test_upload_matching_a_linked_child_names_it(monkeypatch, dummy_ctx):
+    # A linked child carries `path`, not `filename`; the message must not say 'None'.
+    fake = FakeZoteroForAttach()
+    fake._children["ITEM1"] = [{"key": "LINK0004", "data": {
+        "itemType": "attachment", "linkMode": "linked_file",
+        "path": "/Users/test/pdfs/smith-2020.pdf"}}]
+    _patch_write_client(monkeypatch, fake)
+    _patch_path_valid(monkeypatch)
+    result = server.attach_file(item_key="ITEM1", file_path="/Users/test/smith-2020.pdf", ctx=dummy_ctx)
+    assert fake.created == [] and "None" not in result
+    assert "already present" in result and "LINK0004" in result
