@@ -6437,26 +6437,15 @@ def _copy_result(key, title=None, *, error=None, status="copied", target_key=Non
 @mcp.tool(
     name="zotero_copy_items_between_libraries",
     description=(
-        "Copy item(s) from one Zotero library to another (e.g. personal to "
-        "group, between groups, or from an RSS feed to a user/group library). "
-        "Clones metadata, tags, child notes and attachments without modifying "
-        "the source. PDF/image annotations, collections and related-item links "
-        "are not copied, and neither is anything in the trash. "
-        "item_keys: single key or list/comma-separated keys to copy. "
-        "target_library_id / source_library_id: '0'/'user' for the personal "
-        "library (or your userID in web mode), a groupID, or (source only, "
-        "with source_library_type='feed') a feed's libraryID; either defaults "
-        "to the active library. "
-        "copy_notes: copy child notes (default: True). "
-        "copy_attachments: copy attached files and linked URLs (default: True). "
-        "copy_tags: preserve tags (default: True). "
-        "if_exists: 'skip' (default; leaves a matching item untouched), "
-        "'file' (add missing tags to the existing item), 'duplicate' (always creates a new item - "
-        "pick this explicitly, since a retried or repeated call would otherwise double the items). "
-        "Matching is by DOI, ISBN or URL, so an item with none of them is always "
-        "copied, even with 'skip'. If Zotero rate-limits the copy, it stops "
-        "and lists the keys it did not attempt; rerun with those. "
-        "Example: zotero_copy_items_between_libraries(item_keys='ABCD2345', target_library_id='6069773')."
+        "Copy items with their child notes, tags and attachments to another "
+        "library, leaving the source untouched. Library ids: '0'/'user' is the "
+        "personal library, otherwise a groupID; omitted means the active "
+        "library. A source may be an RSS feed (source_library_type='feed', id "
+        "= its libraryID). if_exists: 'skip' (default), 'file' (add missing "
+        "tags to the match) or 'duplicate'. Matches are by DOI, ISBN or URL, "
+        "so an item with none is always copied. Annotations, collections, "
+        "related links and trashed items are not copied. A rate limit stops "
+        "the batch and lists the keys not attempted."
     ),
 )
 @with_zotero_api_lock

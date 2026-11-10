@@ -121,7 +121,9 @@ class TestReportShape:
 SURFACE_CEILINGS = {
     "(unset - default)": 8_200,
     "none": 7_100,
-    "all": 11_500,
+    # 11_500 -> 11_700: zotero_copy_items_between_libraries (#561, ~380 tokens
+    # trimmed from 550), in the opt-in libraries-copy group only.
+    "all": 11_700,
 }
 
 
