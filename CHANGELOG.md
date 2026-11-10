@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The Zotero Agent panel speaks your language.** Its buttons, settings, setup checks, notices, tooltips and the welcome are in English, Simplified Chinese, Traditional Chinese, Japanese, German, French, Spanish and Brazilian Portuguese, using Zotero's own words for items, collections, annotations and notes. It follows Zotero's language; Settings > Appearance > Interface language picks another. Japanese, German, French, Spanish and Portuguese are marked beta until native speakers have reviewed them. What the agent is told stays English, and it still answers in the language you write in.
+
 ## [0.16.0] - 2026-11-06
 
 ### Added
