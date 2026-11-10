@@ -21,8 +21,8 @@ async function main(ctx) {
   out.rows = $$(".wrow").map((r) => r.querySelector(".wrow__t")?.textContent + ":" + (r.classList.contains("wrow--ok") ? "ok" : "bad"));
   await ctx.snapshot("welcome-2-checked");
 
-  // the agent cards: three, one chosen, choosing another is saved
-  check($$(".wcard").length === 3 && $$(".wcard[aria-checked=true]").length === 1, "three cards, one chosen");
+  // the agent cards: the three built-ins and the user-configured one (#813), one chosen, choosing another is saved
+  check($$(".wcard").length === 4 && $$(".wcard[aria-checked=true]").length === 1, "four cards, one chosen");
   const before = host.getSettings().backend;
   const other = $$(".wcard").find((c) => c.getAttribute("aria-checked") === "false");
   other.click();
