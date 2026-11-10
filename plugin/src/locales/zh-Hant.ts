@@ -459,7 +459,7 @@ const zhHant: Catalog = {
   "answer.sources": { other: "{n} 個來源" },
   "answer.page": "第 {pages} 頁",
   "answer.pages": "第 {pages} 頁",
-  "answer.explainPrompt": "請從直覺講起，重新解釋一次：先舉一個小例子，再講細節。請使用你上一則回答的語言。",
+  "answer.explainPrompt": "請從直覺講起，重新解釋一次：先舉一個小例子，再講細節。請使用您上一則回答的語言。",
   // note
   "note.saved": "已儲存到筆記",
   "note.saveFailedShort": "無法儲存筆記",

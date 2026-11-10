@@ -27,6 +27,8 @@ the element is drawn, never in a module constant: the language can change while 
 
 ## Simplified Chinese (zh-Hans): for the maintainer's review
 
+Address the user as 您, never 你, as Zotero's own Chinese UI does.
+
 | English (Zotero term) | Simplified Chinese (zh-Hans) |
 |---|---|
 | Item | 条目 |
@@ -56,6 +58,8 @@ the element is drawn, never in a module constant: the language can change while 
 | Folder / File / Terminal / Keychain | 文件夹 / 文件 / 终端 / 钥匙串 |
 
 ## Traditional Chinese (zh-Hant, Taiwan usage): for the maintainer's review
+
+Address the user as 您, never 你, as Zotero's own Chinese UI does.
 
 | English (Zotero term) | Traditional Chinese (zh-Hant) |
 |---|---|

@@ -527,7 +527,7 @@ test with real Claude Code (`ZMC_LIVE=1`), one tiny prompt, no library writes.
 
 What matters is that the plugin never slows Zotero's own startup, so that is the number under test: with the panel closed,
 Zotero waits for this plugin only while it reads `plugin.js` (6 KB) and runs `startup()`, measured at 0 to 1 ms and capped at 50
-(`test/zotero/budget.js`). `panel.js` (UI, agent runtime, katex, marked: about 600 KB minified) is read the first time the panel opens
+(`test/zotero/budget.js`). `panel.js` (UI, agent runtime, katex, marked, the eight language catalogs: about 950 KB minified, about 35 ms to load in Zotero) is read the first time the panel opens
 (about 35 ms, capped at 150) and never at startup; Zotero's Settings pane reads its own copy only when it is opened (`test/zotero/prefpane.js`). Bundle size is not otherwise a concern, within reason (hundreds of KB are fine,
 tens of MB are not): `test/budget.test.ts` only catches a blow-up. Redundancy is the thing to avoid: no helper, setting or layer without a
 user or a failure it protects against. Every agent-written layer gets a simplify pass before it is called done.
