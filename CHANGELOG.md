@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Articles and passages in separate ChromaDB collections** (#769; #786, #787, #788, #789, #790, #791, #792, #795). With chunking on, each item now keeps its one-vector article record in `zotero_library` and its passages in `zotero_library_passages`, so an article search never loads passage vectors into memory. Turning chunking on no longer needs `--force-rebuild`: the next `update-db` (with `--fulltext` in local mode) adds only the passages and keeps the article vectors you have. If chunking is already on in your config and the index has no passages yet, that next update, including a scheduled one, embeds them, which a paid embedding API bills. An update writes every article record before any passage, so a long run makes article search complete early. Thanks @mronkko.
+- **`zotero_semantic_search(level="articles"|"passages")`** and `zotero-cli search --mode semantic --level`: articles for works on a topic, passages for where something is done or stated. The default follows the chunking setting, falling back to the other level only while the chosen one is empty. When the other level holds more items (during a passage fill, say), the results end with one line saying so. Thanks @mronkko.
+- **`zotero-mcp migrate-index`** splits an index built with chunking on by an earlier version. Such an index keeps working as it is, unmigrated, with no action needed; status (`db-status`, `zotero-cli db status`, `zotero_get_search_database_status`) explains it, with the steps and an estimate of what the last one costs. The migration renames the ChromaDB collection in one SQLite step, keeps every vector and embeds nothing; `--dry-run` shows what it would do, it takes the update lock, and running it again after an interruption finishes the job. The update after it embeds one article record per item, and only that. Thanks @mronkko.
+
+### Changed
+
+- **Status, `repair-db`, `db-inspect` and deletes cover both ChromaDB collections** (#788, #789). An item removed from Zotero leaves both, a reset clears both, `repair-db` rebuilds both and keeps the index's shape, and status counts records and items per level. Thanks @mronkko.
+- **With `idle_unload_minutes` set, a worker that has loaded passages is kept only by passage activity** (#790), so article searches alone let it exit and reload just the small article collection. It never exits during an index update in the server or with an iterator open, and a passage search that had to load them (5 s or more) says so. Thanks @mronkko.
+- **Choosing the level costs a search nothing measurable.** The record counts it needs are read once and reused until `chroma.sqlite3` changes; counting them on every search took 0.3 s cold on a 200,000-passage index.
+
+### Fixed
+
+- **A failure part way through chunking one item no longer mixes up the items after it** (#786). Its passages stayed in the run uncounted, so later items could be counted, and their old passages pruned, against another item's records. Thanks @mronkko.
+- **An item removed from Zotero leaves the semantic index whatever chunking setting indexed it** (#788). The deletion pass chose what to delete from the current setting, so an item indexed under the other one stayed searchable. Thanks @mronkko.
+
 ## [0.16.0] - 2026-11-06
 
 ### Added
