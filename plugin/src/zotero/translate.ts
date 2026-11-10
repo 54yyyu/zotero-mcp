@@ -6,6 +6,7 @@
 import type { AgentRuntime, AgentSession, BackendId, Catalog, ChatEvent, PanelSettings } from "../types.ts";
 import { pickLowEffort, pickTranslateModel, translatorPrompt } from "../agent/index.ts";
 import { language } from "../ui/settings-model.ts";
+import { t } from "../i18n.ts";
 
 const IDLE_MS = 5 * 60_000;
 const MAX_TURNS = 20;
@@ -115,7 +116,7 @@ export function createTranslator(o: {
     try {
       w = await session(s, to);
     } catch (e) {
-      throw new Error(`The agent could not start: ${e instanceof Error ? e.message : String(e)}`); // node missing, signed out, no answer
+      throw new Error(t("tr.startFailed", { error: e instanceof Error ? e.message : String(e) })); // node missing, signed out, no answer
     }
     const turn = w.session;
     let text = "", notice = "", stop = "";
@@ -130,16 +131,16 @@ export function createTranslator(o: {
       w.turns++;
     } catch (e) {
       if (warm?.session === turn) void close(); // the bridge died: the next press starts a fresh one
-      throw new Error(notice || `The agent stopped: ${e instanceof Error ? e.message : String(e)}`);
+      throw new Error(notice || t("chat.stopped", { error: e instanceof Error ? e.message : String(e) }));
     } finally {
       off();
       running = null;
       if (warm) arm();
     }
     if (stop === "cancelled") return;
-    if (stop === "error") throw new Error(notice || "The agent could not translate this.");
-    if (stop === "refusal") throw new Error("The model declined to translate this.");
-    if (!text.trim()) throw new Error("No translation came back. Try again, or choose another model in Settings.");
+    if (stop === "error") throw new Error(notice || t("tr.couldNot"));
+    if (stop === "refusal") throw new Error(t("tr.declined"));
+    if (!text.trim()) throw new Error(t("tr.empty"));
   }
 
   return {

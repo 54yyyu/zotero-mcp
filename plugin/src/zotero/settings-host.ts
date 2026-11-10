@@ -8,6 +8,7 @@ import { createSkills } from "./skills.ts";
 import * as keychain from "./keychain.ts";
 import { PREFIX, prefs } from "./settings.ts";
 import { createStore } from "./store.ts";
+import { t } from "../i18n.ts";
 
 export function createSettingsHost(opts: { version: string; win: any; dataDir: string }) {
   const { win, dataDir } = opts;
@@ -57,7 +58,7 @@ export function createSettingsHost(opts: { version: string; win: any; dataDir: s
     about: () => ({ version: opts.version, workspace: chatFolder() }),
     async chooseFolder(start) {
       const fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      fp.init(win.browsingContext, "Choose the chat folder", Ci.nsIFilePicker.modeGetFolder);
+      fp.init(win.browsingContext, t("settings.folder.pick"), Ci.nsIFilePicker.modeGetFolder);
       if (start) try { fp.displayDirectory = Zotero.File.pathToFile(start); } catch { /* a folder that no longer exists */ }
       const result: number = await new Promise((r) => fp.open(r));
       return result === Ci.nsIFilePicker.returnOK ? fp.file.path : null;
@@ -66,6 +67,7 @@ export function createSettingsHost(opts: { version: string; win: any; dataDir: s
     loadImage: () => images.load(),
     removeImage: () => images.remove(),
     skills: skills.host,
+    locale: () => Zotero.locale,
     theme: () => (dark.matches ? "dark" : "light"),
     onThemeChange(cb) {
       dark.addEventListener("change", cb);

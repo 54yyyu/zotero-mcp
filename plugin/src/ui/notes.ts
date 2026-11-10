@@ -3,6 +3,7 @@
 import type { NoteRequest, SavedNote } from "../types.ts";
 import { noteDiagrams } from "./note-html.ts";
 import { clip, errMessage, h, icon } from "./dom.ts";
+import { t } from "../i18n.ts";
 
 /** An answer's markdown as a note request; diagram.ts is loaded only when the answer has a drawing. */
 export async function answerNote(markdown: string, question?: string): Promise<NoteRequest> {
@@ -19,8 +20,8 @@ export async function trySave(save: () => Promise<SavedNote>): Promise<NoteState
 }
 
 export function noteLine(s: NoteState, open: (uri: string) => void): HTMLElement {
-  if ("err" in s) return h("div.noteline.noteline--err", { role: "alert" }, icon("warn"), h("span", null, `Couldn't save the note: ${s.err}`));
+  if ("err" in s) return h("div.noteline.noteline--err", { role: "alert" }, icon("warn"), h("span", null, t("note.saveFailed", { error: s.err })));
   const uri = s.ok.uri;
-  return h("div.noteline", { role: "status" }, icon("check"), h("span", null, "Saved to note"),
-    h("button.lnk", { type: "button", title: "Show the note in Zotero", onclick: () => open(uri) }, "Open"));
+  return h("div.noteline", { role: "status" }, icon("check"), h("span", null, t("note.saved")),
+    h("button.lnk", { type: "button", title: t("note.show"), onclick: () => open(uri) }, t("common.open")));
 }

@@ -11,6 +11,7 @@
 //   tags and attributes come from the allow-lists below, enforced again by the DOM builder
 import { Marked } from "marked";
 import type { Token, Tokens } from "marked";
+import type { Key } from "../i18n.ts";
 
 export type MdNode = string | MdEl;
 export interface MdEl { tag: string; attrs?: Record<string, string>; kids?: MdNode[] }
@@ -148,16 +149,17 @@ interface FormatToken { type: "fmt"; raw: string; tag: string; color?: string; b
 // the statements across the chat, and turns `\ref{def:x}` into a link to the card.
 
 export type CalloutTone = "thm" | "def" | "rem" | "proof" | "note" | "tip" | "key" | "warn" | "bad";
-export interface CalloutKind { label: string; tone: CalloutTone; numbered: boolean }
-const stmt = (label: string, tone: CalloutTone): CalloutKind => ({ label, tone, numbered: true });
-const aside = (label: string, tone: CalloutTone): CalloutKind => ({ label, tone, numbered: false });
+/** `label` is the message key of the kind's name ("Theorem"), shown in the user's language. */
+export interface CalloutKind { label: Key; tone: CalloutTone; numbered: boolean }
+const stmt = (label: Key, tone: CalloutTone): CalloutKind => ({ label, tone, numbered: true });
+const aside = (label: Key, tone: CalloutTone): CalloutKind => ({ label, tone, numbered: false });
 export const CALLOUT_KINDS: Readonly<Record<string, CalloutKind>> = {
-  theorem: stmt("Theorem", "thm"), lemma: stmt("Lemma", "thm"), proposition: stmt("Proposition", "thm"), corollary: stmt("Corollary", "thm"),
-  claim: stmt("Claim", "thm"), conjecture: stmt("Conjecture", "thm"),
-  definition: stmt("Definition", "def"), notation: stmt("Notation", "def"),
-  remark: stmt("Remark", "rem"), example: stmt("Example", "rem"), exercise: stmt("Exercise", "rem"),
-  proof: aside("Proof", "proof"),
-  note: aside("Note", "note"), tip: aside("Tip", "tip"), important: aside("Important", "key"), warning: aside("Warning", "warn"), caution: aside("Caution", "bad"),
+  theorem: stmt("callout.theorem", "thm"), lemma: stmt("callout.lemma", "thm"), proposition: stmt("callout.proposition", "thm"), corollary: stmt("callout.corollary", "thm"),
+  claim: stmt("callout.claim", "thm"), conjecture: stmt("callout.conjecture", "thm"),
+  definition: stmt("callout.definition", "def"), notation: stmt("callout.notation", "def"),
+  remark: stmt("callout.remark", "rem"), example: stmt("callout.example", "rem"), exercise: stmt("callout.exercise", "rem"),
+  proof: aside("callout.proof", "proof"),
+  note: aside("callout.note", "note"), tip: aside("callout.tip", "tip"), important: aside("callout.important", "key"), warning: aside("callout.warning", "warn"), caution: aside("callout.caution", "bad"),
 };
 /** Display environments that need no card: KaTeX has them, an agent just forgets the `$$`. */
 const MATH_ENVS = new Set(["equation", "equation*", "align", "align*", "gather", "gather*"]);

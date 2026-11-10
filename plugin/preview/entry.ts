@@ -2,6 +2,7 @@
 //   ?theme=dark  &doctor=ok|zotero-api|write-access|cli|node|backend|many
 //   &ctx=item|selection|area|none  &speed=0  &stress=1  &nohistory=1  &welcome=1
 //   &pi=big (pi lists 418 models)  &backend=pi
+//   &lang=de-DE (Zotero's locale: the panel's language)
 //   &look={"glass":false,"background":"dawn",...}  (an appearance laid over the default)  &image=1 (a saved background picture)
 // `window.__zmc` exposes the host's `sim` and the panel handle to Playwright.
 import { mountPanel } from "../src/ui/index.ts";
@@ -19,6 +20,7 @@ const host = new FakeHost({
   noHistory: q.has("nohistory"),
   welcome: q.has("welcome"),
   bigPi: q.get("pi") === "big",
+  ...(q.has("lang") ? { locale: q.get("lang")! } : {}),
 });
 if (q.has("backend")) void host.setSettings({ backend: q.get("backend") as "pi" });
 if (q.has("image")) host.sim.image = host.sim.pickImage?.dataUrl ?? null; // a picture saved by an earlier session

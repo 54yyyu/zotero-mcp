@@ -4,6 +4,7 @@
 // over the feed (linkCallouts), run only when a card or a reference was drawn since the last pass.
 import { CALLOUT_KINDS } from "./markdown.ts";
 import { env, h } from "./dom.ts";
+import { t } from "../i18n.ts";
 
 let dirty = false;
 /** True once after a card or a reference was drawn: the feed numbers and links them again. */
@@ -13,7 +14,7 @@ export const takeCalloutsDirty = (): boolean => { const d = dirty; dirty = false
 export function calloutEl(kind: string, label: string | undefined, title: Node[] | null, body: Node[]): HTMLElement {
   dirty = true;
   const spec = CALLOUT_KINDS[kind];
-  const name = h("span.cb__kind", null, spec?.label ?? kind, spec?.numbered ? h("span.cb__num") : null);
+  const name = h("span.cb__kind", null, spec ? t(spec.label) : kind, spec?.numbered ? h("span.cb__num") : null);
   const head = h("div.cb__head", null, name, title ? h("span.cb__title", null, " — ", ...title) : null);
   return h(`div.cb.cb--${spec?.tone ?? "rem"}`, { role: "group", dataset: { kind, ...(label ? { label } : {}) } }, head, h("div.cb__body", null, ...body));
 }
@@ -41,13 +42,14 @@ export function linkCallouts(root: ParentNode): void {
   for (const r of root.querySelectorAll<HTMLElement>(".cbref")) {
     const c = byLabel.get(r.dataset.ref ?? "");
     r.classList.toggle("cbref--missing", !c);
-    if (!c) { r.title = "Not defined in this chat"; continue; }
-    const kind = CALLOUT_KINDS[c.dataset.kind ?? ""]?.label ?? "";
+    if (!c) { r.title = t("callout.undefined"); continue; }
+    const spec = CALLOUT_KINDS[c.dataset.kind ?? ""];
+    const kind = spec ? t(spec.label) : "";
     const text = `${kind} ${c.dataset.number}`;
     if (r.textContent !== text) r.textContent = text;
-    const t = c.querySelector(":scope > .cb__head .cb__title")?.textContent?.replace(/^\s*— /, "");
+    const title = c.querySelector(":scope > .cb__head .cb__title")?.textContent?.replace(/^\s*— /, "");
     const body = (c.querySelector(".cb__body")?.textContent ?? "").replace(/\s+/g, " ").trim();
-    r.title = `${kind} ${c.dataset.number}${t ? ` — ${t}` : ""}\n${body.length > 200 ? `${body.slice(0, 200)}…` : body}`;
+    r.title = `${kind} ${c.dataset.number}${title ? ` — ${title}` : ""}\n${body.length > 200 ? `${body.slice(0, 200)}…` : body}`;
   }
 }
 

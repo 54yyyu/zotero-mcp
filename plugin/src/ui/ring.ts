@@ -4,12 +4,11 @@
 import type { Usage } from "../types.ts";
 import type { Fill } from "./economy.ts";
 import { fmtTokens, h, icon, setKids, svg } from "./dom.ts";
+import { t } from "../i18n.ts";
 
 /** The ring turns amber from WARM_AT (and New chat becomes the popover's main action); from FULL_AT it turns red. */
 export const WARM_AT = 70;
 export const FULL_AT = 85;
-
-const WHY = "Everything the agent holds in mind in this chat: your messages, what it read, its answers. When it fills up, the agent summarises the older parts automatically.";
 
 /** What the popover lists, read when it opens (and again when the fill or the busy state changes while it is open). */
 export interface RingInfo {
@@ -69,7 +68,7 @@ export class ContextRing {
     if (!fill) { this.close(); this.hideTip(); return; }
     const level = fill.pct >= FULL_AT ? "full" : fill.pct >= WARM_AT ? "warm" : "";
     this.el.dataset["level"] = level;
-    this.el.setAttribute("aria-label", `Context: ${fill.pct}% full (${fmtTokens(fill.used)} of ${fmtTokens(fill.size)} tokens). Show details`);
+    this.el.setAttribute("aria-label", t("ring.label", { pct: fill.pct, used: fmtTokens(fill.used), size: fmtTokens(fill.size) }));
     this.arc.setAttribute("stroke-dasharray", `${fill.pct} 100`);
     if (!this.tip.hidden) this.showTip();
     if (this.pop) this.paint();
@@ -80,7 +79,7 @@ export class ContextRing {
   private showTip(): void {
     const f = this.fill;
     if (!f || this.pop) return;
-    setKids(this.tip, h("span.ctip__t", null, `${f.pct}% of context used`), h("span.ctip__sub", null, `${fmtTokens(f.used)} of ${fmtTokens(f.size)} tokens`));
+    setKids(this.tip, h("span.ctip__t", null, t("ring.used", { pct: f.pct })), h("span.ctip__sub", null, t("ring.tokens", { used: fmtTokens(f.used), size: fmtTokens(f.size) })));
     this.tip.hidden = false;
     // Above the ring, inside the composer: centred on it, but never past either edge.
     const r = this.el, w = this.tip.offsetWidth, cx = r.offsetLeft + r.offsetWidth / 2;
@@ -96,7 +95,7 @@ export class ContextRing {
     if (!this.fill) return;
     this.opts.opening();
     this.hideTip();
-    this.pop = h("div.menu.cpop", { role: "dialog", "aria-label": "Context window", tabindex: "-1", onkeydown: (e: KeyboardEvent) => {
+    this.pop = h("div.menu.cpop", { role: "dialog", "aria-label": t("ring.title"), tabindex: "-1", onkeydown: (e: KeyboardEvent) => {
       if (e.key !== "Escape") return;
       e.preventDefault();
       e.stopPropagation();
@@ -128,19 +127,19 @@ export class ContextRing {
       h(`button.btn.btn--sm${solid ? ".btn--solid" : ".btn--quiet"}`, { type: "button", dataset: { act: id }, disabled: disabled || null, onclick: () => { this.close(); run(); } }, id === "new" ? icon("plus") : null, label);
     pop.dataset["level"] = this.el.dataset["level"] ?? "";
     setKids(pop,
-      h("div.cpop__head", null, h("span.cpop__title", null, "Context window"), h("span.cpop__pct", null, `${f.pct}%`)),
+      h("div.cpop__head", null, h("span.cpop__title", null, t("ring.title")), h("span.cpop__pct", null, `${f.pct}%`)),
       h("div.cpop__bar", { "aria-hidden": "true" }, h("span.cpop__fill", { style: `width:${f.pct}%` })),
-      h("div.cpop__tok", null, `${fmtTokens(f.used)} of ${fmtTokens(f.size)} tokens`),
-      h("p.cpop__why", null, WHY),
+      h("div.cpop__tok", null, t("ring.tokens", { used: fmtTokens(f.used), size: fmtTokens(f.size) })),
+      h("p.cpop__why", null, t("ring.why")),
       h("dl.cpop__facts", null,
-        row("Messages", String(s.messages)),
-        row("Last turn", last && [last.inputTokens ? `${fmtTokens(last.inputTokens)} in` : "", last.outputTokens ? `${fmtTokens(last.outputTokens)} out` : ""].filter(Boolean).join(" · ")),
-        row("Cost", info.showCost && last?.costUsd ? `$${last.costUsd.toFixed(last.costUsd < 0.1 ? 3 : 2)} last turn` : null),
-        row("Summarised", s.compactions ? (s.compactions === 1 ? "once" : `${s.compactions} times`) : null),
-        sent ? [h("dt.cpop__wide", null, "Sent with your last message"), h("dd.cpop__wide", null, sent)] : []),
+        row(t("ring.messages"), String(s.messages)),
+        row(t("ring.lastTurn"), last && [last.inputTokens ? t("usage.in", { n: fmtTokens(last.inputTokens) }) : "", last.outputTokens ? t("usage.out", { n: fmtTokens(last.outputTokens) }) : ""].filter(Boolean).join(" · ")),
+        row(t("ring.cost"), info.showCost && last?.costUsd ? t("ring.costLast", { cost: `$${last.costUsd.toFixed(last.costUsd < 0.1 ? 3 : 2)}` }) : null),
+        row(t("ring.summarised"), s.compactions ? t("ring.times", { n: s.compactions }) : null),
+        sent ? [h("dt.cpop__wide", null, t("ring.sent")), h("dd.cpop__wide", null, sent)] : []),
       h("div.cpop__acts", null,
-        info.canCompact ? act("compact", "Summarise now", () => this.opts.compact(), false, this.busy) : null,
-        act("new", "New chat", () => this.opts.newChat(), f.pct >= WARM_AT)));
+        info.canCompact ? act("compact", t("ring.compact"), () => this.opts.compact(), false, this.busy) : null,
+        act("new", t("common.newChat"), () => this.opts.newChat(), f.pct >= WARM_AT)));
     this.place();
     if (had) (pop.querySelector(`[data-act="${had}"]`) as HTMLElement | null)?.focus();
   }

@@ -1,6 +1,7 @@
 // `@` mentions: items, collections, and the open reader's annotations that match what was typed.
 import type { ContextChip, ItemHit } from "../types.ts";
-import { itemLabel, refOf } from "./context.ts";
+import { annotationType, itemLabel, refOf } from "./context.ts";
+import { t } from "../i18n.ts";
 
 const MAX_ITEMS = 8;
 
@@ -26,7 +27,7 @@ export async function search(win: any, query: string, activeAttachment: any | nu
     for (const libraryID of libs) {
       for (const col of Zotero.Collections.getByLibrary(libraryID, true)) {
         if (hits.filter((h) => h.kind === "collection").length >= 3) break;
-        if (col.name.toLowerCase().includes(lower)) hits.push({ kind: "collection", ref: { libraryID, collectionKey: col.key }, title: col.name, subtitle: "Collection" });
+        if (col.name.toLowerCase().includes(lower)) hits.push({ kind: "collection", ref: { libraryID, collectionKey: col.key }, title: col.name, subtitle: t("search.collection") });
       }
     }
     if (activeAttachment) {
@@ -34,7 +35,7 @@ export async function search(win: any, query: string, activeAttachment: any | nu
       for (const ann of activeAttachment.getAnnotations?.() ?? []) {
         const text = `${ann.annotationText ?? ""} ${ann.annotationComment ?? ""}`;
         if (!text.toLowerCase().includes(lower) || n++ >= 3) continue;
-        hits.push({ kind: "annotation", ref: { ...refOf(activeAttachment), annotationKey: ann.key, pageLabel: ann.annotationPageLabel }, title: `${ann.annotationType} · p.${ann.annotationPageLabel}`, subtitle: text.trim().slice(0, 80) });
+        hits.push({ kind: "annotation", ref: { ...refOf(activeAttachment), annotationKey: ann.key, pageLabel: ann.annotationPageLabel }, title: t("chip.annotationPage", { type: annotationType(ann.annotationType), page: ann.annotationPageLabel }), subtitle: text.trim().slice(0, 80) });
       }
     }
   }

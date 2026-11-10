@@ -1,6 +1,7 @@
 // Puts the panel in Zotero's main window. Measured on Zotero 10: #tabs-deck sits in an hbox below the tab bar,
 // so a sibling appended to that hbox is right of the library AND of every reader tab, and stays put when tabs switch.
 import type { Panel } from "./panel.ts";
+import { startupWord } from "../locales/languages.ts";
 
 const XHTML = "http://www.w3.org/1999/xhtml";
 const MIN_W = 300;
@@ -93,8 +94,9 @@ export function injectPanel(win: any, load: (shadow: ShadowRoot) => Panel, prefs
   const button = doc.createXULElement("toolbarbutton");
   button.id = "zmc-toggle";
   button.className = "zotero-tb-button";
-  button.setAttribute("tooltiptext", "Chat");
-  button.setAttribute("aria-label", "Chat");
+  const chat = startupWord("chat", prefs.json<{ uiLanguage?: string }>("settings", {}).uiLanguage, Zotero.locale);
+  button.setAttribute("tooltiptext", chat);
+  button.setAttribute("aria-label", chat);
   button.style.cssText = `-moz-context-properties: stroke; stroke: currentColor; list-style-image: url("${ICON}");`;
   toolbar?.insertBefore(button, doc.getElementById("zotero-tb-tabs-menu")?.nextSibling ?? null);
 

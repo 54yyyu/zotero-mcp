@@ -6,6 +6,7 @@
 // instead of the fold: the current model and the default first, then each provider's models (the id before the first
 // "/"), smaller providers first, since a provider the user configured lists a handful and a cloud aggregator hundreds.
 import type { ModelOption } from "../types.ts";
+import { t } from "../i18n.ts";
 
 /** Rows listed before "More models" in a short catalog. */
 export const TOP = 4;
@@ -86,11 +87,11 @@ export function withHeadings(rows: Row[], grouped: boolean): (Row | { heading: s
   const out: (Row | { heading: string })[] = [];
   let prev: Row | undefined;
   for (const r of rows) {
-    if (!r.pinned && (!prev || prev.pinned || prev.provider !== r.provider)) out.push({ heading: r.provider || "Other" });
+    if (!r.pinned && (!prev || prev.pinned || prev.provider !== r.provider)) out.push({ heading: r.provider || t("pick.other") });
     out.push(r);
     prev = r;
   }
   return out;
 }
 
-export const countLabel = (n: number): string => (n === 1 ? "1 model" : `${n} models`);
+export const countLabel = (n: number): string => t("pick.count", { n });

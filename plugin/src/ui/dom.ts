@@ -1,6 +1,7 @@
 // DOM helpers for the panel. Nothing here touches Zotero or node. The document and window come from the
 // mount point (`initEnv`), not from globals: a plugin script in a Zotero window may not have `document`
 // or `setTimeout` as free variables.
+import { language, t } from "../i18n.ts";
 
 const XHTML = "http://www.w3.org/1999/xhtml";
 const SVG = "http://www.w3.org/2000/svg";
@@ -150,14 +151,14 @@ export function slotLabel(slot: number): string {
 
 export function relTime(ms: number, now = Date.now()): string {
   const s = Math.max(0, Math.round((now - ms) / 1000));
-  if (s < 45) return "just now";
+  if (s < 45) return t("time.now");
   const m = Math.round(s / 60);
-  if (m < 60) return `${m} min ago`;
+  if (m < 60) return t("time.min", { n: m });
   const hr = Math.round(m / 60);
-  if (hr < 24) return `${hr} h ago`;
+  if (hr < 24) return t("time.hour", { n: hr });
   const d = Math.round(hr / 24);
-  if (d < 7) return `${d} d ago`;
-  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  if (d < 7) return t("time.day", { n: d });
+  return new Date(ms).toLocaleDateString(language(), { month: "short", day: "numeric" });
 }
 
 /** Today / Yesterday / This week / "September" / "September 2025": the history's groups. */
@@ -165,10 +166,10 @@ export function dayGroup(ms: number, now = new Date()): string {
   const d = new Date(ms);
   const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
   const days = Math.round((day(now) - day(d)) / 864e5);
-  if (days <= 0) return "Today";
-  if (days === 1) return "Yesterday";
-  if (days < 7) return "This week";
-  return d.toLocaleDateString(undefined, { month: "long", ...(d.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) });
+  if (days <= 0) return t("time.today");
+  if (days === 1) return t("time.yesterday");
+  if (days < 7) return t("time.thisWeek");
+  return d.toLocaleDateString(language(), { month: "long", ...(d.getFullYear() === now.getFullYear() ? {} : { year: "numeric" }) });
 }
 
 export async function copyText(text: string): Promise<boolean> {

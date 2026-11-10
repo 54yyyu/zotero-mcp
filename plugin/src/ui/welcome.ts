@@ -4,12 +4,14 @@ import type { BackendId, BackendStatus, DoctorCheck, PanelHost } from "../types.
 import { env, h, icon, setKids, svg } from "./dom.ts";
 import { PRIORITY } from "./health.ts";
 import type { Health } from "./health.ts";
-import { BACKENDS, BACKEND_LABEL, PROBLEM, fixButton, mark } from "./views.ts";
+import { BACKENDS, BACKEND_LABEL, fixButton, mark, problem } from "./views.ts";
+import { t } from "../i18n.ts";
+import type { Key } from "../i18n.ts";
 
-const ABOUT: Record<BackendId, { sub: string; signIn: string }> = {
-  "claude-code": { sub: "Anthropic. Uses your Claude subscription.", signIn: "Run `claude` in a terminal and sign in with /login." },
-  codex: { sub: "OpenAI. Uses your ChatGPT plan.", signIn: "Run `codex login` in a terminal." },
-  pi: { sub: "Open source. Local models or your own provider keys.", signIn: "Run `pi` in a terminal and add a provider with /login." },
+const ABOUT: Record<BackendId, { sub: Key; signIn: Key }> = {
+  "claude-code": { sub: "welcome.claude.sub", signIn: "welcome.claude.signIn" },
+  codex: { sub: "welcome.codex.sub", signIn: "welcome.codex.signIn" },
+  pi: { sub: "welcome.pi.sub", signIn: "welcome.pi.signIn" },
 };
 
 /** A tick that draws itself (the stroke grows from nothing). */
@@ -20,7 +22,7 @@ interface Handlers { done(): void; recheck(): void; changed(): void; openSetting
 
 export function welcomeView(host: PanelHost, health: Health, o: Handlers): { el: HTMLElement; render(): void } {
   const hero = mark(true);
-  const cards = h("div.wcards", { role: "radiogroup", "aria-label": "Agent" });
+  const cards = h("div.wcards", { role: "radiogroup", "aria-label": t("common.agent") });
   const hint = h("p.wel__hint", { "aria-live": "polite" });
   const count = h("span.wel__count");
   const fill = h("div.wbar__fill");
@@ -49,25 +51,25 @@ export function welcomeView(host: PanelHost, health: Health, o: Handlers): { el:
       const on = id === chosen;
       return h(`button.wcard${on ? ".wcard--on" : ""}`, { type: "button", role: "radio", "aria-checked": String(on), onclick: () => void pick(id) },
         h("span.wcard__dot", { "aria-hidden": "true" }),
-        h("span.wcard__tx", null, h("span.wcard__t", null, BACKEND_LABEL[id]), h("span.wcard__d", null, ABOUT[id].sub)),
-        h(`span.wcard__st${s?.available ? ".wcard__st--ok" : ""}`, { title: s?.reason ?? "" }, h("span.wcard__led"), s?.available ? s.account || "Ready" : s?.reason ?? "Not set up"));
+        h("span.wcard__tx", null, h("span.wcard__t", null, BACKEND_LABEL[id]), h("span.wcard__d", null, t(ABOUT[id].sub))),
+        h(`span.wcard__st${s?.available ? ".wcard__st--ok" : ""}`, { title: s?.reason ?? "" }, h("span.wcard__led"), s?.available ? s.account || t("welcome.ready") : s?.reason ?? t("welcome.notSetUp")));
     }));
     const cur = status(chosen);
-    setKids(hint, cur && !cur.available ? `${ABOUT[chosen].signIn} Then press Recheck.` : null);
+    setKids(hint, cur && !cur.available ? t("welcome.thenRecheck", { signIn: t(ABOUT[chosen].signIn) }) : null);
   };
 
   const rowFor = (c: DoctorCheck, pending: boolean): HTMLElement => {
     if (pending) {
       return h("li.wrow.wrow--pending", null, h("span.wrow__i", null, h("span.spin")),
-        h("div.wrow__tx", null, h("div.wrow__t", null, c.label), h("div.wrow__d", null, "Checking…")));
+        h("div.wrow__tx", null, h("div.wrow__t", null, c.label), h("div.wrow__d", null, t("common.checking"))));
     }
     const log = h("pre.fixlog", { hidden: !logs.has(c.id), "aria-live": "polite" }, logs.get(c.id) ?? "");
     const fix = c.ok ? null : fixButton(c, ".btn--solid", log, () => { logs.set(c.id, log.textContent ?? ""); o.recheck(); });
-    const help = c.id === "backend" ? "Pick another agent above, or sign in and press Recheck." : PROBLEM[c.id].help;
+    const help = c.id === "backend" ? t("welcome.backendHelp") : problem(c.id).help;
     return h(`li.wrow.wrow--${c.ok ? "ok" : "bad"}`, null,
       h("span.wrow__i", { "aria-hidden": "true" }, c.ok ? tick() : icon("warn")),
       h("div.wrow__tx", null,
-        h("div.wrow__t", null, c.label, h("span.sr", null, c.ok ? " (ok)" : " (needs attention)")),
+        h("div.wrow__t", null, c.label, h("span.sr", null, c.ok ? t("status.okSr") : t("status.badSr"))),
         c.detail ? h("div.wrow__d", null, c.detail) : null,
         c.ok ? null : h("p.wrow__help", null, help),
         c.ok ? null : fix ? h("div.wrow__acts", null, fix) : null,
@@ -87,7 +89,7 @@ export function welcomeView(host: PanelHost, health: Health, o: Handlers): { el:
     const shown = checks.filter((c) => settled.has(c.id));
     setKids(rows, checks.map((c) => rowFor(c, !settled.has(c.id) || (health.busy && !c.ok))));
     const passed = shown.filter((c) => c.ok).length;
-    setKids(count, `${passed} of ${checks.length}`);
+    setKids(count, t("welcome.count", { n: passed, total: checks.length }));
     fill.style.width = `${(passed / checks.length) * 100}%`;
     return shown.length === checks.length && !health.busy;
   };
@@ -100,14 +102,14 @@ export function welcomeView(host: PanelHost, health: Health, o: Handlers): { el:
     const account = health.backend()?.account;
     const who = account ? `${BACKEND_LABEL[s.backend]} (${account})` : BACKEND_LABEL[s.backend];
     const go = h(`button.btn.${ready ? "btn--solid" : "btn--quiet"}`, { type: "button", disabled: blocked || !settledAll ? true : null, onclick: o.done },
-      ready ? "Start chatting" : blocked ? "Start chatting" : "Continue anyway");
+      ready || blocked ? t("welcome.start") : t("welcome.continue"));
     setKids(foot,
-      ready ? h("p.wready", { role: "status" }, h("span.wready__i", null, tick()), `All set. You'll chat with ${who}.`) : null,
-      !ready && settledAll && !blocked ? h("p.wel__hint", null, "You can finish this later: the dot at the top shows what's missing.") : null,
+      ready ? h("p.wready", { role: "status" }, h("span.wready__i", null, tick()), t("welcome.allSet", { who })) : null,
+      !ready && settledAll && !blocked ? h("p.wel__hint", null, t("welcome.later")) : null,
       h("div.wfoot__acts", null, go,
-        settledAll && !ready ? h("button.btn.btn--quiet", { type: "button", onclick: () => o.recheck() }, icon("retry"), "Recheck") : null,
-        h("button.lnk", { type: "button", onclick: o.openSettings }, "Settings")),
-      !ready ? h("button.lnk.wfoot__skip", { type: "button", onclick: o.done }, "Skip setup") : null);
+        settledAll && !ready ? h("button.btn.btn--quiet", { type: "button", onclick: () => o.recheck() }, icon("retry"), t("common.recheck")) : null,
+        h("button.lnk", { type: "button", onclick: o.openSettings }, t("settings.title"))),
+      !ready ? h("button.lnk.wfoot__skip", { type: "button", onclick: o.done }, t("welcome.skip")) : null);
     hero.classList.toggle("mark--busy", !settledAll);
     if (ready && !lastReady) hero.classList.add("mark--ready");
     if (!ready) hero.classList.remove("mark--ready");
@@ -124,10 +126,10 @@ export function welcomeView(host: PanelHost, health: Health, o: Handlers): { el:
 
   const el = h("div.wel", null, h("div.wel__in", null,
     h("div.wel__hero", null, hero,
-      h("h2", null, "Chat with your library"),
-      h("p.wel__lead", null, "Ask about the paper you're reading, or search and organize your collection, right from this panel.")),
-    h("section.wel__sec", { "aria-label": "Choose your agent" }, step(1, "Choose your agent"), cards, hint),
-    h("section.wel__sec", { "aria-label": "Getting ready" }, step(2, "Getting ready", count), h("div.wbar", { "aria-hidden": "true" }, fill), rows),
+      h("h2", null, t("welcome.title")),
+      h("p.wel__lead", null, t("welcome.lead"))),
+    h("section.wel__sec", { "aria-label": t("welcome.step1") }, step(1, t("welcome.step1")), cards, hint),
+    h("section.wel__sec", { "aria-label": t("welcome.step2") }, step(2, t("welcome.step2"), count), h("div.wbar", { "aria-hidden": "true" }, fill), rows),
     foot));
   render();
   return { el, render };

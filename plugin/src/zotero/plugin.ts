@@ -3,6 +3,7 @@ import { injectPanel, type Injected } from "./inject.ts";
 import type { Panel } from "./panel.ts";
 import { prefs } from "./settings.ts";
 import { maybeRunTestScript } from "./testrunner.ts";
+import { startupWord } from "../locales/languages.ts";
 
 interface InitArgs { id: string; version: string; rootURI: string }
 
@@ -94,13 +95,14 @@ class ChatPlugin {
    * appears in this popup, under the button.
    */
   private onSelectionPopup = (event: any): void => {
-    if (!event.params?.annotation?.text?.trim() || prefs.json<{ translate?: boolean }>("settings", {}).translate === false) return;
+    const s = prefs.json<{ translate?: boolean; uiLanguage?: string }>("settings", {});
+    if (!event.params?.annotation?.text?.trim() || s.translate === false) return;
     const box = event.doc.createElement("div");
     const b = event.doc.createElement("button");
     b.className = "toolbar-button wide-button";
     b.setAttribute("data-tabstop", "1");
     b.setAttribute("aria-expanded", "false");
-    b.textContent = "Translate";
+    b.textContent = startupWord("translate", s.uiLanguage, Zotero.locale);
     b.addEventListener("click", () => this.translator().toggle(event, box, b));
     box.append(b);
     event.append(box);

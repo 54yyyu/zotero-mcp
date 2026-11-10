@@ -2,31 +2,32 @@
 // colours by WCAG contrast) is unit-tested; `Look` writes the choice onto the panel's root as data attributes and CSS
 // variables, so a change shows at once and nothing re-renders. The CSS that reads them is styles-look.ts.
 import type { Appearance, SettingsHost } from "../types.ts";
+import type { Key } from "../i18n.ts";
 
 export const DEFAULT_APPEARANCE: Appearance = {
   glass: true, accent: "", background: "none", image: "", imageVisibility: 50, imageBlur: 0, textSize: "default", density: "comfortable",
 };
 
-/** The swatches, each a light and a dark colour. The first, Mono (our ink), is the default and is saved as "". */
-export const ACCENTS = [
-  { id: "", name: "Mono", light: "#16181d", dark: "#e6e8eb" },
-  { id: "#cc2936", name: "Red", light: "#cc2936", dark: "#ff7b86" },
-  { id: "#d9480f", name: "Orange", light: "#d9480f", dark: "#ff922b" },
-  { id: "#2b8a3e", name: "Green", light: "#2b8a3e", dark: "#69db7c" },
-  { id: "#0b7285", name: "Teal", light: "#0b7285", dark: "#66d9e8" },
-  { id: "#2563c9", name: "Blue", light: "#2563c9", dark: "#79a8ff" },
-  { id: "#6741d9", name: "Violet", light: "#6741d9", dark: "#b197fc" },
+/** The swatches, each a light and a dark colour (`name` is its message key). The first, Mono (our ink), is the default and is saved as "". */
+export const ACCENTS: { id: string; name: Key; light: string; dark: string }[] = [
+  { id: "", name: "accent.mono", light: "#16181d", dark: "#e6e8eb" },
+  { id: "#cc2936", name: "accent.red", light: "#cc2936", dark: "#ff7b86" },
+  { id: "#d9480f", name: "accent.orange", light: "#d9480f", dark: "#ff922b" },
+  { id: "#2b8a3e", name: "accent.green", light: "#2b8a3e", dark: "#69db7c" },
+  { id: "#0b7285", name: "accent.teal", light: "#0b7285", dark: "#66d9e8" },
+  { id: "#2563c9", name: "accent.blue", light: "#2563c9", dark: "#79a8ff" },
+  { id: "#6741d9", name: "accent.violet", light: "#6741d9", dark: "#b197fc" },
 ];
 
 /** Drawn by CSS (styles-look.ts), so they cost no bytes and follow light and dark: the glow (three faint washes of colour)
  * and soft gradients. "none" (Plain, the default) is just the paper. */
-export const BACKGROUNDS = [
-  { id: "glow", name: "Glow" },
-  { id: "mist", name: "Mist" },
-  { id: "dawn", name: "Dawn" },
-  { id: "sage", name: "Sage" },
-  { id: "dusk", name: "Dusk" },
-  { id: "sand", name: "Sand" },
+export const BACKGROUNDS: { id: string; name: Key }[] = [
+  { id: "glow", name: "bg.glow" },
+  { id: "mist", name: "bg.mist" },
+  { id: "dawn", name: "bg.dawn" },
+  { id: "sage", name: "bg.sage" },
+  { id: "dusk", name: "bg.dusk" },
+  { id: "sand", name: "bg.sand" },
 ];
 
 const HEX = /^#[0-9a-f]{6}$/i;

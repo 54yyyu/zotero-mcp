@@ -7,6 +7,7 @@ import { chipHash, planContext } from "./economy.ts";
 import { Persister } from "./persist.ts";
 import { applyEvent, emptyTranscript, promptFor, replay } from "./transcript.ts";
 import type { TranscriptState } from "./transcript.ts";
+import { t } from "../i18n.ts";
 
 export interface ChatDeps {
   host: PanelHost;
@@ -147,7 +148,7 @@ export class Chat {
         this.sent = next;
         this.lastContext = plan;
       } catch { /* the question still goes */ }
-      if (ctx.images.length && !sess.supportsImages) this.dispatch({ t: "notice", level: "warn", message: "This agent doesn't take images, so the pictures were left out of that message." });
+      if (ctx.images.length && !sess.supportsImages) this.dispatch({ t: "notice", level: "warn", message: t("chat.noImages") });
       const said = await this.d.expand(text, this.cwd);
       await sess.prompt({
         text: [ctx.text, said].filter(Boolean).join("\n\n"),
@@ -184,7 +185,7 @@ export class Chat {
     if (msg === "cancelled") return;
     const running = this.tr.running;
     if (running) this.dispatch({ t: "turn_end", turn: running, stop: "error" });
-    this.dispatch({ t: "notice", level: "error", message: this.session ? `The agent stopped: ${msg}` : `Couldn't start the agent: ${msg}`, hint: "Check Status for what is missing, then send again." });
+    this.dispatch({ t: "notice", level: "error", message: this.session ? t("chat.stopped", { error: msg }) : t("chat.startFailed", { error: msg }), hint: t("chat.checkStatus") });
     // A rejected prompt means the bridge is gone: the next send starts a fresh one and resumes this chat.
     if (this.session) this.resume = this.saved;
     await this.closeSession();
@@ -248,7 +249,7 @@ export class Chat {
       // A save that ends mid-turn (a crash) must not look like it is still streaming.
       if (this.tr.running) this.tr = applyEvent(this.tr, { t: "turn_end", turn: this.tr.running, stop: "cancelled" });
     } catch (e) {
-      this.tr = replay([{ t: "notice", level: "error", message: `Couldn't open that chat: ${errMessage(e)}` }]);
+      this.tr = replay([{ t: "notice", level: "error", message: t("chat.loadFailed", { error: errMessage(e) }) }]);
     }
     this.saved = s;
     this.resume = s;

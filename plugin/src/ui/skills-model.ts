@@ -1,6 +1,7 @@
 // Skills and prompts as pure functions: SKILL.md frontmatter, what an import copies or skips, the `/` menu's ranking,
 // the message a `/name` turns into, and the four pin slots. No DOM, no Zotero: zotero/skills.ts does the files.
 import type { PanelSettings, PromptEntry, SkillEntry } from "../types.ts";
+import { t } from "../i18n.ts";
 
 // ───────────────────────────── SKILL.md ─────────────────────────────
 
@@ -57,10 +58,10 @@ export const RESERVED = new Set(["zotero-cli", "create-skill"]);
 export const CREATE_SKILL = "create-skill";
 
 export function nameProblem(name: string, taken: string[] = []): string | null {
-  if (!name) return "Give it a name.";
-  if (name.length > 64 || !NAME_RE.test(name)) return "Use lowercase letters, digits and single hyphens (at most 64), like annotate-paper.";
-  if (RESERVED.has(name)) return `“${name}” is the panel's own; choose another name.`;
-  if (taken.includes(name)) return `You already have a skill called “${name}”.`;
+  if (!name) return t("skills.err.noName");
+  if (name.length > 64 || !NAME_RE.test(name)) return t("skills.err.badName");
+  if (RESERVED.has(name)) return t("skills.err.reserved", { name });
+  if (taken.includes(name)) return t("skills.err.taken", { name });
   return null;
 }
 
@@ -100,16 +101,16 @@ export function planImport(found: FoundFile[]): { copy: string[]; skip: { path: 
   const out = (path: string, reason: string, keepable = false) => skip.push({ path, reason, keepable });
   for (const f of [...found].sort((a, b) => (a.path < b.path ? -1 : 1))) {
     const parts = f.path.split("/");
-    if (!f.path || f.path.startsWith("/") || f.path.includes("\\") || parts.some((s) => s === ".." || s === "" || s === ".")) { out(f.path, "outside the skill's folder"); continue; }
+    if (!f.path || f.path.startsWith("/") || f.path.includes("\\") || parts.some((s) => s === ".." || s === "" || s === ".")) { out(f.path, t("skills.skip.outside")); continue; }
     if (f.path === "SKILL.md") continue;
-    if (parts.some((s) => s.startsWith("."))) { out(f.kind === "dir" ? `${f.path}/` : f.path, "hidden"); continue; }
+    if (parts.some((s) => s.startsWith("."))) { out(f.kind === "dir" ? `${f.path}/` : f.path, t("skills.skip.hidden")); continue; }
     if (f.kind === "dir") continue;
-    if (f.kind === "link") { out(f.path, "a link (only real files are copied)"); continue; }
-    if (f.kind !== "file") { out(f.path, "not a regular file"); continue; }
-    if (copy.length + skip.filter((s) => s.keepable).length >= MAX_FILES) { out(f.path, `more than ${MAX_FILES} files`); continue; }
-    if (f.size > MAX_FILE) { out(f.path, "larger than 2 MB"); continue; }
-    if (f.exec || f.shebang || SCRIPT.test(f.path)) { out(f.path, "a script or program", true); continue; }
-    if (!PLAIN.test(f.path)) { out(f.path, "not a plain text or image file", true); continue; }
+    if (f.kind === "link") { out(f.path, t("skills.skip.link")); continue; }
+    if (f.kind !== "file") { out(f.path, t("skills.skip.notFile")); continue; }
+    if (copy.length + skip.filter((s) => s.keepable).length >= MAX_FILES) { out(f.path, t("skills.skip.many", { n: MAX_FILES })); continue; }
+    if (f.size > MAX_FILE) { out(f.path, t("skills.skip.large")); continue; }
+    if (f.exec || f.shebang || SCRIPT.test(f.path)) { out(f.path, t("skills.skip.script"), true); continue; }
+    if (!PLAIN.test(f.path)) { out(f.path, t("skills.skip.notPlain"), true); continue; }
     copy.push(f.path);
   }
   return { copy, skip };
