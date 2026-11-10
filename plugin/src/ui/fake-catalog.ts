@@ -5,6 +5,7 @@ import { DEFAULT_APPEARANCE } from "./appearance.ts";
 const level = (id: string, name: string, description?: string) => ({ id, name, ...(description ? { description } : {}) });
 
 export const CATALOGS: Record<BackendId, Catalog> = {
+  custom: { models: [], modes: [], efforts: [] },
   "claude-code": {
     models: [
       level("opus", "Claude Opus", "Most capable, slower"),

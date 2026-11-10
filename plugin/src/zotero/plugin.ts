@@ -95,8 +95,8 @@ class ChatPlugin {
    * appears in this popup, under the button.
    */
   private onSelectionPopup = (event: any): void => {
-    const s = prefs.json<{ translate?: boolean; uiLanguage?: string }>("settings", {});
-    if (!event.params?.annotation?.text?.trim() || s.translate === false) return;
+    const s = prefs.json<{ translate?: boolean; uiLanguage?: string; backend?: string }>("settings", {});
+    if (!event.params?.annotation?.text?.trim() || s.translate === false || s.backend === "custom") return;
     const box = event.doc.createElement("div");
     const b = event.doc.createElement("button");
     b.className = "toolbar-button wide-button";

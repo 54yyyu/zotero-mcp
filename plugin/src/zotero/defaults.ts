@@ -11,7 +11,7 @@ export const defaultPrompts = (lang = "en"): PromptEntry[] => [
   { id: "compare", slot: 4, title: t("prompt.compare.title", undefined, lang), text: t("prompt.compare.text", undefined, lang) },
 ];
 
-const each = <T>(v: T): Record<BackendId, T> => ({ "claude-code": v, codex: v, pi: v });
+const each = <T>(v: T): Record<BackendId, T> => ({ "claude-code": v, codex: v, pi: v, custom: v });
 
 export const DEFAULT_SETTINGS: PanelSettings = {
   backend: "claude-code",
@@ -19,7 +19,7 @@ export const DEFAULT_SETTINGS: PanelSettings = {
   model: each(""),
   mode: each(""),
   effort: each(""),
-  auth: { "claude-code": "subscription", codex: "subscription", pi: "api-key" },
+  auth: { "claude-code": "subscription", codex: "subscription", pi: "api-key", custom: "api-key" },
   prompts: defaultPrompts(),
   skills: {},
   followFocus: true,

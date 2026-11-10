@@ -106,6 +106,12 @@ Example (Claude Desktop / Claude Code):
 - `zotero_get_attachment_path`: Local file paths of an item's attachments (local mode)
 - `zotero_export_bibliography`: Format references or in-text citations with Zotero's CSL engine, or export BibTeX
 
+In local mode, an item Zotero has flagged as retracted carries
+`"retracted": true` in JSON (`zotero_get_item_metadata`, `zotero-cli --json`)
+and a **Retraction** line in Markdown metadata. The flag is Zotero's own,
+from its last retraction check; no request is made, and an unflagged item is
+not proof the paper stands. A retraction hidden in Zotero is not flagged.
+
 ### 📝 Annotation & notes tools
 - `zotero_get_annotations`: Get annotations (including direct PDF extraction); `format="json"` returns normalized records
 - `zotero_synthesize_annotations`: Per-paper digest of highlights and notes across a collection or tag

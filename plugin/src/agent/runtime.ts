@@ -1,8 +1,9 @@
 // createRuntime: detect which backends can run here, and start a session on one.
 // Process spawning is injected (Spawner); this file has no node:*, DOM or Zotero imports.
-import type { AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, Spawner, StartOpts } from "../types.ts";
+import type { AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, CustomAgentConfig, Spawner, StartOpts } from "../types.ts";
+import { readCustomAgent } from "../custom-agent.ts";
 import { AcpClient } from "./acp.ts";
-import { BACKEND_IDS, backendOf, findCli, probeLogin, type BackendSpec } from "./backends.ts";
+import { BACKENDS, BACKEND_IDS, backendOf, findCli, probeLogin, type BackendSpec } from "./backends.ts";
 import { ensureBridge, locateBridge, locateBundledCodexCli } from "./bridges.ts";
 import { bridgeEnv, dirnameOf, findBinary, nodeEval, stripApiKeys, withPathFirst } from "./env.ts";
 import { AcpAgentSession } from "./session.ts";
@@ -18,6 +19,8 @@ export interface RuntimeOpts {
   initTimeoutMs?: number;
   /** Progress text while a bridge installs ("Installing @agentclientprotocol/claude-agent-acp@0.85.1…"). */
   onProgress?: (message: string) => void;
+  /** Read at each launch so a changed command never reuses the old catalog. */
+  customAgent?: () => CustomAgentConfig | undefined;
 }
 
 const nodeMissing = () => t("agent.nodeMissing");
@@ -52,6 +55,13 @@ async function lockedEnv(spawner: Spawner, env: Record<string, string>, spec: Ba
 
 export function createRuntime(opts: RuntimeOpts): AgentRuntime {
   const { spawner, bridgeDir } = opts;
+
+  async function customCommand(config: CustomAgentConfig, env: Record<string, string>, verify = false): Promise<string> {
+    if (!verify && /^(?:\/|[A-Za-z]:[\\/]|\\\\)/.test(config.command)) return config.command;
+    const found = await findBinary(spawner, env, config.command);
+    if (!found) throw new Error(t("agent.custom.notFound"));
+    return found;
+  }
 
   async function resolveNode(env: Record<string, string>): Promise<string | null> {
     return opts.nodePath ?? (await findBinary(spawner, env, "node"));
@@ -91,6 +101,7 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
 
   const runtime: AgentRuntime = {
     catalog(id: BackendId): Promise<Catalog> {
+      if (id === "custom") return probeCatalog(id);
       let p = catalogs.get(id);
       if (!p) {
         p = probeCatalog(id);
@@ -108,33 +119,55 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
       const node = await resolveNode(env);
       const nodeEnv = node ? withPathFirst(env, dirnameOf(node)) : env;
       const npm = node ? await findBinary(spawner, nodeEnv, "npm") : null;
-      return Promise.all(
+      const statuses = await Promise.all(
         BACKEND_IDS.map(async (id): Promise<BackendStatus> => {
-          const spec = backendOf(id);
+          const spec = BACKENDS[id];
           const base = { id, label: spec.label };
           if (!node) return { ...base, available: false, reason: nodeMissing() };
           const cli = await findCli(spawner, env, spec);
           if (spec.cli && !cli) return { ...base, available: false, reason: t(spec.cli.hint) };
           const installed = await locateBridge(spawner, nodeEnv, node, bridgeDir, spec).catch(() => null);
           if (!installed && !npm) return { ...base, available: false, reason: t("agent.npmMissing", { agent: spec.label }) };
-          let login = cli ? await probeLogin(spawner, env, id, cli) : {};
-          // A system Codex can be killed by the OS while the bridge's own version still works.
-          // Only a successful probe of that installed dependency may override the failed check.
-          if (id === "codex" && login.reason && installed) {
-            const bundled = await locateBundledCodexCli(spawner, nodeEnv, node, installed);
-            if (bundled) {
-              const fallback = await probeLogin(spawner, nodeEnv, id, node, [bundled]);
-              if (fallback.loggedIn === true) login = fallback;
-            }
+          // Chats run the bridge's own Codex, which can be older than the one on PATH, so it is the one asked: a
+          // config.toml only the newer one reads is reported here, not as "failed to load workspace requirements" at
+          // the first message (#811). The Codex on PATH answers before the bridge is installed, or when the OS killed
+          // the bundled one; either Codex can be killed while the other works (#797), so a probe that could not tell
+          // never hides a successful one.
+          const bundled = id === "codex" && installed ? await locateBundledCodexCli(spawner, nodeEnv, node, installed) : null;
+          let login = bundled ? await probeLogin(spawner, nodeEnv, id, node, [bundled]) : {};
+          if (cli && (!bundled || (login.loggedIn !== true && !login.configError && (login.reason || login.loggedIn === undefined)))) {
+            const system = await probeLogin(spawner, env, id, cli);
+            if (!bundled || system.loggedIn === true || !login.reason) login = system;
           }
           if (login.loggedIn === false) return { ...base, available: false, reason: login.reason ?? `${t("agent.notSignedIn", { agent: spec.label })} ${spec.cli ? t(spec.cli.hint) : ""}`.trim() };
           return { ...base, available: true, ...(login.account ? { account: login.account } : {}) };
         }),
       );
+      if (opts.customAgent) {
+        try {
+          const config = readCustomAgent(opts.customAgent());
+          await customCommand(config, { ...env, ...config.env }, true);
+          statuses.push({ id: "custom", label: config.label || t("agent.custom.label"), available: true });
+        } catch (e) {
+          statuses.push({ id: "custom", label: t("agent.custom.label"), available: false, reason: e instanceof Error ? e.message : String(e) });
+        }
+      }
+      return statuses;
     },
 
     async start(start: StartOpts): Promise<AgentSession> {
-      const spec = backendOf(start.backend);
+      if (start.backend === "custom") {
+        if (start.locked) throw new Error(t("agent.custom.noTranslate"));
+        if (start.resumeSessionId) throw new Error(t("agent.custom.noResume"));
+        const config = readCustomAgent(opts.customAgent?.());
+        const base = await spawner.baseEnv();
+        const env = bridgeEnv({ ...base, ...config.env }, { extra: start.env });
+        const withPath = (start.path ?? []).reduceRight((e, dir) => withPathFirst(e, dir), env);
+        const client = await AcpClient.spawn({ spawner, command: await customCommand(config, withPath), args: config.args,
+          cwd: start.cwd, env: withPath, ...(opts.initTimeoutMs !== undefined ? { initTimeoutMs: opts.initTimeoutMs } : {}) });
+        return AcpAgentSession.open(client, backendOf("custom"), start);
+      }
+      const spec = BACKENDS[start.backend];
       const login = await spawner.baseEnv();
       const keyed = start.auth === "subscription" ? stripApiKeys(login, spec.apiKeyVars) : login;
       const env = (start.path ?? []).reduceRight((e, dir) => withPathFirst(e, dir), keyed);
