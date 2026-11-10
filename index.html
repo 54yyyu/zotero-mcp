@@ -33,7 +33,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><svg class="logo-svg" viewBox="0 0 128 128" aria-hidden="true"><g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round"><path class="lb" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke-width="5.5"/><path class="lz" d="M47 39H81L47 77H81" stroke-width="8"/></g></svg>Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.16.0</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.17.0</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./" aria-current="page">Overview</a>
       <a href="agent/">Zotero Agent<span class="new" aria-label="new"></span></a>
@@ -140,6 +140,16 @@
 
       <div class="releases">
         <article class="release lead">
+          <div class="release-tag">0.17.0<small>Nov 2026</small></div>
+          <div>
+            <h3>Articles and passages apart, and the <span class="hl c-yellow">panel in your language</span></h3>
+            <p>The semantic index now keeps one record per article and the passages of each paper in separate collections. An article search no longer has to load every passage, turning chunking on no longer needs a rebuild, and <code>zotero_semantic_search(level="articles"|"passages")</code> picks the level. An index built with chunking on keeps working as it is; <code>zotero-mcp migrate-index</code> splits it when you choose to, renaming the passages and embedding nothing until the next update. Automatic updates never fill passages for the whole library on their own: that waits for an <code>update-db</code> you run, so a paid embedding API is not billed unasked.</p>
+            <p>The Zotero Agent panel speaks Chinese (simplified and traditional), Japanese, German, French, Spanish and Brazilian Portuguese, following Zotero&rsquo;s own language unless you pick one, and in Zotero&rsquo;s own words for items, collections and annotations. You can run your own ACP agent next to Claude Code, Codex and pi, Codex chats use your installed Codex when it is newer than the bridge&rsquo;s, and the top bar lines up with the reader toolbar. Items can be copied between libraries (opt-in), Zotero&rsquo;s retraction flags show up in item metadata, exported bibliographies show <code>&amp;</code> instead of <code>&amp;amp;</code>, and scanned PDFs whose OCR text sits under a visible stamp read correctly.</p>
+            <p class="fine">Translations other than Chinese are marked beta; corrections from native speakers are welcome. With fixes from @mronkko (#561, #786 to #792, #795), @danmackinlay (#507, #509), @FFXFF1 (#729) and @kskszq (#809, #813), and the diagnosis of #811 from @liuup.</p>
+          </div>
+        </article>
+
+        <article class="release">
           <div class="release-tag">0.16.0<small>Nov 2026</small></div>
           <div>
             <h3>Half the context, <span class="hl c-yellow">faster</span> batch edits, and auth for HTTP</h3>
@@ -310,10 +320,10 @@
         <h3>Context used before you type anything</h3>
         <p>An MCP server sends every tool&rsquo;s schema with every request. A skill costs <span data-cost="skill_frontmatter">98</span> tokens until it&rsquo;s used.</p>
         <ul class="bars">
-          <li class="bar" data-cost="all"><span class="bar-label">MCP, all tools<small>50 tools, every request</small></span><span class="bar-track"><span class="bar-fill mcp" style="--w:100%"></span><span class="bar-val">11,266</span></span></li>
-          <li class="bar" data-cost="default"><span class="bar-label">MCP, default tools<small>38 tools, every request</small></span><span class="bar-track"><span class="bar-fill mcp" style="--w:70.9%"></span><span class="bar-val">7,984</span></span></li>
-          <li class="bar" data-cost="skill_body"><span class="bar-label">Skill, instructions loaded<small>only when it&rsquo;s used</small></span><span class="bar-track"><span class="bar-fill skill" style="--w:21.4%"></span><span class="bar-val">2,412</span></span></li>
-          <li class="bar" data-cost="skill_frontmatter"><span class="bar-label">Skill, description only<small>always</small></span><span class="bar-track"><span class="bar-fill skill" style="--w:0.87%"></span><span class="bar-val">98</span></span></li>
+          <li class="bar" data-cost="all"><span class="bar-label">MCP, all tools<small>51 tools, every request</small></span><span class="bar-track"><span class="bar-fill mcp" style="--w:100%"></span><span class="bar-val">11,331</span></span></li>
+          <li class="bar" data-cost="default"><span class="bar-label">MCP, default tools<small>38 tools, every request</small></span><span class="bar-track"><span class="bar-fill mcp" style="--w:70.9%"></span><span class="bar-val">8,037</span></span></li>
+          <li class="bar" data-cost="skill_body"><span class="bar-label">Skill, instructions loaded<small>only when it&rsquo;s used</small></span><span class="bar-track"><span class="bar-fill skill" style="--w:22.1%"></span><span class="bar-val">2,506</span></span></li>
+          <li class="bar" data-cost="skill_frontmatter"><span class="bar-label">Skill, description only<small>always</small></span><span class="bar-track"><span class="bar-fill skill" style="--w:0.86%"></span><span class="bar-val">98</span></span></li>
         </ul>
         <p class="fine">Tokens (cl100k_base), measured with <code>scripts/measure_context_cost.py</code>. This is only the fixed cost. It doesn&rsquo;t measure whether the task succeeds or how many steps it takes.</p>
       </div>
@@ -453,7 +463,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.16.0 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.17.0 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>
