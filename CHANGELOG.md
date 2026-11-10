@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- SQLite item metadata includes Zotero's cached `data.retracted` status and warns in Markdown when an item is flagged as retracted (#438). Reads stay offline; an unflagged item is not a guarantee that a paper has not been retracted.
+
 ## [0.16.0] - 2026-11-06
 
 ### Added

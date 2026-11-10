@@ -846,6 +846,9 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     if data.get("deleted"):
         lines.append("**Status:** 🗑️ In Trash (recoverable from Zotero Trash view)")
 
+    if data.get("retracted") is True:
+        lines.append("**Retraction:** Flagged as retracted by Zotero (cached local status)")
+
     # Date. Resolved the same way as the title: a case's date is
     # `dateDecided`, a statute's `dateEnacted`, a patent's `issueDate` (#452).
     if date := item_display_date(data):
