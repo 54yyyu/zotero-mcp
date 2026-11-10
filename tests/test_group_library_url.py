@@ -50,6 +50,13 @@ class TestApplyLibraryOverride:
         _helpers.apply_library_override(zot, {"library_id": "99", "library_type": "groups"})
         assert zot.library_type == "groups"
 
+    def test_local_personal_library_alias_keeps_the_web_user_id(self):
+        """Hybrid mode: the override says users/0, which only the local API serves."""
+        zot = _FakeClient(library_id="98765", library_type="users")
+        _helpers.apply_library_override(zot, {"library_id": "0", "library_type": "user"})
+        assert zot.library_id == "98765"
+        assert zot.library_type == "users"
+
     def test_library_id_only_keeps_existing_library_type(self):
         zot = _FakeClient(library_type="users")
         _helpers.apply_library_override(zot, {"library_id": "42"})
