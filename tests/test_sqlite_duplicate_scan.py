@@ -19,6 +19,9 @@ class ApiItems:
         self.rows = items
         self.items = Mock(side_effect=self.page)
         self.collection_items = Mock(side_effect=self.collection_page)
+        self.top = Mock(side_effect=self.top_page)
+        self.collection_items_top = Mock(side_effect=self.collection_top_page)
+        self.num_items = Mock(side_effect=lambda: len(self.tops()))
         self.children = Mock(return_value=[])
 
     def page(self, *, start=0, limit=100):
@@ -26,6 +29,16 @@ class ApiItems:
 
     def collection_page(self, key, *, start=0, limit=100):
         rows = [item for item in self.rows if key in item['data'].get('collections', [])]
+        return rows[start:start + limit]
+
+    def tops(self):
+        return [item for item in self.rows if not item['data'].get('parentItem')]
+
+    def top_page(self, *, start=0, limit=100):
+        return self.tops()[start:start + limit]
+
+    def collection_top_page(self, key, *, start=0, limit=100):
+        rows = [item for item in self.tops() if key in item['data'].get('collections', [])]
         return rows[start:start + limit]
 
 
@@ -100,6 +113,7 @@ class TestSqliteDuplicateScan(unittest.TestCase):
             groups, error = write._collect_duplicate_groups(api, 'doi')
         self.assertEqual(groups, {})
         self.assertIn('too large', error)
+        api.top.assert_not_called()  # refused by the count, not by paging 5,100 items
 
     def test_active_group_does_not_leak_personal_items(self):
         reader = self.open_reader()
@@ -143,7 +157,7 @@ class TestSqliteDuplicateScan(unittest.TestCase):
                 groups, error = write._collect_duplicate_groups(api, 'doi')
         self.assertIsNone(error)
         self.assertTrue(groups)
-        api.items.assert_called()
+        api.top.assert_called()
 
     def test_find_tool_reads_sqlite_without_requesting_api_items(self):
         reader = self.open_reader()

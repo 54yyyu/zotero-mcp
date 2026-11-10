@@ -1,6 +1,7 @@
 """Write / mutation tool functions for the Zotero MCP server."""
 
 import contextlib
+import copy
 import difflib
 import functools
 import hashlib
@@ -15,6 +16,7 @@ from typing import Literal, NamedTuple
 from urllib.parse import unquote, urljoin, urlparse
 
 import requests
+from pyzotero.zotero_errors import TooManyRequestsError, TooManyRetriesError
 from unidecode import unidecode
 
 from zotero_mcp import citation_import as _citation_import
@@ -328,10 +330,31 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
 
     The report keeps the ``Item key: `KEY``` line that callers (and
     add_from_file's key extraction) rely on.
+
+    It also reports the citation key when the item has one, since that — not
+    the item key — is what goes into a document. It costs nothing here: the
+    dedup search already returned the full item, so ``data.citationKey`` is
+    in hand. An item without one just omits the line, so nothing depends on
+    Better BibTeX being present.
+
+    Deliberately only ``data.citationKey``, never a ``Citation Key:`` line in
+    ``extra`` — the two disagree, and ``extra`` is the wrong one. On a
+    497-item sample both were present on 77 items and differed on 11 of
+    those; every difference checked against BBT's own export resolved to the
+    native field. Those ``extra`` lines are this package's own import
+    residue: ``citation_import`` preserves the *source document's* key there
+    (``Citation Key: CoaseFirmMarket1988`` beside a native
+    ``Coase1988Firm``), so reading them would report a key BBT does not
+    export. Nothing is lost by ignoring them — no sampled item carried a key
+    in ``extra`` alone. Note this differs from ``search_by_citation_key``,
+    which consults both *on purpose*, so an item stays findable by the key it
+    was imported under.
     """
     item = existing[0]
     item_key = item.get("key")
-    title = item.get("data", {}).get("title") or "(untitled)"
+    data = item.get("data") or {}
+    title = data.get("title") or "(untitled)"
+    citation_key = data.get("citationKey")
 
     note = ""
     if len(existing) > 1:
@@ -345,6 +368,8 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
         f"Already in library: **{title}** (`{item_key}`, matched by {matched_by})\n\n"
         f"Item key: `{item_key}`\n"
     )
+    if citation_key:
+        header += f"Citation key: `{citation_key}`\n"
 
     if if_exists == "skip":
         return header + "No changes made (if_exists='skip')." + note
@@ -3592,7 +3617,9 @@ def delete_item(
 # Duplicate detection — shared by find_duplicates and merge_duplicates
 # ---------------------------------------------------------------------------
 
-# Whole-library scan ceiling. Past this a caller wants collection_key instead.
+# API scan ceiling, in top-level items (what the grouping below compares). It
+# bounds the requests one call can make (at most 51 pages of 100). Past this a
+# caller wants collection_key instead.
 _DUP_SCAN_MAX_ITEMS = 5000
 
 # find_duplicates renders one compact line per item of already-grouped
@@ -3621,19 +3648,43 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
     Both zotero_find_duplicates and zotero_merge_duplicates(auto=True) go
     through here, so "merge everything that qualifies" and "show me what
     qualifies" can never disagree about what a group is.
+
+    On the API path the scan is bounded by ``_DUP_SCAN_MAX_ITEMS`` top-level
+    items, and a whole-library scan asks for the count first (one request)
+    rather than paging in 5,100 items to say "too large" (#507).
     """
     items = _library.get_library_backend(zot).duplicate_scan_items(collection_key)
     if items is None:
         # Only SQLite can enumerate without an HTTP request/count ceiling.
         # The API path (including an unavailable-SQLite fallback) stays bounded.
+        page_size = 100
+
+        # Ask for the size before paging: counting is one request, and paging
+        # in 5,100 items just to say "too large" is about 51. Only the
+        # whole-library scan can be refused by a count (num_items() counts
+        # /items/top, what top() pages); a collection's count includes
+        # children, so it could only over-refuse.
+        if not collection_key:
+            try:
+                total = zot.num_items()
+            except Exception:
+                total = 0  # the paging guard below still bounds the scan
+            if total > _DUP_SCAN_MAX_ITEMS:
+                return {}, (
+                    f"Library has {total} top-level items — too large for "
+                    "duplicate scan. Please scope by collection_key to reduce "
+                    "the search."
+                )
+
+        # Top-level items only: the grouping below drops attachments, notes
+        # and annotations anyway, but they would use up the page budget.
         items = []
         start = 0
-        page_size = 100
         while True:
             if collection_key:
-                batch = zot.collection_items(collection_key, start=start, limit=page_size)
+                batch = zot.collection_items_top(collection_key, start=start, limit=page_size)
             else:
-                batch = zot.items(start=start, limit=page_size)
+                batch = zot.top(start=start, limit=page_size)
             if not batch:
                 break
             items.extend(batch)
@@ -3645,8 +3696,9 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
 
         if len(items) > _DUP_SCAN_MAX_ITEMS:
             return {}, (
-                f"Library has {len(items)} items — too large for duplicate scan. "
-                "Please scope by collection_key to reduce the search."
+                f"Scan exceeded {_DUP_SCAN_MAX_ITEMS} top-level items — too large "
+                "for duplicate scan. Please scope by collection_key to reduce the "
+                "search."
             )
 
     wanted = {"doi", "title"} if method == "both" else {method}
@@ -3679,9 +3731,10 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
         "unattended. "
         "collection_key: optional 8-character key to restrict scanning "
         "to one collection; otherwise scans the whole active library. "
-        "LIBRARY SIZE CAP: API scans refuse libraries with > 5,000 items; "
-        "pass collection_key to narrow the scope. Local SQLite scans have "
-        "no item-count ceiling and work with Zotero closed. "
+        "LIBRARY SIZE CAP: API scans refuse libraries with > 5,000 top-level "
+        "items (attachments and notes do not count); pass collection_key to "
+        "narrow the scope. Local SQLite scans have no item-count ceiling and "
+        "work with Zotero closed. "
         "limit: max groups per call (default 50, max 500). "
         "offset: 0-based index of the first group returned (default 0). "
         "Group order is stable, so page a library with more groups than "
@@ -4820,7 +4873,7 @@ def add_from_file(
         extracted_doi = None
         if ext == ".pdf":
             try:
-                import fitz
+                from zotero_mcp._pymupdf import fitz
                 doc = fitz.open(file_path)
 
                 # Check metadata
@@ -5697,6 +5750,10 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
     'file'/'skip' and a DOI match exists; otherwise None (proceed to
     create). Entries without a DOI always create — title matching is out
     of scope (#4).
+
+    The result carries the item's ``data.citationKey`` when it has one, as
+    _handle_existing_item reports it for the single-item adders (see there
+    for why ``extra`` is not consulted).
     """
     if if_exists == "duplicate":
         return None
@@ -5716,6 +5773,7 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
         return None
 
     item = existing[0]
+    citation_key = (item.get("data") or {}).get("citationKey")
     if if_exists == "skip":
         return {
             "ok": True, "key": item.get("key"), "doi": doi,
@@ -5723,6 +5781,7 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
             "title": item.get("data", {}).get("title") or "(untitled)",
             "collections_failed": [],
             "existed": "skipped — already in library",
+            "citation_key": citation_key,
         }
 
     summary = _converge_existing_item(write_zot, item, coll_keys, tags, ctx)
@@ -5739,6 +5798,7 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
         "error": None, "title": summary["title"],
         "collections_failed": summary["colls_failed"],
         "existed": f"reused existing — {detail}",
+        "citation_key": citation_key,
     }
 
 
@@ -5754,6 +5814,8 @@ def _format_batch_result(header: str, results: list[dict]) -> str:
             lines.append(f"{verb}: **{r['title']}**")
             lines.append("")
             lines.append(f"Item key: `{r['key']}`")
+            if r.get("citation_key"):
+                lines.append(f"Citation key: `{r['citation_key']}`")
             if r["doi"]:
                 lines.append(f"DOI: {r['doi']}")
             if r.get("existed"):
@@ -5779,6 +5841,8 @@ def _format_batch_result(header: str, results: list[dict]) -> str:
                     line += f" (DOI: {r['doi']})"
                 if r.get("existed"):
                     line += f" [{r['existed']}]"
+                if r.get("citation_key"):
+                    line += f" [citation key: {r['citation_key']}]"
                 if r["pdf_status"]:
                     line += f" [{r['pdf_status']}]"
                 if r.get("collections_failed"):
@@ -6294,3 +6358,447 @@ def add_item(
     if _is_citation_path(source, _CSL_JSON_EXTS):
         return add_by_csl_json(file_path=source, attach_mode=attach_mode, **common)
     return add_by_csl_json(csl_json=source, attach_mode=attach_mode, **common)
+
+
+
+# ---------------------------------------------------------------------------
+# zotero_copy_items_between_libraries — cross-library copying
+# ---------------------------------------------------------------------------
+
+
+class _CopyLibrary(NamedTuple):
+    """One side of a copy."""
+
+    library_id: str
+    """The id the active-library override takes: "0" or the userID for the
+    personal library (local vs web mode), the groupID, or the feed's libraryID."""
+    library_type: str
+    """"user", "group" or "feed"."""
+    scope: int
+    """0 for the personal library, the groupID, or the feed's libraryID."""
+
+
+def _copy_library(library_id, library_type) -> _CopyLibrary:
+    """Resolve and validate one side of a copy; ``None`` means the active library.
+
+    Raises ValueError with a user-facing message.
+    """
+    from zotero_mcp.tools.retrieval import validate_library_switch
+
+    if library_id is None:
+        active = _client.get_active_library()
+        if active.get("library_type") == "feed":
+            library_id, library_type = active["library_id"], "feed"
+        else:
+            library_id = _client.get_active_group_id()
+
+    if library_type == "feed":
+        try:
+            scope = int(str(library_id).strip())
+        except ValueError:
+            raise ValueError(
+                f"Invalid feed library_id: {library_id!r}. Use the libraryID "
+                "that zotero_list_feeds reports."
+            ) from None
+        override_id = str(scope)
+    else:
+        scope = _helpers._parse_library_id_param(library_id)
+        if scope is None:
+            raise ValueError("library_id is empty. Use '0'/'user' or a groupID.")
+        # The personal library is always your own: local mode addresses it as
+        # "0", the web API by the userID the credentials belong to. Web mode
+        # also accepts that userID, since zotero_list_libraries shows it (#603).
+        user_id = None
+        if not _utils.is_local_mode() and os.getenv("ZOTERO_LIBRARY_TYPE", "user") == "user":
+            user_id = os.getenv("ZOTERO_LIBRARY_ID")
+        is_own = scope == 0 or (user_id is not None and str(scope) == user_id)
+        if library_type is None:
+            library_type = "user" if is_own else "group"
+        if library_type == "user":
+            if not is_own:
+                raise ValueError(
+                    f"'{library_id}' is not your personal library. Use '0' or "
+                    "'user' for it, or library_type='group' for a group."
+                )
+            scope = 0
+            override_id = user_id or "0"
+        else:
+            override_id = str(scope)
+
+    error = validate_library_switch(override_id, library_type)
+    if error:
+        raise ValueError(error)
+    return _CopyLibrary(override_id, library_type, scope)
+
+
+def _read_copy_source(src: _CopyLibrary, keys: list[str]) -> tuple[dict, dict]:
+    """(items by key, children by parent key) from the source library.
+
+    A feed has no group_id, so the library backend cannot scope to one; feeds
+    are read straight from zotero.sqlite by libraryID instead.
+    """
+    if src.library_type == "feed":
+        reader = _library._sqlite_reader()
+        if reader is None:
+            raise ValueError(
+                "Reading an RSS feed needs the local Zotero database "
+                "(ZOTERO_LOCAL=true)."
+            )
+        return (
+            reader.get_full_items(keys, library_id=src.scope),
+            reader.get_children_of(keys, library_id=src.scope),
+        )
+    with _client.temporary_active_library(src.library_id, src.library_type):
+        backend = _library.get_library_backend()
+        return backend.get_items(keys), backend.get_children(keys)
+
+
+def _source_file_clients(src: _CopyLibrary) -> tuple:
+    """(local_client, web_client) scoped to the source library, for
+    ``download_attachment_file``. Built here because the downloads run while
+    the target library is active."""
+    if src.library_type == "feed":
+        return None, None  # feed files exist only on this computer
+    with _client.temporary_active_library(src.library_id, src.library_type):
+        if not _utils.is_local_mode():
+            return None, _client.get_zotero_client()
+        web_client = _client.get_web_zotero_client()
+        if web_client is not None:
+            _helpers.apply_library_override(web_client, _client.get_active_library())
+        return _client.get_zotero_client(), web_client
+
+
+def _first_isbn(raw) -> str | None:
+    """First valid ISBN in a Zotero ISBN field, which may hold several."""
+    for token in re.split(r"[,;\s]+", raw or ""):
+        if isbn := _helpers._normalize_isbn(token):
+            return isbn
+    return None
+
+
+# Zotero is throttling us; every further request would be refused too, so a
+# copy stops at the first one rather than failing each remaining item.
+_RATE_LIMIT_ERRORS = (TooManyRequestsError, TooManyRetriesError)
+
+
+def _rate_limit_message(exc) -> str:
+    return f"Zotero is rate-limiting requests ({exc})"
+
+
+def _copy_result(key, title=None, *, error=None, status="copied", target_key=None,
+                 notes=0, attachments=0, copied=(), failed=(), stopped=False) -> dict:
+    """``stopped``: Zotero rate-limited this item, so the batch ends here."""
+    return {
+        "source_key": key, "title": title, "error": error, "status": status,
+        "target_key": target_key, "notes_copied": notes,
+        "attachments_copied": attachments, "copied": list(copied), "failed": list(failed),
+        "stopped": stopped,
+    }
+
+
+@mcp.tool(
+    name="zotero_copy_items_between_libraries",
+    description=(
+        "Copy items with their child notes, tags and attachments to another "
+        "library, leaving the source untouched. Library ids: '0'/'user' is the "
+        "personal library, otherwise a groupID; omitted means the active "
+        "library. A source may be an RSS feed (source_library_type='feed', id "
+        "= its libraryID). if_exists: 'skip' (default), 'file' (add missing "
+        "tags to the match) or 'duplicate'. Matches are by DOI, ISBN or URL, "
+        "so an item with none is always copied. Annotations, collections, "
+        "related links and trashed items are not copied. A rate limit stops "
+        "the batch and lists the keys not attempted."
+    ),
+)
+@with_zotero_api_lock
+def copy_items_between_libraries(
+    item_keys: list[str] | str,
+    target_library_id: str | int | None = None,
+    target_library_type: Literal["user", "group"] | None = None,
+    source_library_id: str | int | None = None,
+    source_library_type: Literal["user", "group", "feed"] | None = None,
+    copy_notes: bool = True,
+    copy_attachments: bool = True,
+    copy_tags: bool = True,
+    if_exists: Literal["duplicate", "file", "skip"] = "skip",
+    *,
+    ctx: Context,
+) -> str:
+    """Copy items from one Zotero library to another."""
+    keys = _helpers._normalize_str_list_input(item_keys, "item_keys")
+    if not keys:
+        return "Error: No item_keys provided."
+
+    if if_exists not in _IF_EXISTS_VALUES:
+        return f"Error: if_exists must be one of {_IF_EXISTS_VALUES}."
+
+    try:
+        src = _copy_library(source_library_id, source_library_type)
+    except ValueError as e:
+        return f"Error resolving source library: {e}"
+    try:
+        dst = _copy_library(target_library_id, target_library_type)
+    except ValueError as e:
+        return f"Error resolving target library: {e}"
+
+    if dst.library_type == "feed":
+        return "Error: Cannot copy items to an RSS feed library (feeds are read-only)."
+    if (src.library_type, src.scope) == (dst.library_type, dst.scope):
+        return (
+            f"Error: Source and target libraries are the same "
+            f"({src.library_id}, type={src.library_type}). "
+            "Specify target_library_id (or source_library_id) to copy between different libraries."
+        )
+
+    ctx.info(
+        f"Copying {len(keys)} item(s) from library {src.library_id} ({src.library_type}) "
+        f"to {dst.library_id} ({dst.library_type})"
+    )
+
+    try:
+        source_items, source_children = _read_copy_source(src, keys)
+    except Exception as exc:
+        return f"Error reading from source library {src.library_id}: {_helpers.format_zotero_error(exc)}"
+
+    file_clients = _source_file_clients(src) if copy_attachments else (None, None)
+
+    with _client.temporary_active_library(dst.library_id, dst.library_type):
+        try:
+            _read_zot, target_zot = _helpers._get_write_client(ctx)
+        except ValueError as e:
+            return str(e)
+
+        # Earlier items are already in the target by the time a later one
+        # fails, so a failure becomes that item's result rather than an
+        # exception that would lose the report of what was written.
+        results = []
+        not_attempted: list[str] = []
+        for i, key in enumerate(keys):
+            source_item = source_items.get(key)
+            try:
+                result = _copy_one(
+                    key, source_item, source_children.get(key, []),
+                    target_zot, src, file_clients,
+                    copy_notes=copy_notes, copy_attachments=copy_attachments,
+                    copy_tags=copy_tags, if_exists=if_exists, ctx=ctx,
+                )
+            except _RATE_LIMIT_ERRORS as exc:
+                result = _copy_result(key, _source_title(source_item),
+                                      error=_rate_limit_message(exc), stopped=True)
+            except Exception as exc:
+                result = _copy_result(key, _source_title(source_item),
+                                      error=_helpers.format_zotero_error(exc))
+            results.append(result)
+            if result["stopped"]:
+                not_attempted = keys[i + 1:]
+                break
+
+    return _format_copy_results(src, dst, results, not_attempted,
+                                copy_attachments=copy_attachments)
+
+
+def _source_title(source_item) -> str | None:
+    return _utils.item_display_title((source_item or {}).get("data", {})) or None
+
+
+def _copy_one(key, source_item, children, target_zot, src, file_clients, *,
+              copy_notes, copy_attachments, copy_tags, if_exists, ctx) -> dict:
+    """Copy one item and its children into the (already active) target library."""
+    data = (source_item or {}).get("data", {})
+    item_type = data.get("itemType")
+    if not item_type:
+        return _copy_result(key, error=f"Item '{key}' not found in source library {src.library_id}.")
+
+    title = _utils.item_display_title(data) or f"Item {key}"
+    if data.get("deleted"):
+        return _copy_result(key, title, error=f"Item '{key}' is in the trash; restore it first to copy it.")
+    if item_type in ("attachment", "note", "annotation"):
+        return _copy_result(key, title, error=(
+            f"Item '{key}' has itemType '{item_type}'. Top-level copying of "
+            "attachments, notes, or annotations is not supported; copy the parent item instead."
+        ))
+
+    if if_exists != "duplicate":
+        existing = None
+        for field, value in (
+            ("doi", _helpers._normalize_doi(data.get("DOI"))),
+            ("isbn", _first_isbn(data.get("ISBN"))),
+            ("url", data.get("url")),
+        ):
+            if value and (candidates := _helpers.find_existing_items(
+                target_zot, **{field: value}, title=data.get("title"), ctx=ctx
+            )):
+                existing = candidates[0]
+                break
+        if existing:
+            existing_key = existing.get("key") or existing.get("data", {}).get("key")
+            if if_exists == "skip":
+                return _copy_result(key, title, status="skipped", target_key=existing_key)
+            tags_to_add = [t["tag"] for t in data.get("tags", []) if copy_tags and "tag" in t]
+            if tags_to_add:
+                def _add_tags(it):
+                    have = {x.get("tag") for x in it["data"].get("tags", [])}
+                    it["data"].setdefault("tags", []).extend(
+                        {"tag": t} for t in tags_to_add if t not in have
+                    )
+                # The match is found either way; a failed tag update is
+                # reported on it rather than turning it into an error.
+                try:
+                    _helpers._update_item_with_version_retry(target_zot, existing_key, _add_tags, ctx=ctx)
+                except _RATE_LIMIT_ERRORS as exc:
+                    return _copy_result(key, title, status="reused", target_key=existing_key,
+                                        failed=[f"Tags: {_rate_limit_message(exc)}"], stopped=True)
+                except Exception as exc:
+                    return _copy_result(key, title, status="reused", target_key=existing_key,
+                                        failed=[f"Tags: {_helpers.format_zotero_error(exc)}"])
+            return _copy_result(key, title, status="reused", target_key=existing_key)
+
+    try:
+        payload = _helpers._sanitize_item_for_creation(data, target_zot, copy_tags=copy_tags)
+        create_res = target_zot.create_items([payload])
+    except _RATE_LIMIT_ERRORS:
+        raise
+    except Exception as exc:
+        return _copy_result(key, title, error=f"Error creating item: {_helpers.format_zotero_error(exc)}")
+    if not (isinstance(create_res, dict) and create_res.get("success")):
+        detail = create_res.get("failed", {}).get("0") if isinstance(create_res, dict) else create_res
+        return _copy_result(key, title, error=f"Failed to create item in target library: {detail}")
+    target_key = next(iter(create_res["success"].values()))
+
+    # From here on the parent exists in the target, so nothing below may
+    # raise: the result must keep target_key, or a retry would duplicate it.
+    wanted = {"note": copy_notes, "attachment": copy_attachments}
+    to_copy = [
+        c for c in children
+        if wanted.get(c.get("data", {}).get("itemType")) and not c["data"].get("deleted")
+    ]
+    notes = attachments = 0
+    copied: list[str] = []
+    failed: list[str] = []
+    stopped = False
+    for i, child in enumerate(to_copy):
+        child_data = child["data"]
+        tags = copy.deepcopy(child_data.get("tags", [])) if copy_tags else []
+        if child_data["itemType"] == "note":
+            name = f"Note {child.get('key')}"
+        else:
+            name = child_data.get("title") or child_data.get("filename") or f"Attachment {child.get('key')}"
+        try:
+            if child_data["itemType"] == "note":
+                ok, reason = _create_child(target_zot, {
+                    "itemType": "note", "parentItem": target_key,
+                    "note": child_data.get("note", ""), "tags": tags,
+                })
+                if ok:
+                    notes += 1
+            else:
+                name, reason = _copy_attachment(child, target_zot, target_key, tags, file_clients, ctx)
+                if reason is None:
+                    attachments += 1
+                    copied.append(name)
+        except _RATE_LIMIT_ERRORS as exc:
+            reason = _rate_limit_message(exc)
+            stopped = True
+        except Exception as exc:
+            reason = _helpers.format_zotero_error(exc)
+        if reason is not None:
+            failed.append(f"{name}: {reason}")
+        if stopped:
+            if rest := len(to_copy) - i - 1:
+                failed.append(f"{rest} more child item(s): not attempted")
+            break
+
+    return _copy_result(key, title, target_key=target_key, notes=notes,
+                        attachments=attachments, copied=copied, failed=failed,
+                        stopped=stopped)
+
+
+def _create_child(target_zot, payload) -> tuple[bool, str | None]:
+    """Create one child item. Exceptions propagate to the caller's loop."""
+    res = target_zot.create_items([payload])
+    if isinstance(res, dict) and res.get("success"):
+        return True, None
+    return False, str(res.get("failed", {}).get("0") if isinstance(res, dict) else res)
+
+
+def _copy_attachment(child, target_zot, target_key, tags, file_clients, ctx) -> tuple[str, str | None]:
+    """Copy one child attachment. Returns (display name, failure reason or None)."""
+    child_key = child.get("key")
+    data = child.get("data", {})
+    link_mode = data.get("linkMode")
+    title = data.get("title") or data.get("filename") or "Attachment"
+
+    if link_mode == "linked_url":
+        template = _helpers.item_template_for(target_zot, "attachment", "linked_url")
+        template.update(url=data.get("url", ""), title=title, parentItem=target_key, tags=tags)
+        ok, reason = _create_child(target_zot, template)
+        return f"Linked URL: {title}", reason
+    if link_mode not in ("imported_file", "imported_url"):
+        # A linked file lives at a path on one computer; there is nothing to upload.
+        return f"{title}", f"{link_mode} attachments are not copied"
+
+    filename = data.get("filename") or f"{child_key}.pdf"
+    local_client, web_client = file_clients
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            download = _client.download_attachment_file(
+                child_key, tmp, filename,
+                local_client=local_client, web_client=web_client,
+                in_place=True,  # only read, to upload it
+            )
+            if download.path is None:
+                tried = "; ".join(download.errors) or "no source had the file"
+                return f"File: {filename}", f"could not fetch the file ({tried})"
+            ok, suffix, _new_key = _helpers._attach_and_verify(
+                target_zot, filename, str(download.path), target_key, ctx,
+                content_type=data.get("contentType"),
+            )
+    except _RATE_LIMIT_ERRORS:
+        raise
+    except Exception as exc:
+        return f"File: {filename}", _helpers.format_zotero_error(exc)
+    return f"File: {filename}{suffix if ok else ''}", None if ok else suffix
+
+
+def _format_copy_results(src, dst, results, not_attempted, *, copy_attachments) -> str:
+    lines = [
+        "# zotero_copy_items_between_libraries",
+        "",
+        f"- **Source library:** ID={src.library_id} (type={src.library_type})",
+        f"- **Target library:** ID={dst.library_id} (type={dst.library_type})",
+        "",
+    ]
+    if any(r["stopped"] for r in results):
+        lines.append("**Stopped early: Zotero is rate-limiting requests.** Each item "
+                     "below shows what was written before the stop.")
+        if not_attempted:
+            keys = ", ".join(f"`{k}`" for k in not_attempted)
+            lines.append(f"- **Not attempted:** {keys}. Wait a minute, then rerun with these keys.")
+        lines.append("")
+    labels = {"copied": "Copied", "skipped": "Skipped", "reused": "Reused"}
+    for r in results:
+        if r["error"]:
+            lines.append(f"### ❌ Item `{r['source_key']}`")
+            if r["title"]:
+                lines.append(f"- **Title:** {r['title']}")
+            lines += [f"- **Error:** {r['error']}", ""]
+            continue
+        lines += [
+            f"### ✅ {r['title']}",
+            f"- **Status:** {labels[r['status']]}",
+            f"- **Source Key:** `{r['source_key']}`",
+            f"- **Target Key:** `{r['target_key']}`",
+        ]
+        if r["status"] == "copied":
+            lines.append(f"- **Notes copied:** {r['notes_copied']}")
+            att = f"- **Attachments copied:** {r['attachments_copied']}"
+            if r["copied"]:
+                att += f" ({', '.join(r['copied'])})"
+            lines.append(att)
+        lines += [f"- **Not copied:** {f}" for f in r["failed"]]
+        lines.append("")
+
+    if copy_attachments:
+        lines.append("_PDF/image annotations are not copied; add them in the target library._")
+    lines.append("_Note: To include copied items in semantic search, run `zotero_update_search_database`._")
+    return "\n".join(lines)

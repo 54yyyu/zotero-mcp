@@ -113,6 +113,7 @@ def _patch_fitz(monkeypatch, doc):
     """Patch fitz in sys.modules so 'import fitz' inside server functions works."""
     fake_fitz = _make_fake_fitz_module(doc)
     monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+    monkeypatch.setattr("zotero_mcp._pymupdf.fitz", fake_fitz)  # #642: code imports PyMuPDF through this helper
 
 
 # ---------------------------------------------------------------------------

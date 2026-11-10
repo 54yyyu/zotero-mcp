@@ -15,7 +15,7 @@ Set `ZOTERO_MCP_TOOLSETS` to control which groups are exposed:
 
 | Value | Effect |
 |---|---|
-| *(unset)* | Default profile — core tools plus `semantic`, `libraries`, `search-admin`, `pdf-geometry` |
+| *(unset)* | Default profile — core tools plus `semantic`, `libraries`, `search-admin`, `pdf-geometry` (not `libraries-copy`) |
 | `all` | Every group except `legacy` |
 | `none` | Core tools only, the smallest surface (no semantic search; `none,semantic` adds it back) |
 | `scite,feeds` | Core plus the named groups (the default groups are not included) |
@@ -34,6 +34,7 @@ group name is an error at startup rather than a silent no-op.
 | `feeds` | off | Zotero RSS feed subscriptions |
 | `relations` | off | Explicit item-to-item "related items" links |
 | `libraries` | **on** | List and switch between personal/group libraries |
+| `libraries-copy` | off | Copy items between libraries (`zotero_copy_items_between_libraries`) — separate from `libraries` since most multi-library users never call it |
 | `search-admin` | **on** | Build and inspect the semantic search index (needs the `[semantic]` extra) |
 | `pdf-geometry` | **on** | Page layout and PDF outline — pairs with area annotations |
 | `chatgpt-connector` | auto | The `search`/`fetch` pair required by ChatGPT deep research |

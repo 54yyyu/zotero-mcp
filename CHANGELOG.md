@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`zotero_copy_items_between_libraries`** copies items, with child notes, tags and attachments, from one Zotero library to another (personal to group, between groups, or from an RSS feed into a user/group library), without modifying the source (#560). PDF/image annotations are not copied. It's in its own opt-in `libraries-copy` toolset (`ZOTERO_MCP_TOOLSETS=libraries-copy`), separate from the default-on `libraries` group, since most multi-library users never call it. `if_exists` defaults to `'skip'`, so a retried or repeated call doesn't double the items; pass `'duplicate'` explicitly to always create a new copy. Matching is by DOI, ISBN or URL, so an item with none of them is always copied. Items and child items in the trash are not copied. A failure partway through a batch is reported on that item and the rest still run, so the report always shows what was already written; if Zotero rate-limits the copy, it stops and lists the keys it did not attempt. `library_type='user'` accepts only your own personal library (`0`, `user`, or your userID in web mode), rather than treating any id as yours.
+
+### Changed
+
+- **The add tools report the citation key when they reuse an item already in the library** (#509). The dedup search already returns the full item, so `data.citationKey` costs no extra request, and a caller no longer needs a second `get metadata` lookup to cite it. An item without a key omits the line, so nothing depends on Better BibTeX. Only the native field is read, never a `Citation Key:` line in `extra`: on a 497-item sample the two differed on 11 of 77 items, and Better BibTeX exports the native one. Newly created items get no key, since Better BibTeX assigns it after the item syncs down. Thanks @danmackinlay.
+- **Over the Web API, `zotero_find_duplicates` and `zotero_merge_duplicates(auto=True)` refuse an over-size library in one request, and the 5,000-item ceiling counts top-level items only** (#507, #506). The refusal used to come after paging in 5,100 items, about 51 requests (163 s against a 16,859-item library). The count now answers it first, and the scan pages `/items/top` instead of `/items`, so attachments and notes, which the grouping always discarded, no longer use up the budget; the groups found are the same. Local mode reads `zotero.sqlite` and has no ceiling. Thanks @danmackinlay.
+
+### Fixed
+
+- **Exported bibliographies and other cleaned text show `&`, not `&amp;`** (#621). `clean_html` removed tags but left HTML entities encoded; it now decodes them after stripping the tags.
+- **`zotero-cli --json layout` and `read` print clean JSON** (#642). Seven code paths still imported PyMuPDF as `fitz`, whose deprecation notice goes to stdout ahead of the JSON; they now import it as `pymupdf`.
+- **Hybrid mode writes to the personal library reach the right account.** After `zotero_switch_library` to the personal library, whose local id is `0`, web-API writes went to `/users/0` instead of your userID.
+- **Scanned PDFs whose invisible OCR text sits under a visible stamp no longer come back as the stamp alone** (#724, #729). A page with a full-page scan image and fewer than 60 words of Markdown is read with `page.get_text()`, which keeps the OCR layer and the stamp together, and marked as plain text; pages already represented, and documents with no short page, never open PyMuPDF. Thanks @FFXFF1 and @kremserw.
+
 ## [0.16.0] - 2026-11-06
 
 ### Added

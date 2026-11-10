@@ -587,8 +587,7 @@ def _garbled_content_flags(pdf_path: str, doc) -> dict[int, str]:
     the read simply carries no flags.
     """
     try:
-        import fitz
-
+        from zotero_mcp._pymupdf import fitz
         from zotero_mcp.pdf_layout import _parse_caption_block, scan_math
 
         pdf = fitz.open(pdf_path)
@@ -654,7 +653,7 @@ def render_pdf_pages(
                 code="invalid_page_range",
             )
     try:
-        import fitz
+        from zotero_mcp._pymupdf import fitz
     except ImportError as exc:
         raise PdfReadError(
             f"Rendering pages requires PyMuPDF. {_utils.install_hint('pdf')}",

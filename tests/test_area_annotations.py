@@ -50,6 +50,7 @@ def _patch_fitz(monkeypatch, pages):
     fake_fitz = types.ModuleType("fitz")
     fake_fitz.open = lambda *_args, **_kwargs: FakeDocument(pages)
     monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+    monkeypatch.setattr("zotero_mcp._pymupdf.fitz", fake_fitz)  # #642: code imports PyMuPDF through this helper
 
 
 def _pdf_attachment(key="ATTACH01", content_type="application/pdf"):
