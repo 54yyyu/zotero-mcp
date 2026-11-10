@@ -1036,6 +1036,7 @@ def _row_to_full_api_item(
     collections: list[str],
     relations: dict[str, object],
     library: tuple[int, str] | None,
+    retracted: bool | None = None,
 ) -> dict:
     """Build a complete pyzotero-shaped item record from one hydrated row.
 
@@ -1088,6 +1089,9 @@ def _row_to_full_api_item(
 
     if row["deleted"]:
         data["deleted"] = 1
+
+    if retracted is not None:
+        data["retracted"] = retracted
 
     item = {"key": row["key"], "version": row["version"], "data": data}
     if library is not None:
@@ -2927,6 +2931,22 @@ class LocalZoteroReader:
             for item_id, preds in gathered.items()
         }
 
+    def _fetch_retractions(self, conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, bool] | None:
+        """Zotero's cached retraction flags, or None when the table is absent.
+
+        Match Zotero.Retractions.isRetracted: flag 1 hides a retraction;
+        flag 2 only disables citation warnings and is still retracted.
+        No row means not locally flagged, not a fresh retraction check.
+        """
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='retractedItems'").fetchone():
+            return None
+        placeholders = ",".join("?" * len(item_ids))
+        rows = conn.execute(
+            f"SELECT itemID, flag FROM retractedItems WHERE itemID IN ({placeholders})",
+            item_ids,
+        ).fetchall()
+        return {row["itemID"]: row["flag"] != 1 for row in rows}
+
     _FULL_ITEM_COLUMNS = """
             SELECT i.itemID, i.key, i.libraryID, i.version, i.dateAdded, i.dateModified,
                    it.typeName AS itemType,
@@ -2950,8 +2970,8 @@ class LocalZoteroReader:
     def _build_full_items(self, conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict]:
         """Hydrate `_FULL_ITEM_COLUMNS` rows into complete API-shaped items.
 
-        Five queries total regardless of row count: fields, creators, tags,
-        collection membership, relations.
+        A fixed number of queries regardless of row count: fields, creators,
+        tags, collection membership, relations and cached retraction flags.
         """
         if not rows:
             return []
@@ -2961,6 +2981,7 @@ class LocalZoteroReader:
         tags = self._fetch_tags(conn, item_ids)
         collections = self._fetch_item_collections(conn, item_ids)
         relations = self._fetch_relations(conn, item_ids)
+        retractions = self._fetch_retractions(conn, item_ids)
         labels = self.get_library_labels()
         return [
             _row_to_full_api_item(
@@ -2971,6 +2992,7 @@ class LocalZoteroReader:
                 collections.get(row["itemID"], []),
                 relations.get(row["itemID"], {}),
                 labels.get(row["libraryID"]),
+                None if retractions is None else retractions.get(row["itemID"], False),
             )
             for row in rows
         ]
