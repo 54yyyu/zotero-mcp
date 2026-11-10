@@ -17,7 +17,7 @@ def scanned_pdf(tmp_path):
             page = pdf.new_page()
             image = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 10, 10), False)
             image.clear_with(245)
-            page.insert_image(page.rect, stream=image.tobytes("png"))
+            page.insert_image(page.rect, stream=image.tobytes("png"), keep_proportion=False)
             page.insert_textbox(
                 pymupdf.Rect(60, 100, 520, 500),
                 f"OCR_PAGE_{index}: " + " ".join(f"word{n}" for n in range(50)),
@@ -26,7 +26,7 @@ def scanned_pdf(tmp_path):
             )
             page.insert_text((60, 800), f"VISIBLE STAMP {index}", fontsize=10)
         page = pdf.new_page()
-        page.insert_image(page.rect, stream=image.tobytes("png"))
+        page.insert_image(page.rect, stream=image.tobytes("png"), keep_proportion=False)
         pdf.save(path)
     return path
 
@@ -113,7 +113,7 @@ def test_fragmented_ocr_spans_are_not_mistaken_for_visible_stamp(tmp_path):
         page = pdf.new_page()
         image = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 10, 10), False)
         image.clear_with(245)
-        page.insert_image(page.rect, stream=image.tobytes("png"))
+        page.insert_image(page.rect, stream=image.tobytes("png"), keep_proportion=False)
         for index, char in enumerate(body):
             page.insert_text((60 + 12 * index, 100), char, fontsize=12, render_mode=3)
         page.insert_text((60, 800), "Downloaded at 10/20/2026", fontsize=10)
@@ -125,7 +125,7 @@ def _review_scan_page(pdf, pymupdf):
     page = pdf.new_page()
     image = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 10, 10), False)
     image.clear_with(250)
-    page.insert_image(page.rect, stream=image.tobytes("png"))
+    page.insert_image(page.rect, stream=image.tobytes("png"), keep_proportion=False)
     return page
 
 

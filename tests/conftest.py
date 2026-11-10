@@ -477,3 +477,19 @@ def _chromadb_in_process(monkeypatch):
     monkeypatch.setattr(chroma_worker, "_shared", {})
     yield
     chroma_worker.stop_all()
+
+
+@pytest.fixture(autouse=True)
+def _release_chromadb_clients():
+    """Close the files of every ChromaDB client a test opened.
+
+    ChromaDB caches one client per index path for the life of the process, and
+    each holds its SQLite and HNSW files open. A suite that builds hundreds of
+    temp indexes then runs out of file handles on Windows (512 by default).
+    Only when chromadb is already loaded, so other tests pay nothing.
+    """
+    yield
+    if "chromadb" in sys.modules:
+        from zotero_mcp.chroma_client import release_chroma_clients
+
+        release_chroma_clients()
