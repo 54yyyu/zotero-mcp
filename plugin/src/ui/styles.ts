@@ -117,7 +117,9 @@ const BASE = `
 .zmc .seg__opt:disabled { opacity: 0.5; }
 
 /* ---------- header and frame ---------- */
-.zmc .hd { flex: none; display: flex; align-items: center; gap: var(--s1); padding: var(--s2); border-bottom: 1px solid var(--rule); }
+/* Same height and icon size as the reader's toolbar beside it (Zotero's reader.css: 41px bar, 28px buttons, 20px icons). */
+.zmc .hd { flex: none; display: flex; align-items: center; gap: var(--s1); box-sizing: border-box; height: 41px; padding: 0 var(--s2); border-bottom: 1px solid var(--rule); }
+.zmc .hd .iconbtn svg { width: 20px; height: 20px; }
 .zmc .hd__fill { flex: 1; min-width: var(--s1); }
 .zmc .stat { display: inline-flex; align-items: center; gap: var(--s2); min-width: 0; max-width: 62%; height: var(--h-sm); padding: 0 var(--s3) 0 10px; border: 1px solid var(--rule); border-radius: var(--pill); background: var(--paper-raised); color: var(--ink-muted); font-size: var(--fs-2); transition: color var(--ease), border-color var(--ease); }
 .zmc .stat:hover, .zmc .stat[aria-pressed="true"] { color: var(--ink); border-color: var(--rule-strong); }
