@@ -1036,7 +1036,7 @@ def _row_to_full_api_item(
     collections: list[str],
     relations: dict[str, object],
     library: tuple[int, str] | None,
-    retracted: bool | None = None,
+    retracted: bool = False,
 ) -> dict:
     """Build a complete pyzotero-shaped item record from one hydrated row.
 
@@ -1090,8 +1090,8 @@ def _row_to_full_api_item(
     if row["deleted"]:
         data["deleted"] = 1
 
-    if retracted is not None:
-        data["retracted"] = retracted
+    if retracted:
+        data["retracted"] = True
 
     item = {"key": row["key"], "version": row["version"], "data": data}
     if library is not None:
@@ -2931,21 +2931,22 @@ class LocalZoteroReader:
             for item_id, preds in gathered.items()
         }
 
-    def _fetch_retractions(self, conn: sqlite3.Connection, item_ids: list[int]) -> dict[int, bool] | None:
-        """Zotero's cached retraction flags, or None when the table is absent.
+    def _fetch_retractions(self, conn: sqlite3.Connection, item_ids: list[int]) -> set[int]:
+        """Item IDs Zotero's local cache flags as retracted.
 
-        Match Zotero.Retractions.isRetracted: flag 1 hides a retraction;
-        flag 2 only disables citation warnings and is still retracted.
-        No row means not locally flagged, not a fresh retraction check.
+        As Zotero.Retractions.isRetracted: flag 1 hides a retraction, flag 2
+        only silences citation warnings and is still retracted. Read from
+        Zotero's last check; no row is not proof the paper stands.
         """
-        if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='retractedItems'").fetchone():
-            return None
         placeholders = ",".join("?" * len(item_ids))
-        rows = conn.execute(
-            f"SELECT itemID, flag FROM retractedItems WHERE itemID IN ({placeholders})",
-            item_ids,
-        ).fetchall()
-        return {row["itemID"]: row["flag"] != 1 for row in rows}
+        try:
+            rows = conn.execute(
+                f"SELECT itemID FROM retractedItems WHERE flag IS NOT 1 AND itemID IN ({placeholders})",
+                item_ids,
+            ).fetchall()
+        except sqlite3.OperationalError:  # no retractedItems table
+            return set()
+        return {row[0] for row in rows}
 
     _FULL_ITEM_COLUMNS = """
             SELECT i.itemID, i.key, i.libraryID, i.version, i.dateAdded, i.dateModified,
@@ -2992,7 +2993,7 @@ class LocalZoteroReader:
                 collections.get(row["itemID"], []),
                 relations.get(row["itemID"], {}),
                 labels.get(row["libraryID"]),
-                None if retractions is None else retractions.get(row["itemID"], False),
+                row["itemID"] in retractions,
             )
             for row in rows
         ]

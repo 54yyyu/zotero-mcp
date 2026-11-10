@@ -64,7 +64,9 @@ def reader(tmp_path):
 )
 def test_sqlite_metadata_matches_zotero_retraction_flags(reader, key, expected):
     item = SqliteBackend(reader, group_id=0).get_item(key)
-    assert item["data"]["retracted"] is expected
+    # Like `deleted`, the field is present only when set.
+    assert item["data"].get("retracted", False) is expected
+    assert item["data"].get("retracted") in (True, None)
     assert ("**Retraction:**" in format_item_metadata(item)) is expected
 
 
@@ -72,10 +74,10 @@ def test_retraction_lookup_uses_item_identity_within_library(reader):
     personal = SqliteBackend(reader, group_id=0).get_item("NORMAL01")
     group = SqliteBackend(reader, group_id=corpus.GROUP_ID).get_item("NORMAL01")
     assert personal["data"]["retracted"] is True
-    assert group["data"]["retracted"] is False
+    assert "retracted" not in group["data"]
 
 
-def test_missing_retraction_table_leaves_status_unknown(reader):
+def test_missing_retraction_table_is_not_an_error(reader):
     db = reader.db_path
     reader.close()
     with sqlite3.connect(db) as conn:
@@ -121,7 +123,7 @@ def test_batch_metadata_reads_retraction_flags_in_one_query(reader):
         items = SqliteBackend(reader, group_id=0).get_items(["NORMAL01", "HIDDEN01", "NOWARN01", "UNFLAG01"])
     finally:
         conn.set_trace_callback(None)
-    assert {key: item["data"]["retracted"] for key, item in items.items()} == {
+    assert {key: item["data"].get("retracted", False) for key, item in items.items()} == {
         "NORMAL01": True,
         "HIDDEN01": False,
         "NOWARN01": True,
@@ -129,3 +131,11 @@ def test_batch_metadata_reads_retraction_flags_in_one_query(reader):
     }
     reads = [query for query in queries if "FROM retractedItems" in query]
     assert len(reads) == 1
+
+
+def test_cli_json_projection_marks_retracted_items(reader):
+    from zotero_mcp.cli_json import project_item
+
+    backend = SqliteBackend(reader, group_id=0)
+    assert project_item(backend.get_item("NORMAL01"), "keys_only")["retracted"] is True
+    assert "retracted" not in project_item(backend.get_item("HIDDEN01"), "keys_only")

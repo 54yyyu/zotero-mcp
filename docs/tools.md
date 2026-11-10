@@ -106,16 +106,11 @@ Example (Claude Desktop / Claude Code):
 - `zotero_get_attachment_path`: Local file paths of an item's attachments (local mode)
 - `zotero_export_bibliography`: Format references or in-text citations with Zotero's CSL engine, or export BibTeX
 
-With the SQLite backend, `zotero_get_item_metadata(format="json")` includes
-`data.retracted`, read from Zotero's local `retractedItems` cache. Markdown
-metadata (also included by `zotero_get_item_fulltext`) warns when it is `true`.
-This follows Zotero's own status: hidden retractions are `false`, while
-disabling citation warnings does not clear a retraction. A `false` value means
-**not locally flagged**, not proof that a paper has not been retracted. The
-cache depends on Zotero's last check; this read makes no network requests.
-The field is omitted when the table is unavailable or the record comes from
-the API. BibTeX output, search filters and Scite's separate online checks are
-unchanged.
+In local mode, an item Zotero has flagged as retracted carries
+`"retracted": true` in JSON (`zotero_get_item_metadata`, `zotero-cli --json`)
+and a **Retraction** line in Markdown metadata. The flag is Zotero's own,
+from its last retraction check; no request is made, and an unflagged item is
+not proof the paper stands. A retraction hidden in Zotero is not flagged.
 
 ### 📝 Annotation & notes tools
 - `zotero_get_annotations`: Get annotations (including direct PDF extraction); `format="json"` returns normalized records
