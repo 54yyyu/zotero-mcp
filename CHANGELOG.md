@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Hybrid mode writes to the personal library reach the right account.** After `zotero_switch_library` to the personal library, whose local id is `0`, web-API writes went to `/users/0` instead of your userID.
+- **Scanned PDFs whose invisible OCR text sits under a visible stamp no longer come back as the stamp alone** (#724, #729). A page with a full-page scan image and fewer than 60 words of Markdown is read with `page.get_text()`, which keeps the OCR layer and the stamp together, and marked as plain text; pages already represented, and documents with no short page, never open PyMuPDF. Thanks @FFXFF1 and @kremserw.
 
 ## [0.16.0] - 2026-11-06
 
