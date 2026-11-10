@@ -152,6 +152,39 @@ def test_enabling_chunking_adds_passages_without_re_embedding_articles(build):
     assert len(_passage_ids(search)) == 10
 
 
+def test_an_automatic_update_leaves_a_whole_library_passage_fill_to_the_user(build):
+    """Switching chunking on leaves every item without passages. The startup
+    update and the pre-search sync must not embed the whole library on their
+    own (a paid API bills it); an update the user starts does."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    build(zotero, chunking=False).update_database()
+
+    search = build(zotero, chunking=True)
+    stats = search.update_database(automatic=True)
+
+    assert stats.get("error") is None
+    assert search.chroma_client.embedded == [], "an automatic run embeds no passages"
+    assert stats["passage_gaps_held"] == 2
+
+    stats = search.update_database()
+    assert len(search.chroma_client.embedded) == 10, "update-db fills them"
+    assert "passage_gaps_held" not in stats
+
+
+def test_an_automatic_update_still_embeds_changed_items_and_missing_articles(build):
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    build(zotero, chunking=True).update_database()
+
+    zotero.version = 6
+    zotero.changed = {"BBB"}
+    search = build(zotero, chunking=True)
+    stats = search.update_database(automatic=True)
+
+    assert stats.get("error") is None
+    assert search.chroma_client.embedded, "a changed item is still embedded automatically"
+    assert "passage_gaps_held" not in stats
+
+
 def test_a_second_run_embeds_nothing(build):
     zotero = FakeZotero({"AAA": LONG})
     build(zotero, chunking=True).update_database()

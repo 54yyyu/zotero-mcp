@@ -2597,7 +2597,8 @@ class ZoteroSemanticSearch:
         return "metadata_only" if existing_metadata.get("has_fulltext") == "failed" else "extract"
 
     def _find_index_gaps(
-        self, *, limit: int | None, force_rebuild: bool, batch: bool = False
+        self, *, limit: int | None, force_rebuild: bool, batch: bool = False,
+        fill_passages: bool = True,
     ) -> dict[str, set[str]]:
         """Items that lack a level this index should have: ``{key: {levels}}``.
 
@@ -2605,13 +2606,19 @@ class ZoteroSemanticSearch:
         leaves every item without an article record. Neither shows up as a
         library change, so the sync watermark cannot find them.
         """
+        self._passage_gaps_held = 0
         if limit is not None or force_rebuild or not self._separate_passages():
             return {}
         articles, passages = self.chroma_client.item_keys_by_level()
         gaps: dict[str, set[str]] = {key: {SEARCH_ARTICLES} for key in passages - articles}
-        # The Batch API path cannot make passages yet (#416).
-        if self._chunking_enabled and not batch:
-            for key in articles - passages:
+        # The Batch API path cannot make passages yet (#416). An automatic
+        # run (startup, pre-search) leaves passage gaps alone: after chunking
+        # is switched on that is the whole library, which a paid embedding
+        # API bills; it waits for an update the user starts.
+        missing = articles - passages if self._chunking_enabled and not batch else set()
+        self._passage_gaps_held = 0 if fill_passages else len(missing)
+        if fill_passages:
+            for key in missing:
                 gaps[key] = {SEARCH_PASSAGES}
         return gaps
 
@@ -3546,9 +3553,15 @@ class ZoteroSemanticSearch:
         auto_loop: bool = False,
         batch_poll_interval: int = 60,
         allow_mass_deletion: bool = False,
+        automatic: bool = False,
     ) -> dict[str, Any]:
         """
         Update the semantic search database with Zotero items.
+
+        ``automatic`` marks a run nobody asked for (the startup update, the
+        pre-search sync): it does not fill passages missing for items that
+        have not changed, which after chunking is switched on is the whole
+        library; ``update-db`` does.
 
         Args:
             force_full_rebuild: Whether to rebuild the entire database
@@ -3856,8 +3869,16 @@ class ZoteroSemanticSearch:
                 and bool(layout.get("passage_records"))
             )
             index_gaps = self._find_index_gaps(
-                limit=limit, force_rebuild=force_full_rebuild, batch=batch_enabled
+                limit=limit, force_rebuild=force_full_rebuild, batch=batch_enabled,
+                fill_passages=not automatic,
             )
+            if getattr(self, "_passage_gaps_held", 0):
+                stats["passage_gaps_held"] = self._passage_gaps_held
+                logger.info(
+                    "%d item(s) have no passages yet; run `zotero-mcp update-db` to "
+                    "embed them (automatic updates leave this to you)",
+                    self._passage_gaps_held,
+                )
             # Items that only a run with their full text can fill. What is no
             # longer a gap is forgotten, but only by a run that looked for
             # every gap: a limited run, a rebuild and (until it can make

@@ -51,7 +51,7 @@ def _maybe_fire_presearch_sync(search) -> bool:
 
     def _run():
         try:
-            search.update_database(extract_fulltext=_utils.is_local_mode())
+            search.update_database(extract_fulltext=_utils.is_local_mode(), automatic=True)
         except Exception as e:
             _search_logger.debug(f"Background pre-search sync failed: {e}")
 

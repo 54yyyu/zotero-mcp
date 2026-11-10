@@ -297,6 +297,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 
 ### `db update`
 
+ - `--automatic` -- Run as an automatic update (the server's startup update uses it): passages missing for unchanged items are left for a run without it
  - `--force-rebuild` -- Force complete rebuild of the database
  - `--limit` -- Limit number of items to process (for testing; does not advance the sync watermark)
  - `--fulltext` -- Extract fulltext content from local Zotero database (slower but more comprehensive)

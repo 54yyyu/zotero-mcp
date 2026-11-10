@@ -822,6 +822,9 @@ def tolerate_console_encoding():
 
 def add_update_db_arguments(parser) -> None:
     """The options of `zotero-mcp update-db`, also `zotero-cli db update`."""
+    parser.add_argument("--automatic", action="store_true",
+                        help="Run as an automatic update (the server's startup update uses it): "
+                             "passages missing for unchanged items are left for a run without it")
     parser.add_argument("--force-rebuild", action="store_true",
                                  help="Force complete rebuild of the database")
     parser.add_argument("--limit", type=int,
@@ -979,6 +982,7 @@ def run_update_db(args) -> None:
             auto_loop=args.auto_loop,
             batch_poll_interval=args.poll_interval,
             allow_mass_deletion=args.allow_mass_deletion,
+            automatic=getattr(args, "automatic", False),
         )
 
         _print_update_stats(stats)
