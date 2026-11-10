@@ -118,15 +118,14 @@ def _payload(operation, backend, items, children):
 @mcp.tool(
     name="zotero_bulk_get",
     description=(
-        "Structured mixed reads, up to 50 operations in the active library. "
-        "Each operation has op: item_metadata or item_children (item_key), "
+        "Batch up to 50 reads in the active library. "
+        "operations: op=item_metadata or item_children (item_key), "
         "notes (parent_item_key), or by_citation_key (citation_key). "
         "item_metadata accepts include: {abstract,tags,collections,relations: bool}; "
         "false omits a field. item_children accepts child_types: an array of "
         "note/attachment/annotation. Returns JSON {results:[{index,ok,op,error,...payload}]}, "
-        "in input order. continue_on_error=False stops reading on the first error "
-        "and marks the remaining results aborted. No writes, fulltext, PDF or "
-        "connector operations. Existing single-item tools remain available."
+        "in input order. continue_on_error=False stops on the first error "
+        "and marks later results aborted without reading them. No writes or fulltext."
     ),
 )
 @with_zotero_api_lock
