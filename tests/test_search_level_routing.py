@@ -521,3 +521,27 @@ def test_a_routed_client_reads_the_layout_to_say_where_passages_are(build, monke
     monkeypatch.setattr(chroma_client, "read_index_layout", locked)
     with pytest.raises(sqlite3.OperationalError):
         client.separate_passages()
+
+
+# --- what choosing a level costs a search ----------------------------------------
+
+
+def test_repeated_searches_read_the_layout_once_until_the_index_changes(build, monkeypatch):
+    """Counting records scans every id of a collection, a second or more on a
+    large unmigrated index, so it runs only when chroma.sqlite3 has changed."""
+    search = build(chunking=True, articles=["A"], passages=["A#0"])
+    scans = []
+    real = chroma_client._level_counts
+    monkeypatch.setattr(
+        chroma_client, "_level_counts", lambda *a: scans.append(1) or real(*a)
+    )
+
+    search.search("q")
+    search.search("q")
+    search.search("q")
+    assert len(scans) == 1
+
+    _write(search.chroma_client, ["B"], [_meta("B")])
+    assert search.search("q")["level_note"] is not None
+    assert len(scans) == 2
+    assert search.chroma_client.index_layout()["article_records"] == 2

@@ -1028,6 +1028,13 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
     db = Path(persist_directory) / "chroma.sqlite3"
     if not db.exists():
         return layout
+    # Every search reads this, and the counts scan every id of a collection:
+    # a second or more on a large index. Reuse them until the file changes.
+    stamp = _file_stamp(db)
+    cache_key = (str(db), collection_name)
+    cached = _layout_cache.get(cache_key)
+    if stamp is not None and cached is not None and cached[0] == stamp:
+        return dict(cached[1])
     con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
     try:
         article_id, bare, in_articles = _level_counts(con, collection_name)
@@ -1044,7 +1051,34 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
         article_collection_id=article_id,
         passage_collection_id=passage_id,
     )
+    if stamp is not None and stamp == _file_stamp(db):  # not written to while counting
+        _layout_cache[cache_key] = (stamp, dict(layout))
     return layout
+
+
+# (chroma.sqlite3 path, collection name) -> (file stamp, layout).
+_layout_cache: dict[tuple[str, str], tuple[tuple, dict[str, Any]]] = {}
+
+
+def _file_stamp(db: Path) -> tuple | None:
+    """Changes whenever SQLite commits to the database, or None if unreadable.
+
+    The header's file change counter goes up on every commit in rollback mode
+    (ChromaDB's), whatever the file system's timestamp resolution; the WAL
+    file's size and time cover WAL mode, which does not update it.
+    """
+    try:
+        with open(db, "rb") as f:
+            counter = f.read(28)[24:28]
+        st = db.stat()
+        stamp = [counter, st.st_mtime_ns, st.st_size, st.st_ino]
+        wal = Path(f"{db}-wal")
+        if wal.exists():
+            st = wal.stat()
+            stamp += [st.st_mtime_ns, st.st_size]
+        return tuple(stamp)
+    except OSError:
+        return None
 
 
 def article_token_budget(
