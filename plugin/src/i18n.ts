@@ -5,6 +5,13 @@
 // English; only what a person reads is translated. Catalogs, glossary and how to add a language: src/locales/README.md.
 // (Which language is in force is src/locales/languages.ts, which plugin.js reads without the catalogs.)
 import en from "./locales/en.ts";
+import de from "./locales/de.ts";
+import es from "./locales/es.ts";
+import fr from "./locales/fr.ts";
+import ja from "./locales/ja.ts";
+import ptBR from "./locales/pt-BR.ts";
+import zhHans from "./locales/zh-Hans.ts";
+import zhHant from "./locales/zh-Hant.ts";
 
 export { UI_LANGUAGES, resolveLanguage, uiLanguageFor } from "./locales/languages.ts";
 
@@ -14,7 +21,7 @@ export type Key = keyof typeof en;
 export type Catalog = Record<Key, Msg>;
 export type Vars = Record<string, string | number>;
 
-const CATALOGS: Record<string, Catalog> = { en };
+const CATALOGS: Record<string, Catalog> = { en, "zh-Hans": zhHans, "zh-Hant": zhHant, ja, de, fr, es, "pt-BR": ptBR };
 
 let current = "en";
 const rules = new Map<string, Intl.PluralRules>();
