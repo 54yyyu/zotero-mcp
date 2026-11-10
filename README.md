@@ -99,6 +99,19 @@ or add the server by hand to `claude_desktop_config.json`:
 </details>
 
 <details>
+<summary><b>Cross-client MCP setup</b></summary>
+
+With Node.js 18+, use [Agent Add](https://github.com/pea3nut/agent-add) and select your client:
+
+```bash
+npx -y agent-add --global --mcp '{"zotero":{"command":"zotero-mcp","env":{"ZOTERO_LOCAL":"true"}}}'
+```
+
+`--global` configures your user account; omit it for project scope where supported by the client.
+
+</details>
+
+<details>
 <summary><b>Claude Code, Codex, Cursor and other agents with a shell</b></summary>
 
 Teach the agent to drive `zotero-cli` (the cheaper route, see [below](#mcp-server-or-agent-skill)):
