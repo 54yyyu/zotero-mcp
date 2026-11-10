@@ -23,7 +23,7 @@ if importlib.util.find_spec("chromadb") is None:
 import numpy as np
 
 from zotero_mcp import index_migration
-from zotero_mcp.chroma_client import ChromaClient, read_index_layout
+from zotero_mcp.chroma_client import ChromaClient, read_index_layout, release_chroma_clients
 from zotero_mcp.index_migration import MigrationError, migrate_index
 
 NAME = "zotero_library"
@@ -45,12 +45,20 @@ def _vectors(ids):
 
 
 def _write(client, ids, metadatas, vectors):
+    """Write as another process would (a server, an older version), and let it go.
+
+    ChromaDB writes a collection's HNSW files lazily; a migration that opened
+    the index while this client still held unflushed vectors could find
+    "Nothing found on disk" (seen on Windows CI). In real use the writer is a
+    separate process that has exited, so its files are on disk.
+    """
     client.upsert_embeddings(
         documents=[f"text of {i}" for i in ids],
         metadatas=metadatas,
         ids=ids,
         embeddings=[vectors[i] for i in ids],
     )
+    release_chroma_clients()
 
 
 @pytest.fixture()
@@ -215,6 +223,8 @@ def test_a_stray_passage_does_not_overwrite_a_newer_one(index):
     legacy.collection.upsert(
         ids=["AAA#0"], documents=["old text"], metadatas=[_passage_meta("AAA", 0, 1)], embeddings=[[0.0, 0.0, 0.0, 1.0]]
     )
+    del legacy
+    release_chroma_clients()  # the stray writer is gone before the migration runs again, as in real use
 
     migrate_index(config, **QUIET)
 
