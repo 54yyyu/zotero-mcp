@@ -5493,14 +5493,15 @@ class ZoteroSemanticSearch:
         return SEARCH_ARTICLES if articles or not passages else SEARCH_PASSAGES
 
     def _search_level_note(self, level: str, layout: dict[str, Any]) -> str | None:
-        """Tell the caller what was searched and what the other level holds.
+        """Tell the caller when the other level holds more, or a level is missing.
 
         A passage fill can take days, and until it ends passages cover only part
         of the library. An agent can't see that from the results, so it gets the
         counts and can decide to search the other level. The counts are for the
-        whole index, whichever library was searched. Only an index with articles
-        alone and chunking off, or one still unmigrated, gets no note; an index
-        with passages alone is told no article records are indexed yet.
+        whole index, whichever library was searched. An index whose levels cover
+        the same items, one with articles alone and chunking off, or one still
+        unmigrated gets no note; an index with passages alone is told no article
+        records are indexed yet.
         """
         if layout["unmigrated_passages"] or layout["passage_items"] is None:
             # No passage count could be read: give no counts rather than wrong ones.
@@ -5513,8 +5514,11 @@ class ZoteroSemanticSearch:
 
         note = f"Searched {level} ({_count_items(searched)} in the index)."
         if elsewhere:
-            note += f" The {other[:-1]} level has {_count_items(elsewhere)}"
-            return f'{note}, so level="{other}" may find more.' if elsewhere > searched else f"{note}."
+            # Said only when it could change what the agent does next: every
+            # search would otherwise pay for a line that tells it nothing.
+            if elsewhere <= searched:
+                return None
+            return f'{note} The {other[:-1]} level has {_count_items(elsewhere)}, so level="{other}" may find more.'
         if level == SEARCH_PASSAGES:
             return f"{note} No article records are indexed yet."
         return f"{note} No passages are indexed yet." if self._chunking_enabled else None

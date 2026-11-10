@@ -137,24 +137,17 @@ def test_note_points_at_the_article_level_during_a_fill(build):
     assert 'level="articles"' in note
 
 
-def test_note_gives_both_counts_when_neither_level_has_more(build):
+def test_no_note_when_neither_level_has_more(build):
+    """The steady state of a complete index: a note would cost every search tokens."""
     search = build(chunking=True, articles=["A", "B"], passages=["A#0", "B#0"])
 
-    note = search.search("q")["level_note"]
-
-    assert "Searched passages (2 items in the index)" in note
-    assert "article level has 2 items" in note
-    assert "may find more" not in note
+    assert search.search("q")["level_note"] is None
 
 
-def test_note_on_an_article_search_gives_the_passage_count(build):
+def test_no_note_when_the_other_level_has_fewer_items(build):
     search = build(chunking=False, articles=["A", "B"], passages=["A#0"])
 
-    note = search.search("q")["level_note"]
-
-    assert "Searched articles (2 items in the index)" in note
-    assert "passage level has 1 item" in note
-    assert "may find more" not in note
+    assert search.search("q")["level_note"] is None
 
 
 def test_note_says_passages_are_not_there_yet(build):
@@ -187,7 +180,7 @@ def test_note_says_articles_are_not_there_yet_with_chunking_on(build):
 
 def test_passage_count_includes_an_item_missing_its_first_passage(build):
     """An item whose passage 0 failed to write still has passages to search."""
-    search = build(chunking=True, articles=["A", "B"], passages=["A#0", "A#1", "B#1"])
+    search = build(chunking=True, articles=["A", "B", "C"], passages=["A#0", "A#1", "B#1"])
 
     assert search.chroma_client.index_layout()["passage_items"] == 2
     assert "Searched passages (2 items in the index)" in search.search("q")["level_note"]
@@ -229,7 +222,7 @@ def _failing_reads(monkeypatch, *fragments):
 
 
 def test_search_works_when_the_passage_item_count_cannot_be_read(build, monkeypatch, caplog):
-    search = build(chunking=True, articles=["A", "B"], passages=["A#0", "A#1", "B#0"])
+    search = build(chunking=True, articles=["A", "B", "C"], passages=["A#0", "A#1", "B#0"])
     _failing_reads(monkeypatch, "WITH RECURSIVE")
 
     result = search.search("q")

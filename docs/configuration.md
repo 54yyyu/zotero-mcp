@@ -293,7 +293,7 @@ An update writes every article record before any passage, so article search cove
 
 `zotero_semantic_search` takes `level="articles"` or `level="passages"` to choose per search, and `zotero-cli search --mode semantic` takes `--level`.
 
-While passages are being built, a default search covers only the items that have them so far. If passages don't exist at all yet, it searches articles instead. When an index holds both levels, the results say which level was searched and how many items each holds across the whole index, for example `Searched passages (12,000 items in the index). The article level has 48,750 items, so level="articles" may find more.`
+While passages are being built, a default search covers only the items that have them so far. If passages don't exist at all yet, it searches articles instead. When the other level holds more items, the results say so, with the counts for the whole index, for example `Searched passages (12,000 items in the index). The article level has 48,750 items, so level="articles" may find more.`
 
 Passages and articles live in two ChromaDB collections in the same index directory, `zotero_library_passages` and `zotero_library`, so an article search never loads passage vectors into memory. With chunking off, an item that changes loses its passages, and they are added back when chunking is next on.
 
