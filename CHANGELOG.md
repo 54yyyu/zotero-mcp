@@ -44,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`zotero_search_by_tag`, `zotero_create_collection`, `zotero_update_collection` and `zotero_delete_collection`** are off by default and kept in a new `legacy` tool group until 0.17, when they are removed. `ZOTERO_MCP_TOOLSETS=default,legacy` brings them back; `all` does not include `legacy`. Use `zotero_search_items(tag=...)` and `zotero_manage_collection` instead.
 
+### Changed
+
+- **The MCP server now frees the semantic index's memory after 10 idle minutes by default.** `semantic_search.idle_unload_minutes` defaulted to `0`, so a server that ran one semantic search held the whole vector index until it exited. The default is now `10`: ChromaDB runs in a worker process that exits after 10 minutes without a semantic call, and the next call starts a new one and reloads the index. On an Apple M1 Max a new worker answered its first query 0.4 s after starting for 5,000 article-level records of 3,072 dimensions (about 150 MB resident) and 0.55 s for 50,000 (about 700 MB). Set `idle_unload_minutes` to `0` to keep ChromaDB in the server as before; a value you have set is unchanged. The command-line tools are unaffected. See "Semantic search memory" in `docs/configuration.md`.
+
 ### Fixed
 
 - **With WebDAV set up, `zotero_attach_file` and `zotero-cli attach` upload to WebDAV directly** (#806), as `zotero_add_item` already did. They uploaded to Zotero Storage first, so an account over its quota got `413 File would exceed quota` and an empty attachment for every file. A failed WebDAV upload removes the attachment and says so, and the file's md5 and mtime are now recorded on the attachment. Thanks @ShoRoy.

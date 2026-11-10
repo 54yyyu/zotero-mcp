@@ -77,8 +77,9 @@ class SemanticSearchConfig:
     chunking: ChunkingConfig = field(default_factory=ChunkingConfig)
     # Minutes without a semantic search before the MCP server's ChromaDB
     # worker exits and the index's memory is freed; 0 keeps ChromaDB in the
-    # server process, loaded until it exits.
-    idle_unload_minutes: float = 0
+    # server process, loaded until it exits. Keep in step with
+    # chroma_worker.DEFAULT_IDLE_UNLOAD_MINUTES.
+    idle_unload_minutes: float = 10
     # Per-library incremental-sync watermarks, keyed by group_id as a string
     # ("0" = personal library). Every Zotero library has its own independent
     # version counter, so one shared scalar corrupted sync state whenever the
