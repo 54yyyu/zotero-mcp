@@ -712,6 +712,16 @@ def load_semantic_search_config(semantic_config_path: Path) -> dict:
         return {}
 
 
+WEBDAV_KEYS = ("ZOTERO_WEBDAV_URL", "ZOTERO_WEBDAV_USERNAME", "ZOTERO_WEBDAV_PASSWORD")
+
+
+def _webdav_env(existing_env) -> dict:
+    """The WebDAV settings in a config's env section, to carry over when setup rebuilds it."""
+    if not isinstance(existing_env, dict):
+        return {}
+    return {key: existing_env[key] for key in WEBDAV_KEYS if key in existing_env}
+
+
 def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None, library_id=None, library_type="user", semantic_config=None):
     """Update Claude Desktop config to add zotero-mcp."""
     # Create directory if it doesn't exist
@@ -756,6 +766,8 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
             env_settings["ZOTERO_LIBRARY_ID"] = library_id
         if library_type:
             env_settings["ZOTERO_LIBRARY_TYPE"] = library_type
+    # Without these a rebuilt env section sends uploads back to Zotero Storage.
+    env_settings.update(_webdav_env(existing_env))
 
     # Add semantic search settings if provided
     if semantic_config:
@@ -840,6 +852,7 @@ def _write_standalone_config(local: bool, api_key: str, library_id: str, library
             client_env["ZOTERO_LIBRARY_ID"] = library_id
         if library_type:
             client_env["ZOTERO_LIBRARY_TYPE"] = library_type
+    client_env.update(_webdav_env(existing_env))
 
     full["client_env"] = client_env
 
