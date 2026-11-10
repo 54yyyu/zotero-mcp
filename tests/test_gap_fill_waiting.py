@@ -430,7 +430,7 @@ def test_a_run_stopped_by_an_unreachable_api_keeps_the_waiting_list(build, tmp_p
     search.chroma_client.embedding_function.unreachable = True
     stats = search.update_database()
 
-    assert stats.get("embedding_api_unreachable")
+    assert stats.get("errors")
     assert _saved(tmp_path)["gaps_waiting_for_text"] == ["AAA"]
 
 

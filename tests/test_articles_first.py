@@ -240,7 +240,9 @@ def test_a_stop_between_the_passes_resumes_through_the_gap_fill(build, monkeypat
 
     stats = search.update_database()
 
-    assert stats.get("embedding_api_unreachable") == "api.example"
+    # 0.16 sets a batch that fails mid-run aside and retries it at the end;
+    # the run finishes with errors and leaves the sync version alone.
+    assert stats.get("errors")
     assert _ids(search) == set(KEYS), "every article written before the stop"
     assert _passage_ids(search) == set()
     assert evicted == [], "the extracted text stays cached for the passages"
@@ -319,7 +321,9 @@ def _stop_in_the_passage_pass(monkeypatch, search):
     monkeypatch.setattr(type(ef), "__call__", refuse_passages)
     stats = search.update_database()
     monkeypatch.setattr(type(ef), "__call__", original_call)
-    assert stats.get("embedding_api_unreachable") == "api.example"
+    # 0.16 sets a batch that fails mid-run aside and retries it at the end;
+    # the run finishes with errors and leaves the sync version alone.
+    assert stats.get("errors")
 
 
 def _passages_of(search, key):

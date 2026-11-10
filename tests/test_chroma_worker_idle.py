@@ -297,9 +297,10 @@ def test_an_update_in_this_process_keeps_the_worker(worker, tmp_path):
     assert _idle_check(worker)
 
 
-def test_an_update_that_another_process_holds_does_not_keep_the_worker(worker, tmp_path):
+def test_an_update_that_another_process_holds_does_not_keep_the_worker(worker, tmp_path, monkeypatch):
     from zotero_mcp import semantic_search
 
+    monkeypatch.delenv("ZOTERO_MCP_FORCE_UPDATE", raising=False)  # it skips the lock
     lock = tmp_path / "update.lock"
     _passage_search(worker)
     with semantic_search._acquire_update_lock(lock) as first:

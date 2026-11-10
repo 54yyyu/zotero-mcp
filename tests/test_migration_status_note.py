@@ -21,7 +21,7 @@ if importlib.util.find_spec("chromadb") is None:
 
 import numpy as np
 
-from zotero_mcp import chroma_client, index_staleness
+from zotero_mcp import chroma_client
 from zotero_mcp.chroma_client import ChromaClient, read_collection_status
 from zotero_mcp.index_migration import migrate_index
 
@@ -38,11 +38,6 @@ def home(tmp_path, monkeypatch):
     monkeypatch.delenv("ZOTERO_EMBEDDING_MODEL", raising=False)
     # Local mode, where update-db --fulltext works; the web-API tests switch it off.
     monkeypatch.setenv("ZOTERO_LOCAL", "true")
-    monkeypatch.setattr(
-        index_staleness,
-        "check_active_library",
-        lambda *_a, **_k: index_staleness.Staleness("unknown", detail="not checked in this test"),
-    )
     return home
 
 
