@@ -644,6 +644,7 @@ const ptBR: Catalog = {
   "agent.install.codex": "Instale o Codex (npm i -g @openai/codex) e execute `codex login`.",
   "agent.install.pi": "Instale o pi (npm i -g @earendil-works/pi-coding-agent) e configure um provedor.",
   "agent.codexLoginCheck": "A verificação de login do Codex foi encerrada (código de saída {code}). Execute `codex login status` em um terminal para diagnosticar.",
+  "agent.codexConfig": "O Codex que o chat executa, incluído na ponte, não consegue ler sua configuração do Codex: {error}. Ele pode ser mais antigo que o Codex do seu terminal; remova ou altere essa configuração e clique em Verificar de novo.",
   "agent.nodeMissing": "O node não foi encontrado no PATH da sua sessão de login. Instale o Node.js (https://nodejs.org) e reabra o Zotero.",
   "agent.npmMissing": "O npm não foi encontrado, então o conector de {agent} não pode ser instalado. Instale o Node.js (ele inclui o npm).",
   "agent.notSignedIn": "{agent} não está conectado.",

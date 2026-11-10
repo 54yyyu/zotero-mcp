@@ -117,15 +117,16 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
           if (spec.cli && !cli) return { ...base, available: false, reason: t(spec.cli.hint) };
           const installed = await locateBridge(spawner, nodeEnv, node, bridgeDir, spec).catch(() => null);
           if (!installed && !npm) return { ...base, available: false, reason: t("agent.npmMissing", { agent: spec.label }) };
-          let login = cli ? await probeLogin(spawner, env, id, cli) : {};
-          // A system Codex can be killed by the OS while the bridge's own version still works.
-          // Only a successful probe of that installed dependency may override the failed check.
-          if (id === "codex" && login.reason && installed) {
-            const bundled = await locateBundledCodexCli(spawner, nodeEnv, node, installed);
-            if (bundled) {
-              const fallback = await probeLogin(spawner, nodeEnv, id, node, [bundled]);
-              if (fallback.loggedIn === true) login = fallback;
-            }
+          // Chats run the bridge's own Codex, which can be older than the one on PATH, so it is the one asked: a
+          // config.toml only the newer one reads is reported here, not as "failed to load workspace requirements" at
+          // the first message (#811). The Codex on PATH answers before the bridge is installed, or when the OS killed
+          // the bundled one; either Codex can be killed while the other works (#797), so a probe that could not tell
+          // never hides a successful one.
+          const bundled = id === "codex" && installed ? await locateBundledCodexCli(spawner, nodeEnv, node, installed) : null;
+          let login = bundled ? await probeLogin(spawner, nodeEnv, id, node, [bundled]) : {};
+          if (cli && (!bundled || (login.loggedIn !== true && !login.configError && (login.reason || login.loggedIn === undefined)))) {
+            const system = await probeLogin(spawner, env, id, cli);
+            if (!bundled || system.loggedIn === true || !login.reason) login = system;
           }
           if (login.loggedIn === false) return { ...base, available: false, reason: login.reason ?? `${t("agent.notSignedIn", { agent: spec.label })} ${spec.cli ? t(spec.cli.hint) : ""}`.trim() };
           return { ...base, available: true, ...(login.account ? { account: login.account } : {}) };

@@ -644,6 +644,7 @@ const es: Catalog = {
   "agent.install.codex": "Instale Codex (npm i -g @openai/codex) y ejecute `codex login`.",
   "agent.install.pi": "Instale pi (npm i -g @earendil-works/pi-coding-agent) y configure un proveedor.",
   "agent.codexLoginCheck": "La comprobación de inicio de sesión de Codex se interrumpió (código de salida {code}). Ejecute `codex login status` en una terminal para diagnosticarlo.",
+  "agent.codexConfig": "El Codex que ejecuta el chat, incluido con su puente, no puede leer su configuración de Codex: {error}. Puede ser más antiguo que el Codex de su terminal; quite o cambie ese ajuste y pulse Comprobar de nuevo.",
   "agent.nodeMissing": "No se encontró node en el PATH de su sesión. Instale Node.js (https://nodejs.org) y vuelva a abrir Zotero.",
   "agent.npmMissing": "No se encontró npm, así que no se puede instalar el conector de {agent}. Instale Node.js (incluye npm).",
   "agent.notSignedIn": "{agent} no tiene la sesión iniciada.",

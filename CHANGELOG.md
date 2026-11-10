@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Scanned PDFs whose invisible OCR text sits under a visible stamp no longer come back as the stamp alone** (#724, #729). A page with a full-page scan image and fewer than 60 words of Markdown is read with `page.get_text()`, which keeps the OCR layer and the stamp together, and marked as plain text; pages already represented, and documents with no short page, never open PyMuPDF. Thanks @FFXFF1 and @kremserw.
 - **A failure part way through chunking one item no longer mixes up the items after it** (#786). Its passages stayed in the run uncounted, so later items could be counted, and their old passages pruned, against another item's records. Thanks @mronkko.
 - **An item removed from Zotero leaves the semantic index whatever chunking setting indexed it** (#788). The deletion pass chose what to delete from the current setting, so an item indexed under the other one stayed searchable. Thanks @mronkko.
+- **Zotero Agent: a Codex config that the bundled Codex cannot read is reported in the status check** (#811). Chats run the Codex bundled with the bridge, which can be older than the one in your terminal, but the check asked the one on PATH, so it said Codex was ready and every message then failed with "failed to load workspace requirements". The check now asks the bundled Codex, and says which setting it cannot read; the Codex on PATH still answers before the bridge is installed or when the OS stops the bundled one. Thanks @liuup.
 
 ## [0.16.0] - 2026-11-06
 

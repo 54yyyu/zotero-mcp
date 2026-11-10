@@ -36,20 +36,41 @@ describe("Codex login detection", () => {
     assert.equal(status.account, "ChatGPT");
   });
 
-  it("does not probe the bundled CLI when the system CLI is already signed in", async () => {
+  it("asks only the bridge's Codex, which chats run, when it answers", async () => {
     const dir = fakeBridgeDir(["codex"]);
     const marker = join(dir, "unexpected-probe");
-    bundledCli(dir, `require("fs").writeFileSync(${JSON.stringify(marker)}, "called"); ${SIGNED_OUT}`);
-    assert.equal((await detect(dir, 'echo "Logged in using ChatGPT" >&2')).available, true);
+    bundledCli(dir, SIGNED_IN);
+    assert.equal((await detect(dir, `touch '${marker}'; echo "Not logged in" >&2; exit 1`)).available, true);
     assert.equal(existsSync(marker), false);
   });
 
   it("keeps a genuinely signed-out user unavailable", async () => {
     const dir = fakeBridgeDir(["codex"]);
-    bundledCli(dir, SIGNED_IN);
-    const status = await detect(dir, 'echo "Not logged in" >&2; exit 1');
+    bundledCli(dir, SIGNED_OUT);
+    const status = await detect(dir, 'echo "Logged in using ChatGPT" >&2');
     assert.equal(status.available, false);
     assert.match(status.reason!, /not signed in/i);
+  });
+
+  it("reports a config.toml the bridge's Codex cannot read, though the newer system Codex can (#811)", async () => {
+    const dir = fakeBridgeDir(["codex"]);
+    bundledCli(dir, 'console.error("Error loading configuration: /home/u/.codex/config.toml:39:1: invalid type: map, expected a boolean\\nin `features`\\n"); process.exitCode = 1;');
+    const status = await detect(dir, 'echo "Logged in using ChatGPT" >&2');
+    assert.equal(status.available, false);
+    assert.match(status.reason!, /can't read your Codex configuration: \/home\/u\/\.codex\/config\.toml:39:1: invalid type: map, expected a boolean in `features`\. /);
+  });
+
+  it("asks the system Codex when the bridge is not installed yet", async () => {
+    const status = await detect(fakeBridgeDir([]), 'echo "Logged in using ChatGPT" >&2');
+    assert.equal(status.available, true, status.reason ?? "");
+    assert.equal(status.account, "ChatGPT");
+  });
+
+  it("falls back to the system Codex when the OS kills the bridge's one", async () => {
+    const dir = fakeBridgeDir(["codex"]);
+    bundledCli(dir, 'process.kill(process.pid, "SIGKILL");');
+    const status = await detect(dir, 'echo "Logged in using ChatGPT" >&2');
+    assert.equal(status.available, true, status.reason ?? "");
   });
 
   it("reports the failed system probe when the bridge has no Codex dependency", async () => {
@@ -69,8 +90,8 @@ describe("Codex login detection", () => {
 
   it("does not treat a signed-out fallback as successful", async () => {
     const dir = fakeBridgeDir(["codex"]);
-    bundledCli(dir, SIGNED_OUT);
-    const status = await detect(dir);
+    bundledCli(dir, 'process.kill(process.pid, "SIGKILL");');
+    const status = await detect(dir, 'echo "Not logged in" >&2; exit 1');
     assert.equal(status.available, false);
     assert.match(status.reason!, /login check.*terminated/i);
   });

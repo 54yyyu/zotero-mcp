@@ -644,6 +644,7 @@ const fr: Catalog = {
   "agent.install.codex": "Installez Codex (npm i -g @openai/codex), puis lancez `codex login`.",
   "agent.install.pi": "Installez pi (npm i -g @earendil-works/pi-coding-agent) et configurez un fournisseur.",
   "agent.codexLoginCheck": "La vérification de connexion de Codex a été interrompue (code de sortie {code}). Exécutez `codex login status` dans un terminal pour diagnostiquer.",
+  "agent.codexConfig": "Le Codex qu'exécute la conversation, fourni avec son pont, ne peut pas lire votre configuration Codex : {error}. Il peut être plus ancien que le Codex de votre terminal ; supprimez ou modifiez ce réglage, puis appuyez sur Revérifier.",
   "agent.nodeMissing": "node est introuvable dans le PATH de votre session. Installez Node.js (https://nodejs.org), puis rouvrez Zotero.",
   "agent.npmMissing": "npm est introuvable, le pont de {agent} ne peut donc pas être installé. Installez Node.js (qui inclut npm).",
   "agent.notSignedIn": "{agent} n'est pas connecté.",

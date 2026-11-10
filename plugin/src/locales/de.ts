@@ -644,6 +644,7 @@ const de: Catalog = {
   "agent.install.codex": "Installieren Sie Codex (npm i -g @openai/codex) und führen Sie dann `codex login` aus.",
   "agent.install.pi": "Installieren Sie pi (npm i -g @earendil-works/pi-coding-agent) und richten Sie einen Provider ein.",
   "agent.codexLoginCheck": "Die Codex-Anmeldeprüfung wurde beendet (Exit-Code {code}). Führen Sie `codex login status` in einem Terminal aus, um die Ursache zu finden.",
+  "agent.codexConfig": "Das Codex, das der Chat ausführt (mit seiner Bridge gebündelt), kann Ihre Codex-Konfiguration nicht lesen: {error}. Es kann älter sein als das Codex in Ihrem Terminal; entfernen oder ändern Sie diese Einstellung und klicken Sie dann auf „Erneut prüfen“.",
   "agent.nodeMissing": "node wurde in Ihrem Login-PATH nicht gefunden. Installieren Sie Node.js (https://nodejs.org) und öffnen Sie Zotero dann neu.",
   "agent.npmMissing": "npm wurde nicht gefunden, daher kann die Anbindung für {agent} nicht installiert werden. Installieren Sie Node.js (enthält npm).",
   "agent.notSignedIn": "{agent} ist nicht angemeldet.",

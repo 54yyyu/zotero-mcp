@@ -644,6 +644,7 @@ const en = {
   "agent.install.codex": "Install Codex (npm i -g @openai/codex), then run `codex login`.",
   "agent.install.pi": "Install pi (npm i -g @earendil-works/pi-coding-agent) and configure a provider.",
   "agent.codexLoginCheck": "Codex login check was terminated (exit code {code}). Run `codex login status` in a terminal to diagnose.",
+  "agent.codexConfig": "The Codex the chat runs, bundled with its bridge, can't read your Codex configuration: {error}. It can be older than the Codex in your terminal; remove or change that setting, then press Recheck.",
   "agent.nodeMissing": "node was not found on your login PATH. Install Node.js (https://nodejs.org), then reopen Zotero.",
   "agent.npmMissing": "npm was not found, so the {agent} bridge cannot be installed. Install Node.js (it includes npm).",
   "agent.notSignedIn": "{agent} is not signed in.",

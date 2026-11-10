@@ -111,6 +111,8 @@ interface LoginProbe {
   account?: string;
   /** A failed check is not evidence that the user is signed out. */
   reason?: string;
+  /** The CLI could not read its own config file: chats with it fail too, whatever the login (#811). */
+  configError?: boolean;
 }
 
 /** `claude auth status` prints JSON; `codex login status` prints a sentence. pi has no login of its own. */
@@ -129,6 +131,8 @@ export async function probeLogin(spawner: Spawner, env: Record<string, string>, 
         return { loggedIn: false, reason: t("agent.codexLoginCheck", { code: r.code ?? "?" }) };
       }
       const text = `${r.stdout}\n${r.stderr}`;
+      const config = /Error loading config[^:]*:\s*([\s\S]+)/i.exec(text)?.[1]?.replace(/\s+/g, " ").trim().replace(/\.$/, "");
+      if (r.code !== 0 && config) return { loggedIn: false, configError: true, reason: t("agent.codexConfig", { error: config }) };
       // Newer Codex reports an API key as "API key configured - sk-…" rather than "Logged in using an API key" (#785).
       if (r.code === 0 && /api key configured/i.test(text)) return { loggedIn: true, account: "API key" };
       if (r.code === 0 && /logged in/i.test(text)) {

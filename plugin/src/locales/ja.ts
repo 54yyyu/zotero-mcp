@@ -644,6 +644,7 @@ const ja: Catalog = {
   "agent.install.codex": "Codex をインストール（npm i -g @openai/codex）してから、`codex login` を実行してください。",
   "agent.install.pi": "pi をインストール（npm i -g @earendil-works/pi-coding-agent）して、プロバイダを設定してください。",
   "agent.codexLoginCheck": "Codex のログイン確認が中断されました（終了コード {code}）。原因を調べるには、ターミナルで `codex login status` を実行してください。",
+  "agent.codexConfig": "チャットが実行する Codex（ブリッジに同梱）が Codex の設定を読み込めません: {error}。ターミナルで使っている Codex より古い場合があります。その設定を削除または変更してから、「再確認」を押してください。",
   "agent.nodeMissing": "ログイン時の PATH に node が見つかりません。Node.js（https://nodejs.org）をインストールしてから、Zotero を開き直してください。",
   "agent.npmMissing": "npm が見つからないため、{agent} のブリッジをインストールできません。Node.js（npm が含まれています）をインストールしてください。",
   "agent.notSignedIn": "{agent} にサインインしていません。",

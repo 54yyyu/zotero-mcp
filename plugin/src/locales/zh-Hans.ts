@@ -644,6 +644,7 @@ const zhHans: Catalog = {
   "agent.install.codex": "请安装 Codex（npm i -g @openai/codex），然后运行 `codex login`。",
   "agent.install.pi": "请安装 pi（npm i -g @earendil-works/pi-coding-agent）并配置服务商。",
   "agent.codexLoginCheck": "Codex 登录检查已终止（退出码 {code}）。请在终端中运行 `codex login status` 进行诊断。",
+  "agent.codexConfig": "对话所运行的 Codex（随桥接程序附带）无法读取您的 Codex 配置：{error}。它可能比您在终端中使用的 Codex 旧；请删除或修改该设置，然后点击“重新检查”。",
   "agent.nodeMissing": "在登录 shell 的 PATH 中未找到 node。请安装 Node.js（https://nodejs.org），然后重新打开 Zotero。",
   "agent.npmMissing": "未找到 npm，无法安装 {agent} 桥接程序。请安装 Node.js（已包含 npm）。",
   "agent.notSignedIn": "{agent} 未登录。",
