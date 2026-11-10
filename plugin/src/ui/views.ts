@@ -6,8 +6,8 @@ import { shortPath } from "./settings-model.ts";
 import { skillLabel } from "./skills-model.ts";
 import type { Pinned } from "./skills-model.ts";
 
-export const BACKEND_LABEL: Record<BackendId, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
-export const BACKENDS: BackendId[] = ["claude-code", "codex", "pi"];
+export const BACKEND_LABEL: Record<BackendId, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi", custom: "Custom" };
+export const BACKENDS: BackendId[] = ["claude-code", "codex", "pi", "custom"];
 
 /**
  * The logo (assets/logo.svg): a hollow square chat box with a small tail, and a red Z in it (--brand: the accent setting never recolours it). It follows the theme. The parts

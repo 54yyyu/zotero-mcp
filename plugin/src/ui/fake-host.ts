@@ -320,8 +320,9 @@ export class FakeHost implements PanelHost {
 
   private statuses(): BackendStatus[] {
     const m = this.sim.doctorMode;
-    return this.sim.statuses.map((s) => (s.id === "claude-code" && (m === "backend" || m === "many") && !this.fixed.has("backend")
-      ? { ...s, available: false, reason: "claude is not logged in", account: undefined } : s));
+    return [...this.sim.statuses.map((s) => (s.id === "claude-code" && (m === "backend" || m === "many") && !this.fixed.has("backend")
+      ? { ...s, available: false, reason: "claude is not logged in", account: undefined } : s)),
+      { id: "custom", label: this.settings.customAgent?.label || "Custom agent", available: !!this.settings.customAgent?.command, reason: "Set the custom agent command in Settings > Agent." }];
   }
 
   // --- context
@@ -441,6 +442,7 @@ export class FakeHost implements PanelHost {
   async removeImage() { this.sim.image = null; }
   /** What each backend's own CLI takes to continue a session; the folder is quoted for the shell. */
   resumeCommand(s: SavedSession) {
+    if (s.backend === "custom") return null;
     const cmd = { "claude-code": `claude --resume ${s.agentSessionId}`, codex: `codex resume ${s.agentSessionId}`, pi: `pi --session ${s.agentSessionId}` }[s.backend];
     return s.agentSessionId ? `cd '${s.cwd.replace(/'/g, "'\\''")}' && ${cmd}` : null;
   }

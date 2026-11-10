@@ -7,6 +7,7 @@ import type { Health } from "./health.ts";
 import { BACKENDS, BACKEND_LABEL, PROBLEM, fixButton, mark } from "./views.ts";
 
 const ABOUT: Record<BackendId, { sub: string; signIn: string }> = {
+  custom: { sub: "Your own installed ACP agent.", signIn: "Set its command in Settings > Agent and sign in through its own CLI." },
   "claude-code": { sub: "Anthropic. Uses your Claude subscription.", signIn: "Run `claude` in a terminal and sign in with /login." },
   codex: { sub: "OpenAI. Uses your ChatGPT plan.", signIn: "Run `codex login` in a terminal." },
   pi: { sub: "Open source. Local models or your own provider keys.", signIn: "Run `pi` in a terminal and add a provider with /login." },

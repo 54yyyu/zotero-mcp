@@ -16,15 +16,12 @@
 //   pi-acp 0.0.34            configOptions: model (hundreds of "provider/model") / thought_level;
 //                            `modes` are pi's thinking levels, NOT permissions (ignored here);
 //                            session/set_config_option works. No permission frames at all.
-import type { BackendId, Spawner } from "../types.ts";
+import type { BackendId, BuiltinBackendId, Spawner } from "../types.ts";
 import { findBinary } from "./env.ts";
 
 export interface BackendSpec {
   id: BackendId;
   label: string;
-  /** npm package of the ACP bridge, and the version we pin (checked with `npm view`). */
-  pkg: string;
-  version: string;
   /** The CLI the user must have on their login PATH, when the backend needs one. */
   cli?: { name: string; hint: string };
   /** How the model is chosen after session/new: a config option, or session/set_model. */
@@ -41,11 +38,23 @@ export interface BackendSpec {
   claudeMeta: boolean;
   /** Its advertised `/compact` was verified live (summarises on demand, the chat goes on): Claude, and Codex (2026-10-05, test/live/skills.live.ts). pi-acp lists one too, but reported no summary. */
   compacts: boolean;
-  /** The terminal command that continues a session by its id, run from the folder the session ran in. */
+}
+
+export interface BridgeSpec extends BackendSpec {
+  /** npm package of the ACP bridge, and the pinned version. */
+  pkg: string;
+  version: string;
   resume: (sessionId: string) => string;
 }
 
-export const BACKENDS: Record<BackendId, BackendSpec> = {
+// An unmeasured endpoint: prefer the wire IDs in ACP's models block, falling back to config options.
+// Only advertised choices are shown; no vendor login probe, compaction claim or terminal resume command.
+const CUSTOM: BackendSpec = {
+  id: "custom", label: "Custom agent", modelVia: "set_model", effortVia: "config_option",
+  apiKeyVars: [], permissionModes: true, briefVia: "first-prompt", claudeMeta: false, compacts: false,
+};
+
+export const BACKENDS: Record<BuiltinBackendId, BridgeSpec> = {
   "claude-code": {
     id: "claude-code",
     label: "Claude Code",
@@ -93,9 +102,10 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
   },
 };
 
-export const BACKEND_IDS: BackendId[] = ["claude-code", "codex", "pi"];
+export const BACKEND_IDS: BuiltinBackendId[] = ["claude-code", "codex", "pi"];
 
 export function backendOf(id: BackendId): BackendSpec {
+  if (id === "custom") return CUSTOM;
   const b = BACKENDS[id];
   if (!b) throw new Error(`unknown backend "${id}"`);
   return b;
@@ -148,7 +158,8 @@ export async function findCli(spawner: Spawner, env: Record<string, string>, spe
 }
 
 /** `cd "<folder>" && <resume command>`: what to paste in a terminal to continue a chat started in the panel. */
-export function resumeCommand(backend: BackendId, cwd: string, sessionId: string): string {
+export function resumeCommand(backend: BackendId, cwd: string, sessionId: string): string | null {
+  if (backend === "custom") return null;
   const quoted = `'${cwd.replace(/'/g, `'\\''`)}'`;
   return `cd ${quoted} && ${BACKENDS[backend].resume(sessionId)}`;
 }

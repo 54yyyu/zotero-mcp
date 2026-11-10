@@ -231,7 +231,7 @@ class Panel {
     const st = this.health.backend();
     this.statusBtn.dataset.state = this.health.state;
     // Say plainly who pays: a subscription's account name, or "API key". pi has neither: it uses the user's own provider keys.
-    const label = s.backend === "pi" ? "pi" : s.auth[s.backend] === "api-key" ? `${BACKEND_LABEL[s.backend]} · API key` : st?.account || `${BACKEND_LABEL[s.backend]} · subscription`;
+    const label = s.backend === "custom" ? s.customAgent?.label || "Custom agent" : s.backend === "pi" ? "pi" : s.auth[s.backend] === "api-key" ? `${BACKEND_LABEL[s.backend]} · API key` : st?.account || `${BACKEND_LABEL[s.backend]} · subscription`;
     this.accountEl.textContent = label;
     const bad = this.health.failing;
     const tip = { ok: "Everything is set up", checking: "Checking…", unknown: "Status unknown", warn: "", bad: "" }[this.health.state] || bad.map((c) => c.label).join(", ");
@@ -258,6 +258,7 @@ class Panel {
   }
 
   private onSettings(): void {
+    this.catalogs.delete("custom");
     this.onHealth();
     this.applyBehavior();
     // An empty chat has no history to protect: let a changed backend take effect on the next send.
@@ -301,9 +302,12 @@ class Panel {
   /** The chosen backend's models, modes and efforts. `strict`: let a failure reach the caller (a picker menu shows it). */
   private async loadCatalog(strict: boolean): Promise<void> {
     const b = this.host.getSettings().backend;
+    if (b === "custom" && !strict) return this.syncPickers();
     if (this.catalogs.has(b) || this.chat.session?.backend === b) return this.syncPickers();
+    const source = JSON.stringify(this.host.getSettings().customAgent);
     try {
-      this.catalogs.set(b, await this.host.runtime.catalog(b));
+      const catalog = await this.host.runtime.catalog(b);
+      if (b !== "custom" || source === JSON.stringify(this.host.getSettings().customAgent)) this.catalogs.set(b, catalog);
     } catch (e) {
       if (strict) throw e;
     }

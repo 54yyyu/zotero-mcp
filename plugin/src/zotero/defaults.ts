@@ -9,7 +9,7 @@ export const DEFAULT_PROMPTS: PromptEntry[] = [
   { id: "compare", slot: 4, title: "Compare key findings to other studies", text: "Compare this paper's key findings with related studies in my library, and with recent work outside it. Cite everything." },
 ];
 
-const each = <T>(v: T): Record<BackendId, T> => ({ "claude-code": v, codex: v, pi: v });
+const each = <T>(v: T): Record<BackendId, T> => ({ "claude-code": v, codex: v, pi: v, custom: v });
 
 export const DEFAULT_SETTINGS: PanelSettings = {
   backend: "claude-code",
@@ -17,7 +17,7 @@ export const DEFAULT_SETTINGS: PanelSettings = {
   model: each(""),
   mode: each(""),
   effort: each(""),
-  auth: { "claude-code": "subscription", codex: "subscription", pi: "api-key" },
+  auth: { "claude-code": "subscription", codex: "subscription", pi: "api-key", custom: "api-key" },
   prompts: DEFAULT_PROMPTS,
   skills: {},
   followFocus: true,

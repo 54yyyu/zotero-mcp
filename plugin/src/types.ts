@@ -87,7 +87,17 @@ export type ChatEvent =
 
 // ───────────────────────────── agent/ ─────────────────────────────
 
-export type BackendId = "claude-code" | "codex" | "pi";
+export type BuiltinBackendId = "claude-code" | "codex" | "pi";
+export type BackendId = BuiltinBackendId | "custom";
+export type BackendValues<T> = Record<BuiltinBackendId, T> & Partial<Record<"custom", T>>;
+
+/** A user-installed stdio ACP agent. Arguments are literal argv entries, never a shell command. */
+export interface CustomAgentConfig {
+  label: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
 
 export interface ModelOption { id: string; name: string; description?: string }
 export interface ModeOption { id: string; name: string; description?: string }
@@ -278,12 +288,13 @@ export interface SkillHost {
 
 export interface PanelSettings {
   backend: BackendId;
+  customAgent?: CustomAgentConfig;
   /** Per backend; "" means the backend's own default. Ids are the backend's, so they are never shared between backends. */
-  model: Record<BackendId, string>;
-  mode: Record<BackendId, string>;
-  effort: Record<BackendId, string>;
+  model: BackendValues<string>;
+  mode: BackendValues<string>;
+  effort: BackendValues<string>;
   /** Per backend: run on the user's subscription (bridge login) or on an API key kept in the OS keychain. */
-  auth: Record<BackendId, "subscription" | "api-key">;
+  auth: BackendValues<"subscription" | "api-key">;
   prompts: PromptEntry[];
   /** Per skill name: its pin slot (shared with the prompts' slots) and whether it is turned off. */
   skills?: Record<string, { slot?: number; off?: boolean }>;
@@ -317,7 +328,7 @@ export interface PanelSettings {
   /** The target language's id (ui/settings-model.ts LANGUAGES); the default follows Zotero's own language. */
   translateTo: string;
   /** Per backend: the translator's model; "" = the fastest one the backend offers. */
-  translateModel: Record<BackendId, string>;
+  translateModel: BackendValues<string>;
   appearance: Appearance;
 }
 

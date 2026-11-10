@@ -34,7 +34,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
   const spawner = createGeckoSpawner();
   const context = new ContextTracker(opts.id);
   context.start(win);
-  const base = createRuntime({ spawner, bridgeDir: PathUtils.join(dataDir, "bridges") });
+  const base = createRuntime({ spawner, bridgeDir: PathUtils.join(dataDir, "bridges"), customAgent: () => settings().customAgent });
   const known = new Map<BackendId, Catalog>();
   // Wherever zotero-cli is, the agent's shell must find it: its folder goes on the agent's PATH.
   const runtime: AgentRuntime = {
@@ -120,5 +120,5 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       return { cwd, brief: `${buildBrief()}\n\n${TOOL_SHEET}\n\n${DRAWING_GUIDE}\n\n${CALLOUT_GUIDE}\n\n${FORMAT_GUIDE}`, env: key && varName ? { [varName]: key } : {} };
     },
   };
-  return { host, spawner, context, prefetchPaper: () => papers.prefetch(host.currentContext()), importImage: images.importImage, knownCatalog: (b) => known.get(b), dispose: () => { offSettings(); sh.dispose(); context.stop(); } };
+  return { host, spawner, context, prefetchPaper: () => papers.prefetch(host.currentContext()), importImage: images.importImage, knownCatalog: (b) => b === "custom" ? undefined : known.get(b), dispose: () => { offSettings(); sh.dispose(); context.stop(); } };
 }

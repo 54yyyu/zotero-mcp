@@ -60,6 +60,39 @@ Claude Code and Codex each run in one of two ways, chosen per agent in the setti
 
 The plugin never runs a model itself.
 
+### Custom ACP agents
+
+In **Settings > Agent**, choose **Custom**. Enter a display name, the executable
+command, arguments as a JSON array of strings, and optional extra environment
+variables as a JSON object of strings. Press **Save custom agent**. For example,
+[Qoder's documented ACP command](https://docs.qoder.com/zh/cli/acp) is:
+
+- Name: `Qoder CLI`
+- Command: `qoder` (or the full path to the executable; on Windows this may be `qoder.cmd`)
+- Arguments: `["--acp"]`
+- Environment: `{}`
+
+Install the agent and sign in through its own CLI first. The plugin starts the
+command directly over stdio, without installing an npm bridge. A command must be
+on the login PATH or be an absolute path; arguments are literal entries, not a
+shell command. The agent inherits your login environment plus the extra variables.
+Extras are saved in Zotero preferences, **not** the keychain; prefer the agent's
+own credential storage for secrets.
+
+**Show Custom's options** starts a short session to read the agent's advertised
+models, effort levels and modes. Missing options stay hidden. A mode's name and
+description come from the agent; custom modes are not assumed to have the same
+permission behavior as the built-in agents. Changing the command takes effect in
+new chats and clears the custom model/mode/effort choices. An existing chat keeps
+its running process.
+
+Custom support is best-effort ACP, not a vendor compatibility certification. It
+uses the existing client's capabilities and does not add filesystem or terminal
+RPC services. Saved custom chats remain readable locally, but continuing them,
+a terminal resume command, Summarise now and Translate are unavailable. In
+particular, the plugin cannot assume an arbitrary agent implements the verified
+tool restrictions required by Translate.
+
 ## Settings
 
 Open them from the gear in the panel, or in Zotero's own Settings window under **Zotero Agent** (the same cards; a change in either shows in the other at once). They are a stack of cards, and everything is per agent where it can differ between agents.

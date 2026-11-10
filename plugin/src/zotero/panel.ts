@@ -36,7 +36,7 @@ export function createPanel(opts: { id: string; version: string; win: any; dataD
  */
 export function createSettingsPane(opts: { version: string; win: any; dataDir: string; root: HTMLElement; known(b: BackendId): Catalog | undefined }): { dispose(): void } {
   const sh = createSettingsHost(opts);
-  const own = createRuntime({ spawner: createGeckoSpawner(), bridgeDir: PathUtils.join(opts.dataDir, "bridges") });
+  const own = createRuntime({ spawner: createGeckoSpawner(), bridgeDir: PathUtils.join(opts.dataDir, "bridges"), customAgent: () => sh.host.getSettings().customAgent });
   const runtime = { detect: () => own.detect(), catalog: (b: BackendId) => { const k = opts.known(b); return k ? Promise.resolve(k) : own.catalog(b); } };
   const ui = mountSettings(opts.root.shadowRoot ?? opts.root.attachShadow({ mode: "open" }), { ...sh.host, runtime }, (b) => !!opts.known(b));
   return { dispose() { ui.dispose(); sh.dispose(); } };
@@ -48,7 +48,10 @@ export function createSettingsPane(opts: { version: string; win: any; dataDir: s
  * change there closes a session started for other ones.
  */
 export function createTranslate(opts: { dataDir: string; known(b: BackendId): Catalog | undefined }): { toggle(event: any, box: Element, button: HTMLElement): void; revive(event: any, box: Element, button: HTMLElement): void; translator: Translator; dispose(): void } {
-  const settings = () => withDefaults(prefs.json("settings", {}), Zotero.locale);
+  const settings = () => {
+    const s = withDefaults(prefs.json("settings", {}), Zotero.locale);
+    return s.backend === "custom" ? { ...s, translate: false } : s;
+  };
   const dir = PathUtils.join(opts.dataDir, "translate");
   const translator = createTranslator({
     known: opts.known,

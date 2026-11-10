@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Zotero Agent can launch a user-installed stdio ACP agent from Settings > Agent > Custom, with a command, literal arguments and extra environment variables (#810). Models and modes come from the agent; custom session continuation, terminal resume and Translate are not supported.
+
 ## [0.16.0] - 2026-11-06
 
 ### Added
