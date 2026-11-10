@@ -10,10 +10,10 @@ import { cleanupTemp, fakeBin, fakeBridgeDir, hermeticSpawner } from "./helpers.
 after(cleanupTemp);
 
 /** A nested dependency, as npm may install it, with no platform-specific vendor path. */
-function bundledCli(dir: string, body: string): void {
+function bundledCli(dir: string, body: string, version?: string): void {
   const pkg = join(dir, "node_modules", "@agentclientprotocol", "codex-acp", "node_modules", "@openai", "codex");
   mkdirSync(join(pkg, "bin"), { recursive: true });
-  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@openai/codex", bin: { codex: "bin/codex.js" } }));
+  writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: "@openai/codex", ...(version ? { version } : {}), bin: { codex: "bin/codex.js" } }));
   writeFileSync(join(pkg, "bin", "codex.js"), body);
 }
 
@@ -58,6 +58,46 @@ describe("Codex login detection", () => {
     const status = await detect(dir, 'echo "Logged in using ChatGPT" >&2');
     assert.equal(status.available, false);
     assert.match(status.reason!, /can't read your Codex configuration: \/home\/u\/\.codex\/config\.toml:39:1: invalid type: map, expected a boolean in `features`\. /);
+  });
+
+  // A user's own Codex that reports its version, then answers login status signed in.
+  const own = (version: string, marker?: string) =>
+    `case "$1" in --version) echo "codex-cli ${version}";; *) ${marker ? `touch '${marker}'; ` : ""}echo "Logged in using ChatGPT" >&2;; esac`;
+  const CONFIG_ERROR = 'console.error("Error loading configuration: /home/u/.codex/config.toml:1:1: invalid type: map, expected a boolean"); process.exitCode = 1;';
+
+  it("asks the user's own Codex when it is newer than the bridge's, since chats will run it (#811)", async () => {
+    const dir = fakeBridgeDir(["codex"]);
+    bundledCli(dir, CONFIG_ERROR, "0.159.3");
+    const status = await detect(dir, own("0.167.0"));
+    assert.equal(status.available, true, status.reason ?? "");
+    assert.equal(status.account, "ChatGPT");
+  });
+
+  it("keeps the bridge's Codex when the user's own is older", async () => {
+    const dir = fakeBridgeDir(["codex"]);
+    const marker = join(dir, "own-probed");
+    bundledCli(dir, CONFIG_ERROR, "0.159.3");
+    const status = await detect(dir, own("0.150.1", marker));
+    assert.equal(status.available, false);
+    assert.match(status.reason!, /can't read your Codex configuration/);
+    assert.equal(existsSync(marker), false, "the older Codex is not asked once the bundled one answered");
+  });
+
+  it("starts Codex chats with CODEX_PATH set to the user's newer Codex, and not to an older one (#811)", async () => {
+    for (const [version, expected] of [["0.167.0", true], ["0.150.1", false]] as const) {
+      const dir = fakeBridgeDir(["codex"]);
+      bundledCli(dir, SIGNED_IN, "0.159.3");
+      const bin = fakeBin({ codex: own(version), npm: "exit 0" });
+      const base = hermeticSpawner({}, [bin]);
+      const envs: Record<string, string>[] = [];
+      const spawner: Spawner = { ...base, spawn: (command, args, opts) => { envs.push(opts.env); return base.spawn(command, args, opts); } };
+      const runtime = createRuntime({ spawner, bridgeDir: dir, nodePath: process.execPath });
+      const session = await runtime.start({ backend: "codex", cwd: dir, brief: "" } as never);
+      await session.close();
+      const bridgeEnv = envs.at(-1)!;
+      if (expected) assert.equal(bridgeEnv.CODEX_PATH, join(bin, "codex"), `codex ${version}`);
+      else assert.equal(bridgeEnv.CODEX_PATH, undefined, `codex ${version}`);
+    }
   });
 
   it("asks the system Codex when the bridge is not installed yet", async () => {

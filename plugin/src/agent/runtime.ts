@@ -4,7 +4,7 @@ import type { AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, Cus
 import { readCustomAgent } from "../custom-agent.ts";
 import { AcpClient } from "./acp.ts";
 import { BACKENDS, BACKEND_IDS, backendOf, findCli, probeLogin, type BackendSpec } from "./backends.ts";
-import { ensureBridge, locateBridge, locateBundledCodexCli } from "./bridges.ts";
+import { ensureBridge, locateBridge, locateBundledCodex, systemCodexForChats } from "./bridges.ts";
 import { bridgeEnv, dirnameOf, findBinary, nodeEval, stripApiKeys, withPathFirst } from "./env.ts";
 import { AcpAgentSession } from "./session.ts";
 import { t } from "../i18n.ts";
@@ -128,12 +128,15 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
           if (spec.cli && !cli) return { ...base, available: false, reason: t(spec.cli.hint) };
           const installed = await locateBridge(spawner, nodeEnv, node, bridgeDir, spec).catch(() => null);
           if (!installed && !npm) return { ...base, available: false, reason: t("agent.npmMissing", { agent: spec.label }) };
-          // Chats run the bridge's own Codex, which can be older than the one on PATH, so it is the one asked: a
-          // config.toml only the newer one reads is reported here, not as "failed to load workspace requirements" at
-          // the first message (#811). The Codex on PATH answers before the bridge is installed, or when the OS killed
-          // the bundled one; either Codex can be killed while the other works (#797), so a probe that could not tell
+          // The Codex chats run is the one asked. That is the user's own when it is at least as new as the bridge's
+          // (systemCodexForChats), else the bundled one, which can be older than the one on PATH: then a config.toml
+          // only the newer one reads is reported here, not as "failed to load workspace requirements" at the first
+          // message (#811). The Codex on PATH answers before the bridge is installed, or when the OS killed the
+          // bundled one; either Codex can be killed while the other works (#797), so a probe that could not tell
           // never hides a successful one.
-          const bundled = id === "codex" && installed ? await locateBundledCodexCli(spawner, nodeEnv, node, installed) : null;
+          const found = id === "codex" && installed ? await locateBundledCodex(spawner, nodeEnv, node, installed) : null;
+          const own = found ? await systemCodexForChats(spawner, nodeEnv, cli, found) : null;
+          const bundled = found && !own ? found.entry : null;
           let login = bundled ? await probeLogin(spawner, nodeEnv, id, node, [bundled]) : {};
           if (cli && (!bundled || (login.loggedIn !== true && !login.configError && (login.reason || login.loggedIn === undefined)))) {
             const system = await probeLogin(spawner, env, id, cli);
@@ -177,7 +180,14 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
         ensureBridge({ spawner, env, node, bridgeDir, spec, ...(opts.onProgress ? { onProgress: opts.onProgress } : {}) }),
         spec.claudeMeta ? findCli(spawner, withPathFirst(env, dirnameOf(node)), spec) : null,
       ]);
-      const extra = { ...start.env, ...(start.locked ? await lockedEnv(spawner, env, spec, start) : {}) };
+      const extra: Record<string, string> = { ...start.env, ...(start.locked ? await lockedEnv(spawner, env, spec, start) : {}) };
+      if (start.backend === "codex" && !extra.CODEX_PATH) {
+        // Chats run the user's own Codex when it is at least as new as the bridge's (#811); see systemCodexForChats.
+        const nodeEnv = withPathFirst(env, dirnameOf(node));
+        const found = await locateBundledCodex(spawner, nodeEnv, node, bridge);
+        const own = found ? await systemCodexForChats(spawner, nodeEnv, await findCli(spawner, env, spec), found) : null;
+        if (own) extra.CODEX_PATH = own;
+      }
       const childEnv = bridgeEnv(env, { claudeExecutable: claude, node, extra });
       const client = await AcpClient.spawn({
         spawner,
