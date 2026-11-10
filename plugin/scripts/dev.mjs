@@ -10,8 +10,12 @@
 //   1. the profile and data dir live under plugin/.dev/ and user.js pins useDataDir + dataDir there;
 //   2. we refuse to run if that path is, or is inside, ~/Zotero or any dir holding a zotero.sqlite we did not make;
 //   3. after launch we check with lsof that the process holds nothing under ~/Zotero, and kill it if it does;
-//   4. we only ever signal the pid we started, and the local server port is a checked-free one, never 23119.
+//   4. we only ever signal the Zotero we started (its pid, and any process on our profile, of which there was none
+//      before we launched it: we refuse to start while one exists), and the local server port is a checked-free one,
+//      never 23119;
+//   5. however the run ends (done, failed, timed out, Ctrl-C, killed, crashed), that Zotero is stopped.
 import { execFileSync, spawn } from "node:child_process";
+import { zoterosOn } from "./dev-guard.mjs";
 import { pathToFileURL } from "node:url";
 import { copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -45,13 +49,19 @@ mkdirSync(dev, { recursive: true });
   }
   const release = () => rmSync(lock, { recursive: true, force: true });
   process.on("exit", release);
-  for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, () => process.exit(130));
 }
 const profile = join(dev, "profile");
 const data = join(dev, "data");
 const realData = join(homedir(), "Zotero");
 
 function die(msg) { console.error(`dev: ${msg}`); process.exit(2); }
+
+// A Zotero already on this profile (a run that was cut off left it): a second one would only show the user Zotero's "A copy
+// of Zotero is already open". Say which, and stop; it is not ours to kill.
+{
+  const left = zoterosOn(profile);
+  if (left.length) die(`a Zotero is already running on ${profile} (pid ${left.join(", ")}), probably left by an earlier run. Quit it, then run again.`);
+}
 
 // --- 1/2: the data dir must be ours -------------------------------------------------------------------------
 for (const p of [profile, data]) {
@@ -195,16 +205,22 @@ const sink = flag("debug") ? openSync(logFile, "w") : "ignore";
 const child = spawn(ZOTERO, ["--profile", profile, "--new-instance", "-ZoteroDebugText"], { env, stdio: ["ignore", sink, sink] });
 console.log(`dev: zotero pid ${child.pid}, server port ${port}, data ${data}`);
 
+// Ours: the pid we spawned and whatever runs on our profile (Zotero may re-launch itself under a new pid). Nothing ran
+// there before we spawned (checked above) and the .dev lock keeps other runs out, so this never reaches someone else's.
+const ours = () => [...new Set([...(child.exitCode === null && !child.signalCode ? [child.pid] : []), ...zoterosOn(profile)])];
+const signal = (pids, sig) => { for (const pid of pids) { try { process.kill(pid, sig); } catch { /* gone */ } } };
 let killed = false;
 async function stop() {
   if (killed) return;
   killed = true;
-  try { process.kill(child.pid, "SIGTERM"); } catch {}
-  for (let i = 0; i < 20; i++) { if (child.exitCode !== null || child.signalCode) return; await sleep(250); }
-  try { process.kill(child.pid, "SIGKILL"); } catch {}
+  signal(ours(), "SIGTERM");
+  for (let i = 0; i < 20 && ours().some((pid) => { try { process.kill(pid, 0); return true; } catch { return false; } }); i++) await sleep(250);
+  signal(ours(), "SIGKILL");
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-process.on("SIGINT", async () => { await stop(); process.exit(130); });
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, async () => { await stop(); process.exit(130); });
+// Any other way out (an exception, process.exit from a check): no waiting is possible here, so whatever is left is killed.
+process.on("exit", () => { if (!killed) signal(ours(), "SIGKILL"); });
 
 // --- 3: verify isolation once the process has opened its database ---------------------------------------
 await sleep(6000);
