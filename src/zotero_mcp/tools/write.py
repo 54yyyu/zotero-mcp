@@ -3617,7 +3617,9 @@ def delete_item(
 # Duplicate detection — shared by find_duplicates and merge_duplicates
 # ---------------------------------------------------------------------------
 
-# Whole-library scan ceiling. Past this a caller wants collection_key instead.
+# API scan ceiling, in top-level items (what the grouping below compares). It
+# bounds the requests one call can make (at most 51 pages of 100). Past this a
+# caller wants collection_key instead.
 _DUP_SCAN_MAX_ITEMS = 5000
 
 # find_duplicates renders one compact line per item of already-grouped
@@ -3646,19 +3648,43 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
     Both zotero_find_duplicates and zotero_merge_duplicates(auto=True) go
     through here, so "merge everything that qualifies" and "show me what
     qualifies" can never disagree about what a group is.
+
+    On the API path the scan is bounded by ``_DUP_SCAN_MAX_ITEMS`` top-level
+    items, and a whole-library scan asks for the count first (one request)
+    rather than paging in 5,100 items to say "too large" (#507).
     """
     items = _library.get_library_backend(zot).duplicate_scan_items(collection_key)
     if items is None:
         # Only SQLite can enumerate without an HTTP request/count ceiling.
         # The API path (including an unavailable-SQLite fallback) stays bounded.
+        page_size = 100
+
+        # Ask for the size before paging: counting is one request, and paging
+        # in 5,100 items just to say "too large" is about 51. Only the
+        # whole-library scan can be refused by a count (num_items() counts
+        # /items/top, what top() pages); a collection's count includes
+        # children, so it could only over-refuse.
+        if not collection_key:
+            try:
+                total = zot.num_items()
+            except Exception:
+                total = 0  # the paging guard below still bounds the scan
+            if total > _DUP_SCAN_MAX_ITEMS:
+                return {}, (
+                    f"Library has {total} top-level items — too large for "
+                    "duplicate scan. Please scope by collection_key to reduce "
+                    "the search."
+                )
+
+        # Top-level items only: the grouping below drops attachments, notes
+        # and annotations anyway, but they would use up the page budget.
         items = []
         start = 0
-        page_size = 100
         while True:
             if collection_key:
-                batch = zot.collection_items(collection_key, start=start, limit=page_size)
+                batch = zot.collection_items_top(collection_key, start=start, limit=page_size)
             else:
-                batch = zot.items(start=start, limit=page_size)
+                batch = zot.top(start=start, limit=page_size)
             if not batch:
                 break
             items.extend(batch)
@@ -3670,8 +3696,9 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
 
         if len(items) > _DUP_SCAN_MAX_ITEMS:
             return {}, (
-                f"Library has {len(items)} items — too large for duplicate scan. "
-                "Please scope by collection_key to reduce the search."
+                f"Scan exceeded {_DUP_SCAN_MAX_ITEMS} top-level items — too large "
+                "for duplicate scan. Please scope by collection_key to reduce the "
+                "search."
             )
 
     wanted = {"doi", "title"} if method == "both" else {method}
@@ -3704,9 +3731,10 @@ def _collect_duplicate_groups(zot, method, collection_key=None):
         "unattended. "
         "collection_key: optional 8-character key to restrict scanning "
         "to one collection; otherwise scans the whole active library. "
-        "LIBRARY SIZE CAP: API scans refuse libraries with > 5,000 items; "
-        "pass collection_key to narrow the scope. Local SQLite scans have "
-        "no item-count ceiling and work with Zotero closed. "
+        "LIBRARY SIZE CAP: API scans refuse libraries with > 5,000 top-level "
+        "items (attachments and notes do not count); pass collection_key to "
+        "narrow the scope. Local SQLite scans have no item-count ceiling and "
+        "work with Zotero closed. "
         "limit: max groups per call (default 50, max 500). "
         "offset: 0-based index of the first group returned (default 0). "
         "Group order is stable, so page a library with more groups than "
