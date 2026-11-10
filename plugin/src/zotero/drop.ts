@@ -3,7 +3,8 @@
 //   zotero/annotation  JSON array of annotations, each with attachmentItemID added by the reader (reader.js)
 import type { ContextChip } from "../types.ts";
 import type { ContextTracker } from "./context.ts";
-import { itemLabel, refOf } from "./context.ts";
+import { annotationType, itemLabel, refOf } from "./context.ts";
+import { t } from "../i18n.ts";
 
 const MAX = 10;
 
@@ -29,7 +30,7 @@ export async function dropChips(tracker: ContextTracker, data: DataTransfer): Pr
     } else if (a.type !== "image") {
       // Not saved yet (a selection being dragged): the text and page are all there is.
       const label = a.pageLabel || "?";
-      chips.push({ id: `annotation:${a.id ?? chips.length}`, kind: "annotation", label: `${a.type ?? "text"} · p.${label}`, auto: false, pinned: true, ref: { ...refOf(att), pageLabel: label }, text: a.text || a.comment || "" });
+      chips.push({ id: `annotation:${a.id ?? chips.length}`, kind: "annotation", label: t("chip.annotationPage", { type: annotationType(a.type ?? "text"), page: label }), auto: false, pinned: true, ref: { ...refOf(att), pageLabel: label }, text: a.text || a.comment || "" });
     }
   }
   return chips;

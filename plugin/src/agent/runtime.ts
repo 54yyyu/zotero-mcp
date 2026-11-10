@@ -6,6 +6,7 @@ import { BACKEND_IDS, backendOf, findCli, probeLogin, type BackendSpec } from ".
 import { ensureBridge, locateBridge, locateBundledCodexCli } from "./bridges.ts";
 import { bridgeEnv, dirnameOf, findBinary, nodeEval, stripApiKeys, withPathFirst } from "./env.ts";
 import { AcpAgentSession } from "./session.ts";
+import { t } from "../i18n.ts";
 
 export interface RuntimeOpts {
   spawner: Spawner;
@@ -19,7 +20,7 @@ export interface RuntimeOpts {
   onProgress?: (message: string) => void;
 }
 
-const NODE_MISSING = "node was not found on your login PATH. Install Node.js (https://nodejs.org), then reopen Zotero.";
+const nodeMissing = () => t("agent.nodeMissing");
 
 /**
  * Remove a probe's temp workspace, and the empty project folder Claude Code makes for it under ~/.claude/projects
@@ -38,9 +39,9 @@ export const CATALOG_CLEANUP = 'real=$(cd "$1" && pwd -P); d="$HOME/.claude/proj
 async function lockedEnv(spawner: Spawner, env: Record<string, string>, spec: BackendSpec, { cwd, model }: StartOpts): Promise<Record<string, string>> {
   if (spec.id === "claude-code") return { MAX_THINKING_TOKENS: "0", ...(model ? { ANTHROPIC_MODEL: model } : {}) };
   if (spec.id === "codex") return { CODEX_CONFIG: JSON.stringify({ sandbox_mode: "read-only", approval_policy: "never", web_search: "disabled" }) };
-  if (spawner.windows) throw new Error("Translating with pi is not available on Windows yet. Choose another agent for translation.");
+  if (spawner.windows) throw new Error(t("agent.piWindows"));
   const pi = await findCli(spawner, env, spec);
-  if (!pi) throw new Error(spec.cli!.hint);
+  if (!pi) throw new Error(t(spec.cli!.hint));
   const script = `${cwd}/pi-locked.sh`;
   const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   const body = `#!/bin/sh\nexec ${q(pi)} --no-tools --no-extensions --no-skills --no-prompt-templates --no-context-files --no-session "$@"\n`;
@@ -111,11 +112,11 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
         BACKEND_IDS.map(async (id): Promise<BackendStatus> => {
           const spec = backendOf(id);
           const base = { id, label: spec.label };
-          if (!node) return { ...base, available: false, reason: NODE_MISSING };
+          if (!node) return { ...base, available: false, reason: nodeMissing() };
           const cli = await findCli(spawner, env, spec);
-          if (spec.cli && !cli) return { ...base, available: false, reason: spec.cli.hint };
+          if (spec.cli && !cli) return { ...base, available: false, reason: t(spec.cli.hint) };
           const installed = await locateBridge(spawner, nodeEnv, node, bridgeDir, spec).catch(() => null);
-          if (!installed && !npm) return { ...base, available: false, reason: `npm was not found, so the ${spec.label} bridge cannot be installed. Install Node.js (it includes npm).` };
+          if (!installed && !npm) return { ...base, available: false, reason: t("agent.npmMissing", { agent: spec.label }) };
           let login = cli ? await probeLogin(spawner, env, id, cli) : {};
           // A system Codex can be killed by the OS while the bridge's own version still works.
           // Only a successful probe of that installed dependency may override the failed check.
@@ -126,7 +127,7 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
               if (fallback.loggedIn === true) login = fallback;
             }
           }
-          if (login.loggedIn === false) return { ...base, available: false, reason: login.reason ?? `${spec.label} is not signed in. ${spec.cli?.hint ?? ""}`.trim() };
+          if (login.loggedIn === false) return { ...base, available: false, reason: login.reason ?? `${t("agent.notSignedIn", { agent: spec.label })} ${spec.cli ? t(spec.cli.hint) : ""}`.trim() };
           return { ...base, available: true, ...(login.account ? { account: login.account } : {}) };
         }),
       );
@@ -138,7 +139,7 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
       const keyed = start.auth === "subscription" ? stripApiKeys(login, spec.apiKeyVars) : login;
       const env = (start.path ?? []).reduceRight((e, dir) => withPathFirst(e, dir), keyed);
       const node = await resolveNode(env);
-      if (!node) throw new Error(NODE_MISSING);
+      if (!node) throw new Error(nodeMissing());
       const [bridge, claude] = await Promise.all([
         ensureBridge({ spawner, env, node, bridgeDir, spec, ...(opts.onProgress ? { onProgress: opts.onProgress } : {}) }),
         spec.claudeMeta ? findCli(spawner, withPathFirst(env, dirnameOf(node)), spec) : null,

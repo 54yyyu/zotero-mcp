@@ -6,6 +6,7 @@ import type { PanelSettings } from "../types.ts";
 import { LANGUAGES, language } from "../ui/settings-model.ts";
 import { translationRequest } from "../agent/index.ts";
 import type { Translator } from "./translate.ts";
+import { resolveLanguage, setLanguage, t } from "../i18n.ts";
 
 const WIDTH = 320;
 
@@ -49,12 +50,12 @@ const ICON = {
 /** What one press shows: the result block in this popup, and how to take it away. `text`: the selection it translates. */
 interface Shown { text: string; reader: any; box: Element; el: HTMLElement; popup: HTMLElement | null; button: HTMLElement; closed: boolean }
 
-export function createPopupTranslate(t: Translator, o: { settings(): PanelSettings; copy(text: string): void }) {
+export function createPopupTranslate(translator: Translator, o: { settings(): PanelSettings; copy(text: string): void }) {
   let shown: Shown | null = null;
 
   const close = (s: Shown) => {
     s.closed = true;
-    t.cancel();
+    translator.cancel();
     s.el.remove();
     s.button.setAttribute("aria-expanded", "false");
     s.popup?.style.removeProperty("width");
@@ -81,8 +82,9 @@ export function createPopupTranslate(t: Translator, o: { settings(): PanelSettin
     if (shown?.box === box) return close(shown);
     if (shown) close(shown);
     const doc: Document = event.doc;
+    setLanguage(resolveLanguage(o.settings().uiLanguage, Zotero.locale));
     if (!doc.getElementById("zmc-tr-css")) doc.head.append(Object.assign(doc.createElement("style"), { id: "zmc-tr-css", textContent: CSS }));
-    const el = node(doc, "div", "zmc-tr", { role: "region", "aria-label": "Translation" });
+    const el = node(doc, "div", "zmc-tr", { role: "region", "aria-label": t("tr.region") });
     // The panel's accent; Mono is a quiet ink line.
     el.style.setProperty("--zmc-tr-accent", o.settings().appearance.accent || "color-mix(in srgb, var(--fill-primary) 32%, transparent)");
     const s: Shown = { text: String(event.params.annotation.text), reader: event.reader, box, el, popup: null, button, closed: false };
@@ -106,14 +108,14 @@ export function createPopupTranslate(t: Translator, o: { settings(): PanelSettin
     const doc = s.el.ownerDocument;
     const { text: request, truncated } = translationRequest(source);
     const out = node(doc, "div", "zmc-tr__text", { lang: to, dir: "auto", tabindex: "0" });
-    const sk = node(doc, "div", "zmc-tr__sk", { "aria-label": "Translating" }, node(doc, "i"), node(doc, "i"));
+    const sk = node(doc, "div", "zmc-tr__sk", { "aria-label": t("tr.busy") }, node(doc, "i"), node(doc, "i"));
     const scroll = node(doc, "div", "zmc-tr__scroll", null, sk, out);
-    const select = node(doc, "select", "", { "aria-label": "Translate into" }, ...LANGUAGES.map((l) => node(doc, "option", "", { value: l.id }, l.label))) as HTMLSelectElement;
+    const select = node(doc, "select", "", { "aria-label": t("settings.translate.into") }, ...LANGUAGES.map((l) => node(doc, "option", "", { value: l.id }, l.label))) as HTMLSelectElement;
     select.value = to;
     const chip = node(doc, "label", "zmc-tr__lang", null, node(doc, "span", "", null, language(to).label), icon(doc, ICON.chevron), select);
     select.addEventListener("change", () => run(s, source, select.value)); // this popup only; the setting stays
-    const copy = node(doc, "button", "zmc-tr__act", { type: "button", title: "Copy the translation", hidden: "" }, icon(doc, ICON.copy), "Copy") as HTMLButtonElement;
-    const note = node(doc, "span", "zmc-tr__note", null, truncated ? "First 6,000 characters" : "");
+    const copy = node(doc, "button", "zmc-tr__act", { type: "button", title: t("tr.copyTip"), hidden: "" }, icon(doc, ICON.copy), t("common.copy")) as HTMLButtonElement;
+    const note = node(doc, "span", "zmc-tr__note", null, truncated ? t("tr.truncated") : "");
     s.el.replaceChildren(node(doc, "div", "zmc-tr__body", null, scroll), node(doc, "div", "zmc-tr__foot", null, chip, note, copy));
     s.el.setAttribute("aria-busy", "true");
     scroll.addEventListener("scroll", () => fade(scroll), { passive: true });
@@ -121,14 +123,14 @@ export function createPopupTranslate(t: Translator, o: { settings(): PanelSettin
     let all = "";
     copy.addEventListener("click", () => {
       o.copy(all.trim());
-      copy.replaceChildren(icon(doc, ICON.check), "Copied");
-      doc.defaultView!.setTimeout(() => copy.replaceChildren(icon(doc, ICON.copy), "Copy"), 1400);
+      copy.replaceChildren(icon(doc, ICON.check), t("common.copied"));
+      doc.defaultView!.setTimeout(() => copy.replaceChildren(icon(doc, ICON.copy), t("common.copy")), 1400);
     });
     const gone = () => s.closed || !s.el.isConnected;
-    t.translate({
+    translator.translate({
       text: request, to,
       onText(delta) {
-        if (gone()) return t.cancel(); // the popup closed with its selection
+        if (gone()) return translator.cancel(); // the popup closed with its selection
         const piece = all ? delta : delta.trimStart();
         all += delta;
         if (!piece) return;
@@ -149,8 +151,8 @@ export function createPopupTranslate(t: Translator, o: { settings(): PanelSettin
         sk.remove();
         out.remove();
         s.el.removeAttribute("aria-busy");
-        scroll.append(node(doc, "div", "zmc-tr__err", { role: "alert" }, node(doc, "b", "", null, "Couldn't translate"), e instanceof Error ? e.message : String(e)));
-        const retry = node(doc, "button", "zmc-tr__act", { type: "button" }, "Try again");
+        scroll.append(node(doc, "div", "zmc-tr__err", { role: "alert" }, node(doc, "b", "", null, t("tr.failed")), e instanceof Error ? e.message : String(e)));
+        const retry = node(doc, "button", "zmc-tr__act", { type: "button" }, t("common.tryAgain"));
         retry.addEventListener("click", () => run(s, source, select.value));
         copy.replaceWith(retry);
       },

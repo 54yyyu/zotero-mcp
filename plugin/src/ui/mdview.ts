@@ -7,6 +7,7 @@ import { ALLOWED_ATTRS, ALLOWED_CLASSES, ALLOWED_TAGS, HEX_COLOR, MAX_MD, blockN
 import type { MdNode } from "./markdown.ts";
 import { copyText, edgeFade, env, flashCheck, h, icon } from "./dom.ts";
 import { calloutEl, jumpToCallout, refEl } from "./callout.ts";
+import { t } from "../i18n.ts";
 
 /** `open` gets a link or citation chip that was clicked (http(s) or zotero: only ever reaches it); `saveFile` is the host's file picker
  *  (diagram export), `saveNote` the host's note writer (a diagram's "Add to a note"). */
@@ -126,7 +127,7 @@ function toDom(node: MdNode, rc: RenderCtx): Node {
       void renderMath(host, tex, display);
       if (!display) return host;
       // Copy TeX: the formula's source, from a quiet button that shows on hover or focus.
-      const copy = h("button.iconbtn.iconbtn--sm.math__copy", { type: "button", "aria-label": "Copy TeX", title: "Copy TeX" }, icon("copy"));
+      const copy = h("button.iconbtn.iconbtn--sm.math__copy", { type: "button", "aria-label": t("md.copyTex"), title: t("md.copyTex") }, icon("copy"));
       copy.addEventListener("click", () => void copyText(tex).then((ok) => ok && flashCheck(copy)));
       return h("div.mathblock", null, host, copy);
     }
@@ -170,7 +171,7 @@ function toDom(node: MdNode, rc: RenderCtx): Node {
 }
 
 function codeBlock(code: string, lang?: string): HTMLElement {
-  const copy = h("button.iconbtn.iconbtn--sm.code__copy", { type: "button", "aria-label": "Copy code", title: "Copy" }, icon("copy"));
+  const copy = h("button.iconbtn.iconbtn--sm.code__copy", { type: "button", "aria-label": t("md.copyCode"), title: t("common.copy") }, icon("copy"));
   copy.addEventListener("click", () => void copyText(code).then((ok) => ok && flashCheck(copy)));
   return h("div.code", null,
     h("div.code__head", null, h("span.code__lang", null, lang ?? "text"), copy),

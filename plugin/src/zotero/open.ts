@@ -1,6 +1,7 @@
 // Jumping to things in Zotero: the zotero:// links the agent writes, and refs from chips.
 import type { ZoteroRef } from "../types.ts";
 import { findQuote, rangeRects } from "./quote.ts";
+import { t } from "../i18n.ts";
 
 type Target = ZoteroRef & { page?: string; quote?: string };
 
@@ -44,18 +45,18 @@ export async function openTarget(win: any, target: string | ZoteroRef): Promise<
   }
   const uri = typeof target === "string" ? target : uriFor(target);
   const ref = parseZoteroURI(uri);
-  if (!ref) throw new Error(`Not a Zotero link: ${uri}`);
+  if (!ref) throw new Error(t("open.notLink", { uri }));
 
   if (ref.collectionKey) {
     const col = Zotero.Collections.getByLibraryAndKey(ref.libraryID, ref.collectionKey);
-    if (!col) throw new Error("That collection no longer exists");
+    if (!col) throw new Error(t("open.noCollection"));
     win.Zotero_Tabs.select("zotero-pane");
     await win.ZoteroPane.collectionsView.selectCollection(col.id);
     return;
   }
   if (ref.attachmentKey) {
     const att = Zotero.Items.getByLibraryAndKey(ref.libraryID, ref.attachmentKey);
-    if (!att) throw new Error("That attachment no longer exists");
+    if (!att) throw new Error(t("open.noAttachment"));
     const location: Record<string, unknown> | undefined = ref.annotationKey ? { annotationID: ref.annotationKey } : ref.page ? { pageLabel: ref.page } : undefined;
     if (!ref.quote) { await Zotero.Reader.open(att.id, location); return; }
     // A quote: an open reader just focuses (no page jump first), then flashes the words; never fails.
@@ -69,7 +70,7 @@ export async function openTarget(win: any, target: string | ZoteroRef): Promise<
     return;
   }
   const item = Zotero.Items.getByLibraryAndKey(ref.libraryID, ref.itemKey!);
-  if (!item) throw new Error("That item no longer exists");
+  if (!item) throw new Error(t("open.noItem"));
   win.Zotero_Tabs.select("zotero-pane");
   await win.ZoteroPane.selectItem(item.id);
 }

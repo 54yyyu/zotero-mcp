@@ -31,6 +31,8 @@ interface FakeOptions {
   bigPi?: boolean;
   /** Start as a first-run user: the welcome screen shows before the chat. */
   welcome?: boolean;
+  /** Zotero's UI locale ("de-DE"); the preview's `?lang=`. English by default, which the behavior tests read. */
+  locale?: string;
 }
 
 interface Sim {
@@ -279,11 +281,13 @@ export class FakeHost implements PanelHost {
   private themeCbs = new Set<() => void>();
   private settingsCbs = new Set<() => void>();
   private _theme: "light" | "dark";
+  private _locale: string;
   private store = new Map<string, { meta: SavedSession; events: ChatEvent[] }>();
   private fixed = new Set<string>();
 
   constructor(o: FakeOptions = {}) {
     this._theme = o.theme ?? "light";
+    this._locale = o.locale ?? "en-US";
     this.settings.welcomed = !o.welcome;
     const sim: Sim = {
       opened: [], prompts: [], doctorMode: o.doctor ?? "ok", searchFails: false, startFails: null, catalogFails: [], pickFolder: "/Users/you/Documents/Projects/hiring-audits/paper-notes", pickImage: { name: "kyoto-evening.jpg", dataUrl: SAMPLE_IMAGE }, image: null, preparedCwd: [], catalogDelay: o.catalogDelay ?? 120, data: { cleared: 0, revealed: 0, resets: 0 }, nextAnswer: null, saved: [], saveTo: "/Users/you/Downloads", notes: [], noteFails: null, contextUsage: null, speed: o.speed ?? 18, writes: [], keys: {}, closed: 0,
@@ -447,6 +451,7 @@ export class FakeHost implements PanelHost {
   async prepareSession(cwd?: string) { this.sim.preparedCwd.push(cwd); return { cwd: cwd ?? this.folder(), brief: "You are in a Zotero side panel.", env: {} }; }
 
   // --- theme
+  locale() { return this._locale; }
   theme() { return this._theme; }
   onThemeChange(cb: () => void) { this.themeCbs.add(cb); return () => { this.themeCbs.delete(cb); }; }
   onSettingsChange(cb: () => void) { this.settingsCbs.add(cb); return () => { this.settingsCbs.delete(cb); }; }

@@ -18,6 +18,8 @@
 //                            session/set_config_option works. No permission frames at all.
 import type { BackendId, Spawner } from "../types.ts";
 import { findBinary } from "./env.ts";
+import { t } from "../i18n.ts";
+import type { Key } from "../i18n.ts";
 
 export interface BackendSpec {
   id: BackendId;
@@ -26,7 +28,8 @@ export interface BackendSpec {
   pkg: string;
   version: string;
   /** The CLI the user must have on their login PATH, when the backend needs one. */
-  cli?: { name: string; hint: string };
+  /** `hint`: how to install it, a message key (shown in the user's language). */
+  cli?: { name: string; hint: Key };
   /** How the model is chosen after session/new: a config option, or session/set_model. */
   modelVia: "config_option" | "set_model";
   /** Where the reasoning effort lives: a config option (`effort` / `thought_level`), or a `[level]` suffix on model ids (codex). */
@@ -51,7 +54,7 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     label: "Claude Code",
     pkg: "@agentclientprotocol/claude-agent-acp",
     version: "0.85.1",
-    cli: { name: "claude", hint: "Install Claude Code (https://claude.com/claude-code), then run `claude` once to sign in." },
+    cli: { name: "claude", hint: "agent.install.claude" },
     modelVia: "config_option",
     effortVia: "config_option",
     apiKeyVars: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
@@ -66,7 +69,7 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     label: "Codex",
     pkg: "@agentclientprotocol/codex-acp",
     version: "2.1.1",
-    cli: { name: "codex", hint: "Install Codex (npm i -g @openai/codex), then run `codex login`." },
+    cli: { name: "codex", hint: "agent.install.codex" },
     modelVia: "set_model",
     effortVia: "model-suffix",
     apiKeyVars: ["OPENAI_API_KEY", "CODEX_API_KEY"],
@@ -81,7 +84,7 @@ export const BACKENDS: Record<BackendId, BackendSpec> = {
     label: "pi",
     pkg: "pi-acp",
     version: "0.0.34",
-    cli: { name: "pi", hint: "Install pi (npm i -g @earendil-works/pi-coding-agent) and configure a provider." },
+    cli: { name: "pi", hint: "agent.install.pi" },
     modelVia: "config_option",
     effortVia: "config_option",
     apiKeyVars: [],
@@ -123,7 +126,7 @@ export async function probeLogin(spawner: Spawner, env: Record<string, string>, 
     if (id === "codex") {
       const r = await spawner.run(cliPath, [...cliArgs, "login", "status"], { env, timeoutMs: 15_000 });
       if (r.code === null || r.code < 0) {
-        return { loggedIn: false, reason: `Codex login check was terminated (exit code ${r.code ?? "unknown"}). Run \`codex login status\` in a terminal to diagnose.` };
+        return { loggedIn: false, reason: t("agent.codexLoginCheck", { code: r.code ?? "?" }) };
       }
       const text = `${r.stdout}\n${r.stderr}`;
       // Newer Codex reports an API key as "API key configured - sk-…" rather than "Logged in using an API key" (#785).

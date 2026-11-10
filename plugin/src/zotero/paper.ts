@@ -4,6 +4,7 @@
 // the delta rules send each once per paper per session, and again when it changes. Nothing here runs at Zotero's startup.
 import type { ContextChip } from "../types.ts";
 import { itemLabel, viewStats } from "./context.ts";
+import { t as msg } from "../i18n.ts"; // `t` here is the text being prepared
 
 /** The longest the first message waits for the file once the session is up; later turns name it when it is ready. */
 export const WAIT_MS = 1500;
@@ -206,7 +207,7 @@ export function createPapers(o: { dataDir: string; defaultFolder(): string; chat
       try {
         t = target(chips);
         meta = items(chips).map((it): ContextChip => ({
-          id: `paper:${it.key}`, kind: "paper", label: `${itemLabel(it)} metadata`, auto: true, pinned: false,
+          id: `paper:${it.key}`, kind: "paper", label: msg("sent.metadata", { item: itemLabel(it) }), auto: true, pinned: false,
           ref: { libraryID: it.libraryID, itemKey: it.key }, text: aboutText(facts(it, t && t.item === it ? pagesOf(t.att) : undefined)),
         }));
       } catch (e) { Zotero.debug(`zotero-chat: paper metadata: ${e}`); }
@@ -215,7 +216,7 @@ export function createPapers(o: { dataDir: string; defaultFolder(): string; chat
       const done = pending ? await within(pending, WAIT_MS) : null;
       if (!t || !done) return meta;
       return [...meta, {
-        id: `fulltext:${t.att.key}`, kind: "paper", label: `${itemLabel(t.item)} full text`, auto: true, pinned: false,
+        id: `fulltext:${t.att.key}`, kind: "paper", label: msg("sent.fulltext", { item: itemLabel(t.item) }), auto: true, pinned: false,
         ref: { libraryID: t.att.libraryID, itemKey: t.item.key, attachmentKey: t.att.key }, text: fullTextLine(done.path, done.pages),
       }];
     },

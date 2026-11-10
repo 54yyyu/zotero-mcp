@@ -7,6 +7,7 @@
 // imported its PNG (`image(i)`), else its SVG source as code.
 import { CALLOUT_KINDS, HEX_COLOR, mdToTree, walk } from "./markdown.ts";
 import type { MdEl, MdNode } from "./markdown.ts";
+import { t } from "../i18n.ts";
 
 export interface NoteHtmlOpts {
   /** The note's first line (Zotero titles a note by it). */
@@ -51,7 +52,7 @@ export function noteHtml(markdown: string, o: NoteHtmlOpts = {}): string {
     if (c.tag !== "callout") continue;
     const spec = CALLOUT_KINDS[c.attrs?.kind ?? ""];
     if (spec?.numbered) numbers.set(c, ++count);
-    if (c.attrs?.label && spec && !names.has(c.attrs.label)) names.set(c.attrs.label, spec.numbered ? `${spec.label} ${count}` : spec.label);
+    if (c.attrs?.label && spec && !names.has(c.attrs.label)) names.set(c.attrs.label, spec.numbered ? `${t(spec.label)} ${count}` : t(spec.label));
   }
 
   const mathHtml = (tex: string, block: boolean): string => {
@@ -109,7 +110,7 @@ export function noteHtml(markdown: string, o: NoteHtmlOpts = {}): string {
         const first = n.kids?.[0];
         const title = typeof first !== "string" && first?.tag === "calloutTitle" ? first : null;
         const num = numbers.get(n);
-        const label = `${spec?.label ?? esc(a.kind ?? "")}${num ? ` ${num}` : ""}${spec?.tone === "proof" ? "." : ""}`;
+        const label = `${spec ? esc(t(spec.label)) : esc(a.kind ?? "")}${num ? ` ${num}` : ""}${spec?.tone === "proof" ? "." : ""}`;
         const rest = (n.kids ?? []).filter((k) => k !== title).map((k) => node(k, true)).join("");
         return `<blockquote><p><strong>${label}</strong>${title ? ` — ${kids(title)}` : ""}</p>${rest}${spec?.tone === "proof" ? "<p>∎</p>" : ""}</blockquote>`;
       }

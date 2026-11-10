@@ -513,6 +513,28 @@ await test("pickers: effort, model and mode act on the live session and save int
   assert.match(await p.locator(".pick--model .pick__e").innerText(), /Off/, "pi's own effort default");
 });
 
+await test("languages: Zotero in Chinese draws the panel in Chinese; the Interface language setting redraws it at once, chat and draft kept", async (p) => {
+  const english = /^[\x20-\x7e…]+$/;
+  assert.equal(await p.locator('button[aria-label="设置"]').count(), 1, "Zotero's own word for Settings");
+  assert.doesNotMatch(await p.locator(".cin").getAttribute("placeholder"), english);
+  assert.doesNotMatch(await p.locator(".empty h2").innerText(), english);
+  await send(p, "hello");
+  await done(p);
+  await p.locator(".cin").fill("a draft");
+  await p.locator('button[aria-label="设置"]').click();
+  await p.waitForSelector("#look select");
+  for (const title of await p.locator(".sec__t").allInnerTexts()) assert.doesNotMatch(title, english, `card “${title}”`);
+  assert.match(await p.locator("#look select option").first().innerText(), /简体中文/, "Automatic names Zotero's language");
+  await p.locator("#look select").selectOption("en");
+  await p.waitForSelector('button[aria-label="Settings"]');
+  assert.equal(await settings(p).then((s) => s.uiLanguage), "en");
+  assert.equal(await p.locator(".sec__t", { hasText: "Appearance" }).count(), 1, "the settings screen stays open, now in English");
+  await p.getByRole("button", { name: "Back to the chat" }).click();
+  assert.equal(await p.locator(".msg--user").count(), 1, "the chat is still there");
+  assert.equal(await p.locator(".cin").inputValue(), "a draft");
+  assert.equal(await p.locator(".cin").getAttribute("placeholder"), "Ask about your library…");
+}, { params: { lang: "zh-CN" } });
+
 await test("settings saved elsewhere (Zotero's Settings pane) apply to the open panel at once, settings screen included", async (p) => {
   await openSettings(p);
   const before = await settings(p);
@@ -1722,6 +1744,7 @@ await test("Add skill: the full text, what is copied and what is left out, the s
 
 
 // no horizontal overflow at 300 px in any state: nothing may stick out of the panel except inside scroll containers
+// (the steps find their buttons by place, not by their English labels, since they also run in other languages)
 for (const [name, params, run] of [
   ["empty", {}, async () => {}],
   ["answer", {}, async (p) => { await send(p, "compare"); await done(p); await p.locator(".foot__src").click(); await p.locator(".step__row").first().click(); }],
@@ -1736,24 +1759,28 @@ for (const [name, params, run] of [
     const g = await p.evaluate(() => { const r = (s) => window.__zmc.shadow.querySelector(s).getBoundingClientRect(); const m = r(".mdd"), b = r(".pick--model"), c = r(".composer"); return { off: Math.abs(m.left - Math.max(c.left, Math.min(b.left - c.left, c.width - m.width) + c.left)), inside: m.right <= c.right + 1 }; });
     assert.ok(g.off < 3 && g.inside, "the dropdown opens above its own button, inside the composer");
   }],
-  ["diagram", {}, async (p) => { await send(p, "draw it"); await done(p); await p.locator(".dg").first().hover(); await p.locator(".dg").first().locator('button[aria-label="Show the SVG source"]').click(); }],
+  ["diagram", {}, async (p) => { await send(p, "draw it"); await done(p); await p.locator(".dg").first().hover(); await p.locator(".dg").first().locator(".dg__bar .iconbtn").first().click(); }],
   ["meter", {}, async (p) => { await p.evaluate(() => { window.__zmc.sim.contextUsage = { used: 176000, size: 200000 }; }); await send(p, "hello"); await done(p); await p.waitForSelector(".cnote:not([hidden])"); }],
-  ["popup", {}, async (p) => { await p.locator('button[aria-label="Add a source"]').click(); await p.waitForSelector(".pop__i"); }],
+  ["popup", {}, async (p) => { await p.locator(".ctools > .iconbtn").first().click(); await p.waitForSelector(".pop__i"); }],
   ["permission", { speed: 5 }, async (p) => { await send(p, "add a note"); await p.waitForSelector(".perm__opts"); }],
   ["error", {}, async (p) => { await send(p, "error"); await done(p, "error"); }],
-  ["history", {}, async (p) => { await p.locator('button[aria-label="History"]').click(); await p.waitForSelector(".hrow__main"); }],
-  ["settings", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForTimeout(300); }],
-  ["skills card", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForSelector(".sp"); await p.locator('button[aria-label="Edit /annotate-paper"]').click(); await p.waitForSelector(".sp__src"); await p.locator('button[aria-label="Edit Short summary"]').click(); }],
-  ["add skill", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.waitForSelector(".sp"); await p.getByRole("button", { name: "Add skill…" }).click(); await p.waitForSelector(".imp"); }],
+  ["history", {}, async (p) => { await p.locator(".hd > button").nth(2).click(); await p.waitForSelector(".hrow__main"); }],
+  ["settings", {}, async (p) => { await p.locator(".hd > button").last().click(); await p.waitForTimeout(300); }],
+  ["skills card", {}, async (p) => { await p.locator(".hd > button").last().click(); await p.waitForSelector(".sp"); await p.locator('.sp:has([title="/annotate-paper"]) .sp__acts .iconbtn').click(); await p.waitForSelector(".sp__src"); await p.locator('.sp:has([title="Short summary"]) .sp__acts .iconbtn').click(); }],
+  ["add skill", {}, async (p) => { await p.locator(".hd > button").last().click(); await p.waitForSelector(".sp"); await p.locator('[data-fid="sp:add"]').click(); await p.waitForSelector(".imp"); }],
   ["slash menu", {}, async (p) => { await sim(p, () => window.__zmc.sim.setSettingsElsewhere({ skills: { "annotate-paper": { slot: 4 } }, prompts: window.__zmc.host.getSettings().prompts.map((x) => (x.id === "p4" ? { ...x, slot: undefined } : x)) })); await p.locator(".cin").click(); await p.keyboard.type("/"); await p.waitForSelector(".pop--slash .pop__i"); }],
   ["start with", {}, async (p) => { await pinSkill(p); await LONG(p); await p.waitForFunction(() => /must truncate/.test(window.__zmc.shadow.querySelector(".pin__t").textContent)); }],
-  ["appearance", {}, async (p) => { await p.locator('button[aria-label="Settings"]').click(); await p.getByRole("button", { name: "Choose an image…" }).click(); await p.waitForSelector(".bgsw--image"); await p.locator('input[type="color"]').fill("#8a2be2"); await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hex")); }],
+  ["appearance", {}, async (p) => { await p.locator(".hd > button").last().click(); await p.locator('[data-fid="image:choose"]').click(); await p.waitForSelector(".bgsw--image"); await p.locator('input[type="color"]').fill("#8a2be2"); await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hex")); }],
   ["status", { doctor: "many" }, async (p) => { await p.locator(".stat").click(); await p.waitForSelector(".check"); }],
   ["setup", { doctor: "many" }, async (p) => { await p.locator(".setup").waitFor(); }],
   ["welcome", { welcome: "1", doctor: "many" }, async (p) => { await p.waitForSelector(".wrow--bad"); await p.waitForFunction(() => !window.__zmc.shadow.querySelector(".wrow--pending")); await p.locator(".wrow--bad .btn").first().click(); await p.waitForTimeout(500); }],
 ]) {
   for (const width of [300, 320]) for (const dark of [false, true]) {
     await test(`no overflow at ${width}px ${dark ? "dark" : "light"}: ${name}`, async (p) => { await run(p); await p.waitForTimeout(150); assert.deepEqual(await p.evaluate(OVERFLOW), []); }, { width, dark, params });
+  }
+  // the longest languages (German, French: about 30% longer than English) and the CJK ones, at the narrowest width
+  for (const lang of ["de-DE", "fr-FR", "pt-BR", "ja-JP", "zh-TW"]) {
+    await test(`no overflow at 300px in ${lang}: ${name}`, async (p) => { await run(p); await p.waitForTimeout(150); assert.deepEqual(await p.evaluate(OVERFLOW), []); }, { width: 300, params: { ...params, lang } });
   }
 }
 

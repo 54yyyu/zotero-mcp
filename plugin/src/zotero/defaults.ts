@@ -1,12 +1,14 @@
 import type { BackendId, PanelSettings, PromptEntry } from "../types.ts";
 import { DEFAULT_APPEARANCE, readAppearance } from "../ui/appearance.ts";
 import { LANGUAGES, languageForLocale } from "../ui/settings-model.ts";
+import { UI_LANGUAGES, resolveLanguage, t } from "../i18n.ts";
 
-export const DEFAULT_PROMPTS: PromptEntry[] = [
-  { id: "summary-detailed", slot: 1, title: "Detailed summary", text: "Give a detailed summary of this paper: the question, the data and method, the main results, and the limitations. Cite the pages." },
-  { id: "summary-short", slot: 2, title: "Short summary", text: "Summarize this paper in five sentences, then list its three most important claims with page citations." },
-  { id: "hypotheses", slot: 3, title: "Propose testable hypotheses", text: "Based on this paper, propose testable hypotheses that follow from its findings, and say what data would test each." },
-  { id: "compare", slot: 4, title: "Compare key findings to other studies", text: "Compare this paper's key findings with related studies in my library, and with recent work outside it. Cite everything." },
+/** The four prompts a new user starts with, in the panel's language (a prompt once edited is saved as it is). */
+export const defaultPrompts = (lang = "en"): PromptEntry[] => [
+  { id: "summary-detailed", slot: 1, title: t("prompt.detailed.title", undefined, lang), text: t("prompt.detailed.text", undefined, lang) },
+  { id: "summary-short", slot: 2, title: t("prompt.short.title", undefined, lang), text: t("prompt.short.text", undefined, lang) },
+  { id: "hypotheses", slot: 3, title: t("prompt.hypotheses.title", undefined, lang), text: t("prompt.hypotheses.text", undefined, lang) },
+  { id: "compare", slot: 4, title: t("prompt.compare.title", undefined, lang), text: t("prompt.compare.text", undefined, lang) },
 ];
 
 const each = <T>(v: T): Record<BackendId, T> => ({ "claude-code": v, codex: v, pi: v });
@@ -18,7 +20,7 @@ export const DEFAULT_SETTINGS: PanelSettings = {
   mode: each(""),
   effort: each(""),
   auth: { "claude-code": "subscription", codex: "subscription", pi: "api-key" },
-  prompts: DEFAULT_PROMPTS,
+  prompts: defaultPrompts(),
   skills: {},
   followFocus: true,
   attachSelection: true,
@@ -33,13 +35,14 @@ export const DEFAULT_SETTINGS: PanelSettings = {
   translate: true,
   translateTo: "en", // withDefaults puts Zotero's own language here
   translateModel: each(""),
+  uiLanguage: "",
   appearance: DEFAULT_APPEARANCE,
 };
 
 /**
  * Saved settings laid over the defaults; the per-backend maps merge key by key so a new backend never has holes, and the
  * appearance is validated field by field. The translate target is a known language, else the one `locale` (Zotero's UI
- * language) reads.
+ * language) reads; the interface language a known one or "" (Zotero's), and the default prompts are in it.
  */
 export function withDefaults(saved: Partial<PanelSettings>, locale?: string): PanelSettings {
   const d = DEFAULT_SETTINGS;
@@ -51,6 +54,8 @@ export function withDefaults(saved: Partial<PanelSettings>, locale?: string): Pa
     translate: typeof saved.translate === "boolean" ? saved.translate : d.translate,
     translateTo: LANGUAGES.some((l) => l.id === saved.translateTo) ? saved.translateTo! : languageForLocale(locale),
     translateModel: { ...d.translateModel, ...saved.translateModel },
+    uiLanguage: UI_LANGUAGES.some((l) => l.id === saved.uiLanguage) ? saved.uiLanguage! : "",
+    prompts: Array.isArray(saved.prompts) ? saved.prompts : defaultPrompts(resolveLanguage(saved.uiLanguage, locale)),
     appearance: readAppearance(saved.appearance),
   };
 }

@@ -2,9 +2,10 @@
 // pinned so they survive focus changes, chips the user dismissed until that item leaves focus, and chips
 // added by hand with `@` or `+`.
 import type { ChipSummary, ContextChip, PanelHost } from "../types.ts";
+import { t } from "../i18n.ts";
 
 export const summary = (c: ContextChip): ChipSummary => ({
-  id: c.id, kind: c.kind, label: c.kind === "selection" ? "Text Selection" : c.label, ref: c.ref, ...(c.text ? { text: c.text.slice(0, 2000) } : {}),
+  id: c.id, kind: c.kind, label: c.kind === "selection" ? t("chip.selection") : c.label, ref: c.ref, ...(c.text ? { text: c.text.slice(0, 2000) } : {}),
 });
 
 export class ChipState {

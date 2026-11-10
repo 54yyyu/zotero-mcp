@@ -6,6 +6,7 @@ import { Look } from "./appearance.ts";
 import { clear, h, initEnv } from "./dom.ts";
 import { settingsView } from "./settings.ts";
 import { STYLES } from "./styles.ts";
+import { resolveLanguage, setLanguage } from "../i18n.ts";
 
 /** The pane sits in Zotero's own scrolling page: natural height, and Zotero's window is the backdrop (no gradient or picture of ours). */
 const PANE_STYLES = `
@@ -17,6 +18,8 @@ const PANE_STYLES = `
 
 export function mountSettings(root: ShadowRoot, host: SettingsHost, catalogReady: (b: BackendId) => boolean): { dispose(): void } {
   initEnv(root);
+  const language = () => setLanguage(resolveLanguage(host.getSettings().uiLanguage, host.locale()));
+  language();
   const app = h("div.zmc.zmc--pane", { dataset: { theme: host.theme(), view: "settings" } });
   const look = new Look(app, host);
   look.apply();
@@ -25,7 +28,7 @@ export function mountSettings(root: ShadowRoot, host: SettingsHost, catalogReady
   const view = settingsView(host, {
     statuses: () => statuses,
     refreshStatuses: () => void host.runtime.detect().then((s) => { statuses = s; view.render(); }, () => {}),
-    changed: () => {},
+    changed: () => { language(); }, // the next render is in the new language
     look, catalogReady,
   });
   app.append(view.el);
@@ -33,6 +36,7 @@ export function mountSettings(root: ShadowRoot, host: SettingsHost, catalogReady
   const offs = [
     host.onThemeChange(() => { app.dataset.theme = host.theme(); }),
     host.onSettingsChange(() => {
+      language();
       const now = host.getSettings().appearance.image;
       if (now !== image) { image = now; look.setImage(null); } else look.apply();
       view.render();

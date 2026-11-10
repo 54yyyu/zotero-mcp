@@ -3,6 +3,7 @@
 // (economy.ts imageTokens), so a 5K screenshot does not ride along as 10 MB of base64.
 import type { ContextChip } from "../types.ts";
 import { env } from "./dom.ts";
+import { t } from "../i18n.ts";
 
 const MAX_EDGE = 1568;
 const MAX_IMAGES = 5;
@@ -30,7 +31,7 @@ export async function imageChips(files: File[]): Promise<ContextChip[]> {
     try {
       const data = await toPng(f);
       // Pasted screenshots are all called "image.png": only a real file name is worth showing.
-      const label = f.name && !/^image\.\w+$/i.test(f.name) ? f.name : "Image";
+      const label = f.name && !/^image\.\w+$/i.test(f.name) ? f.name : t("chip.image");
       if (data) out.push({ id: `image:${++seq}`, kind: "image", label, auto: false, pinned: false, ref: { libraryID: 0 }, image: { mime: "image/png", data } });
     } catch { /* not an image the browser can read */ }
   }

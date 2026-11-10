@@ -22,7 +22,7 @@ Zotero main window ── #tabs-deck lives in an hbox below the tab bar; we appe
  └ agent/    ACP client, backends, bridge locator/installer, brief.   (no DOM, no Zotero; Spawner injected)
 ```
 
-`agent/` and `ui/` never import each other; both import only `types.ts`. `zotero/` wires them.
+`agent/` and `ui/` never import each other; both import only `types.ts` and `i18n.ts` (pure strings, below). `zotero/` wires them.
 
 ### Facts measured on this machine (Zotero 10.0.5, Gecko 140, macOS)
 
@@ -381,6 +381,47 @@ scripts, `zotero-cli` and the agent's shell are the tools.
 - **Startup.** Nothing at Zotero's startup (budget.js unchanged). The folder is scanned when the `/` menu opens or the
   settings card renders: one directory listing and a stat per `SKILL.md`, re-read only when its mtime changed (6 ms
   first scan, 0 ms after, in the harness).
+
+## Languages (src/i18n.ts, src/locales/)
+
+The panel's own words (buttons, labels, settings, status and setup messages, notices, tooltips, aria-labels, empty
+states, the welcome, the reader's Translate popup) are in English, Simplified and Traditional Chinese, Japanese, German,
+French, Spanish and Brazilian Portuguese. What the agent reads stays English: the brief and guides (`agent/brief.ts`),
+the `<zotero-context>` block, skill invocations, `zotero-cli` commands. Model, backend and file names, and the preview's
+scenario content (`ui/fake-*.ts`), are not translated; nor is the "Translate into" list (`LANGUAGES`), which names
+languages for the translator, not the interface.
+
+- **`t(key, vars)`**: a flat catalog per language, `src/locales/<id>.ts`, keys by where they show
+  (`settings.agent.ready`, `composer.placeholder`). `{name}` is filled in; a message with a count is an object of plural
+  forms picked by `Intl.PluralRules` (`{ one: "{n} source", other: "{n} sources" }`; Chinese and Japanese have only
+  `other`). English (`en.ts`) is the source and the fallback for a missing key. `Key` is `keyof typeof en`, and every other
+  catalog is typed `Record<Key, Msg>`, so a typo, a missing key or an extra one is a type error; `test/i18n.test.ts` also
+  checks placeholders, `code` spans and plural categories per language. No library.
+- **Which language**: the Settings > Appearance "Interface language" (`PanelSettings.uiLanguage`, "" = Automatic), else
+  Zotero's locale (`host.locale()`, `Zotero.locale`): zh-CN/SG to zh-Hans, zh-TW/HK/MO to zh-Hant, pt-* to pt-BR, any
+  other language we have to itself, anything else English (`locales/languages.ts`). Each copy of panel.js (the panel, the
+  Settings pane, the reader's Translate) sets it as it draws.
+- **A change** redraws the panel (`Panel.relabel`: header, feed and composer built again from the same chat, session,
+  chips and draft) and comes back to Settings at the Appearance card; the Settings pane re-renders. A label is never a
+  module constant: `t()` runs when the element is drawn. Notices already in a saved chat stay in the language they were
+  written in.
+- **Startup**: plugin.js shows two words before panel.js is read (the toolbar button's tooltip, the reader's Translate
+  button); they are `STARTUP_WORDS` in `locales/languages.ts`, so startup reads no catalog. The tooltip is set when the
+  window opens, so a language change reaches it at the next start.
+- **Not translated by us**: a bridge's permission option names in English (in another language the buttons say ours, by
+  ACP kind: Allow once, Always allow, Deny); the agent's own notices and errors that come from the bridge; command output
+  in the fix log.
+- **The default prompts** are in the interface language when a new user's settings are first read; once edited they are
+  saved as written.
+- **Terms**: Zotero's own translations for Zotero's concepts, taken from its locale files (item, collection, annotation,
+  note, library, attachment, tag, reader, Settings > Advanced, the local-API checkbox). The per-language glossary is in
+  `src/locales/README.md`. zh-Hans and zh-Hant are for the maintainer to review; the others say "(beta)" in the list until a
+  native speaker has read them.
+- **Size**: the catalogs are 31 KB (English) to 66 KB (Japanese) each minified and all bundled in panel.js (a lazy load would need a
+  file read in Zotero, the pane and the preview alike for about 5 ms of parse time saved); `test/budget.test.ts` was raised
+  for them (below).
+- **Layout**: German and French run about 30% longer than English. The behavior suite runs its no-overflow scenarios at
+  300 px in German, French, Portuguese, Japanese and Traditional Chinese as well as English.
 
 ## Zotero glue (zotero/)
 

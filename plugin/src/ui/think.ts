@@ -1,56 +1,52 @@
 // What the agent is doing right now, for the working line under a running answer: a state (which dot pattern) and a
 // label a person reads. PURE: `thinkOf` maps the turn's blocks; `Pacer` keeps the label from flickering.
 import type { Block } from "./transcript.ts";
-import { stepTitle } from "./steptitle.ts";
+import { stepOf } from "./steptitle.ts";
+import { t } from "../i18n.ts";
+import type { Key, Vars } from "../i18n.ts";
 
 export type ThinkState = "thinking" | "searching" | "reading" | "writing" | "working" | "waiting";
 export interface Think { state: ThinkState; label: string }
 
-const THINKING: Think = { state: "thinking", label: "Thinking" };
-const LIBRARY: Think = { state: "searching", label: "Searching your library" };
-const WEB: Think = { state: "searching", label: "Searching the web" };
-const WORKING: Think = { state: "working", label: "Working" };
+const think = (state: ThinkState, key: Key, vars?: Vars): Think => ({ state, label: t(key, vars) });
+const thinking = () => think("thinking", "work.thinking");
 
 /** The file a path names ("~/x/SKILL.md" -> "SKILL.md"), or null when `s` is not a path or a file name. */
 function fileName(s: string): string | null {
-  const t = s.trim().replace(/^["']|["']$/g, "");
-  if (!t.includes("/") && !/^\S+\.\w{1,8}$/.test(t)) return null;
-  const base = t.split("/").filter(Boolean).pop() ?? "";
+  const x = s.trim().replace(/^["']|["']$/g, "");
+  if (!x.includes("/") && !/^\S+\.\w{1,8}$/.test(x)) return null;
+  const base = x.split("/").filter(Boolean).pop() ?? "";
   return base && base.length <= 48 ? base : null;
 }
 
-/** zotero-cli calls that only read, by stepTitle's summary. */
-const CLI_READS: [RegExp, string][] = [
-  [/^Get full text of /, "Reading the full text"],
-  [/^Get metadata of /, "Reading the metadata"],
-  [/^Get the outline of /, "Reading the outline"],
-  [/^List annotations of /, "Reading the annotations"],
-  [/^List notes of /, "Reading the notes"],
-  [/^Find figures and tables in /, "Finding figures and tables"],
-];
+/** zotero-cli calls that only read, by stepOf's summary. */
+const CLI_READS: Partial<Record<Key, Key>> = {
+  "step.getFulltext": "work.readFulltext", "step.getMetadata": "work.readMetadata", "step.outline": "work.readOutline",
+  "step.listAnnotationsOf": "work.readAnnotations", "step.listNotesOf": "work.readNotes", "step.layout": "work.findFigures",
+};
 
-/** A running tool step as an activity. The summary is stepTitle's ("Read pages 7–8 of KEY"), never the raw command. */
+/** A running tool step as an activity: by stepOf's summary of a zotero-cli call ("Read pages 7–8 of KEY"), never the raw command. */
 function toolThink(b: Extract<Block, { type: "tool" }>): Think {
-  const s = stepTitle(b.title);
-  // the summary, or a search piped into something (which stepTitle leaves as the command)
-  if (/^(Search library|Semantic search) for /.test(s) || /\bzotero-cli\s+(?:--\S+\s+)*(?:search|s)\s/.test(b.title)) return LIBRARY;
-  const pages = /^Read (pages? \S+) of /.exec(s);
-  if (pages) return { state: "reading", label: `Reading ${pages[1]}` };
-  const cli = CLI_READS.find(([re]) => re.test(s));
-  if (cli) return { state: "reading", label: cli[1] };
+  const { cmd, step } = stepOf(b.title);
+  const [key, vars] = step ?? [null, {}];
+  // the summary, or a search piped into something (which stepOf leaves as the command)
+  if (key === "step.search" || key === "step.semantic" || /\bzotero-cli\s+(?:--\S+\s+)*(?:search|s)\s/.test(b.title)) return think("searching", "work.library");
+  if (key?.startsWith("step.readPage")) return think("reading", key.startsWith("step.readPages") ? "work.readPages" : "work.readPage", vars);
+  const cli = key && CLI_READS[key];
+  if (cli) return think("reading", cli);
   const name = (b.name ?? "").toLowerCase();
-  if (b.kind === "fetch" || name.startsWith("web")) return WEB;
-  if (b.kind === "search") return { state: "searching", label: "Searching files" };
-  if (b.kind === "think") return THINKING;
+  if (b.kind === "fetch" || name.startsWith("web")) return think("searching", "work.web");
+  if (b.kind === "search") return think("searching", "work.files");
+  if (b.kind === "think") return thinking();
   if (b.kind === "read") {
-    const file = fileName(s.replace(/^Read\s+/, ""));
-    return { state: "reading", label: file ? `Reading ${file}` : "Reading" };
+    const file = fileName(cmd.replace(/^Read\s+/, ""));
+    return file ? think("reading", "work.readFile", { file }) : think("reading", "work.reading");
   }
   if (b.kind === "edit") {
-    const file = fileName(s.replace(/^(Edit|Write)\s+/, ""));
-    return { state: "working", label: file ? `Editing ${file}` : "Editing" };
+    const file = fileName(cmd.replace(/^(Edit|Write)\s+/, ""));
+    return file ? think("working", "work.editFile", { file }) : think("working", "work.editing");
   }
-  return WORKING;
+  return think("working", "work.working");
 }
 
 /**
@@ -59,16 +55,16 @@ function toolThink(b: Extract<Block, { type: "tool" }>): Think {
  * step, else (all finished, the model deciding what next) thinking.
  */
 export function thinkOf(blocks: readonly Block[]): Think {
-  if (blocks.some((b) => b.type === "permission" && b.resolved === undefined)) return { state: "waiting", label: "Waiting for your OK" };
+  if (blocks.some((b) => b.type === "permission" && b.resolved === undefined)) return think("waiting", "work.waiting");
   const last = blocks[blocks.length - 1];
-  if (!last || last.type === "thought") return THINKING;
-  if (last.type === "text") return last.text.trim() ? { state: "writing", label: "Writing the answer" } : THINKING;
+  if (!last || last.type === "thought") return thinking();
+  if (last.type === "text") return last.text.trim() ? think("writing", "work.writing") : thinking();
   for (let i = blocks.length - 1; i >= 0; i--) {
     const b = blocks[i]!;
     if (b.type !== "tool") { if (b.type === "text") break; continue; }
     if (b.status === "running" || b.status === "pending") return toolThink(b);
   }
-  return THINKING;
+  return thinking();
 }
 
 /** At most one label change per `gap` ms. A change inside the gap waits; only the newest waiting one is ever shown. */

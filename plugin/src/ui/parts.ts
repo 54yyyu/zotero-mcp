@@ -6,6 +6,8 @@ import { MdView, pretty } from "./mdview.ts";
 import { h, icon, setKids, unwrapTicks } from "./dom.ts";
 import { stepTitle } from "./steptitle.ts";
 import type { IconName } from "./dom.ts";
+import { language, t } from "../i18n.ts";
+import type { Key } from "../i18n.ts";
 
 export interface MsgActions {
   open(target: string | ZoteroRef): void;
@@ -103,7 +105,7 @@ export function thoughtSeg(): SegView {
     body.hidden = !open;
     el.classList.toggle("thought--open", open);
     if (open && block) body.textContent = block.text;
-    glint(label, active ? "Thinking" : "Thought");
+    glint(label, active ? t("work.thinking") : t("work.thought"));
     if (active && !mark.firstChild) mark.appendChild(dots());
     if (!active) mark.replaceChildren();
     el.classList.toggle("thought--active", active);
@@ -124,17 +126,17 @@ export function thoughtSeg(): SegView {
 function statusMark(status: string, stopped: boolean): HTMLElement {
   // A step cut off by the user's Stop is not a failure: a quiet dash, not a red cross.
   const mark = (cls: string, label: string, kid: Node) => h(`span.step__st${cls}`, { "aria-label": label.toLowerCase(), title: label }, kid);
-  if (stopped && status === "failed") return mark("", "Stopped", icon("stop"));
-  if (status === "done") return mark("", "Done", icon("check"));
-  if (status === "failed") return mark(".step__st--failed", "Failed", icon("close"));
+  if (stopped && status === "failed") return mark("", t("stop.cancelled"), icon("stop"));
+  if (status === "done") return mark("", t("common.done"), icon("check"));
+  if (status === "failed") return mark(".step__st--failed", t("step.failed"), icon("close"));
   // still: the turn has one moving indicator (dots/glint above)
-  return mark("", status === "pending" ? "Waiting" : "Running", h("span.step__run"));
+  return mark("", status === "pending" ? t("step.waiting") : t("step.running"), h("span.step__run"));
 }
 
 function detailBox(label: string, value: unknown): HTMLElement {
   const { text, trimmed } = pretty(value);
   return h("div.sd", null,
-    h("div.sd__head", null, h("span.eyebrow", null, label), trimmed ? h("span.sd__trim", null, "trimmed") : null),
+    h("div.sd__head", null, h("span.eyebrow", null, label), trimmed ? h("span.sd__trim", null, t("step.trimmed")) : null),
     h("pre.sd__pre", null, text));
 }
 
@@ -164,14 +166,14 @@ export function stepsSeg(): SegView {
     },
       h("span.step__icon", null, icon(TOOL_ICON[b.kind] ?? "dot")),
       b.name ? h("span.step__name", null, b.name) : null,
-      h("span.step__title", { title: raw && shown !== raw ? raw : null }, shown || "Working"),
+      h("span.step__title", { title: raw && shown !== raw ? raw : null }, shown || t("work.working")),
       statusMark(b.status, stopped),
       hasDetail ? icon("chevDown", "step__chev") : null);
     const kids: HTMLElement[] = [btn];
     if (opened && hasDetail) {
       kids.push(h("div.step__detail", null,
-        b.input !== undefined ? detailBox("Input", b.input) : null,
-        b.output ? detailBox("Output", b.output) : null));
+        b.input !== undefined ? detailBox(t("step.input"), b.input) : null,
+        b.output ? detailBox(t("step.output"), b.output) : null));
     }
     return h(`div.step${opened ? ".step--open" : ""}`, null, ...kids);
   }
@@ -183,7 +185,7 @@ export function stepsSeg(): SegView {
     el.classList.toggle("steps--folded", fold && folded);
     if (fold) {
       head.setAttribute("aria-expanded", String(!folded));
-      setKids(head, icon("list"), h("span.steps__sum", null, `${blocks.length} steps`, failed ? h("span.steps__bad", null, ` · ${failed} failed`) : null), icon("chevDown", "steps__chev"));
+      setKids(head, icon("list"), h("span.steps__sum", null, t("step.count", { n: blocks.length }), failed ? h("span.steps__bad", null, ` · ${t("step.failedCount", { n: failed })}`) : null), icon("chevDown", "steps__chev"));
     }
     list.hidden = fold && folded;
     if (list.hidden) return;
@@ -221,11 +223,11 @@ export function stepsSeg(): SegView {
 
 // ───────────────────────────── plan ─────────────────────────────
 
-const PLAN_LABEL: Record<PlanEntry["status"], string> = { pending: "to do", in_progress: "in progress", completed: "done" };
+const PLAN_LABEL: Record<PlanEntry["status"], Key> = { pending: "plan.pending", in_progress: "plan.inProgress", completed: "plan.completed" };
 
 export function planSeg(): SegView {
   const list = h("ul.plan__list");
-  const el = h("div.plan", null, h("div.plan__head", null, icon("list"), h("span", null, "Plan")), list);
+  const el = h("div.plan", null, h("div.plan__head", null, icon("list"), h("span", null, t("plan.title"))), list);
   let last: PlanEntry[] | null = null;
   return {
     kind: "plan", el,
@@ -235,7 +237,7 @@ export function planSeg(): SegView {
       setKids(list, s.block.entries.map((e) => h(`li.plan__i.plan__i--${e.status}`, null,
         h("span.plan__box", { "aria-hidden": "true" }, e.status === "completed" ? icon("check") : null),
         h("span.plan__t", null, e.content),
-        h("span.sr", null, ` (${PLAN_LABEL[e.status]})`))));
+        h("span.sr", null, ` (${t(PLAN_LABEL[e.status])})`))));
     },
   };
 }
@@ -243,6 +245,9 @@ export function planSeg(): SegView {
 // ───────────────────────────── permission ─────────────────────────────
 
 const RANK: Record<string, number> = { allow_once: 0, allow_always: 1, reject_once: 2, reject_always: 3 };
+/** The bridge's own words in English; in another language ours, by ACP kind (a bridge's wording cannot be translated). */
+const KIND_NAME: Record<string, Key> = { allow_once: "perm.allowOnce", allow_always: "perm.allowAlways", reject_once: "perm.rejectOnce", reject_always: "perm.rejectAlways" };
+const optionName = (o: PermissionOption): string => (language() !== "en" && KIND_NAME[o.kind] ? t(KIND_NAME[o.kind]!) : o.name);
 const optionClass = (o: PermissionOption) =>
   o.kind === "allow_once" ? "btn.btn--solid" : o.kind.startsWith("allow") ? "btn" : "btn.btn--quiet-danger";
 
@@ -259,7 +264,7 @@ export function permSeg(): SegView {
       if (b === last && lastDone === c.msg.done) return;
       const wasPending = last ? last.resolved === undefined : false;
       last = b; lastDone = c.msg.done;
-      el.setAttribute("aria-label", `Permission needed: ${b.title}`);
+      el.setAttribute("aria-label", t("perm.needed", { title: b.title }));
       const chosen = b.options.find((o) => o.id === b.resolved);
       const hasInput = b.input !== undefined && b.input !== null;
       if (b.resolved !== undefined || c.msg.done) {
@@ -268,22 +273,22 @@ export function permSeg(): SegView {
         setKids(el,
           icon(chosen ? (allowed ? "check" : "close") : "info"),
           h("span.perm__what", null, unwrapTicks(b.title)),
-          h("span.perm__res", null, chosen ? chosen.name : "No answer"));
+          h("span.perm__res", null, chosen ? optionName(chosen) : t("perm.noAnswer")));
         return;
       }
       el.className = "perm";
       const opts = [...b.options].sort((x, y) => (RANK[x.kind] ?? 9) - (RANK[y.kind] ?? 9));
-      const inputBox = h("div.perm__raw", { hidden: !showInput }, hasInput ? detailBox("Input", b.input) : null);
+      const inputBox = h("div.perm__raw", { hidden: !showInput }, hasInput ? detailBox(t("step.input"), b.input) : null);
       const toggle = h("button.perm__more", { type: "button", "aria-expanded": String(showInput), onclick: () => {
         showInput = !showInput; inputBox.hidden = !showInput; toggle.setAttribute("aria-expanded", String(showInput));
-        toggle.textContent = showInput ? "Hide input" : "Show input";
-      } }, showInput ? "Hide input" : "Show input");
+        toggle.textContent = showInput ? t("perm.hideInput") : t("perm.showInput");
+      } }, showInput ? t("perm.hideInput") : t("perm.showInput"));
       setKids(el,
-        h("div.perm__q", null, icon("shield"), "Needs your OK", b.name ? h("span.step__name", null, b.name) : null),
+        h("div.perm__q", null, icon("shield"), t("perm.ask"), b.name ? h("span.step__name", null, b.name) : null),
         h("div.perm__what", null, unwrapTicks(b.title)),
         hasInput ? toggle : null, hasInput ? inputBox : null,
-        h("div.perm__opts", null, opts.map((o) => h(`button.${optionClass(o)}.btn--sm`, { type: "button", onclick: () => c.actions.answer(c.msg.id, b.id, o.id) }, o.name))));
-      if (!wasPending) c.announce(`Permission needed: ${b.title}`);
+        h("div.perm__opts", null, opts.map((o) => h(`button.${optionClass(o)}.btn--sm`, { type: "button", onclick: () => c.actions.answer(c.msg.id, b.id, o.id) }, optionName(o)))));
+      if (!wasPending) c.announce(t("perm.needed", { title: b.title }));
     },
   };
 }

@@ -13,6 +13,7 @@ import { openTarget } from "./open.ts";
 import { chipForHit, search } from "./search.ts";
 import { createGeckoSpawner } from "./spawn-gecko.ts";
 import { createSettingsHost } from "./settings-host.ts";
+import { t } from "../i18n.ts";
 
 export interface HostBundle {
   host: PanelHost;
@@ -91,7 +92,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     async saveFile(name, data, mime) {
       const fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
       const ext = /\.([a-z0-9]{1,5})$/i.exec(name)?.[1]?.toLowerCase() ?? "";
-      fp.init(win.browsingContext, "Save", Ci.nsIFilePicker.modeSave);
+      fp.init(win.browsingContext, t("common.save"), Ci.nsIFilePicker.modeSave);
       fp.defaultString = name;
       if (ext) { fp.appendFilter(`${ext.toUpperCase()} (${mime})`, `*.${ext}`); fp.defaultExtension = ext; }
       const result: number = await new Promise((r) => fp.open(r));

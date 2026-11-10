@@ -1,12 +1,13 @@
 // The `@` / `+` popup: items, collections and annotations matching a query, from host.search.
 import type { ItemHit } from "../types.ts";
 import { CHIP_ICON, clear, env, errMessage, h, icon, setKids } from "./dom.ts";
+import { t } from "../i18n.ts";
 
 interface SearchSource { search(query: string): Promise<ItemHit[]> }
 
 export class SearchPopup {
   readonly el: HTMLElement;
-  private list = h("ul.pop__list", { role: "listbox", id: "zmc-hits", "aria-label": "Matches in your library" });
+  private list = h("ul.pop__list", { role: "listbox", id: "zmc-hits", "aria-label": t("search.matches") });
   private status = h("div.pop__status", { role: "status" });
   private input: HTMLInputElement | null = null;
   private hits: ItemHit[] = [];
@@ -37,7 +38,7 @@ export class SearchPopup {
     this.lastQuery = "\u0000";
     if (mode === "plus") {
       this.input = h("input.pop__q", {
-        type: "text", placeholder: "Search items, collections, annotations", "aria-label": "Search your library",
+        type: "text", placeholder: t("search.placeholder"), "aria-label": t("search.label"),
         role: "combobox", "aria-expanded": "true", "aria-controls": "zmc-hits",
         oninput: () => this.query((this.input as HTMLInputElement).value),
         onkeydown: (e: KeyboardEvent) => { if (this.handleKey(e)) { e.preventDefault(); e.stopPropagation(); } },
@@ -70,7 +71,7 @@ export class SearchPopup {
     this.pending = true;
     this.hits = []; // results of an older query must never be picked by a quick Enter
     env.win.clearTimeout(this.timer);
-    this.status.textContent = this.list.children.length ? "" : "Searching…";
+    this.status.textContent = this.list.children.length ? "" : t("search.searching");
     this.timer = env.win.setTimeout(() => {
       this.opts.search(q).then((hits) => {
         if (seq !== this.seq) return; // a newer query is in flight
@@ -83,7 +84,7 @@ export class SearchPopup {
         this.pending = false;
         this.hits = [];
         clear(this.list);
-        this.status.textContent = `Couldn't search Zotero: ${errMessage(e)}`;
+        this.status.textContent = t("search.failed", { error: errMessage(e) });
         this.status.className = "pop__status pop__status--bad";
       });
     }, q ? 120 : 0);
@@ -91,7 +92,7 @@ export class SearchPopup {
 
   private paint(q: string): void {
     this.status.className = "pop__status";
-    this.status.textContent = this.hits.length ? "" : q ? `No matches for "${q}"` : "Nothing to suggest yet. Type to search.";
+    this.status.textContent = this.hits.length ? "" : q ? t("search.none", { q }) : t("search.empty");
     setKids(this.list, this.hits.map((hit, i) => h(`li.pop__i${i === this.sel ? ".pop__i--on" : ""}`, {
       role: "option", id: `zmc-hit-${i}`, "aria-selected": String(i === this.sel),
       // mousedown, not click: the textarea must not lose its caret before the pick lands

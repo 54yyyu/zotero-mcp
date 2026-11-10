@@ -19,11 +19,10 @@ import { settingsView } from "./settings.ts";
 import { BACKEND_LABEL, BACKENDS, emptyState, historyView, setupCard, statusView } from "./views.ts";
 import { welcomeView } from "./welcome.ts";
 import { enabledSkills, invocationText, parseInvocation, pinned, skillPath } from "./skills-model.ts";
+import { resolveLanguage, setLanguage, t } from "../i18n.ts";
 
 type View = "chat" | "history" | "settings" | "status" | "welcome";
 
-/** The footer's "Explain better": the last answer again, the way a good teacher would start. */
-const EXPLAIN_BETTER = "Explain that again from the intuition first, with a tiny example, then the details, in the language of your last answer.";
 
 export const mountPanel: MountPanel = (root, host) => {
   initEnv(root);
@@ -37,17 +36,17 @@ class Panel {
   private chat: Chat;
   private health: Health;
   private chips: ChipState;
-  private feed: Feed;
-  private composer: Composer;
-
-  private app: HTMLElement;
-  private chatEl: HTMLElement;
-  private viewEl: HTMLElement;
-  private setupSlot = h("div.setupslot");
-  private statusBtn: HTMLButtonElement;
-  private accountEl = h("span.stat__t");
-  private historyBtn: HTMLButtonElement;
-  private look: Look;
+  // Drawn by build(), and again when the interface language changes (relabel).
+  private feed!: Feed;
+  private composer!: Composer;
+  private app!: HTMLElement;
+  private chatEl!: HTMLElement;
+  private viewEl!: HTMLElement;
+  private setupSlot!: HTMLElement;
+  private statusBtn!: HTMLButtonElement;
+  private accountEl!: HTMLElement;
+  private historyBtn!: HTMLButtonElement;
+  private look!: Look;
 
   private view: View = "chat";
   private activeView: { render?: () => void; refresh?: () => void } | null = null;
@@ -68,12 +67,37 @@ class Panel {
       host,
       onChange: () => this.scheduleRender(),
       blockReason: () => this.health.blockReason(),
-      turnEnded: (stop) => this.feed.announce(stop === "end_turn" ? "Answer finished" : "Turn ended"),
+      turnEnded: (stop) => this.feed.announce(stop === "end_turn" ? t("chat.answerFinished") : t("chat.turnEnded")),
       setupFailed: () => void this.health.refresh(),
       sessionChanged: () => this.syncPickers(),
       shownChanged: () => this.refreshChips(),
       expand: (text, cwd) => this.expand(text, cwd),
     });
+    this.applyLanguage();
+    this.build();
+
+    this.disposers.push(host.onContextChange(() => this.refreshChips()), host.onThemeChange(() => { this.app.dataset.theme = host.theme(); }),
+      host.onSettingsChange(() => this.onOutsideSettings()));
+    this.refreshChips();
+    this.onHealth();
+    this.applyBehavior();
+    void this.loadCatalog(false);
+    this.render();
+    void this.health.refresh();
+    if (!host.getSettings().welcomed) this.show("welcome");
+
+    this.handle = {
+      dispose: () => this.dispose(),
+      focusComposer: () => { this.show("chat"); this.composer.focus(); },
+      runPrompt: (slot) => this.runPinned(slot),
+    };
+  }
+
+  /** The DOM: header, feed, composer, the view host. The chat, its session and the chips live outside it. */
+  private build(): void {
+    const { root, host } = this;
+    this.setupSlot = h("div.setupslot");
+    this.accountEl = h("span.stat__t");
     this.feed = new Feed({
       open: (t) => void this.open(t),
       copy: (t) => void copyText(t),
@@ -84,10 +108,10 @@ class Panel {
       saveNote: (n) => host.saveNote(n),
       saveAnswer: async (id) => {
         const m = this.chat.tr.messages.find((x) => x.id === id);
-        if (m?.role !== "assistant") throw new Error("that answer is no longer here");
+        if (m?.role !== "assistant") throw new Error(t("chat.answerGone"));
         return host.saveNote(await answerNote(answerText(m), promptFor(this.chat.tr, id)?.text));
       },
-      explain: () => this.send(EXPLAIN_BETTER, false),
+      explain: () => this.send(t("answer.explainPrompt"), false), // the last answer again, the way a good teacher would start
     });
     this.composer = new Composer({
       search: (q) => host.search(q),
@@ -122,35 +146,37 @@ class Panel {
 
     const btn = (label: string, ic: Parameters<typeof icon>[0], onclick: () => void) =>
       h("button.iconbtn", { type: "button", "aria-label": label, title: label, onclick }, icon(ic)) as HTMLButtonElement;
-    this.historyBtn = btn("History", "history", () => this.show(this.view === "history" ? "chat" : "history"));
+    this.historyBtn = btn(t("history.title"), "history", () => this.show(this.view === "history" ? "chat" : "history"));
     this.statusBtn = h("button.stat", { type: "button", onclick: () => this.show(this.view === "status" ? "chat" : "status") }, h("span.stat__dot"), this.accountEl) as HTMLButtonElement;
     const hd = h("header.hd", null,
-      btn("Close the panel", "close", () => (root.host ?? this.app).dispatchEvent(new env.win.CustomEvent("zmc-close", { bubbles: true, composed: true }))),
-      btn("New chat", "plus", () => void this.newChat()), this.historyBtn,
+      btn(t("header.close"), "close", () => (root.host ?? this.app).dispatchEvent(new env.win.CustomEvent("zmc-close", { bubbles: true, composed: true }))),
+      btn(t("common.newChat"), "plus", () => void this.newChat()), this.historyBtn,
       h("span.hd__fill"), this.statusBtn,
-      btn("Settings", "gear", () => this.show(this.view === "settings" ? "chat" : "settings")));
+      btn(t("settings.title"), "gear", () => this.show(this.view === "settings" ? "chat" : "settings")));
     this.chatEl = h("div.chat", null, this.feed.el, h("div.dock", null, this.setupSlot, this.composer.el));
     this.viewEl = h("div.viewhost", { hidden: true });
     this.app = h("div.zmc", { dataset: { theme: host.theme(), view: "chat" }, onkeydown: (e: KeyboardEvent) => this.onKey(e) }, hd, h("div.body", null, this.chatEl, this.viewEl));
     this.look = new Look(this.app, host);
     this.look.apply();
     root.append(h("style", { text: STYLES }), this.app);
+  }
 
-    this.disposers.push(host.onContextChange(() => this.refreshChips()), host.onThemeChange(() => { this.app.dataset.theme = host.theme(); }),
-      host.onSettingsChange(() => this.onOutsideSettings()));
+  /** The setting, else Zotero's language; true when it changed. */
+  private applyLanguage(): boolean { return setLanguage(resolveLanguage(this.host.getSettings().uiLanguage, this.host.locale())); }
+
+  /** The interface language changed: everything is drawn again in it. The chat, its session, the chips and the draft stay. */
+  private relabel(): void {
+    const draft = this.composer.ta.value;
+    const view = this.view;
+    this.composer.dispose();
+    clear(this.root);
+    this.emptyShown = null;
+    this.build();
+    this.composer.setText(draft);
     this.refreshChips();
-    this.onHealth();
     this.applyBehavior();
-    void this.loadCatalog(false);
     this.render();
-    void this.health.refresh();
-    if (!host.getSettings().welcomed) this.show("welcome");
-
-    this.handle = {
-      dispose: () => this.dispose(),
-      focusComposer: () => { this.show("chat"); this.composer.focus(); },
-      runPrompt: (slot) => this.runPinned(slot),
-    };
+    this.show(view, view === "settings" ? "#look" : undefined);
   }
 
   // ───────────────────────────── screens ─────────────────────────────
@@ -202,7 +228,7 @@ class Panel {
   }
 
   private async open(target: string | ZoteroRef): Promise<void> {
-    try { await this.host.open(target); } catch (e) { this.warn(`Couldn't open that in Zotero: ${errMessage(e)}`); }
+    try { await this.host.open(target); } catch (e) { this.warn(t("chat.openFailed", { error: errMessage(e) })); }
   }
 
   private async newChat(): Promise<void> {
@@ -231,12 +257,12 @@ class Panel {
     const st = this.health.backend();
     this.statusBtn.dataset.state = this.health.state;
     // Say plainly who pays: a subscription's account name, or "API key". pi has neither: it uses the user's own provider keys.
-    const label = s.backend === "pi" ? "pi" : s.auth[s.backend] === "api-key" ? `${BACKEND_LABEL[s.backend]} · API key` : st?.account || `${BACKEND_LABEL[s.backend]} · subscription`;
+    const label = s.backend === "pi" ? "pi" : s.auth[s.backend] === "api-key" ? t("header.apiKey", { agent: BACKEND_LABEL[s.backend] }) : st?.account || t("header.subscription", { agent: BACKEND_LABEL[s.backend] });
     this.accountEl.textContent = label;
     const bad = this.health.failing;
-    const tip = { ok: "Everything is set up", checking: "Checking…", unknown: "Status unknown", warn: "", bad: "" }[this.health.state] || bad.map((c) => c.label).join(", ");
-    this.statusBtn.title = `${tip}. Open status`;
-    this.statusBtn.setAttribute("aria-label", `${label}. Status: ${tip}`);
+    const tip = { ok: t("status.allSet"), checking: t("common.checking"), unknown: t("header.statusUnknown"), warn: "", bad: "" }[this.health.state] || bad.map((c) => c.label).join(", ");
+    this.statusBtn.title = t("header.statusTip", { status: tip });
+    this.statusBtn.setAttribute("aria-label", t("header.statusLabel", { account: label, status: tip }));
     this.composer.setBlocked(this.health.blockReason());
     this.syncPickers(); // the agents' status dots
     this.paintEmpty();
@@ -258,6 +284,7 @@ class Panel {
   }
 
   private onSettings(): void {
+    if (this.applyLanguage()) this.relabel();
     this.onHealth();
     this.applyBehavior();
     // An empty chat has no history to protect: let a changed backend take effect on the next send.
@@ -320,7 +347,7 @@ class Panel {
 
   /** A choice from the pickers; the model "" is the agent's own default (the saved choice is cleared). */
   private async pick(kind: "model" | "effort" | "mode", id: string): Promise<void> {
-    try { await this.chat.pick(kind, id, kind === "model" && !id ? this.choices().defaultModel : id); } catch (e) { this.warn(`Couldn't switch the ${kind}: ${errMessage(e)}`); }
+    try { await this.chat.pick(kind, id, kind === "model" && !id ? this.choices().defaultModel : id); } catch (e) { this.warn(t(kind === "model" ? "chat.switchModelFailed" : kind === "effort" ? "chat.switchEffortFailed" : "chat.switchModeFailed", { error: errMessage(e) })); }
     this.syncPickers();
   }
 
@@ -378,7 +405,7 @@ class Panel {
 
   /** A pinned skill runs on what is open, as `/name` would. */
   private async runSkill(name: string): Promise<void> {
-    if (!(await this.host.skills.list().catch(() => [])).some((k) => k.name === name)) { this.show("chat"); this.warn(`The “${name}” skill is no longer in your skills folder. Unpin it in Settings.`); return; }
+    if (!(await this.host.skills.list().catch(() => [])).some((k) => k.name === name)) { this.show("chat"); this.warn(t("chat.skillGone", { name })); return; }
     this.runText(`/${name}`);
   }
 
@@ -387,7 +414,7 @@ class Panel {
     const s = this.host.getSettings();
     const items: SlashItem[] = enabledSkills(s, await this.host.skills.list()).map((k) => ({ group: "Skills", id: k.name, label: `/${k.name}`, detail: k.description, insert: `/${k.name} ` }));
     for (const p of s.prompts) if (!p.off && (p.title || p.text)) items.push({ group: "Prompts", id: p.id, label: p.title || clip(p.text, 60), detail: p.title ? p.text : "", insert: p.text });
-    if (this.chat.tr.messages.length && this.chat.session?.canCompact && !this.chat.busy) items.push({ group: "Agent", id: "compact", label: "Summarise now", detail: "Summarise the chat so far to free up context", run: () => void this.chat.compact() });
+    if (this.chat.tr.messages.length && this.chat.session?.canCompact && !this.chat.busy) items.push({ group: "Agent", id: "compact", label: t("ring.compact"), detail: t("slash.compactDetail"), run: () => void this.chat.compact() });
     return items;
   }
 
@@ -416,7 +443,7 @@ class Panel {
     this.feed.update(c.tr, !c.busy);
     this.composer.setBusy(c.busy);
     this.composer.setContextFill(contextFill(c.tr));
-    this.feed.setPending(c.sending && c.tr.running === null ? (c.compacting ? "Summarising" : c.starting ? `Starting ${BACKEND_LABEL[this.host.getSettings().backend]}` : "Sending") : null);
+    this.feed.setPending(c.sending && c.tr.running === null ? (c.compacting ? t("work.summarising") : c.starting ? t("work.starting", { agent: BACKEND_LABEL[this.host.getSettings().backend] }) : t("work.sending")) : null);
   }
 
   private dispose(): void {

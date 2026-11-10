@@ -1,6 +1,8 @@
 // The background picture. The user picks one; it is drawn at most 1600 px on its long edge into a JPEG (a few hundred KB
 // at most), kept as <dataDir>/background.jpg (the prefs hold only its name), and handed to the panel as a data: URL,
 // which is the one kind of image URL Zotero loads into the panel's stylesheet.
+import { t } from "../i18n.ts";
+
 const MAX_EDGE = 1600;
 
 export function createImages(win: any, dataDir: string) {
@@ -15,7 +17,7 @@ export function createImages(win: any, dataDir: string) {
   async function importImage(path: string): Promise<{ name: string; dataUrl: string }> {
     let bmp: any;
     try { bmp = await win.createImageBitmap(new win.Blob([await IOUtils.read(path)])); } catch {
-      throw new Error("Zotero can't open that file as an image. Choose a PNG, JPEG, GIF, WebP or AVIF.");
+      throw new Error(t("image.bad"));
     }
     const k = Math.min(1, MAX_EDGE / Math.max(bmp.width, bmp.height));
     const c = win.document.createElementNS("http://www.w3.org/1999/xhtml", "canvas");
@@ -37,7 +39,7 @@ export function createImages(win: any, dataDir: string) {
     importImage,
     async choose(): Promise<{ name: string; dataUrl: string } | null> {
       const fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      fp.init(win.browsingContext, "Choose a background image", Ci.nsIFilePicker.modeOpen);
+      fp.init(win.browsingContext, t("image.pick"), Ci.nsIFilePicker.modeOpen);
       fp.appendFilters(Ci.nsIFilePicker.filterImages);
       const result: number = await new Promise((r) => fp.open(r));
       return result === Ci.nsIFilePicker.returnOK ? importImage(fp.file.path) : null;

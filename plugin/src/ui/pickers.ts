@@ -5,6 +5,7 @@
 import type { BackendId, ModeOption, ModelOption } from "../types.ts";
 import { env, errMessage, h, icon, setKids } from "./dom.ts";
 import { LIMIT, arrange, countLabel, search, shortName, withHeadings, type Row } from "./model-list.ts";
+import { t } from "../i18n.ts";
 
 export interface AgentChoice { id: BackendId; label: string; available?: boolean | undefined; reason?: string | undefined }
 export interface Choices {
@@ -31,7 +32,6 @@ interface PickerOpts {
   checkSetup(): void;
 }
 
-const MODE_TITLE = "Permission mode: how much the agent asks before acting";
 const nameOf = (list: { id: string; name: string }[], id: string | undefined, fallback: string) => list.find((x) => x.id === id)?.name ?? (id || fallback);
 
 export class Pickers {
@@ -55,8 +55,8 @@ export class Pickers {
     this.host = host;
     this.opts = opts;
     this.buttons = {
-      model: h("button.pick.pick--model", { type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", title: "Agent, model and effort", onclick: () => void this.openModel() }) as HTMLButtonElement,
-      mode: h("button.pick.pick--mode", { type: "button", "aria-haspopup": "menu", "aria-expanded": "false", title: MODE_TITLE, onclick: () => void this.openMode() }) as HTMLButtonElement,
+      model: h("button.pick.pick--model", { type: "button", "aria-haspopup": "dialog", "aria-expanded": "false", title: t("pick.modelTitle"), onclick: () => void this.openModel() }) as HTMLButtonElement,
+      mode: h("button.pick.pick--mode", { type: "button", "aria-haspopup": "menu", "aria-expanded": "false", title: t("pick.modeTitle"), onclick: () => void this.openMode() }) as HTMLButtonElement,
     };
     this.set(this.choices);
   }
@@ -65,15 +65,15 @@ export class Pickers {
   set(c: Choices): void {
     this.choices = c;
     const cur = c.models.find((m) => m.id === c.model);
-    const model = cur ? shortName(cur) : c.model || "Default model";
+    const model = cur ? shortName(cur) : c.model || t("pick.defaultModel");
     const effort = c.efforts.length && c.effort ? nameOf(c.efforts, c.effort, "") : "";
-    const mode = nameOf(c.modes, c.mode, "Mode");
+    const mode = nameOf(c.modes, c.mode, t("pick.mode"));
     setKids(this.buttons.model, h("span.pick__t", null, model), effort ? h("span.pick__e", null, effort) : null, icon("chevDown", "pick__chev"));
     setKids(this.buttons.mode, icon("shield"), h("span.pick__t", null, mode));
     this.buttons.mode.hidden = c.modes.length === 0;
     this.buttons.mode.className = `pick pick--mode pick--m-${c.mode ?? "default"}`;
-    this.buttons.model.setAttribute("aria-label", `Model: ${model}${effort ? `, effort ${effort}` : ""}. Change the agent, model or effort`);
-    this.buttons.mode.setAttribute("aria-label", `Permission mode: ${mode}`);
+    this.buttons.model.setAttribute("aria-label", effort ? t("pick.modelLabelEffort", { model, effort }) : t("pick.modelLabel", { model }));
+    this.buttons.mode.setAttribute("aria-label", t("pick.modeLabel", { mode }));
     if (this.agentsEl) this.paintAgents();
   }
 
@@ -121,9 +121,9 @@ export class Pickers {
   // ───────────────────────────── agent, model and effort ─────────────────────────────
 
   private async openModel(): Promise<void> {
-    const menu = this.mount(this.buttons.model, "div.menu.mdd", { role: "dialog", "aria-label": "Agent, model and effort" });
+    const menu = this.mount(this.buttons.model, "div.menu.mdd", { role: "dialog", "aria-label": t("pick.modelTitle") });
     if (!menu) return;
-    this.agentsEl = h("div.mdd__agents", { role: "radiogroup", "aria-label": "Agent" });
+    this.agentsEl = h("div.mdd__agents", { role: "radiogroup", "aria-label": t("common.agent") });
     this.noteEl = h("div.mdd__note", { hidden: true, role: "status" });
     this.bodyEl = h("div.mdd__body");
     menu.append(this.agentsEl, this.noteEl, this.bodyEl);
@@ -141,7 +141,7 @@ export class Pickers {
       const on = a.id === c.backend;
       return h(`button.mdd__agent${on ? ".mdd__agent--on" : ""}`, {
         type: "button", role: "radio", "aria-checked": String(on), tabindex: on ? "0" : "-1",
-        title: a.available === false ? `${a.label} isn't ready: ${a.reason ?? "not found"}` : a.available ? `${a.label} is ready` : a.label,
+        title: a.available === false ? t("health.notReady", { agent: a.label, reason: a.reason ?? t("health.notFound") }) : a.available ? t("pick.ready", { agent: a.label }) : a.label,
         dataset: { id: a.id, state: a.available === undefined ? "" : a.available ? "ok" : "bad", stop: "" },
         onclick: () => this.chooseAgent(a),
       }, h("span.mdd__dot", { "aria-hidden": "true" }), h("span.mdd__an", null, a.label));
@@ -166,13 +166,13 @@ export class Pickers {
   private chooseAgent(a: AgentChoice): void {
     if (a.id === this.choices.backend) { this.note(null); return; }
     if (a.available === false) {
-      this.note(`${a.label} isn't ready: ${a.reason ?? "not found"}.`, [["Check setup", () => { this.close(); this.opts.checkSetup(); }]]);
+      this.note(t("settings.agent.notReady", { agent: a.label, reason: a.reason ?? t("health.notFound") }), [[t("common.checkSetup"), () => { this.close(); this.opts.checkSetup(); }]]);
       return;
     }
     if (!this.opts.hasMessages()) { void this.switchTo(a.id); return; }
-    this.note(`Switching starts a new chat with ${a.label}.`, [
-      ["Start new chat", () => void this.switchTo(a.id), true],
-      ["Cancel", () => { this.note(null); this.focusAgent(this.choices.backend); }],
+    this.note(t("pick.switchAsk", { agent: a.label }), [
+      [t("pick.startNew"), () => void this.switchTo(a.id), true],
+      [t("common.cancel"), () => { this.note(null); this.focusAgent(this.choices.backend); }],
     ]);
   }
 
@@ -181,11 +181,11 @@ export class Pickers {
     this.note(null);
     this.set({ ...this.choices, backend: id });
     this.focusAgent(id);
-    if (this.bodyEl) setKids(this.bodyEl, h("div.menu__note", null, "Loading…"));
+    if (this.bodyEl) setKids(this.bodyEl, h("div.menu__note", null, t("common.loading")));
     try {
       await this.opts.switchAgent(id);
     } catch (e) {
-      if (this.menu === menu && this.bodyEl) setKids(this.bodyEl, h("div.menu__note.menu__note--bad", null, `Couldn't switch: ${errMessage(e)}`));
+      if (this.menu === menu && this.bodyEl) setKids(this.bodyEl, h("div.menu__note.menu__note--bad", null, t("pick.switchFailed", { error: errMessage(e) })));
       return;
     }
     if (this.menu !== menu) return;
@@ -201,7 +201,7 @@ export class Pickers {
     this.flush?.();
     this.flush = null;
     this.query = null;
-    setKids(body, h("div.menu__note", null, "Loading…"));
+    setKids(body, h("div.menu__note", null, t("common.loading")));
     this.place();
     if (focusCurrent) this.focusAgent(this.choices.backend);
     let c: Choices;
@@ -209,15 +209,15 @@ export class Pickers {
       c = await this.opts.load();
     } catch (e) {
       if (gen !== this.gen) return;
-      setKids(body, h("div.menu__note.menu__note--bad", null, `Couldn't load the choices: ${errMessage(e)}`),
-        h("button.menu__item", { type: "button", dataset: { stop: "" }, onclick: () => { this.close(); this.opts.checkSetup(); } }, "Check setup"));
+      setKids(body, h("div.menu__note.menu__note--bad", null, t("pick.loadFailed", { error: errMessage(e) })),
+        h("button.menu__item", { type: "button", dataset: { stop: "" }, onclick: () => { this.close(); this.opts.checkSetup(); } }, t("common.checkSetup")));
       this.place();
       return;
     }
     if (gen !== this.gen) return;
     this.set(c);
     setKids(body, this.models(c), c.efforts.length ? this.effort(c) : null,
-      !c.models.length && !c.efforts.length ? h("div.menu__note", null, "This agent doesn't offer a choice here.") : null);
+      !c.models.length && !c.efforts.length ? h("div.menu__note", null, t("pick.noChoice")) : null);
     this.place();
     if (focusCurrent) (body.querySelector('[aria-checked="true"]') as HTMLElement | null)?.focus();
   }
@@ -233,8 +233,8 @@ export class Pickers {
     },
       h("span.menu__check", null, r.m.id === c.model ? icon("check") : null),
       h("span.menu__tx", null, h("span.menu__t", null, r.label), r.note ? h("span.menu__d", null, r.note) : null),
-      r.m.id === c.defaultModel ? h("span.mdd__tag", null, "Default") : null);
-    const menu = h("div.mdd__models", { role: "menu", "aria-label": "Models" });
+      r.m.id === c.defaultModel ? h("span.mdd__tag", null, t("common.default")) : null);
+    const menu = h("div.mdd__models", { role: "menu", "aria-label": t("pick.models") });
     const more = (label: string, n: number, run: () => void, attrs: Record<string, string> = {}) => h("button.menu__item.mdd__more", { type: "button", role: "menuitem", dataset: { stop: "" }, onclick: run, ...attrs },
       attrs["aria-expanded"] ? h("span.mdd__chev", null, icon("chevDown")) : null, h("span.menu__tx", null, h("span.menu__t", null, label)), h("span.mdd__n", null, String(n)));
     if (!list.long) {
@@ -242,7 +242,7 @@ export class Pickers {
       const rest = list.rows.filter((r) => !r.top);
       if (rest.length) {
         const extra = h("div.mdd__extra", { hidden: true }, rest.map(item));
-        const btn: HTMLElement = more("More models", rest.length, () => {
+        const btn: HTMLElement = more(t("pick.moreModels"), rest.length, () => {
           extra.hidden = !extra.hidden;
           btn.setAttribute("aria-expanded", String(!extra.hidden));
           this.place();
@@ -253,9 +253,9 @@ export class Pickers {
       return h("div.mdd__mods", null, menu);
     }
     // A long list: a search field over one scrolling list, at most LIMIT rows drawn until "Show all".
-    const input = h("input.mdd__qi", { type: "text", placeholder: "Search models", "aria-label": "Search models", autocomplete: "off", spellcheck: "false", dataset: { stop: "" } }) as HTMLInputElement;
+    const input = h("input.mdd__qi", { type: "text", placeholder: t("pick.searchModels"), "aria-label": t("pick.searchModels"), autocomplete: "off", spellcheck: "false", dataset: { stop: "" } }) as HTMLInputElement;
     const count = h("span.mdd__qn", { "aria-live": "polite" });
-    const clear = h("button.mdd__qx", { type: "button", title: "Clear the search", "aria-label": "Clear the search", hidden: true, onclick: () => { set(""); input.focus(); } }, icon("close"));
+    const clear = h("button.mdd__qx", { type: "button", title: t("pick.clearSearch"), "aria-label": t("pick.clearSearch"), hidden: true, onclick: () => { set(""); input.focus(); } }, icon("close"));
     let all = false;
     let found: Row[] = [];
     const paint = () => {
@@ -263,12 +263,12 @@ export class Pickers {
       found = search(list, q);
       const shown = all ? found : found.slice(0, LIMIT);
       setKids(menu, withHeadings(shown, list.grouped).map((x) => ("heading" in x ? h("div.mdd__h", { role: "presentation" }, x.heading) : item(x))),
-        found.length > shown.length ? more("Show all", found.length - shown.length, () => {
+        found.length > shown.length ? more(t("pick.showAll"), found.length - shown.length, () => {
           all = true;
           paint();
           (menu.querySelectorAll('[role="menuitemradio"]')[shown.length] as HTMLElement | undefined)?.focus();
         }) : null,
-        found.length ? null : h("div.menu__note", null, "No model matches"));
+        found.length ? null : h("div.menu__note", null, t("pick.noMatch")));
       count.textContent = q && found.length ? countLabel(found.length) : "";
       clear.hidden = !input.value;
       menu.scrollTop = 0;
@@ -297,16 +297,16 @@ export class Pickers {
     const cur = h("span.eff__cur");
     const desc = h("div.eff__desc");
     const fill = h("span.eff__fill");
-    const stops = levels.map((l) => h(`span.eff__stop${l.id === c.defaultEffort ? ".eff__stop--rec" : ""}`, { title: l.id === c.defaultEffort ? `${l.name} (recommended)` : l.name }));
-    const track = h("div.eff__track", { role: "slider", tabindex: "0", "aria-label": "Effort", "aria-valuemin": "0", "aria-valuemax": String(n - 1), style: `--n:${n}`, dataset: { stop: "" } }, h("span.eff__line"), fill, ...stops);
+    const stops = levels.map((l) => h(`span.eff__stop${l.id === c.defaultEffort ? ".eff__stop--rec" : ""}`, { title: l.id === c.defaultEffort ? t("pick.recommendedName", { name: l.name }) : l.name }));
+    const track = h("div.eff__track", { role: "slider", tabindex: "0", "aria-label": t("settings.effort"), "aria-valuemin": "0", "aria-valuemax": String(n - 1), style: `--n:${n}`, dataset: { stop: "" } }, h("span.eff__line"), fill, ...stops);
     const paint = () => {
       const l = levels[at];
       cur.textContent = l?.name ?? "";
       const rec = !!l && l.id === c.defaultEffort;
-      setKids(desc, rec ? h("span.eff__rec", null, "Recommended") : null, l?.description ?? null);
+      setKids(desc, rec ? h("span.eff__rec", null, t("pick.recommended")) : null, l?.description ?? null);
       desc.hidden = !rec && !l?.description;
       track.setAttribute("aria-valuenow", String(at));
-      track.setAttribute("aria-valuetext", `${l?.name ?? ""}${rec ? ", recommended" : ""}`);
+      track.setAttribute("aria-valuetext", rec ? t("pick.recommendedValue", { name: l?.name ?? "" }) : l?.name ?? "");
       fill.style.setProperty("--at", String(at));
       stops.forEach((s, i) => s.classList.toggle("eff__stop--on", i === at));
     };
@@ -354,7 +354,7 @@ export class Pickers {
     });
     this.flush = apply;
     paint();
-    return h("div.mdd__eff", { role: "group", "aria-label": "Effort" }, h("span.mdd__el", null, "Effort"), track, cur, desc);
+    return h("div.mdd__eff", { role: "group", "aria-label": t("settings.effort") }, h("span.mdd__el", null, t("settings.effort")), track, cur, desc);
   }
 
   private keyModel(e: KeyboardEvent): void {
@@ -396,23 +396,23 @@ export class Pickers {
 
   private async openMode(): Promise<void> {
     const anchor = this.buttons.mode;
-    const menu = this.mount(anchor, "div.menu.menu--mode", { role: "menu", "aria-label": "Permission mode" });
+    const menu = this.mount(anchor, "div.menu.menu--mode", { role: "menu", "aria-label": t("settings.permissionMode") });
     if (!menu) return;
     menu.addEventListener("keydown", (e) => this.keyMode(e as KeyboardEvent));
-    setKids(menu, h("div.menu__note", null, "Loading…"));
+    setKids(menu, h("div.menu__note", null, t("common.loading")));
     this.place();
     let c: Choices;
     try {
       c = await this.opts.load();
     } catch (e) {
       if (this.menu !== menu) return;
-      setKids(menu, h("div.menu__note.menu__note--bad", null, `Couldn't load the choices: ${errMessage(e)}`),
-        h("button.menu__item", { type: "button", onclick: () => { this.close(); this.opts.checkSetup(); } }, "Check setup"));
+      setKids(menu, h("div.menu__note.menu__note--bad", null, t("pick.loadFailed", { error: errMessage(e) })),
+        h("button.menu__item", { type: "button", onclick: () => { this.close(); this.opts.checkSetup(); } }, t("common.checkSetup")));
       return;
     }
     if (this.menu !== menu) return;
     this.set(c);
-    if (!c.modes.length) { setKids(menu, h("div.menu__note", null, "This agent doesn't offer a choice here.")); return; }
+    if (!c.modes.length) { setKids(menu, h("div.menu__note", null, t("pick.noChoice"))); return; }
     setKids(menu, c.modes.map((o) => h("button.menu__item", {
       type: "button", role: "menuitemradio", "aria-checked": String(o.id === c.mode),
       onclick: () => { this.close(); anchor.focus(); this.opts.pick("mode", o.id); },
