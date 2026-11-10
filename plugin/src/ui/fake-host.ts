@@ -2,6 +2,7 @@
 // Zotero. The preview page and the Playwright scripts drive it through `host.sim`.
 import { CATALOGS, bigPiCatalog, defaultSettings } from "./fake-catalog.ts";
 import { repeatLine } from "./economy.ts";
+import { t } from "../i18n.ts";
 import { DIAGRAM_ANSWER } from "./fake-diagrams.ts";
 import { FakeSkills } from "./fake-skills.ts";
 import type {
@@ -324,8 +325,9 @@ export class FakeHost implements PanelHost {
 
   private statuses(): BackendStatus[] {
     const m = this.sim.doctorMode;
-    return this.sim.statuses.map((s) => (s.id === "claude-code" && (m === "backend" || m === "many") && !this.fixed.has("backend")
-      ? { ...s, available: false, reason: "claude is not logged in", account: undefined } : s));
+    return [...this.sim.statuses.map((s) => (s.id === "claude-code" && (m === "backend" || m === "many") && !this.fixed.has("backend")
+      ? { ...s, available: false, reason: "claude is not logged in", account: undefined } : s)),
+      { id: "custom", label: this.settings.customAgent?.label || t("agent.custom.label"), available: !!this.settings.customAgent?.command, reason: t("agent.custom.noCommand") }];
   }
 
   // --- context
@@ -445,6 +447,7 @@ export class FakeHost implements PanelHost {
   async removeImage() { this.sim.image = null; }
   /** What each backend's own CLI takes to continue a session; the folder is quoted for the shell. */
   resumeCommand(s: SavedSession) {
+    if (s.backend === "custom") return null;
     const cmd = { "claude-code": `claude --resume ${s.agentSessionId}`, codex: `codex resume ${s.agentSessionId}`, pi: `pi --session ${s.agentSessionId}` }[s.backend];
     return s.agentSessionId ? `cd '${s.cwd.replace(/'/g, "'\\''")}' && ${cmd}` : null;
   }

@@ -9,6 +9,7 @@ import { t } from "../i18n.ts";
 import type { Key } from "../i18n.ts";
 
 const ABOUT: Record<BackendId, { sub: Key; signIn: Key }> = {
+  custom: { sub: "welcome.custom.sub", signIn: "welcome.custom.signIn" },
   "claude-code": { sub: "welcome.claude.sub", signIn: "welcome.claude.signIn" },
   codex: { sub: "welcome.codex.sub", signIn: "welcome.codex.signIn" },
   pi: { sub: "welcome.pi.sub", signIn: "welcome.pi.signIn" },

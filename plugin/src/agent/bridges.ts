@@ -3,7 +3,7 @@
 // then the bridge is run as `node <entry>`: no npx at chat time (slow, needs the network).
 // No node:fs here (Gecko): the check for "already installed" is a tiny `node -e`.
 import type { Spawner } from "../types.ts";
-import type { BackendSpec } from "./backends.ts";
+import type { BridgeSpec } from "./backends.ts";
 import { dirnameOf, findBinary, withPathFirst } from "./env.ts";
 
 export interface BridgeLocation {
@@ -21,7 +21,7 @@ const LOCATE_SCRIPT =
   "console.log(JSON.stringify({version:p.version,entry:e}))}catch(e){}";
 
 /** The installed bridge for `spec`, or null when it is missing (or a different version than pinned). */
-export async function locateBridge(spawner: Spawner, env: Record<string, string>, node: string, bridgeDir: string, spec: BackendSpec): Promise<BridgeLocation | null> {
+export async function locateBridge(spawner: Spawner, env: Record<string, string>, node: string, bridgeDir: string, spec: BridgeSpec): Promise<BridgeLocation | null> {
   const r = await spawner.run(node, ["-e", LOCATE_SCRIPT, bridgeDir, spec.pkg], { env, timeoutMs: 15_000 });
   const line = r.stdout.trim().split("\n").pop();
   if (!line) return null;
@@ -58,7 +58,7 @@ interface EnsureBridgeOpts {
   env: Record<string, string>;
   node: string;
   bridgeDir: string;
-  spec: BackendSpec;
+  spec: BridgeSpec;
   onProgress?: (message: string) => void;
 }
 
