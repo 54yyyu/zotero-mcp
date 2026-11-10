@@ -77,6 +77,7 @@ from zotero_mcp.tools.annotations import (  # noqa: F401
     update_annotation,
     update_note,
 )
+from zotero_mcp.tools.bulk import bulk_get  # noqa: F401
 from zotero_mcp.tools.connectors import (  # noqa: F401
     chatgpt_connector_search,
     connector_fetch,

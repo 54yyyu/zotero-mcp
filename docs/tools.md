@@ -100,6 +100,7 @@ Example (Claude Desktop / Claude Code):
 - `zotero_get_item_metadata`: Metadata for one item (`format="markdown"`, `"json"` for the raw record, or `"bibtex"`)
 - `zotero_get_item_fulltext`: Full text of an item's PDF or EPUB
 - `zotero_get_item_children`: Attachments and notes for one item or many (pass an array of keys)
+- `zotero_bulk_get`: Structured, mixed reads of known item keys and citation keys; see [Batch reads](#batch-reads)
 - `zotero_read_pdf_pages`: Read a page range of a PDF as Markdown, with pages whose math, figures or tables the text garbles flagged; `format="image"` returns the pages as images, and `rect=[x, y, width, height]` zooms into one region
 - `zotero_get_pdf_outline`: A PDF's table of contents (`pdf-geometry`)
 - `zotero_get_attachment_path`: Local file paths of an item's attachments (local mode)
@@ -189,6 +190,68 @@ zotero_remove_item_relation(
 **Relation types:**
 - `dc:relation` — General related items (default)
 - `owl:sameAs` — Items that are the same work (e.g., preprint and published version)
+
+## Batch reads
+
+`zotero_bulk_get` returns structured JSON for up to **50 operations** in the
+active library. A batch may mix these four operations:
+
+| `op` | Required field | Optional fields | Success payload |
+|---|---|---|---|
+| `item_metadata` | `item_key` | `include`: booleans for `abstract`, `tags`, `collections`, `relations` | `metadata`: raw Zotero record |
+| `item_children` | `item_key` | `child_types`: an array of `note`, `attachment`, `annotation` | `children`: raw Zotero records |
+| `notes` | `parent_item_key` | — | `notes`: `{note_key, content, tags}` records; content is full note HTML, tags are strings |
+| `by_citation_key` | `citation_key` | — | `item_key` and raw `metadata`, both null when no match is found |
+
+Item keys must be eight uppercase letters/digits. Metadata includes every field
+by default; `include` entries set to false omit those fields from `data`.
+An omitted `child_types` returns every child type; an empty array returns none.
+`notes` reads a parent's child notes; to read a known note itself, use
+`item_metadata`. Citation-key lookup uses the existing backend's matching rules.
+
+```json
+{
+  "operations": [
+    {"op": "item_metadata", "item_key": "ABCD1234", "include": {"abstract": false}},
+    {"op": "notes", "parent_item_key": "ABCD1234"},
+    {"op": "item_children", "item_key": "ABCD1234", "child_types": ["attachment"]},
+    {"op": "by_citation_key", "citation_key": "smith2026"}
+  ],
+  "continue_on_error": true
+}
+```
+
+The JSON text response has a `results` array of the same length and order as
+`operations`. Every element contains `index` (zero-based), `op`, `ok` and
+`error` (null on success), plus its payload on success. For example:
+
+```json
+{"results":[{"index":0,"op":"notes","ok":true,"error":null,"notes":[]}]}
+```
+
+Failures are per operation: `unknown_op`, `invalid_arguments`,
+`not_found_or_unavailable`, or `read_failed` (with a `detail` message).
+The backend can omit a key both when it is missing and when retrieval failed,
+so `not_found_or_unavailable` deliberately does not assert that an item is
+absent. An existing parent with no children or notes is a successful empty
+array. Unknown fields and invalid option types are rejected, not ignored.
+
+With `continue_on_error=true` (default), valid metadata/parent lookups and
+child lookups are deduplicated and grouped through the existing SQLite/API
+backend; citation-key searches run independently. A failure does not discard
+other successful results. With `false`, operations run sequentially: the first
+failure stops reading, and all remaining results have `error: "aborted"`.
+Later operations are not prefetched in that mode.
+
+An empty batch returns an empty results array. More than 50 operations is a
+tool-level error before any reads; split larger batches into separate calls.
+For clients that stringify arguments, `operations` also accepts the JSON
+encoding of the same array. Malformed JSON or an envelope other than an array
+of objects is a tool-level error before any reads.
+The API backend retains pyzotero's existing retry/backoff behavior; the batch
+tool adds no retry loop. Results are not a transactional snapshot, and payloads
+are not truncated. This tool does not implement writes, fulltext, annotations,
+PDF outlines, collection listing or connector fetch; use their existing tools.
 
 ## PDF annotation extraction
 
