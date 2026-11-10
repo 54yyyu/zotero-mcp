@@ -4873,7 +4873,7 @@ def add_from_file(
         extracted_doi = None
         if ext == ".pdf":
             try:
-                import fitz
+                from zotero_mcp._pymupdf import fitz
                 doc = fitz.open(file_path)
 
                 # Check metadata

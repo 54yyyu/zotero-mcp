@@ -1640,8 +1640,7 @@ def create_annotations(
             # A PDF is opened once and shared by every spec; opening it is
             # also the check that the file is a PDF at all.
             if file_type == "pdf":
-                import fitz
-
+                from zotero_mcp._pymupdf import fitz
                 try:
                     source = fitz.open(file_path)
                     valid = bool(source.is_pdf)

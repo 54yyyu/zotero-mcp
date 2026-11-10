@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Exported bibliographies and other cleaned text show `&`, not `&amp;`** (#621). `clean_html` removed tags but left HTML entities encoded; it now decodes them after stripping the tags.
+- **`zotero-cli --json layout` and `read` print clean JSON** (#642). Seven code paths still imported PyMuPDF as `fitz`, whose deprecation notice goes to stdout ahead of the JSON; they now import it as `pymupdf`.
 - **Hybrid mode writes to the personal library reach the right account.** After `zotero_switch_library` to the personal library, whose local id is `0`, web-API writes went to `/users/0` instead of your userID.
 - **Scanned PDFs whose invisible OCR text sits under a visible stamp no longer come back as the stamp alone** (#724, #729). A page with a full-page scan image and fewer than 60 words of Markdown is read with `page.get_text()`, which keeps the OCR layer and the stamp together, and marked as plain text; pages already represented, and documents with no short page, never open PyMuPDF. Thanks @FFXFF1 and @kremserw.
 

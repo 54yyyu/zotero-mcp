@@ -820,7 +820,7 @@ def open_pdf(pdf):
         yield pdf
         return
     try:
-        import fitz
+        from zotero_mcp._pymupdf import fitz
     except ImportError as exc:
         raise ImportError(f"PDF features require PyMuPDF. {install_hint('pdf')}") from exc
     document = fitz.open(pdf)
@@ -948,8 +948,7 @@ def text_in_rects(pdf, page_index: int, rects: list[list[float]]) -> str:
     Returns:
         The text of all rects joined by spaces
     """
-    import fitz
-
+    from zotero_mcp._pymupdf import fitz
     with open_pdf(pdf) as doc:
         page = doc[page_index]
         to_page = fitz.Matrix(*_pdf_to_page_transform(page))
