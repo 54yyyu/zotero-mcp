@@ -329,7 +329,8 @@ def cmd_search(args):
                 sys.exit(1)
         result = search_mod.semantic_search(
             query=args.query, limit=args.limit, filters=filters,
-            search_all_libraries=getattr(args, "all_libraries", False), ctx=ctx,
+            search_all_libraries=getattr(args, "all_libraries", False),
+            level=getattr(args, "level", None), ctx=ctx,
         )
     elif args.mode == "notes":
         result = annotations.search_notes(query=args.query, limit=args.limit, ctx=ctx)
@@ -983,8 +984,20 @@ def cmd_db(args):
         print("=== Semantic Search Database Status ===")
         print(f"Collection: {ci.get('name', 'Unknown')}")
         print(f"Document count: {ci.get('count', 0)}")
+        print(f"  Article-level records: {ci.get('article_records', 0)}")
+        print(f"  Passage-level records: {ci.get('passage_records', 0)}")
+        for label, key in (("Items with article records", "article_items"), ("Items with passages", "passage_items")):
+            if key in ci:
+                print(f"  {label}: {'unknown' if ci[key] is None else ci[key]}")
         print(f"Embedding model: {ci.get('embedding_model', 'Unknown')}")
         print(f"Database path: {ci.get('persist_directory', 'Unknown')}")
+        if ci.get("migration"):
+            from zotero_mcp.index_migration import status_note
+            from zotero_mcp.utils import is_local_mode
+
+            print("\nIndex migration:")
+            for line in status_note(ci["migration"], "zotero-cli db update", local_mode=is_local_mode()):
+                print(f"  {line}")
         print("\nUpdate configuration:")
         print(f"- Auto update: {uc.get('auto_update', False)}")
         print(f"- Frequency: {uc.get('update_frequency', 'manual')}")
@@ -1006,8 +1019,9 @@ def cmd_db(args):
         col = client.collection
 
         if args.stats:
-            meta = col.get(include=["metadatas"])
-            metas = meta.get("metadatas", [])
+            metas = []
+            for collection in client.collections():
+                metas.extend(collection.get(include=["metadatas"]).get("metadatas", []))
             info = client.get_collection_info()
             print("=== Semantic DB Stats ===")
             print(f"Collection: {info.get('name')} @ {info.get('persist_directory')}")
@@ -1554,6 +1568,9 @@ def build_parser() -> argparse.ArgumentParser:
                      default="items", help="Search mode (default: items)")
     s_p.add_argument("--qmode", choices=["titleCreatorYear", "everything"],
                      default="titleCreatorYear")
+    s_p.add_argument("--level", choices=["articles", "passages"],
+                     help="With --mode semantic: search articles or passages "
+                          "(default: passages when chunking is on, articles when off)")
     s_p.add_argument("--collection", help="Scope to a collection key")
     s_p.add_argument("--limit", type=int, default=10)
     s_p.add_argument("--conditions", help='JSON conditions for advanced mode')

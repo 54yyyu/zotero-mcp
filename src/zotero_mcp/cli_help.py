@@ -22,7 +22,7 @@ HELP_GROUPS: list[tuple[str, list[str]]] = [
         "setup", "setup-info", "authorize-local", "install-skill",
         "schema-refresh", "update", "version",
     ]),
-    ("Semantic search index", ["update-db", "db-status", "db-inspect", "repair-db"]),
+    ("Semantic search index", ["update-db", "db-status", "db-inspect", "repair-db", "migrate-index"]),
     ("Batch API indexing", ["batch-status", "batch-import"]),
     ("Deprecated (still work)", ["openai-batch-status", "openai-batch-import"]),
 ]
