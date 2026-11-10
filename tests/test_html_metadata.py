@@ -109,6 +109,17 @@ class TestExtractEmbeddedMetadata:
                 'content="https://doi.org/10.1000/abc.123"></head>')
         assert extract_embedded_metadata(html).doi == "10.1000/abc.123"
 
+    def test_doi_keeps_a_bracket_it_opened(self):
+        # TAO's DOI ends in ")" that belongs to the suffix (see test_identifiers).
+        html = ('<head><meta name="citation_doi" '
+                'content="10.3319/TAO.2009.05.25.02(IWNOP)"></head>')
+        assert extract_embedded_metadata(html).doi == "10.3319/TAO.2009.05.25.02(IWNOP)"
+
+    def test_doi_drops_prose_closing_bracket(self):
+        html = ('<head><meta name="citation_doi" '
+                'content="(see 10.1234/foo)"></head>')
+        assert extract_embedded_metadata(html).doi == "10.1234/foo"
+
     def test_dublin_core_fallback(self):
         html = ('<head><meta name="DC.Title" content="A DC Paper">'
                 '<meta name="DC.Creator" content="Smith, Jane">'

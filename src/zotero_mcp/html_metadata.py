@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 
+from .identifiers import normalize_doi
+
 # Highwire tag -> our field name. Both the ``citation_`` and the bare
 # Dublin Core spellings appear in the wild; DC is the weaker source and is
 # only consulted for fields Highwire did not supply.
@@ -201,7 +203,7 @@ def _normalize_date(raw: str) -> str:
 def _clean_doi(raw: str) -> str:
     """Pull a bare DOI out of a tag value that may be a URL or prefixed."""
     match = _DOI_RE.search(raw or "")
-    return match.group(1).rstrip(".,;)") if match else ""
+    return (normalize_doi(match.group(1)) or "") if match else ""
 
 
 def extract_embedded_metadata(html: str) -> EmbeddedMetadata:
