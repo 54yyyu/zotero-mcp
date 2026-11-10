@@ -18,21 +18,14 @@ _BATCH_LABELS = {"openai": "OpenAI", "gemini": "Gemini"}
 
 
 def format_chunking_status(status: dict) -> str:
-    """Describe what the next indexing run will actually do about chunking.
-
-    Reports the effective behaviour, not the requested setting: the Batch API
-    path has no chunking step, so ``chunking.enabled: true`` there still yields
-    one truncated vector per item (#416).
-    """
+    """Describe what the next indexing run will do about chunking."""
     chunking = status.get("chunking", {})
     if not chunking.get("enabled"):
         max_tokens = chunking.get("max_tokens")
         if isinstance(max_tokens, (int, float)) and max_tokens < 2000:
             return f"disabled (item-level indexing; only the first ~{int(max_tokens)} tokens of each item are searchable)"
         return "disabled (item-level indexing)"
-    if chunking.get("effective"):
-        return "enabled"
-    return "requested but NOT applied (Batch API path indexes item-level)"
+    return "enabled"
 
 
 def _enabled(value: Any) -> str:
@@ -85,7 +78,6 @@ def semantic_config_rows(
 
     chunk_status = {"chunking": {
         "enabled": bool(chunking.get("enabled")),
-        "effective": bool(chunking.get("enabled")) and not batch_on,
         "max_tokens": max_tokens,
     }}
     chunk_text = format_chunking_status(chunk_status)
