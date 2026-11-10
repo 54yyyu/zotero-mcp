@@ -14,6 +14,7 @@ import type { AcpClient, InitializeResult } from "./acp.ts";
 import type { BackendSpec } from "./backends.ts";
 import { withBrief } from "./brief.ts";
 import { JsonRpcError, MethodNotFound } from "./jsonrpc.ts";
+import { t } from "../i18n.ts";
 
 type Obj = Record<string, unknown>;
 type ToolEvent = Extract<ChatEvent, { t: "tool" }> & { name?: string };
@@ -528,7 +529,7 @@ export class AcpAgentSession implements AgentSession {
     const stop = stopOf(result?.["stopReason"]);
     // pi, for one, reports a rejected request (a 400 for a reasoning level the model refuses) as a clean, empty end_turn.
     if (stop === "end_turn" && !turn.produced) {
-      this.#emit({ t: "notice", level: "warn", message: "The agent finished without answering.", hint: "The model or its reasoning effort may have been rejected. Try another model or a lower effort; the agent's own settings or log can say why." });
+      this.#emit({ t: "notice", level: "warn", message: t("agent.noAnswer"), hint: t("agent.noAnswerHint") });
     }
     this.#endTurn(turn.id, stop, usage);
   }
@@ -561,8 +562,8 @@ export class AcpAgentSession implements AgentSession {
       this.#cancelPending();
       this.#turn = undefined;
     }
-    if (silent.compacted) this.#emit({ t: "notice", level: "info", message: COMPACTED, compacted: true, ...(this.#ctx ? { context: { ...this.#ctx } } : {}) });
-    else if (!this.#cancelled) this.#emit({ t: "notice", level: "warn", message: "The agent did not summarise this chat.", ...(silent.said.trim() ? { hint: silent.said.trim() } : {}) });
+    if (silent.compacted) this.#emit({ t: "notice", level: "info", message: t("agent.compacted"), compacted: true, ...(this.#ctx ? { context: { ...this.#ctx } } : {}) });
+    else if (!this.#cancelled) this.#emit({ t: "notice", level: "warn", message: t("agent.notCompacted"), ...(silent.said.trim() ? { hint: silent.said.trim() } : {}) });
   }
 
   async cancel(): Promise<void> {
@@ -692,7 +693,7 @@ export class AcpAgentSession implements AgentSession {
       case "compaction_update": // claude and codex, because initialize says we take them (acp.ts)
         if (update["status"] !== "completed" || this.#compactions.has(String(update["compactionId"]))) return; // claude repeats the terminal frame with token counts
         this.#compactions.add(String(update["compactionId"]));
-        this.#emit({ t: "notice", level: "info", message: COMPACTED, compacted: true });
+        this.#emit({ t: "notice", level: "info", message: t("agent.compacted"), compacted: true });
         return;
       default:
         return; // user_message_chunk, session_info_update, ...
@@ -720,8 +721,6 @@ export class AcpAgentSession implements AgentSession {
   }
 }
 
-const COMPACTED = "Older parts of this chat were summarised to make room.";
-
 function usageOf(result: Obj | undefined, cost: number, ctx?: { used: number; size: number }): Usage | undefined {
   const u = asObj(result?.["usage"]);
   const usage: Usage = {};
@@ -739,7 +738,7 @@ function usageOf(result: Obj | undefined, cost: number, ctx?: { used: number; si
 function hintFor(e: JsonRpcError, account: string | undefined): { hint?: string } {
   const text = `${e.rpc.message} ${JSON.stringify(e.rpc.data ?? "")}`;
   if (/auth|log ?in|sign ?in|credential|api key|unauthor|401/i.test(text)) {
-    return { hint: account ? "Sign in again in the agent's own app, then start a new chat." : "Sign in in the agent's own app (for Claude Code: run `claude` once), or use an API key, then start a new chat." };
+    return { hint: account ? t("agent.signInAgain") : t("agent.signIn") };
   }
   return {};
 }

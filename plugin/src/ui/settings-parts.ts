@@ -2,6 +2,7 @@
 // field, a card and its rows, swatches, a slider, and a two-step confirm.
 import { append, env, h } from "./dom.ts";
 import type { Kid } from "./dom.ts";
+import { t } from "../i18n.ts";
 
 export interface Opt { id: string; label: string; disabled?: boolean; title?: string }
 
@@ -38,11 +39,15 @@ export function switchRow(label: string, help: string, on: boolean, onChange: (o
 }
 
 /** A native select in our frame; `options[].id === ""` is the "default" entry. */
-export function selectField(label: string, options: { id: string; label: string }[], value: string, onChange: (id: string) => void): HTMLElement {
+export function select(label: string, options: { id: string; label: string }[], value: string, onChange: (id: string) => void): HTMLElement {
   const sel = h("select.input", { "aria-label": label, dataset: { fid: `select:${label}` }, onchange: () => onChange((sel as HTMLSelectElement).value) },
     options.map((o) => h("option", { value: o.id, selected: o.id === value ? true : null }, o.label)));
-  return h("div.field", null, h("span.field__l", null, label), h("div.select", null, sel));
+  return h("div.select", null, sel);
 }
+
+/** A select with its label above it. */
+export const selectField = (label: string, options: { id: string; label: string }[], value: string, onChange: (id: string) => void): HTMLElement =>
+  h("div.field", null, h("span.field__l", null, label), select(label, options, value, onChange));
 
 /** A card: a title, one line on what it is for, then its rows. */
 export function section(title: string, desc: string, ...kids: Kid[]): HTMLElement {
@@ -95,12 +100,12 @@ export function confirmAction(o: { label: string; ask: string; yes: string; dang
   };
   const ask = () => {
     const yes = h(`button.btn.btn--sm${o.danger ? ".btn--danger" : ".btn--solid"}`, { type: "button", onclick: go }, o.yes);
-    box.replaceChildren(h("span.confirm__q", { role: "alert" }, o.ask), yes, h("button.btn.btn--sm", { type: "button", onclick: () => idle() }, "Cancel"));
+    box.replaceChildren(h("span.confirm__q", { role: "alert" }, o.ask), yes, h("button.btn.btn--sm", { type: "button", onclick: () => idle() }, t("common.cancel")));
     (box.querySelector("button.btn--sm:last-child") as HTMLElement | null)?.focus();
   };
   const go = async () => {
-    box.replaceChildren(h("span.confirm__msg", null, "Working…"));
-    try { idle((await o.run()) || "Done."); } catch (e) { idle(`Failed: ${e instanceof Error ? e.message : String(e)}`); }
+    box.replaceChildren(h("span.confirm__msg", null, t("common.working")));
+    try { idle((await o.run()) || t("common.doneDot")); } catch (e) { idle(t("common.failed", { error: e instanceof Error ? e.message : String(e) })); }
     env.win.setTimeout(() => { const m = box.querySelector(".confirm__msg"); if (m) m.textContent = ""; }, 4000);
   };
   idle();

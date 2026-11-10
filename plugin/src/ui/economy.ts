@@ -3,6 +3,8 @@
 // whenever it changes; unchanged, it becomes one short reminder line, and its image is never sent again.
 import type { ContextChip, PromptInput, Usage } from "../types.ts";
 import type { TranscriptState } from "./transcript.ts";
+import { language, t } from "../i18n.ts";
+import type { Key } from "../i18n.ts";
 
 /** FNV-1a, 32 bit: a fingerprint, not security. */
 function fnv(s: string): string {
@@ -108,12 +110,20 @@ export function chatStats(tr: TranscriptState): { messages: number; compactions:
   return { messages, compactions, ...(last ? { last } : {}) };
 }
 
+const SENT_KIND: Partial<Record<ContextChip["kind"], Key>> = {
+  reader: "sent.reader", selection: "sent.selection", area: "sent.area", annotation: "sent.annotation", item: "sent.item", collection: "sent.collection", note: "sent.note", image: "sent.image",
+};
+
 /** What the last message's <zotero-context> carried: "Reader p.8 and selection p.3 in full; item Bell 2017 named only". */
 export function sentLine(chips: ContextChip[]): string {
-  const name = (c: ContextChip) => c.kind === "reader" ? `reader${pageOf(c)}` : c.kind === "selection" ? `selection${pageOf(c)}`
-    : c.kind === "area" ? `area${pageOf(c)}` : c.kind === "annotation" ? `annotation${pageOf(c)}` : `${c.kind === "paper" ? "" : `${c.kind} `}${c.label.length > 28 ? `${c.label.slice(0, 27)}…` : c.label}`;
-  const list = (cs: ContextChip[]) => cs.map(name).join(", ").replace(/, ([^,]*)$/, " and $1");
+  const label = (c: ContextChip) => (c.label.length > 28 ? `${c.label.slice(0, 27)}…` : c.label);
+  const name = (c: ContextChip) => {
+    const key = SENT_KIND[c.kind];
+    return key ? t(key, { page: pageOf(c).trim(), label: label(c) }).trim() : c.kind === "paper" ? label(c) : `${c.kind} ${label(c)}`;
+  };
+  const and = new Intl.ListFormat(language(), { type: "conjunction" });
+  const list = (cs: ContextChip[]) => and.format(cs.map(name));
   const full = list(chips.filter((c) => !c.repeat)), rep = list(chips.filter((c) => c.repeat));
-  const s = [full && `${full} in full`, rep && `${rep} named only (unchanged)`].filter(Boolean).join("; ");
+  const s = [full && t("sent.full", { list: full }), rep && t("sent.named", { list: rep })].filter(Boolean).join(t("sent.sep"));
   return s && s[0]!.toUpperCase() + s.slice(1);
 }

@@ -9,7 +9,6 @@ import time as _time
 from pathlib import Path
 from typing import Literal
 
-
 from zotero_mcp import client as _client
 from zotero_mcp import library as _library
 from zotero_mcp import search_semantics as _semantics
@@ -52,7 +51,7 @@ def _maybe_fire_presearch_sync(search) -> bool:
 
     def _run():
         try:
-            search.update_database(extract_fulltext=_utils.is_local_mode())
+            search.update_database(extract_fulltext=_utils.is_local_mode(), automatic=True)
         except Exception as e:
             _search_logger.debug(f"Background pre-search sync failed: {e}")
 
@@ -1433,7 +1432,9 @@ def advanced_search(
         "metadata filter with one key per dict, e.g. {'item_type': "
         "'journalArticle'}; keys item_type, item_key, citation_key, doi, "
         "publication, tags, has_fulltext; combine with {'$and': [{...}, "
-        "{...}]}; there is no year filter. Searches the active library; "
+        "{...}]}; there is no year filter. level: 'articles' (works on a topic) "
+        "or 'passages' (where something is stated); default follows the "
+        "chunking setting. Searches the active library; "
         "library_id picks another (0 or 'user', or a group ID), "
         "search_all_libraries=True searches every indexed library (not with "
         "library_id). Needs a built index: if results look empty or stale, "
@@ -1449,6 +1450,7 @@ def semantic_search(
     library_id: int | str | None = None,
     search_all_libraries: bool = False,
     full_passage: bool = False,
+    level: Literal["articles", "passages"] | None = None,
     *,
     ctx: Context
 ) -> str:
@@ -1553,7 +1555,10 @@ def semantic_search(
         )
 
         # Perform search
-        results = search.search(query=query, limit=limit, filters=filters, group_id=group_id)
+        results = search.search(
+            query=query, limit=limit, filters=filters, group_id=group_id,
+            **({"level": level} if level else {}),
+        )
         stale_note = _stale_index_note(search, version_check()) if version_check else None
 
         if results.get("error"):
@@ -1563,15 +1568,30 @@ def semantic_search(
             return message
 
         search_results = results.get("results", [])
+        level_note = results.get("level_note")
+        load_note = results.get("load_note")
 
         if not search_results:
-            message = f"No semantically similar items found for query: '{query}'"
-            return f"{message}\n\n{stale_note}" if stale_note else message
+            empty = f"No semantically similar items found for query: '{query}'"
+            notes = [
+                n for n in (
+                    f"*{level_note}*" if level_note else None,
+                    f"*{load_note}*" if load_note else None,
+                    stale_note,
+                ) if n
+            ]
+            return "\n\n".join([empty, *notes])
 
         # Format results as markdown
         output = [f"# Semantic Search Results for '{query}'", ""]
         if search_all_libraries:
             output.append("*Scope: all indexed libraries.*")
+            output.append("")
+        if level_note:
+            output.append(f"*{level_note}*")
+            output.append("")
+        if load_note:
+            output.append(f"*{load_note}*")
             output.append("")
         output.append(f"Found {len(search_results)} similar items:")
         output.append("")
@@ -1807,6 +1827,12 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append("## Collection Information")
         output.append(f"**Name:** {collection_info.get('name', 'Unknown')}")
         output.append(f"**Document Count:** {collection_info.get('count', 0)}")
+        output.append(f"**Article-level Records:** {collection_info.get('article_records', 0)}")
+        output.append(f"**Passage-level Records:** {collection_info.get('passage_records', 0)}")
+        for label, key in (("Items with Article Records", "article_items"), ("Items with Passages", "passage_items")):
+            if key in collection_info:
+                count = collection_info[key]
+                output.append(f"**{label}:** {'unknown' if count is None else count}")
         if collection_info.get("pending_writes"):
             output.append(
                 f"**Pending Writes:** {collection_info['pending_writes']} "
@@ -1830,6 +1856,17 @@ def get_search_database_status(*, ctx: Context) -> str:
             output.append(f"**Error:** {collection_info['error']}")
 
         output.append("")
+
+        if collection_info.get("migration"):
+            from zotero_mcp.index_migration import status_note
+
+            output.append("## Index Migration")
+            output.append("```")
+            output.extend(
+                status_note(collection_info["migration"], "zotero-mcp update-db", local_mode=_utils.is_local_mode())
+            )
+            output.append("```")
+            output.append("")
 
         output.append("## Update Configuration")
         output.append(f"**Auto Update:** {update_config.get('auto_update', False)}")

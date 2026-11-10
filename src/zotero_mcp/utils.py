@@ -2,6 +2,7 @@ import contextlib
 import json
 import logging
 import os
+import html
 import re
 import sys
 import tempfile
@@ -543,7 +544,8 @@ def clean_html(raw_html: str, collapse_whitespace: bool = False) -> str:
     """
     if not raw_html:
         return ""
-    clean_text = re.sub(html_re, "", raw_html)
+    # Entities after the tags, so an escaped "&lt;b&gt;" stays text (#621).
+    clean_text = html.unescape(re.sub(html_re, "", raw_html))
     if collapse_whitespace:
         clean_text = re.sub(r'\s+', ' ', clean_text).strip()
     return clean_text

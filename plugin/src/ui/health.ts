@@ -2,6 +2,7 @@
 // ready, and the one problem worth showing first.
 import type { BackendStatus, DoctorCheck, PanelHost } from "../types.ts";
 import { errMessage } from "./dom.ts";
+import { t } from "../i18n.ts";
 
 /** Which failing check matters most, in order; the first two stop the chat from working at all. */
 export const PRIORITY: DoctorCheck["id"][] = ["node", "backend", "zotero-api", "cli", "write-access"];
@@ -43,7 +44,7 @@ export class Health {
   /** Why sending is impossible right now, or null. */
   blockReason(): string | null {
     const st = this.backend();
-    if (st && !st.available) return `${st.label} isn't ready: ${st.reason ?? "not found"}`;
+    if (st && !st.available) return t("health.notReady", { agent: st.label, reason: st.reason ?? t("health.notFound") });
     const bad = this.checks?.find((c) => !c.ok && BLOCKING.has(c.id));
     return bad ? `${bad.label}${bad.detail ? `: ${bad.detail}` : ""}` : null;
   }
@@ -63,7 +64,7 @@ export class Health {
       const [checks] = await Promise.all([this.host.doctor(), this.refreshStatuses()]);
       this.checks = checks;
     } catch (e) {
-      this.checks = [{ id: "backend", ok: false, label: "Status check", detail: errMessage(e) }];
+      this.checks = [{ id: "backend", ok: false, label: t("health.statusCheck"), detail: errMessage(e) }];
     } finally {
       this.checking = false;
       this.changed();

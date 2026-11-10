@@ -6,10 +6,13 @@ import { ACCENTS, BACKGROUNDS } from "./appearance.ts";
 import type { Look } from "./appearance.ts";
 import { errMessage, h } from "./dom.ts";
 import { row, section, seg, slider, swatches, switchRow } from "./settings-parts.ts";
+import type { Kid } from "./dom.ts";
+import { t } from "../i18n.ts";
 
 const HEX = /^#[0-9a-f]{6}$/i;
 
-export function appearanceCard(host: SettingsHost, look: Look, save: (patch: Partial<Appearance>) => Promise<void>, render: () => void): () => HTMLElement {
+/** `first`: a row drawn at the top of the card (the interface language, which is saved with the other settings). */
+export function appearanceCard(host: SettingsHost, look: Look, save: (patch: Partial<Appearance>) => Promise<void>, render: () => void, first: () => Kid): () => HTMLElement {
   let msg = "";
   let busy = false;
   const fail = (e: unknown) => { msg = errMessage(e); render(); };
@@ -31,42 +34,45 @@ export function appearanceCard(host: SettingsHost, look: Look, save: (patch: Par
     const a = host.getSettings().appearance;
     const custom = !!a.accent && !ACCENTS.some((x) => x.id === a.accent);
     const color = h("input", {
-      type: "color", value: a.accent || ACCENTS[0]!.light, "aria-label": "Custom colour", title: "Custom colour", dataset: { fid: "accent:custom" },
+      type: "color", value: a.accent || ACCENTS[0]!.light, "aria-label": t("look.custom"), title: t("look.custom"), dataset: { fid: "accent:custom" },
       oninput: () => look.apply({ ...a, accent: (color as HTMLInputElement).value.toLowerCase() }),
       onchange: () => void save({ accent: (color as HTMLInputElement).value.toLowerCase() }),
     });
     // The hex field: exact colours, and a way in wherever the system colour picker does not open.
     const hex = h("input.input.input--sm.hex", {
-      type: "text", value: a.accent || ACCENTS[0]!.light, maxlength: "7", spellcheck: "false", "aria-label": "Accent colour as hex", dataset: { fid: "accent:hex" },
+      type: "text", value: a.accent || ACCENTS[0]!.light, maxlength: "7", spellcheck: "false", "aria-label": t("look.hex"), dataset: { fid: "accent:hex" },
       onchange: () => {
         const v = (hex as HTMLInputElement).value.trim().replace(/^(?!#)/, "#");
-        if (HEX.test(v)) void save({ accent: v.toLowerCase() }); else { msg = "A colour is # and six hex digits, like #2563c9."; render(); }
+        if (HEX.test(v)) void save({ accent: v.toLowerCase() }); else { msg = t("look.hexBad"); render(); }
       },
     });
     const tiles = [
-      { id: "none", label: "Plain", mod: "none" },
-      ...BACKGROUNDS.map((b) => ({ id: b.id, label: b.name, mod: b.id })),
-      ...(a.image ? [{ id: "image", label: `Your picture (${a.image})`, mod: "image" }] : []),
+      { id: "none", label: t("bg.plain"), mod: "none" },
+      ...BACKGROUNDS.map((b) => ({ id: b.id, label: t(b.name), mod: b.id })),
+      ...(a.image ? [{ id: "image", label: t("look.yourPicture", { name: a.image }), mod: "image" }] : []),
     ];
-    return section("Appearance", "How the panel looks. Changes show as you make them.",
-      switchRow("Glass", "Frosted, translucent cards and menus.", a.glass, (on) => void save({ glass: on })),
-      row("Accent colour",
-        swatches("Accent colour", "sw", ACCENTS.map((c) => ({ id: c.id, label: c.name, style: `--cl:${c.light};--cd:${c.dark}`, mod: c.id ? undefined : "mono" })), custom ? "custom" : a.accent, (id) => void save({ accent: id }),
+    const sec = section(t("look.title"), t("look.desc"),
+      first(),
+      switchRow(t("look.glass"), t("look.glassHint"), a.glass, (on) => void save({ glass: on })),
+      row(t("look.accent"),
+        swatches(t("look.accent"), "sw", ACCENTS.map((c) => ({ id: c.id, label: t(c.name), style: `--cl:${c.light};--cd:${c.dark}`, mod: c.id ? undefined : "mono" })), custom ? "custom" : a.accent, (id) => void save({ accent: id }),
           h(`label.sw.sw--custom${custom ? ".sw--on" : ""}`, null, color)),
-        "The send button, selections, the working dots and, once you pick a colour, links. Mono is black and white."),
-      custom ? row("Hex", hex) : null,
-      row("Background",
-        [swatches("Background", "bgsw", tiles, a.background, (id) => void save({ background: id })),
+        t("look.accentHint")),
+      custom ? row(t("look.hexLabel"), hex) : null,
+      row(t("look.background"),
+        [swatches(t("look.background"), "bgsw", tiles, a.background, (id) => void save({ background: id })),
           h("div.row__ctl", null,
-            h("button.btn.btn--sm", { type: "button", disabled: busy ? true : null, dataset: { fid: "image:choose" }, onclick: () => void chooseImage() }, busy ? "Opening…" : "Choose an image…"),
-            a.image ? h("button.btn.btn--sm.btn--quiet", { type: "button", "aria-label": "Remove the background picture", onclick: () => void removeImage() }, "Remove") : null)],
-        "Behind the chat. A picture is shrunk and kept in Zotero's profile, never synced."),
+            h("button.btn.btn--sm", { type: "button", disabled: busy ? true : null, dataset: { fid: "image:choose" }, onclick: () => void chooseImage() }, busy ? t("look.opening") : t("look.chooseImage")),
+            a.image ? h("button.btn.btn--sm.btn--quiet", { type: "button", "aria-label": t("look.removeImage"), onclick: () => void removeImage() }, t("common.remove")) : null)],
+        t("look.backgroundHint")),
       a.background === "image" ? [
-        slider("Picture visibility", { value: a.imageVisibility, min: 0, max: 100, unit: "%", help: "Lower fades it into the panel so text stays easy to read.", onInput: (v) => look.apply({ ...a, imageVisibility: v }), onChange: (v) => void save({ imageVisibility: v }) }),
-        slider("Picture blur", { value: a.imageBlur, min: 0, max: 20, unit: " px", onInput: (v) => look.apply({ ...a, imageBlur: v }), onChange: (v) => void save({ imageBlur: v }) }),
+        slider(t("look.visibility"), { value: a.imageVisibility, min: 0, max: 100, unit: "%", help: t("look.visibilityHint"), onInput: (v) => look.apply({ ...a, imageVisibility: v }), onChange: (v) => void save({ imageVisibility: v }) }),
+        slider(t("look.blur"), { value: a.imageBlur, min: 0, max: 20, unit: " px", onInput: (v) => look.apply({ ...a, imageBlur: v }), onChange: (v) => void save({ imageBlur: v }) }),
       ] : null,
-      row("Text size", seg("Text size", [{ id: "small", label: "Small" }, { id: "default", label: "Default" }, { id: "large", label: "Large" }], a.textSize, (id) => void save({ textSize: id as Appearance["textSize"] }))),
-      row("Density", seg("Density", [{ id: "compact", label: "Compact" }, { id: "comfortable", label: "Comfortable" }], a.density, (id) => void save({ density: id as Appearance["density"] }))),
+      row(t("look.textSize"), seg(t("look.textSize"), [{ id: "small", label: t("look.small") }, { id: "default", label: t("common.default") }, { id: "large", label: t("look.large") }], a.textSize, (id) => void save({ textSize: id as Appearance["textSize"] }))),
+      row(t("look.density"), seg(t("look.density"), [{ id: "compact", label: t("look.compact") }, { id: "comfortable", label: t("look.comfortable") }], a.density, (id) => void save({ density: id as Appearance["density"] }))),
       msg ? h("p.sec__hint", { role: "alert" }, msg) : null);
+    sec.id = "look"; // a change of language redraws the panel and comes back here
+    return sec;
   };
 }

@@ -26,5 +26,17 @@ async function main(ctx) {
   injected.hide(); injected.show();
   out.reopenMs = Date.now() - t1;
   check(out.reopenMs < 30, `reopen took ${out.reopenMs} ms (budget 30)`);
+
+  // panel.js ships UTF-8 (esbuild charset "utf8"), not \u escapes: Gecko's script loader must decode it as UTF-8.
+  const PREF = "extensions.zotero-chat.settings";
+  const saved = Zotero.Prefs.get(PREF, true) || "{}";
+  const ta = () => win.document.getElementById("zmc-root")?.shadowRoot?.querySelector("textarea");
+  try {
+    Zotero.Prefs.set(PREF, JSON.stringify({ ...JSON.parse(saved), uiLanguage: "zh-Hans" }), true);
+    await ctx.waitFor(() => ta()?.placeholder === "\u8be2\u95ee\u60a8\u7684\u6587\u732e\u5e93\u2026", "the panel speaks Simplified Chinese, decoded as UTF-8");
+    out.zhPlaceholder = ta().placeholder;
+  } finally {
+    Zotero.Prefs.set(PREF, saved, true);
+  }
   return out;
 }

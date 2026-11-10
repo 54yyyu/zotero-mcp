@@ -8,6 +8,7 @@ import { HUES, HUE_DARK, HUE_LIGHT, SOFT_DARK, SOFT_LIGHT, exportPalette, prepar
 import { copyText, edgeFade, env, h, icon } from "./dom.ts";
 import type { IconName } from "./dom.ts";
 import { noteLine, trySave } from "./notes.ts";
+import { t } from "../i18n.ts";
 
 export interface DiagramOpts {
   /** The host's file picker (PanelHost.saveFile); absent, the Save buttons are not shown. */
@@ -99,7 +100,7 @@ export function fill(card: HTMLElement, src: string, opts: DiagramOpts): boolean
   const { svg: tree, fit, title } = p;
   const fig = build(tree);
   fig.setAttribute("role", "img");
-  fig.setAttribute("aria-label", tree.attrs["aria-label"] || title || "Diagram");
+  fig.setAttribute("aria-label", tree.attrs["aria-label"] || title || t("diagram.label"));
   // Between 0.9x and 1.3x its own size: labels never billboard-size in a wide panel, never below ~11px in a narrow one
   // (there it scrolls sideways, with a soft fade on the side that has more).
   fig.style.maxWidth = `${Math.round(fit.box[2] * 1.3)}px`;
@@ -116,7 +117,7 @@ export function fill(card: HTMLElement, src: string, opts: DiagramOpts): boolean
     b.addEventListener("click", () => void run(b));
     return b;
   };
-  const sourceBtn = btn("Show the SVG source", "code", (b) => {
+  const sourceBtn = btn(t("diagram.source"), "code", (b) => {
     const on = !srcEl;
     if (on) { srcEl = h("div.dg__src", null, opts.codeBlock(src, "svg")); card.appendChild(srcEl); }
     else { srcEl?.remove(); srcEl = null; }
@@ -133,9 +134,9 @@ export function fill(card: HTMLElement, src: string, opts: DiagramOpts): boolean
     return cs.getPropertyValue("--accent-l").trim() || (app.getAttribute("data-theme") === "dark" ? undefined : cs.getPropertyValue("--accent").trim()) || undefined;
   };
   const exported = () => serializeSvg(tree, fit, exportPalette(accent()));
-  const copyBtn = btn("Copy as an image", "copy", async (b) => done(b, await copyPng(exported(), fit.box[2], fit.box[3])));
+  const copyBtn = btn(t("diagram.copy"), "copy", async (b) => done(b, await copyPng(exported(), fit.box[2], fit.box[3])));
   const saveBtn = (fmt: "PNG" | "SVG") => {
-    const b = h("button.dg__btn", { type: "button", title: `Save as ${fmt}`, "aria-label": `Save as ${fmt}` }, icon("download"), fmt);
+    const b = h("button.dg__btn", { type: "button", title: t("diagram.saveAs", { format: fmt }), "aria-label": t("diagram.saveAs", { format: fmt }) }, icon("download"), fmt);
     b.addEventListener("click", () => void (async () => {
       if (!opts.saveFile) return;
       try {
@@ -148,7 +149,7 @@ export function fill(card: HTMLElement, src: string, opts: DiagramOpts): boolean
   };
   // A note under the item the user is on: the title, then the drawing as an embedded PNG; the line under the card says where it went.
   let noteEl: HTMLElement | null = null;
-  const noteBtn = (save: NonNullable<DiagramOpts["saveNote"]>) => btn("Add to a note", "note", async (b) => {
+  const noteBtn = (save: NonNullable<DiagramOpts["saveNote"]>) => btn(t("diagram.note"), "note", async (b) => {
     b.setAttribute("disabled", "");
     const st = await trySave(async () => save({ ...(title ? { title } : {}), markdown: fence(src), images: [await pngOf(src, accent())] }));
     b.removeAttribute("disabled");
@@ -157,7 +158,7 @@ export function fill(card: HTMLElement, src: string, opts: DiagramOpts): boolean
     noteEl = noteLine(st, (uri) => opts.open?.(uri));
     card.insertBefore(noteEl, srcEl);
   });
-  const bar = h("div.dg__bar", { role: "toolbar", "aria-label": "Diagram" }, sourceBtn, copyBtn,
+  const bar = h("div.dg__bar", { role: "toolbar", "aria-label": t("diagram.label") }, sourceBtn, copyBtn,
     opts.saveFile ? [h("span.dg__sep"), saveBtn("PNG"), saveBtn("SVG")] : null,
     opts.saveNote ? [h("span.dg__sep"), noteBtn(opts.saveNote)] : null);
   card.className = "dg";
@@ -171,7 +172,7 @@ export function fill(card: HTMLElement, src: string, opts: DiagramOpts): boolean
 export function pending(card: HTMLElement): void {
   card.className = "dg dg--pending";
   card.setAttribute("role", "status");
-  card.replaceChildren("Drawing…");
+  card.replaceChildren(t("diagram.drawing"));
   ensureStyles(card);
   env.win.queueMicrotask?.(() => ensureStyles(card));
 }
@@ -195,7 +196,7 @@ const fileName = (title: string) => title.toLowerCase().replace(/[^a-z0-9]+/g, "
 
 /** A check mark for a moment on success; the button's own content again after. */
 function done(b: HTMLElement, ok: boolean): void {
-  if (!ok) { b.title = "That did not work"; return; }
+  if (!ok) { b.title = t("diagram.failed"); return; }
   const kids = [...b.childNodes];
   b.replaceChildren(icon("check"));
   env.win.setTimeout(() => b.replaceChildren(...kids), 1200);

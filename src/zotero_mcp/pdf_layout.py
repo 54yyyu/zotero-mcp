@@ -596,7 +596,7 @@ def detect_page_regions(pdf, page_num: int) -> dict:
         return _page_regions(pdf, page_num)
 
     try:
-        import fitz
+        from zotero_mcp._pymupdf import fitz
     except ImportError:
         raise ImportError(
             f"PDF layout detection requires PyMuPDF. {install_hint('pdf')}"

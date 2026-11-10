@@ -1,6 +1,7 @@
 // "Is everything the chat needs in place?" Each check says what is wrong and, where we can, fixes it.
 import type { AgentRuntime, DoctorCheck, PanelSettings, Spawner } from "../types.ts";
 import { findBinary } from "../agent/index.ts";
+import { t } from "../i18n.ts";
 
 const port = () => Number(Zotero.Prefs.get("httpServer.port")) || 23119;
 
@@ -32,7 +33,7 @@ async function* stream(spawner: Spawner, env: Record<string, string>, cmd: strin
     else await new Promise<void>((r) => { wake = r; });
   }
   clearTimeout(timer);
-  if (timedOut) yield "Gave up waiting. Check your network and try again.";
+  if (timedOut) yield t("doctor.gaveUp");
   return proc.exited;
 }
 
@@ -50,7 +51,7 @@ export function installCli(spawner: Spawner, maxMs?: number): () => AsyncIterabl
     const env = await spawner.baseEnv();
     let uv = await findBinary(spawner, env, "uv", localBin(env));
     if (!uv) {
-      yield "uv, the installer zotero-cli uses, is not installed. Fetching it from astral.sh first.";
+      yield t("doctor.fetchUv");
       const code = yield* stream(spawner, { ...env, UV_NO_MODIFY_PATH: "1" }, "/bin/sh", ["-c", "curl -LsSf https://astral.sh/uv/install.sh | sh"], maxMs);
       uv = code === 0 ? await findBinary(spawner, env, "uv", localBin(env)) : null;
     }
@@ -61,19 +62,19 @@ export function installCli(spawner: Spawner, maxMs?: number): () => AsyncIterabl
     const py = await findBinary(spawner, env, "python3");
     if (py) attempts.push([py, ["-m", "pip", "install", "--user", "--upgrade", "zotero-mcp-server"]]);
     if (!attempts.length) {
-      yield "No installer found. Install uv (https://docs.astral.sh/uv/), then try again.";
+      yield t("doctor.noInstaller");
       return;
     }
     for (const [cmd, args] of attempts) {
       const code = yield* stream(spawner, env, cmd, args, maxMs);
       if (code === 0) {
-        yield "Installed.";
+        yield t("doctor.installed");
         if (cmd === uv && !(env["PATH"] ?? "").split(":").some((p) => localBin(env).includes(p))) {
-          yield "The chat can use it now. To use zotero-cli in a terminal too, run `uv tool update-shell` and reopen the terminal.";
+          yield t("doctor.updateShell");
         }
         return;
       }
-      yield `Failed (exit ${code}).`;
+      yield t("doctor.failedExit", { code: String(code) });
     }
   };
 }
@@ -88,56 +89,56 @@ export function createDoctor(deps: { win: any; spawner: Spawner; runtime: AgentR
     const ping = await httpStatus(spawner, env, "/connector/ping");
     if (!Zotero.Prefs.get("httpServer.enabled")) {
       checks.push({
-        id: "zotero-api", ok: false, label: "Zotero's local server is turned off", detail: "zotero-cli reaches your library through it. Turn it on, then restart Zotero.",
-        fix: { label: "Turn it on", run: async function* () { Zotero.Prefs.set("httpServer.enabled", true); Zotero.Prefs.set("httpServer.localAPI.enabled", true); yield "Enabled. Restart Zotero to apply."; } },
+        id: "zotero-api", ok: false, label: t("doctor.serverOff"), detail: t("doctor.serverOffDetail"),
+        fix: { label: t("doctor.turnOn"), run: async function* () { Zotero.Prefs.set("httpServer.enabled", true); Zotero.Prefs.set("httpServer.localAPI.enabled", true); yield t("doctor.enabledRestart"); } },
       });
     } else if (!ping) {
-      checks.push({ id: "zotero-api", ok: false, label: "Zotero's local server is not answering", detail: "Zotero stops serving its local port after running for a long time. Quit and reopen Zotero, then try again." });
+      checks.push({ id: "zotero-api", ok: false, label: t("doctor.serverSilent"), detail: t("doctor.serverSilentDetail") });
     } else if (!Zotero.Prefs.get("httpServer.localAPI.enabled")) {
       checks.push({
-        id: "zotero-api", ok: false, label: "Zotero's local API is off", detail: "zotero-cli reads your library through it.",
-        fix: { label: "Turn it on", run: async function* () { Zotero.Prefs.set("httpServer.localAPI.enabled", true); yield "Local API enabled."; } },
+        id: "zotero-api", ok: false, label: t("doctor.apiOff"), detail: t("doctor.apiOffDetail"),
+        fix: { label: t("doctor.turnOn"), run: async function* () { Zotero.Prefs.set("httpServer.localAPI.enabled", true); yield t("doctor.apiEnabled"); } },
       });
     } else {
       const api = await httpStatus(spawner, env, "/api/users/0/items?limit=1", ["Zotero-API-Version: 3"]);
       // pyzotero, which zotero-cli is built on, only ever talks to 23119.
       checks.push(api === 200 && port() !== 23119
-        ? { id: "zotero-api", ok: false, label: `Zotero's local server is on port ${port()}, not 23119`, detail: "zotero-cli can only reach Zotero on port 23119. Change it back in Zotero's settings (Advanced) and restart Zotero." }
+        ? { id: "zotero-api", ok: false, label: t("doctor.port", { port: port() }), detail: t("doctor.portDetail") }
         : api === 200
-        ? { id: "zotero-api", ok: true, label: "Zotero's local API is reachable" }
-        : { id: "zotero-api", ok: false, label: "Zotero's local API does not answer", detail: `The server is up but /api answered ${api || "nothing"}. Restart Zotero.` });
+        ? { id: "zotero-api", ok: true, label: t("doctor.apiOk") }
+        : { id: "zotero-api", ok: false, label: t("doctor.apiSilent"), detail: api ? t("doctor.apiSilentDetail", { status: api }) : t("doctor.apiNothing") });
     }
 
     // 2. zotero-cli
     const cli = await findCli(spawner, env);
     if (cli) {
-      checks.push({ id: "cli", ok: true, label: "zotero-cli is installed", detail: cli });
+      checks.push({ id: "cli", ok: true, label: t("doctor.cliOk"), detail: cli });
     } else {
-      checks.push({ id: "cli", ok: false, label: "zotero-cli is not installed", detail: "The agent uses it to work with your library. One click installs it, and uv (its installer) if you do not have that.", fix: { label: "Install zotero-cli", run: installCli(spawner) } });
+      checks.push({ id: "cli", ok: false, label: t("doctor.cliMissing"), detail: t("doctor.cliMissingDetail"), fix: { label: t("doctor.installCli"), run: installCli(spawner) } });
     }
 
     // 3. node: the bridges are Node programs
     const node = await findBinary(spawner, env, "node");
     checks.push(node
-      ? { id: "node", ok: true, label: "Node.js found", detail: node }
-      : { id: "node", ok: false, label: "Node.js not found", detail: "The agent bridges run on Node.js. Install it from https://nodejs.org, then reopen Zotero." });
+      ? { id: "node", ok: true, label: t("doctor.nodeOk"), detail: node }
+      : { id: "node", ok: false, label: t("doctor.nodeMissing"), detail: t("doctor.nodeMissingDetail") });
 
     // 4. the chosen agent
     const chosen = deps.settings().backend;
     const status = (await runtime.detect()).find((s) => s.id === chosen);
     checks.push(status?.available
-      ? { id: "backend", ok: true, label: `${status.label} is ready`, ...(status.account ? { detail: status.account } : {}) }
-      : { id: "backend", ok: false, label: `${status?.label ?? chosen} is not available`, ...(status?.reason ? { detail: status.reason } : {}) });
+      ? { id: "backend", ok: true, label: t("pick.ready", { agent: status.label }), ...(status.account ? { detail: status.account } : {}) }
+      : { id: "backend", ok: false, label: t("doctor.agentMissing", { agent: status?.label ?? chosen }), ...(status?.reason ? { detail: status.reason } : {}) });
 
     // 5. writes: the CLI reports how it can write; without a grant, the fix runs the authorization (Zotero asks the user)
     const mcp = await findBinary(spawner, env, "zotero-mcp");
     const st = mcp ? await spawner.run(mcp, ["authorize-local", "--status"], { env, timeoutMs: 20000 }).catch(() => null) : null;
     const mode = st && /^Write mode:\s+(\w+)/m.exec(st.stdout)?.[1];
     if (mcp && mode === "none") {
-      checks.push({ id: "write-access", ok: false, label: "Writes to your library are not authorized", detail: "Reading works. To let the agent edit, Zotero will ask you to allow it; choose Always Allow.",
-        fix: { label: "Authorize writes", run: async function* () { yield* stream(spawner, env, mcp, ["authorize-local"]); } } });
+      checks.push({ id: "write-access", ok: false, label: t("doctor.writeOff"), detail: t("doctor.writeOffDetail"),
+        fix: { label: t("doctor.authorize"), run: async function* () { yield* stream(spawner, env, mcp, ["authorize-local"]); } } });
     } else {
-      checks.push({ id: "write-access", ok: true, label: mode ? `Writes are set up (${mode})` : "Changes to your library need your OK in Zotero", ...(mode ? {} : { detail: "The first time the agent edits your library, Zotero asks you to allow it." }) });
+      checks.push({ id: "write-access", ok: true, label: mode ? t("doctor.writeOk", { mode }) : t("doctor.writeAsk"), ...(mode ? {} : { detail: t("doctor.writeAskDetail") }) });
     }
     return checks;
   };

@@ -87,7 +87,17 @@ export type ChatEvent =
 
 // ───────────────────────────── agent/ ─────────────────────────────
 
-export type BackendId = "claude-code" | "codex" | "pi";
+export type BuiltinBackendId = "claude-code" | "codex" | "pi";
+export type BackendId = BuiltinBackendId | "custom";
+export type BackendValues<T> = Record<BuiltinBackendId, T> & Partial<Record<"custom", T>>;
+
+/** A user-installed stdio ACP agent. Arguments are literal argv entries, never a shell command. */
+export interface CustomAgentConfig {
+  label: string;
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+}
 
 export interface ModelOption { id: string; name: string; description?: string }
 export interface ModeOption { id: string; name: string; description?: string }
@@ -278,12 +288,13 @@ export interface SkillHost {
 
 export interface PanelSettings {
   backend: BackendId;
+  customAgent?: CustomAgentConfig;
   /** Per backend; "" means the backend's own default. Ids are the backend's, so they are never shared between backends. */
-  model: Record<BackendId, string>;
-  mode: Record<BackendId, string>;
-  effort: Record<BackendId, string>;
+  model: BackendValues<string>;
+  mode: BackendValues<string>;
+  effort: BackendValues<string>;
   /** Per backend: run on the user's subscription (bridge login) or on an API key kept in the OS keychain. */
-  auth: Record<BackendId, "subscription" | "api-key">;
+  auth: BackendValues<"subscription" | "api-key">;
   prompts: PromptEntry[];
   /** Per skill name: its pin slot (shared with the prompts' slots) and whether it is turned off. */
   skills?: Record<string, { slot?: number; off?: boolean }>;
@@ -317,7 +328,9 @@ export interface PanelSettings {
   /** The target language's id (ui/settings-model.ts LANGUAGES); the default follows Zotero's own language. */
   translateTo: string;
   /** Per backend: the translator's model; "" = the fastest one the backend offers. */
-  translateModel: Record<BackendId, string>;
+  translateModel: BackendValues<string>;
+  /** The panel's own language (src/locales/languages.ts UI_LANGUAGES); "" follows Zotero's. */
+  uiLanguage: string;
   appearance: Appearance;
 }
 
@@ -418,6 +431,8 @@ export interface PanelHost {
   removeImage(): Promise<void>;
   /** The shell command that continues a saved chat in a terminal, e.g. `cd "…" && claude --resume ID`; null when the backend has none. */
   resumeCommand(session: SavedSession): string | null;
+  /** Zotero's UI locale ("zh-CN"): the panel's language unless the setting names one. */
+  locale(): string;
   /** "light" | "dark", and a callback for when Zotero's theme changes. */
   theme(): "light" | "dark";
   onThemeChange(cb: () => void): () => void;
@@ -427,7 +442,7 @@ export interface PanelHost {
 
 /** What the settings screen needs, and all that Zotero's Settings pane provides (zotero/settings-host.ts). */
 export type SettingsHost = Pick<PanelHost, "getSettings" | "setSettings" | "resetSettings" | "setApiKey" | "hasApiKey" | "clearHistory" | "revealWorkspace"
-  | "about" | "chooseFolder" | "chooseImage" | "loadImage" | "removeImage" | "theme" | "onThemeChange" | "onSettingsChange" | "skills"> & { runtime: Pick<AgentRuntime, "detect" | "catalog"> };
+  | "about" | "chooseFolder" | "chooseImage" | "loadImage" | "removeImage" | "locale" | "theme" | "onThemeChange" | "onSettingsChange" | "skills"> & { runtime: Pick<AgentRuntime, "detect" | "catalog"> };
 
 /** The only function the UI layer exports to the bootstrap: render into a shadow root, return a disposer. `runPrompt` runs the prompt or skill pinned to that slot. */
 export type MountPanel = (root: ShadowRoot, host: PanelHost) => { dispose(): void; focusComposer(): void; runPrompt(slot: number): void };

@@ -4,10 +4,13 @@ import type { BackendId, DoctorCheck, PanelHost, SavedSession } from "../types.t
 import { copyText, dayGroup, env, errMessage, h, icon, isMac, relTime, setKids, slotLabel, svg } from "./dom.ts";
 import { shortPath } from "./settings-model.ts";
 import { skillLabel } from "./skills-model.ts";
+import { t } from "../i18n.ts";
+import type { Key } from "../i18n.ts";
 import type { Pinned } from "./skills-model.ts";
 
-export const BACKEND_LABEL: Record<BackendId, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
-export const BACKENDS: BackendId[] = ["claude-code", "codex", "pi"];
+// Product names stay as they are; "Custom" is a word, so it is looked up each time it is drawn.
+export const BACKEND_LABEL: Record<BackendId, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi", get custom() { return t("agent.custom.tab"); } };
+export const BACKENDS: BackendId[] = ["claude-code", "codex", "pi", "custom"];
 
 /**
  * The logo (assets/logo.svg): a hollow square chat box with a small tail, and a red Z in it (--brand: the accent setting never recolours it). It follows the theme. The parts
@@ -21,28 +24,14 @@ export const mark = (hero = false): HTMLElement => h(`div.mark${hero ? ".mark--h
 
 // ───────────────────────────── problems (the unavailable states) ─────────────────────────────
 
-export const PROBLEM: Record<DoctorCheck["id"], { title: string; help: string }> = {
-  "zotero-api": {
-    title: "Restart Zotero: its local API isn't answering",
-    help: "A long-running Zotero can stop serving its local API. Restart Zotero (quit it and open it again), then press Recheck. If it still fails, turn on “Allow other applications on this computer to communicate with Zotero” in Zotero's Settings > Advanced.",
-  },
-  "write-access": {
-    title: "The agent can't change your library yet",
-    help: "Reading works, but writing needs one authorization. Approve the prompt Zotero shows, or allow write access in Zotero's Settings > Advanced, then press Recheck.",
-  },
-  cli: {
-    title: "zotero-cli isn't installed",
-    help: "The agent works your library through zotero-cli. Install it with one click below, or run `uv tool install zotero-mcp-server` in a terminal.",
-  },
-  node: {
-    title: "Node.js wasn't found",
-    help: "The agent bridge runs on Node.js 20 or newer. Install it from nodejs.org, then restart Zotero so it sees the new PATH.",
-  },
-  backend: {
-    title: "No agent is ready",
-    help: "Sign in to Claude Code in a terminal (run `claude`, then /login), or choose another agent or an API key in Settings.",
-  },
+const PROBLEM: Record<DoctorCheck["id"], [Key, Key]> = {
+  "zotero-api": ["problem.zoteroApi.title", "problem.zoteroApi.help"],
+  "write-access": ["problem.writeAccess.title", "problem.writeAccess.help"],
+  cli: ["problem.cli.title", "problem.cli.help"],
+  node: ["problem.node.title", "problem.node.help"],
+  backend: ["problem.backend.title", "problem.backend.help"],
 };
+export const problem = (id: DoctorCheck["id"]): { title: string; help: string } => ({ title: t(PROBLEM[id][0]), help: t(PROBLEM[id][1]) });
 
 /** The button that runs a check's fix, streaming its output into `log`; `after` runs when it ends. */
 export function fixButton(check: DoctorCheck, cls: string, log: HTMLElement, after: () => void): HTMLButtonElement | null {
@@ -51,7 +40,7 @@ export function fixButton(check: DoctorCheck, cls: string, log: HTMLElement, aft
   const btn = h(`button.btn.btn--sm${cls}`, { type: "button" }, fix.label) as HTMLButtonElement;
   btn.addEventListener("click", async () => {
     btn.disabled = true;
-    btn.textContent = "Working…";
+    btn.textContent = t("common.working");
     log.hidden = false;
     log.textContent = "";
     try {
@@ -68,10 +57,10 @@ export function fixButton(check: DoctorCheck, cls: string, log: HTMLElement, aft
 
 /** A card for the check that blocks the most (the empty state shows one; the rest are in Status). */
 export function setupCard(check: DoctorCheck, more: number, handlers: { recheck(): void; openStatus(): void; openSettings(): void }): HTMLElement {
-  const p = PROBLEM[check.id];
+  const p = problem(check.id);
   const log = h("pre.fixlog", { hidden: true, "aria-live": "polite" });
   const fixBtn = fixButton(check, ".btn--solid", log, handlers.recheck);
-  return h("div.setup", { role: "region", "aria-label": "Setup needed" },
+  return h("div.setup", { role: "region", "aria-label": t("setup.region") },
     h("div.setup__head", null, h("span.setup__i", null, icon("warn")), h("div.setup__tx", null,
       h("div.setup__t", null, p.title),
       check.detail ? h("div.setup__d", null, check.detail) : null)),
@@ -79,9 +68,9 @@ export function setupCard(check: DoctorCheck, more: number, handlers: { recheck(
     log,
     h("div.setup__acts", null,
       fixBtn,
-      check.id === "backend" ? h("button.btn.btn--sm", { type: "button", onclick: handlers.openSettings }, "Open settings") : null,
-      h("button.btn.btn--sm.btn--quiet", { type: "button", onclick: handlers.recheck }, "Recheck"),
-      more > 0 ? h("button.btn.btn--sm.btn--quiet", { type: "button", onclick: handlers.openStatus }, `${more} more`) : null));
+      check.id === "backend" ? h("button.btn.btn--sm", { type: "button", onclick: handlers.openSettings }, t("common.openSettings")) : null,
+      h("button.btn.btn--sm.btn--quiet", { type: "button", onclick: handlers.recheck }, t("common.recheck")),
+      more > 0 ? h("button.btn.btn--sm.btn--quiet", { type: "button", onclick: handlers.openStatus }, t("setup.more", { n: more })) : null));
 }
 
 // ───────────────────────────── empty state ─────────────────────────────
@@ -92,20 +81,20 @@ export function emptyState(o: { pins: Pinned[]; ready: boolean; run(slot: number
     const label = p.kind === "prompt" ? p.prompt.title || p.prompt.text : skillLabel(p.name);
     return h("li", null, h("button.pin", {
       type: "button", disabled: o.ready ? null : true, dataset: { slot: String(p.slot) },
-      title: p.kind === "prompt" ? (p.prompt.title ? `${p.prompt.title}\n${p.prompt.text}` : p.prompt.text) : `${label}: the ${p.name} skill`,
+      title: p.kind === "prompt" ? (p.prompt.title ? `${p.prompt.title}\n${p.prompt.text}` : p.prompt.text) : t("empty.pinSkillTip", { label, name: p.name }),
       "aria-keyshortcuts": isMac() ? `Meta+Control+${p.slot}` : `Control+Alt+${p.slot}`,
       onclick: () => o.run(p.slot),
-    }, h("span.pin__t", null, label), p.kind === "skill" ? h("span.pin__skill", null, icon("sparkle"), h("span.sr", null, "skill")) : null, h("kbd.pin__k", null, slotLabel(p.slot))));
+    }, h("span.pin__t", null, label), p.kind === "skill" ? h("span.pin__skill", null, icon("sparkle"), h("span.sr", null, t("empty.skill"))) : null, h("kbd.pin__k", null, slotLabel(p.slot))));
   };
   return h("div.empty", null,
     mark(),
-    h("h2", null, "Ask your library"),
-    h("p.empty__lead", null, "Your agent sees what you have open in Zotero and works through zotero-cli. Select text or a figure to ask about it, type @ to add a source, or / for your skills and prompts."),
-    h("section.pins", { "aria-label": "Start with" },
-      h("div.pins__head", null, h("h3.eyebrow", null, "Start with"), h("button.lnk", { type: "button", onclick: o.edit }, icon("pencil"), "Edit")),
+    h("h2", null, t("empty.title")),
+    h("p.empty__lead", null, t("empty.lead")),
+    h("section.pins", { "aria-label": t("empty.startWith") },
+      h("div.pins__head", null, h("h3.eyebrow", null, t("empty.startWith")), h("button.lnk", { type: "button", onclick: o.edit }, icon("pencil"), t("common.edit"))),
       o.pins.length
         ? h("ul.pins__list", null, o.pins.map(row))
-        : h("p.pins__none", null, "Pin up to four skills or prompts in Settings to start with them here, or type / to browse them all.")));
+        : h("p.pins__none", null, t("empty.noPins"))));
 }
 
 // ───────────────────────────── a view's frame ─────────────────────────────
@@ -113,7 +102,7 @@ export function emptyState(o: { pins: Pinned[]; ready: boolean; run(slot: number
 export function frame(title: string, back: () => void, ...body: (HTMLElement | null)[]): HTMLElement {
   return h("div.vw", null,
     h("div.vw__head", null,
-      h("button.iconbtn", { type: "button", "aria-label": "Back to the chat", title: "Back (Esc)", onclick: back }, icon("back")),
+      h("button.iconbtn", { type: "button", "aria-label": t("frame.back"), title: t("frame.backTip"), onclick: back }, icon("back")),
       h("h2.vw__t", null, title)),
     h("div.vw__body", null, ...body));
 }
@@ -122,7 +111,7 @@ export function frame(title: string, back: () => void, ...body: (HTMLElement | n
 
 export function historyView(host: PanelHost, o: { current(): string | null; back(): void; resume(s: SavedSession): void; deleted(id: string): void }): { el: HTMLElement; refresh(): void } {
   const list = h("div.hist__list");
-  const q = h("input.input", { type: "search", placeholder: "Search chats", "aria-label": "Search chats" }) as HTMLInputElement;
+  const q = h("input.input", { type: "search", placeholder: t("history.search"), "aria-label": t("history.search") }) as HTMLInputElement;
   let all: SavedSession[] | null = null;
   let confirming: string | null = null;
   let copied: string | null = null;
@@ -141,38 +130,38 @@ export function historyView(host: PanelHost, o: { current(): string | null; back
     const rows = all.filter((s) => !needle || s.title.toLowerCase().includes(needle)).sort((a, b) => b.updatedAt - a.updatedAt);
     if (!rows.length) {
       setKids(list, h("div.vempty", null, icon("history"),
-        h("div.vempty__t", null, needle ? "No chats match" : "No saved chats yet"),
-        h("div.vempty__d", null, needle ? "Try a different word." : "Conversations are saved here as you go, and you can pick one up where you left off.")));
+        h("div.vempty__t", null, needle ? t("history.noMatch") : t("history.none")),
+        h("div.vempty__d", null, needle ? t("history.noMatchHint") : t("history.noneHint"))));
       return;
     }
     const out: HTMLElement[] = [];
-    if (rows.some((s) => host.resumeCommand(s))) out.push(h("p.hist__note", null, icon("terminal"), "Paste a copied command in a terminal to continue that chat there. Don't run it in both places at once."));
+    if (rows.some((s) => host.resumeCommand(s))) out.push(h("p.hist__note", null, icon("terminal"), t("history.terminalNote")));
     let group = "";
     for (const s of rows) {
       const g = dayGroup(s.updatedAt);
       if (g !== group) { group = g; out.push(h("div.hist__group", null, g)); }
       const isCur = o.current() === s.id;
       if (confirming === s.id) {
-        out.push(h("div.hrow.hrow--confirm", { role: "group", "aria-label": `Delete ${s.title}?` },
-          h("span.hrow__q", null, "Delete this chat?"),
-          h("button.btn.btn--sm.btn--danger", { type: "button", onclick: () => void del(s) }, "Delete"),
-          h("button.btn.btn--sm", { type: "button", onclick: () => { confirming = null; paint(); } }, "Cancel")));
+        out.push(h("div.hrow.hrow--confirm", { role: "group", "aria-label": t("history.deleteAsk", { title: s.title }) },
+          h("span.hrow__q", null, t("history.deleteThis")),
+          h("button.btn.btn--sm.btn--danger", { type: "button", onclick: () => void del(s) }, t("common.delete")),
+          h("button.btn.btn--sm", { type: "button", onclick: () => { confirming = null; paint(); } }, t("common.cancel"))));
         continue;
       }
       const cmd = host.resumeCommand(s);
       const done = copied === s.id;
       out.push(h(`div.hrow${isCur ? ".hrow--on" : ""}`, null,
         h("button.hrow__main", { type: "button", onclick: () => o.resume(s), ...(isCur ? { "aria-current": "true" } : {}) },
-          h("span.hrow__t", null, s.title || "Untitled chat"),
+          h("span.hrow__t", null, s.title || t("history.untitled")),
           h("span.hrow__m", null, `${BACKEND_LABEL[s.backend] ?? s.backend} · ${relTime(s.updatedAt)}`),
           s.cwd ? h("span.hrow__f", { title: s.cwd }, icon("folder"), h("span", null, shortPath(s.cwd, 30))) : null),
-        cmd ? h(`button.${done ? "lnk.hrow__copied" : "iconbtn.iconbtn.iconbtn--sm.hrow__cmd"}`, { type: "button", title: "Copy terminal command", "aria-label": done ? "Copied" : `Copy terminal command for ${s.title || "chat"}`, onclick: () => void copyCmd(s, cmd) }, icon(done ? "check" : "terminal"), done ? "Copied" : null) : null,
-        h("button.iconbtn.iconbtn--sm.hrow__del", { type: "button", "aria-label": `Delete ${s.title || "chat"}`, title: "Delete", onclick: () => { confirming = s.id; paint(); } }, icon("trash"))));
+        cmd ? h(`button.${done ? "lnk.hrow__copied" : "iconbtn.iconbtn.iconbtn--sm.hrow__cmd"}`, { type: "button", title: t("history.copyCmd"), "aria-label": done ? t("common.copied") : t("history.copyCmdFor", { title: s.title || t("history.chat") }), onclick: () => void copyCmd(s, cmd) }, icon(done ? "check" : "terminal"), done ? t("common.copied") : null) : null,
+        h("button.iconbtn.iconbtn--sm.hrow__del", { type: "button", "aria-label": t("history.deleteFor", { title: s.title || t("history.chat") }), title: t("common.delete"), onclick: () => { confirming = s.id; paint(); } }, icon("trash"))));
     }
     setKids(list, out);
   };
   const del = async (s: SavedSession) => {
-    try { await host.deleteSession(s.id); } catch (e) { confirming = null; all = (all ?? []); setKids(list, h("div.vwerr", { role: "alert" }, `Couldn't delete: ${errMessage(e)}`)); env.win.setTimeout(paint, 2500); return; }
+    try { await host.deleteSession(s.id); } catch (e) { confirming = null; all = (all ?? []); setKids(list, h("div.vwerr", { role: "alert" }, t("history.deleteFailed", { error: errMessage(e) }))); env.win.setTimeout(paint, 2500); return; }
     all = (all ?? []).filter((x) => x.id !== s.id);
     confirming = null;
     o.deleted(s.id);
@@ -181,12 +170,12 @@ export function historyView(host: PanelHost, o: { current(): string | null; back
   const refresh = () => {
     skeleton();
     host.sessions().then((s) => { all = s; confirming = null; paint(); }, (e) => {
-      setKids(list, h("div.vempty", { role: "alert" }, icon("warn"), h("div.vempty__t", null, "Couldn't load your chats"), h("div.vempty__d", null, errMessage(e)),
-        h("button.btn.btn--sm", { type: "button", onclick: refresh }, "Try again")));
+      setKids(list, h("div.vempty", { role: "alert" }, icon("warn"), h("div.vempty__t", null, t("history.loadFailed")), h("div.vempty__d", null, errMessage(e)),
+        h("button.btn.btn--sm", { type: "button", onclick: refresh }, t("common.tryAgain"))));
     });
   };
   q.addEventListener("input", paint);
-  const el = frame("History", o.back, h("div.hist__search", null, q), list);
+  const el = frame(t("history.title"), o.back, h("div.hist__search", null, q), list);
   return { el, refresh };
 }
 
@@ -200,18 +189,18 @@ export function statusView(host: PanelHost, o: { back(): void; changed(checks: D
 
   const paint = (checks: DoctorCheck[]) => {
     const bad = checks.filter((c) => !c.ok);
-    setKids(sum, h("span.status__dot", { "data-ok": String(bad.length === 0) }), bad.length ? `${bad.length} ${bad.length === 1 ? "thing needs" : "things need"} attention` : "Everything is set up");
+    setKids(sum, h("span.status__dot", { "data-ok": String(bad.length === 0) }), bad.length ? t("status.attention", { n: bad.length }) : t("status.allSet"));
     setKids(list, checks.map((c) => {
       const log = h("pre.fixlog", { hidden: !logs.has(c.id), "aria-live": "polite" }, logs.get(c.id) ?? "");
-      const p = PROBLEM[c.id];
+      const p = problem(c.id);
       const fixBtn = c.ok ? null : fixButton(c, ".btn--solid", log, () => { logs.set(c.id, log.textContent ?? ""); refresh(); });
-      const settingsBtn = c.id === "backend" && !c.ok ? h("button.btn.btn--sm", { type: "button", onclick: o.openSettings }, "Open settings") : null;
+      const settingsBtn = c.id === "backend" && !c.ok ? h("button.btn.btn--sm", { type: "button", onclick: o.openSettings }, t("common.openSettings")) : null;
       return h(`div.check.check--${c.ok ? "ok" : "bad"}`, null,
         h("span.check__i", { "aria-hidden": "true" }, icon(c.ok ? "check" : "warn")),
         h("div.check__tx", null,
-          h("div.check__t", null, c.label, h("span.sr", null, c.ok ? " (ok)" : " (needs attention)")),
+          h("div.check__t", null, c.label, h("span.sr", null, c.ok ? t("status.okSr") : t("status.badSr"))),
           c.detail ? h("div.check__d", null, c.detail) : null,
-          !c.ok && p ? h("p.check__help", null, p.help) : null,
+          !c.ok ? h("p.check__help", null, p.help) : null,
           fixBtn || settingsBtn ? h("div.check__acts", null, fixBtn, settingsBtn) : null,
           log));
     }));
@@ -219,15 +208,15 @@ export function statusView(host: PanelHost, o: { back(): void; changed(checks: D
   const refresh = () => {
     if (busy) return;
     busy = true;
-    sum.textContent = "Checking…";
+    sum.textContent = t("common.checking");
     host.doctor().then((checks) => { paint(checks); o.changed(checks); }, (e) => {
-      setKids(list, h("div.vempty", { role: "alert" }, icon("warn"), h("div.vempty__t", null, "The check itself failed"), h("div.vempty__d", null, errMessage(e))));
+      setKids(list, h("div.vempty", { role: "alert" }, icon("warn"), h("div.vempty__t", null, t("status.checkFailed")), h("div.vempty__d", null, errMessage(e))));
       sum.textContent = "";
     }).finally(() => { busy = false; });
   };
   if (o.initial) paint(o.initial);
-  const recheck = h("button.btn.btn--sm", { type: "button", onclick: () => refresh() }, icon("retry"), "Recheck");
-  const el = frame("Status", o.back, h("div.status__top", null, sum, recheck), list);
+  const recheck = h("button.btn.btn--sm", { type: "button", onclick: () => refresh() }, icon("retry"), t("common.recheck"));
+  const el = frame(t("status.title"), o.back, h("div.status__top", null, sum, recheck), list);
   return { el, refresh };
 }
 

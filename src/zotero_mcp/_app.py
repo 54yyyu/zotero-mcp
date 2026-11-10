@@ -49,7 +49,7 @@ def _semantic_update_command() -> list[str] | None:
     if not should_update(update_cfg):
         return None
 
-    cmd = [sys.executable, "-m", "zotero_mcp.cli", "update-db"]
+    cmd = [sys.executable, "-m", "zotero_mcp.cli", "update-db", "--automatic"]
     if is_local_mode():
         cmd.append("--fulltext")
     return cmd

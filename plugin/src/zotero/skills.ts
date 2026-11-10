@@ -9,11 +9,12 @@ import type { SkillEntry, SkillHost, SkillImport } from "../types.ts";
 import { AGENT_SKILL_DIRS, CREATE_SKILL, NAME_RE, nameProblem, parseSkill, planImport, proposeSkill, skillPath, withFrontmatter } from "../ui/skills-model.ts";
 import type { FoundFile } from "../ui/skills-model.ts";
 import { createSkillText } from "../ui/create-skill.ts";
+import { t } from "../i18n.ts";
 
 const MARK = ".zotero-chat";
 const MARK_TEXT = "Copied here by Zotero Agent from its skills folder; changes here are replaced. Edit the skill in Zotero Agent's settings.\n";
 const MAX_TEXT = 256 * 1024;
-const BUILTIN: SkillEntry = { name: CREATE_SKILL, description: "Make a new skill with your agent: it asks a few questions, then writes it.", builtin: true };
+const builtin = (): SkillEntry => ({ name: CREATE_SKILL, description: t("skills.builtinDesc"), builtin: true });
 
 const file = (p: string) => Zotero.File.pathToFile(p);
 const join = (...p: string[]) => PathUtils.join(...p);
@@ -21,7 +22,7 @@ const join = (...p: string[]) => PathUtils.join(...p);
 export function createSkills(o: { dataDir: string; win: any; defaultFolder(): string }) {
   const dir = join(o.dataDir, "skills");
   const cache = new Map<string, { mtime: number; entry: SkillEntry }>();
-  const checked = (name: string) => { if (!NAME_RE.test(name) || name.length > 64) throw new Error(`"${name}" is not a skill name`); return join(dir, name); };
+  const checked = (name: string) => { if (!NAME_RE.test(name) || name.length > 64) throw new Error(t("skills.err.notName", { name })); return join(dir, name); };
 
   async function list(): Promise<SkillEntry[]> {
     let kids: string[] = [];
@@ -41,7 +42,7 @@ export function createSkills(o: { dataDir: string; win: any; defaultFolder(): st
       }
       out.push(hit.entry);
     }
-    return [...out, BUILTIN];
+    return [...out, builtin()];
   }
 
   /** Every file under `root` (relative paths), as planImport needs them; hidden folders are listed, not entered. */
@@ -66,8 +67,8 @@ export function createSkills(o: { dataDir: string; win: any; defaultFolder(): st
 
   async function inspect(path: string): Promise<SkillImport> {
     const f = file(path);
-    if (f.isSymlink() || !f.isFile()) throw new Error("pick a regular .md file, not a link or a folder");
-    if (f.fileSize > MAX_TEXT) throw new Error("that file is over 256 KB, too large for a skill");
+    if (f.isSymlink() || !f.isFile()) throw new Error(t("skills.err.notMd"));
+    if (f.fileSize > MAX_TEXT) throw new Error(t("skills.err.tooLarge"));
     const text = await IOUtils.readUTF8(path);
     const loose = !/^skill\.md$/i.test(PathUtils.filename(path));
     const folder = PathUtils.parent(path)!;
@@ -92,11 +93,11 @@ export function createSkills(o: { dataDir: string; win: any; defaultFolder(): st
     list,
     read: (name) => (name === CREATE_SKILL ? Promise.resolve(createSkillText(dir)) : IOUtils.readUTF8(join(checked(name), "SKILL.md"))),
     async write(name, text) {
-      if (name === CREATE_SKILL) throw new Error("the built-in skill can't be changed");
+      if (name === CREATE_SKILL) throw new Error(t("skills.err.builtinEdit"));
       await IOUtils.writeUTF8(join(checked(name), "SKILL.md"), text);
     },
     async remove(name) {
-      if (name === CREATE_SKILL) throw new Error("the built-in skill can't be deleted");
+      if (name === CREATE_SKILL) throw new Error(t("skills.err.builtinDelete"));
       await IOUtils.remove(checked(name), { recursive: true, ignoreAbsent: true });
       cache.delete(name);
     },
@@ -106,8 +107,8 @@ export function createSkills(o: { dataDir: string; win: any; defaultFolder(): st
     },
     async pick() {
       const fp = Cc["@mozilla.org/filepicker;1"].createInstance(Ci.nsIFilePicker);
-      fp.init(o.win.browsingContext, "Add a skill: its SKILL.md, or any .md file", Ci.nsIFilePicker.modeOpen);
-      fp.appendFilter("Skill or Markdown", "*.md; *.markdown; *.txt");
+      fp.init(o.win.browsingContext, t("skills.pickTitle"), Ci.nsIFilePicker.modeOpen);
+      fp.appendFilter(t("skills.pickFilter"), "*.md; *.markdown; *.txt");
       const result: number = await new Promise((r) => fp.open(r));
       return result === Ci.nsIFilePicker.returnOK ? inspect(fp.file.path) : null;
     },
@@ -116,9 +117,9 @@ export function createSkills(o: { dataDir: string; win: any; defaultFolder(): st
       const problem = nameProblem(a.name, (await list()).map((s) => s.name));
       if (problem) throw new Error(problem);
       const desc = a.description.trim();
-      if (!desc) throw new Error("Give it a one-line description: the agent reads it to know when to use the skill.");
+      if (!desc) throw new Error(t("skills.needDescription"));
       const dst = checked(a.name);
-      if (await IOUtils.exists(dst)) throw new Error(`a folder called ${a.name} is already in the skills folder`);
+      if (await IOUtils.exists(dst)) throw new Error(t("skills.err.exists", { name: a.name }));
       await IOUtils.makeDirectory(dst, { createAncestors: true });
       try {
         // The text the user read in the preview, not the file as it is now.

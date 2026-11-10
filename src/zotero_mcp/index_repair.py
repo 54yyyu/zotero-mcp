@@ -50,6 +50,9 @@ _ITEMS_PER_BATCH = 200
 
 _REBUILD_HINT = "Rebuild the index instead: zotero-mcp update-db --force-rebuild"
 
+ARTICLES = "articles"
+PASSAGES = "passages"
+
 
 class RepairError(Exception):
     """The index cannot be repaired; the message says why and what to do."""
@@ -68,6 +71,8 @@ class RepairReport:
     skipped_rows: int = 0
     broken_directory: str | None = None
     report_path: str | None = None
+    # Collections with no saved vector files; update-db embeds their items again.
+    collections_left_out: list[str] = field(default_factory=list)
 
 
 # --- SQLite ------------------------------------------------------------------
@@ -329,6 +334,139 @@ def _pending_item_keys(
     return keys
 
 
+@dataclass
+class _Source:
+    """One collection of the index being repaired."""
+
+    name: str
+    level: str
+    collection_id: str
+    dim: int
+    meta_segment: str
+    vector_segment: str
+    vectors: _HnswVectors
+    pending: set[str] = field(default_factory=set)
+
+
+def _locate_sources(
+    con: sqlite3.Connection,
+    persist_dir: Path,
+    collection_name: str,
+    report: RepairReport,
+    progress: Callable[[str], None],
+) -> list[_Source]:
+    """The collections there are vectors to recover from.
+
+    Small collections keep their vectors in memory until 1000 documents, so a
+    small one has no saved vector files even in a healthy index. That loses only
+    that collection's vectors, and update-db embeds them again, so it does not
+    stop the repair of the other one. With nothing to recover from at all, the
+    repair is refused.
+    """
+    from .chroma_client import passage_collection_name
+
+    names = [(collection_name, ARTICLES)]
+    passages = passage_collection_name(collection_name)
+    try:
+        if con.execute("SELECT 1 FROM collections WHERE name = ?", (passages,)).fetchone():
+            names.append((passages, PASSAGES))
+    except sqlite3.DatabaseError as e:
+        raise RepairError(f"cannot read the index catalog ({e}). {_REBUILD_HINT}") from e
+
+    sources = []
+    for name, level in names:
+        # No dimension means nothing was ever written, as in the new article
+        # collection of a migrated index before its first update-db.
+        row = con.execute("SELECT dimension FROM collections WHERE name = ?", (name,)).fetchone()
+        if row is not None and not row[0] and len(names) > 1:
+            report.collections_left_out.append(name)
+            progress(f"{name} is empty; update-db will embed its items.")
+            continue
+        collection_id, dim, meta_segment, vector_segment = _locate(con, name)
+        segment_dir = persist_dir / vector_segment
+        # A small collection can have a header with no metadata beside it yet.
+        if not all((segment_dir / f).exists() for f in ("header.bin", "index_metadata.pickle")):
+            report.collections_left_out.append(name)
+            progress(f"{name} has no saved vector files; update-db will embed its items again.")
+            continue
+        sources.append(_Source(
+            name, level, collection_id, dim, meta_segment, vector_segment, _open_hnsw(segment_dir, dim)
+        ))
+    if not sources:
+        raise RepairError(
+            "the index has no saved vector files (small indexes keep them in memory "
+            f"until 1000 documents). {_REBUILD_HINT}"
+        )
+    return sources
+
+
+def _copy_collection(
+    source: _Source,
+    work_db: sqlite3.Connection,
+    target: Any,
+    report: RepairReport,
+    progress: Callable[[str], None],
+) -> set[str]:
+    """Check one collection's items and write the good ones; returns the keys kept."""
+    row_ids: dict[str, int] = {}
+    for rid, doc_id in work_db.execute("SELECT id, doc_id FROM emb WHERE segment = ?", (source.meta_segment,)):
+        if doc_id in row_ids:  # a torn page can repeat a row; trust neither copy
+            row_ids[doc_id] = -1
+        else:
+            row_ids[doc_id] = rid
+    by_item: dict[str, list[str]] = defaultdict(list)
+    for doc_id in row_ids:
+        by_item[doc_id.split("#", 1)[0]].append(doc_id)
+    progress(f"Found {len(row_ids)} chunks in {len(by_item)} items in {source.name}.")
+
+    excluded: dict[str, str] = {}
+    chunks_kept = 0
+    keys = sorted(by_item)
+    for start in range(0, len(keys), _ITEMS_PER_BATCH):
+        batch_keys = keys[start:start + _ITEMS_PER_BATCH]
+        metadata, conflicted = _load_metadata(
+            work_db, [(d, row_ids[d]) for k in batch_keys for d in by_item[k] if row_ids[d] != -1]
+        )
+        ids, rows, documents, metadatas = [], [], [], []
+        for key in batch_keys:
+            if key in source.pending:
+                excluded[key] = "write still queued"
+                continue
+            if any(row_ids[d] == -1 or d in conflicted for d in by_item[key]):
+                excluded[key] = "duplicate or conflicting rows"
+                continue
+            checked = _check_item(key, by_item[key], metadata, source.vectors)
+            if isinstance(checked, str):
+                excluded[key] = checked
+                continue
+            for acc, part in zip((ids, rows, documents, metadatas), checked):
+                acc += part
+        if not ids:
+            continue
+        embeddings = source.vectors.get(rows)
+        norms = np.linalg.norm(embeddings, axis=1)
+        bad = {ids[i].split("#", 1)[0] for i in np.flatnonzero(~np.isfinite(norms) | (norms == 0))}
+        if bad:
+            for key in bad:
+                excluded[key] = "invalid vector"
+            keep = [i for i, d in enumerate(ids) if d.split("#", 1)[0] not in bad]
+            ids = [ids[i] for i in keep]
+            documents = [documents[i] for i in keep]
+            metadatas = [metadatas[i] for i in keep]
+            embeddings = embeddings[keep]
+        chunks_kept += len(ids)
+        if target is not None and ids:
+            target.upsert_embeddings(documents, metadatas, ids, embeddings)
+        done = min(start + _ITEMS_PER_BATCH, len(keys))
+        if done % (_ITEMS_PER_BATCH * 25) == 0 or done == len(keys):
+            progress(f"  {done}/{len(keys)} items checked, {chunks_kept} chunks kept")
+
+    report.chunks_kept += chunks_kept
+    suffix = " (passages)" if source.level == PASSAGES else ""
+    report.excluded.update({key: reason + suffix for key, reason in excluded.items()})
+    return set(by_item) - set(excluded)
+
+
 def repair_index(
     config_path: str | None = None,
     *,
@@ -340,7 +478,7 @@ def repair_index(
     ``dry_run`` checks everything and reports what would be kept, writing
     nothing but a temporary working copy that is removed afterwards.
     """
-    from .chroma_client import create_chroma_client, release_chroma_clients
+    from .chroma_client import create_chroma_client, read_index_layout, release_chroma_clients
     from .config import resolve_chroma_dir
 
     collection_name = "zotero_library"
@@ -372,17 +510,12 @@ def repair_index(
             progress("The database header undercounted its pages (an interrupted write); corrected in the copy.")
 
         src = sqlite3.connect(f"file:{staged}?mode=ro", uri=True)
-        collection_id, dim, meta_segment, vector_segment = _locate(src, collection_name)
-        segment_dir = persist_dir / vector_segment
-        if not (segment_dir / "header.bin").exists():
-            raise RepairError(
-                "the index has no saved vector files (small indexes keep them in memory "
-                f"until 1000 documents). {_REBUILD_HINT}"
-            )
-        vectors = _open_hnsw(segment_dir, dim)
-        progress(f"Vector index: {len(vectors.label_to_row)} live vectors of dimension {dim}.")
+        sources = _locate_sources(src, persist_dir, collection_name, report, progress)
+        for source in sources:
+            progress(f"Vector index {source.name}: {len(source.vectors.label_to_row)} live vectors "
+                     f"of dimension {source.dim}.")
 
-        need = int(source_db.stat().st_size * 1.3) + vectors.rows.nbytes
+        need = int(source_db.stat().st_size * 1.3) + sum(source.vectors.rows.nbytes for source in sources)
         free = shutil.disk_usage(persist_dir.parent).free
         if not dry_run and free < need:
             raise RepairError(
@@ -392,81 +525,42 @@ def repair_index(
 
         # Copy what is needed into a clean working database, by full scans.
         work_db = sqlite3.connect(work_dir / "work.sqlite3")
-        work_db.execute("CREATE TABLE emb (id INTEGER, doc_id TEXT)")
+        work_db.execute("CREATE TABLE emb (id INTEGER, doc_id TEXT, segment TEXT)")
         work_db.execute("CREATE TABLE meta (id INTEGER, key TEXT, s, i, f, b)")
         progress("Reading documents and metadata ...")
+        wanted_segments = {source.meta_segment for source in sources}
         for batch in _batched(_scan_rows(src, "embeddings", "id, segment_id, embedding_id", skipped)):
             work_db.executemany(
-                "INSERT INTO emb VALUES (?, ?)",
-                [(rid, doc_id) for rid, seg, doc_id in batch if seg == meta_segment and isinstance(doc_id, str)],
+                "INSERT INTO emb VALUES (?, ?, ?)",
+                [(rid, doc_id, seg) for rid, seg, doc_id in batch if seg in wanted_segments and isinstance(doc_id, str)],
             )
         for batch in _batched(_scan_rows(
             src, "embedding_metadata", "id, key, string_value, int_value, float_value, bool_value", skipped
         )):
             work_db.executemany("INSERT INTO meta VALUES (?, ?, ?, ?, ?, ?)", batch)
         work_db.execute("CREATE INDEX meta_id ON meta(id)")
-        pending = _pending_item_keys(src, collection_id, (meta_segment, vector_segment), skipped)
+        for source in sources:
+            source.pending = _pending_item_keys(
+                src, source.collection_id, (source.meta_segment, source.vector_segment), skipped
+            )
         src.close()
-
-        row_ids: dict[str, int] = {}
-        for rid, doc_id in work_db.execute("SELECT id, doc_id FROM emb"):
-            if doc_id in row_ids:  # a torn page can repeat a row; trust neither copy
-                row_ids[doc_id] = -1
-            else:
-                row_ids[doc_id] = rid
-        by_item: dict[str, list[str]] = defaultdict(list)
-        for doc_id in row_ids:
-            by_item[doc_id.split("#", 1)[0]].append(doc_id)
-        progress(f"Found {len(row_ids)} chunks in {len(by_item)} items.")
 
         target = None
         if not dry_run:
             target = create_chroma_client(config_path, persist_directory=str(new_dir))
+            # Keep the index's shape. An index with its passages in the article
+            # collection is rebuilt that way; migrating it is a separate step.
+            target.route_passages = any(source.level == PASSAGES for source in sources)
 
-        keys = sorted(by_item)
-        for start in range(0, len(keys), _ITEMS_PER_BATCH):
-            batch_keys = keys[start:start + _ITEMS_PER_BATCH]
-            metadata, conflicted = _load_metadata(
-                work_db, [(d, row_ids[d]) for k in batch_keys for d in by_item[k] if row_ids[d] != -1]
-            )
-            ids, rows, documents, metadatas = [], [], [], []
-            for key in batch_keys:
-                if key in pending:
-                    report.excluded[key] = "write still queued"
-                    continue
-                if any(row_ids[d] == -1 or d in conflicted for d in by_item[key]):
-                    report.excluded[key] = "duplicate or conflicting rows"
-                    continue
-                checked = _check_item(key, by_item[key], metadata, vectors)
-                if isinstance(checked, str):
-                    report.excluded[key] = checked
-                    continue
-                for acc, part in zip((ids, rows, documents, metadatas), checked):
-                    acc += part
-            if not ids:
-                continue
-            embeddings = vectors.get(rows)
-            norms = np.linalg.norm(embeddings, axis=1)
-            bad = {ids[i].split("#", 1)[0] for i in np.flatnonzero(~np.isfinite(norms) | (norms == 0))}
-            if bad:
-                for key in bad:
-                    report.excluded[key] = "invalid vector"
-                keep = [i for i, d in enumerate(ids) if d.split("#", 1)[0] not in bad]
-                ids = [ids[i] for i in keep]
-                documents = [documents[i] for i in keep]
-                metadatas = [metadatas[i] for i in keep]
-                embeddings = embeddings[keep]
-            report.chunks_kept += len(ids)
-            if target is not None and ids:
-                target.upsert_embeddings(documents, metadatas, ids, embeddings)
-            done = min(start + _ITEMS_PER_BATCH, len(keys))
-            if done % (_ITEMS_PER_BATCH * 25) == 0 or done == len(keys):
-                progress(f"  {done}/{len(keys)} items checked, {report.chunks_kept} chunks kept")
+        kept_items: set[str] = set()
+        for source in sources:
+            kept_items |= _copy_collection(source, work_db, target, report, progress)
         work_db.close()
-        report.items_kept = len(by_item) - len(report.excluded)
+        report.items_kept = len(kept_items)
 
     if target is not None:
-        written = target.collection.count()
+        layout = read_index_layout(str(new_dir), collection_name)
+        written = layout["article_records"] + layout["passage_records"]
         if written != report.chunks_kept:
             raise RepairError(
                 f"the rebuilt index at {new_dir} holds {written} chunks, expected "
@@ -495,6 +589,7 @@ def repair_index(
         "skipped_rows": report.skipped_rows,
         "broken_directory": report.broken_directory,
         "excluded": report.excluded,
+        "collections_left_out": report.collections_left_out,
     }, indent=1))
     report.report_path = str(report_path)
     return report

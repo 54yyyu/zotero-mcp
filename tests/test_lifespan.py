@@ -249,7 +249,7 @@ def test_due_update_runs_update_db_in_a_child(tmp_path, monkeypatch, local):
         ' {"auto_update": true, "update_frequency": "startup"}}}',
     )
 
-    expected = [sys.executable, "-m", "zotero_mcp.cli", "update-db"]
+    expected = [sys.executable, "-m", "zotero_mcp.cli", "update-db", "--automatic"]
     assert seen["cmd"] == expected + (["--fulltext"] if local else [])
     assert not seen["semantic_search"] and not seen["chromadb"]
 

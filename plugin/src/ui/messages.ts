@@ -16,6 +16,8 @@ import { Pacer, thinkOf } from "./think.ts";
 import { START, intentUp, isUpKey, pinned, scrolled } from "./follow.ts";
 import type { Follow } from "./follow.ts";
 import type { Think } from "./think.ts";
+import { t } from "../i18n.ts";
+import type { Key } from "../i18n.ts";
 
 export type { MsgActions };
 
@@ -36,11 +38,7 @@ const CLOCK = { now: () => Date.now(), set: (fn: () => void, ms: number) => env.
 
 // ───────────────────────────── assistant message ─────────────────────────────
 
-const STOP_NOTE: Record<string, string> = {
-  cancelled: "Stopped",
-  max_tokens: "Stopped at the length limit",
-  refusal: "The model declined to answer",
-};
+const STOP_NOTE: Record<string, Key> = { cancelled: "stop.cancelled", max_tokens: "stop.maxTokens", refusal: "stop.refusal" };
 
 class AssistantView {
   readonly el: HTMLElement;
@@ -108,33 +106,34 @@ class AssistantView {
       this.sources = collectSources(textsOf(msg));
     }
     const text = answerText(msg);
-    const copyBtn = h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": "Copy answer", title: "Copy", disabled: text ? null : true }, icon("copy"));
+    const copyBtn = h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": t("answer.copy"), title: t("common.copy"), disabled: text ? null : true }, icon("copy"));
     copyBtn.addEventListener("click", () => { this.actions.copy(text); flashCheck(copyBtn); });
-    const noteBtn = h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": "Save as a Zotero note", title: "Save as note", disabled: text && !this.saving ? null : true, onclick: () => void this.saveNote() }, icon("note"));
+    const noteBtn = h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": t("answer.saveNoteLabel"), title: t("answer.saveNote"), disabled: text && !this.saving ? null : true, onclick: () => void this.saveNote() }, icon("note"));
     // The last answer only: asking again is about what was just said.
     const explainBtn = f.canRetry && text
-      ? h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": "Explain it better", title: "Explain better: intuition first, a tiny example, then the details", onclick: () => this.actions.explain() }, icon("bulb"))
+      ? h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": t("answer.explainLabel"), title: t("answer.explainTip"), onclick: () => this.actions.explain() }, icon("bulb"))
       : null;
     const retryBtn = f.canRetry
-      ? h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": "Try again", title: "Try again", onclick: () => this.actions.retry(msg.id) }, icon("retry"))
+      ? h("button.iconbtn.iconbtn--sm", { type: "button", "aria-label": t("common.tryAgain"), title: t("common.tryAgain"), onclick: () => this.actions.retry(msg.id) }, icon("retry"))
       : null;
     const u = msg.usage;
     // Tokens and cost are off by default: a running price under every answer makes people hesitate to ask.
     const usage = f.showUsage && u && (u.inputTokens || u.outputTokens || u.costUsd)
-      ? [u.inputTokens ? `${fmtTokens(u.inputTokens)} in` : "", u.outputTokens ? `${fmtTokens(u.outputTokens)} out` : "", u.costUsd ? `$${u.costUsd.toFixed(u.costUsd < 0.1 ? 3 : 2)}` : ""].filter(Boolean).join(" · ")
+      ? [u.inputTokens ? t("usage.in", { n: fmtTokens(u.inputTokens) }) : "", u.outputTokens ? t("usage.out", { n: fmtTokens(u.outputTokens) }) : "", u.costUsd ? `$${u.costUsd.toFixed(u.costUsd < 0.1 ? 3 : 2)}` : ""].filter(Boolean).join(" · ")
       : "";
     const n = this.sources.length;
     const srcBtn = n
       ? h("button.foot__src", { type: "button", "aria-expanded": String(this.sourcesOpen), onclick: () => { this.sourcesOpen = !this.sourcesOpen; this.paintFoot(msg, f); } },
-        icon("chev", "foot__chev"), `${n} ${n === 1 ? "source" : "sources"}`)
+        icon("chev", "foot__chev"), t("answer.sources", { n }))
       : null;
     const list = n && this.sourcesOpen
       ? h("ul.sources", null, this.sources.map((s) => h("li", null,
         h("button.source", { type: "button", onclick: () => this.actions.open(s.href), title: s.href.replace(/^zotero:\/\//, "") },
           icon("item"), h("span.source__t", null, s.label),
-          s.pages.length ? h("span.source__p", null, `${s.pages.length === 1 ? "p." : "pp."} ${s.pages.join(", ")}`) : null))))
+          s.pages.length ? h("span.source__p", null, t(s.pages.length === 1 ? "answer.page" : "answer.pages", { pages: s.pages.join(", ") })) : null))))
       : null;
-    const note = STOP_NOTE[msg.stop ?? "end_turn"];
+    const stop = STOP_NOTE[msg.stop ?? "end_turn"];
+    const note = stop ? t(stop) : "";
     this.foot.className = `foot${this.sourcesOpen ? " foot--open" : ""}`;
     setKids(this.foot,
       note ? h(`div.stopnote.stopnote--${msg.stop}`, null, icon(msg.stop === "cancelled" ? "stop" : "warn"), note) : null,
@@ -149,7 +148,7 @@ class AssistantView {
     this.note = await trySave(() => this.actions.saveAnswer(this.msg.id));
     this.saving = false;
     this.paintFoot(this.msg, this.flags);
-    this.announce("ok" in this.note ? "Saved to note" : "Couldn't save the note");
+    this.announce("ok" in this.note ? t("note.saved") : t("note.saveFailedShort"));
   }
 }
 
@@ -173,7 +172,7 @@ function noticeView(m: NoticeMessage, actions: MsgActions): HTMLElement {
     h("div.notice__body", null,
       h("div.notice__msg", null, m.message),
       m.hint ? h("div.notice__hint", null, m.hint) : null,
-      bad ? h("div.notice__acts", null, h("button.btn.btn--sm", { type: "button", onclick: () => actions.checkSetup() }, "Check setup")) : null));
+      bad ? h("div.notice__acts", null, h("button.btn.btn--sm", { type: "button", onclick: () => actions.checkSetup() }, t("common.checkSetup"))) : null));
 }
 
 // ───────────────────────────── the feed ─────────────────────────────
@@ -200,8 +199,8 @@ export class Feed {
   constructor(actions: MsgActions) {
     this.actions = actions;
     this.inner = h("div.feed__inner");
-    this.scroller = h("div.feed", { tabindex: "0", role: "log", "aria-label": "Conversation", "aria-live": "off" }, this.inner);
-    this.jump = h("button.jump", { type: "button", hidden: true, "aria-label": "Jump to the latest message", title: "Jump to the latest", onclick: () => this.toBottom(true) }, icon("down"));
+    this.scroller = h("div.feed", { tabindex: "0", role: "log", "aria-label": t("feed.label"), "aria-live": "off" }, this.inner);
+    this.jump = h("button.jump", { type: "button", hidden: true, "aria-label": t("feed.jump"), title: t("feed.jumpTip"), onclick: () => this.toBottom(true) }, icon("down"));
     this.live = h("div.sr", { role: "status", "aria-live": "polite" });
     this.el = h("div.feedwrap", null, this.scroller, this.jump, this.live);
     this.scroller.addEventListener("scroll", () => this.take(scrolled(this.follow, this.scroller)));

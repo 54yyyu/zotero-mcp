@@ -1036,6 +1036,7 @@ def _row_to_full_api_item(
     collections: list[str],
     relations: dict[str, object],
     library: tuple[int, str] | None,
+    retracted: bool = False,
 ) -> dict:
     """Build a complete pyzotero-shaped item record from one hydrated row.
 
@@ -1088,6 +1089,9 @@ def _row_to_full_api_item(
 
     if row["deleted"]:
         data["deleted"] = 1
+
+    if retracted:
+        data["retracted"] = True
 
     item = {"key": row["key"], "version": row["version"], "data": data}
     if library is not None:
@@ -2927,6 +2931,23 @@ class LocalZoteroReader:
             for item_id, preds in gathered.items()
         }
 
+    def _fetch_retractions(self, conn: sqlite3.Connection, item_ids: list[int]) -> set[int]:
+        """Item IDs Zotero's local cache flags as retracted.
+
+        As Zotero.Retractions.isRetracted: flag 1 hides a retraction, flag 2
+        only silences citation warnings and is still retracted. Read from
+        Zotero's last check; no row is not proof the paper stands.
+        """
+        placeholders = ",".join("?" * len(item_ids))
+        try:
+            rows = conn.execute(
+                f"SELECT itemID FROM retractedItems WHERE flag IS NOT 1 AND itemID IN ({placeholders})",
+                item_ids,
+            ).fetchall()
+        except sqlite3.OperationalError:  # no retractedItems table
+            return set()
+        return {row[0] for row in rows}
+
     _FULL_ITEM_COLUMNS = """
             SELECT i.itemID, i.key, i.libraryID, i.version, i.dateAdded, i.dateModified,
                    it.typeName AS itemType,
@@ -2950,8 +2971,8 @@ class LocalZoteroReader:
     def _build_full_items(self, conn: sqlite3.Connection, rows: list[sqlite3.Row]) -> list[dict]:
         """Hydrate `_FULL_ITEM_COLUMNS` rows into complete API-shaped items.
 
-        Five queries total regardless of row count: fields, creators, tags,
-        collection membership, relations.
+        A fixed number of queries regardless of row count: fields, creators,
+        tags, collection membership, relations and cached retraction flags.
         """
         if not rows:
             return []
@@ -2961,6 +2982,7 @@ class LocalZoteroReader:
         tags = self._fetch_tags(conn, item_ids)
         collections = self._fetch_item_collections(conn, item_ids)
         relations = self._fetch_relations(conn, item_ids)
+        retractions = self._fetch_retractions(conn, item_ids)
         labels = self.get_library_labels()
         return [
             _row_to_full_api_item(
@@ -2971,6 +2993,7 @@ class LocalZoteroReader:
                 collections.get(row["itemID"], []),
                 relations.get(row["itemID"], {}),
                 labels.get(row["libraryID"]),
+                row["itemID"] in retractions,
             )
             for row in rows
         ]
@@ -2981,6 +3004,7 @@ class LocalZoteroReader:
         *,
         group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
         include_trashed: bool = True,
+        library_id: int | None = None,
     ) -> dict[str, dict]:
         """Complete records for `keys`, keyed by item key.
 
@@ -2994,7 +3018,10 @@ class LocalZoteroReader:
         if not keys:
             return {}
         conn = self._get_connection()
-        lib_ids = self._resolve_scope_library_ids(group_id)
+        if library_id is not None:
+            lib_ids = [library_id]
+        else:
+            lib_ids = self._resolve_scope_library_ids(group_id)
         if not lib_ids:
             return {}
         lib_ph = ",".join("?" * len(lib_ids))
@@ -3013,6 +3040,7 @@ class LocalZoteroReader:
         *,
         item_type: str | None = None,
         group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        library_id: int | None = None,
     ) -> dict[str, list[dict]]:
         """Children of every given parent, keyed by parent key, in one pass.
 
@@ -3030,7 +3058,10 @@ class LocalZoteroReader:
         if not parent_keys:
             return {}
         conn = self._get_connection()
-        lib_ids = self._resolve_scope_library_ids(group_id)
+        if library_id is not None:
+            lib_ids = [library_id]
+        else:
+            lib_ids = self._resolve_scope_library_ids(group_id)
         if not lib_ids:
             return {}
         lib_ph = ",".join("?" * len(lib_ids))

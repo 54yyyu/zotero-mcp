@@ -202,6 +202,29 @@ def get_active_library() -> dict[str, str]:
     return dict(_current_override())
 
 
+@contextmanager
+def temporary_active_library(library_id: str, library_type: str):
+    """Context manager to temporarily override the active library.
+
+    Restores the previous active library state (or clears it if there was none)
+    when exiting the context.
+
+    ``_active_library_override`` is a module-level global, not thread-local, so
+    this must only be used while holding ``_zotero_api_lock`` (i.e. inside a
+    ``with_zotero_api_lock``-wrapped tool) — otherwise a concurrent call could
+    see, or override, another thread's active library mid-operation.
+    """
+    previous = get_active_library()
+    set_active_library(library_id, library_type)
+    try:
+        yield
+    finally:
+        if previous:
+            set_active_library(previous["library_id"], previous["library_type"])
+        else:
+            clear_active_library()
+
+
 def get_active_group_id() -> int:
     """group_id (0 = personal, else Zotero groupID) of the library
     ``get_zotero_client()`` is currently scoped to."""
@@ -845,6 +868,9 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
     # had explicitly removed. Surface it near the top where it's hard to miss.
     if data.get("deleted"):
         lines.append("**Status:** 🗑️ In Trash (recoverable from Zotero Trash view)")
+
+    if data.get("retracted") is True:
+        lines.append("**Retraction:** Flagged as retracted by Zotero (cached local status)")
 
     # Date. Resolved the same way as the title: a case's date is
     # `dateDecided`, a statute's `dateEnacted`, a patent's `issueDate` (#452).

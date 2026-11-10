@@ -29,6 +29,7 @@ def test_dry_run_annotation_metadata_uses_selected_local_group(monkeypatch):
     personal = _MetadataClient({"key": "GROUPPDF", "data": {"itemType": "journalArticle"}})
     fake_pdf = SimpleNamespace(is_pdf=True, close=lambda: None)
     monkeypatch.setitem(sys.modules, "fitz", SimpleNamespace(open=lambda _path: fake_pdf))
+    monkeypatch.setattr("zotero_mcp._pymupdf.fitz", SimpleNamespace(open=lambda _path: fake_pdf))  # #642: code imports PyMuPDF through this helper
     monkeypatch.setenv("ZOTERO_LOCAL", "true")
     monkeypatch.setenv("ZOTERO_LIBRARY_ID", "123456")
     monkeypatch.setenv("ZOTERO_LIBRARY_TYPE", "group")

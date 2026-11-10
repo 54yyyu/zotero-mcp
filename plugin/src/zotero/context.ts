@@ -1,6 +1,12 @@
 // What the user is looking at, as chips. The panel follows focus: the open reader (page, text selection),
 // otherwise the items selected in the library.
 import type { ContextChip, ZoteroRef } from "../types.ts";
+import { t } from "../i18n.ts";
+import type { Key } from "../i18n.ts";
+
+const ANN_TYPE: Record<string, Key> = { highlight: "ann.highlight", underline: "ann.underline", note: "ann.note", text: "ann.text", image: "ann.image", ink: "ann.ink" };
+/** An annotation's type as Zotero's reader names it, in the user's language ("Highlight"). */
+export const annotationType = (type: string): string => (ANN_TYPE[type] ? t(ANN_TYPE[type]!) : type);
 
 const OBSERVER_ID = "zotero-chat";
 
@@ -15,7 +21,7 @@ export function itemLabel(item: any): string {
   const who = stripBidi(item.firstCreator || "");
   const year = (item.getField("date", true, true) || "").slice(0, 4);
   if (who && year) return `${who} ${year}`;
-  const title = stripBidi(item.getDisplayTitle() || "Untitled");
+  const title = stripBidi(item.getDisplayTitle() || t("chip.untitled"));
   return title.length > 40 ? title.slice(0, 39) + "…" : title;
 }
 
@@ -152,7 +158,7 @@ export class ContextTracker {
     const sel = this.selections.get(att.id);
     if (!sel) return null;
     return {
-      id: `selection:${att.key}`, kind: "selection", label: "Text Selection", auto: true, pinned: false,
+      id: `selection:${att.key}`, kind: "selection", label: t("chip.selection"), auto: true, pinned: false,
       ref: { ...refOf(att), ...(sel.pageIndex != null ? { pageIndex: sel.pageIndex } : {}), ...(sel.pageLabel ? { pageLabel: sel.pageLabel } : {}) },
       text: sel.text,
     };
@@ -199,9 +205,9 @@ export class ContextTracker {
     const ref: ZoteroRef = { ...refOf(att), annotationKey: ann.key, pageLabel: label, pageIndex: Number(JSON.parse(ann.annotationPosition || "{}").pageIndex ?? 0) };
     const own = { auto: o.auto, pinned: !o.auto, ref };
     if (ann.annotationType === "image") {
-      return { id: `area:${ann.key}`, kind: "area", label: `Selected Area · p.${label}`, ...own, ...(o.image ? { image: o.image } : {}) };
+      return { id: `area:${ann.key}`, kind: "area", label: t("chip.areaPage", { page: label }), ...own, ...(o.image ? { image: o.image } : {}) };
     }
-    return { id: `annotation:${ann.key}`, kind: "annotation", label: `${ann.annotationType} · p.${label}`, ...own, text: ann.annotationText || ann.annotationComment || "" };
+    return { id: `annotation:${ann.key}`, kind: "annotation", label: t("chip.annotationPage", { type: annotationType(ann.annotationType), page: label }), ...own, text: ann.annotationText || ann.annotationComment || "" };
   }
 
   /**

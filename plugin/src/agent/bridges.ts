@@ -3,7 +3,7 @@
 // then the bridge is run as `node <entry>`: no npx at chat time (slow, needs the network).
 // No node:fs here (Gecko): the check for "already installed" is a tiny `node -e`.
 import type { Spawner } from "../types.ts";
-import type { BackendSpec } from "./backends.ts";
+import type { BridgeSpec } from "./backends.ts";
 import { dirnameOf, findBinary, withPathFirst } from "./env.ts";
 
 export interface BridgeLocation {
@@ -21,7 +21,7 @@ const LOCATE_SCRIPT =
   "console.log(JSON.stringify({version:p.version,entry:e}))}catch(e){}";
 
 /** The installed bridge for `spec`, or null when it is missing (or a different version than pinned). */
-export async function locateBridge(spawner: Spawner, env: Record<string, string>, node: string, bridgeDir: string, spec: BackendSpec): Promise<BridgeLocation | null> {
+export async function locateBridge(spawner: Spawner, env: Record<string, string>, node: string, bridgeDir: string, spec: BridgeSpec): Promise<BridgeLocation | null> {
   const r = await spawner.run(node, ["-e", LOCATE_SCRIPT, bridgeDir, spec.pkg], { env, timeoutMs: 15_000 });
   const line = r.stdout.trim().split("\n").pop();
   if (!line) return null;
@@ -35,16 +35,47 @@ const LOCATE_CODEX_SCRIPT =
   'const pkg=JSON.parse(fs.readFileSync(p,"utf8"));' +
   'const bin=typeof pkg.bin==="string"?pkg.bin:pkg.bin.codex;' +
   'const entry=path.resolve(path.dirname(p),bin);fs.accessSync(entry);' +
-  'console.log(JSON.stringify(entry))}catch(e){}';
+  'console.log(JSON.stringify({codex:entry,version:pkg.version||""}))}catch(e){}';
 
-/** The Codex launcher resolved from the installed bridge, including nested npm dependencies. Run it with node, not a platform-specific shim. */
-export async function locateBundledCodexCli(spawner: Spawner, env: Record<string, string>, node: string, bridge: BridgeLocation): Promise<string | null> {
+/** The Codex bundled with the installed bridge: its launcher (run it with node, not a platform shim) and version. */
+export async function locateBundledCodex(spawner: Spawner, env: Record<string, string>, node: string, bridge: BridgeLocation): Promise<{ entry: string; version: string } | null> {
   try {
     const r = await spawner.run(node, ["-e", LOCATE_CODEX_SCRIPT, bridge.entry], { env, timeoutMs: 15_000 });
     const line = r.stdout.trim().split("\n").pop();
     if (r.code !== 0 || !line) return null;
-    const entry: unknown = JSON.parse(line);
-    return typeof entry === "string" ? entry : null;
+    const found: unknown = JSON.parse(line);
+    if (!found || typeof found !== "object") return null;
+    const { codex: entry, version } = found as { codex?: unknown; version?: unknown };
+    return typeof entry === "string" ? { entry, version: typeof version === "string" ? version : "" } : null;
+  } catch {
+    return null;
+  }
+}
+
+const semver = (v: string): number[] | null => {
+  const m = /(\d+)\.(\d+)\.(\d+)/.exec(v);
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+};
+
+/** a >= b, comparing major.minor.patch. */
+export function atLeast(a: string, b: string): boolean {
+  const x = semver(a), y = semver(b);
+  if (!x || !y) return false;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i]! > y[i]!;
+  return true;
+}
+
+/**
+ * The user's own Codex, when chats should run it instead of the bridge's bundled one: when it is at least as new
+ * (#811: a config.toml written for a newer Codex fails to load in the older bundled one, as "failed to load
+ * workspace requirements"). codex-acp runs it through CODEX_PATH. An older or unversioned Codex, or on Windows
+ * anything but an .exe (CODEX_PATH is launched directly, so npm's .cmd shim would not start), keeps the bundled one.
+ */
+export async function systemCodexForChats(spawner: Spawner, env: Record<string, string>, cli: string | null, bundled: { version: string } | null): Promise<string | null> {
+  if (!cli || !bundled?.version || (spawner.windows && !/\.exe$/i.test(cli))) return null;
+  try {
+    const r = await spawner.run(cli, ["--version"], { env, timeoutMs: 15_000 });
+    return r.code === 0 && atLeast(r.stdout, bundled.version) ? cli : null;
   } catch {
     return null;
   }
@@ -58,7 +89,7 @@ interface EnsureBridgeOpts {
   env: Record<string, string>;
   node: string;
   bridgeDir: string;
-  spec: BackendSpec;
+  spec: BridgeSpec;
   onProgress?: (message: string) => void;
 }
 

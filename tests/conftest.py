@@ -153,6 +153,19 @@ class FakeZotero:
     def items(self, **kwargs):
         return self._items
 
+    def top(self, **kwargs):
+        """Top-level items, as /items/top does: no child items.
+
+        A standalone attachment or note has no parent and so is top-level,
+        which is why this filters on parentItem rather than on itemType.
+        """
+        return [it for it in self.items(**kwargs)
+                if not it.get("data", {}).get("parentItem")]
+
+    def num_items(self, **kwargs):
+        """Total top-level items, matching what top() pages."""
+        return len(self.top())
+
     def collections(self, **kwargs):
         return self._collections
 
@@ -244,6 +257,10 @@ class FakeZotero:
     def collection_items(self, key, **kwargs):
         return [it for it in self._items
                 if key in it.get("data", {}).get("collections", [])]
+
+    def collection_items_top(self, key, **kwargs):
+        return [it for it in self.collection_items(key, **kwargs)
+                if not it.get("data", {}).get("parentItem")]
 
     def file(self, key, **kwargs):
         return b""
@@ -460,3 +477,19 @@ def _chromadb_in_process(monkeypatch):
     monkeypatch.setattr(chroma_worker, "_shared", {})
     yield
     chroma_worker.stop_all()
+
+
+@pytest.fixture(autouse=True)
+def _release_chromadb_clients():
+    """Close the files of every ChromaDB client a test opened.
+
+    ChromaDB caches one client per index path for the life of the process, and
+    each holds its SQLite and HNSW files open. A suite that builds hundreds of
+    temp indexes then runs out of file handles on Windows (512 by default).
+    Only when chromadb is already loaded, so other tests pay nothing.
+    """
+    yield
+    if "chromadb" in sys.modules:
+        from zotero_mcp.chroma_client import release_chroma_clients
+
+        release_chroma_clients()

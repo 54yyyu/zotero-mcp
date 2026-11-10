@@ -15,7 +15,7 @@ Set `ZOTERO_MCP_TOOLSETS` to control which groups are exposed:
 
 | Value | Effect |
 |---|---|
-| *(unset)* | Default profile — core tools plus `semantic`, `libraries`, `search-admin`, `pdf-geometry` |
+| *(unset)* | Default profile — core tools plus `semantic`, `libraries`, `search-admin`, `pdf-geometry` (not `libraries-copy`) |
 | `all` | Every group except `legacy` |
 | `none` | Core tools only, the smallest surface (no semantic search; `none,semantic` adds it back) |
 | `scite,feeds` | Core plus the named groups (the default groups are not included) |
@@ -34,6 +34,7 @@ group name is an error at startup rather than a silent no-op.
 | `feeds` | off | Zotero RSS feed subscriptions |
 | `relations` | off | Explicit item-to-item "related items" links |
 | `libraries` | **on** | List and switch between personal/group libraries |
+| `libraries-copy` | off | Copy items between libraries (`zotero_copy_items_between_libraries`) — separate from `libraries` since most multi-library users never call it |
 | `search-admin` | **on** | Build and inspect the semantic search index (needs the `[semantic]` extra) |
 | `pdf-geometry` | **on** | Page layout and PDF outline — pairs with area annotations |
 | `chatgpt-connector` | auto | The `search`/`fetch` pair required by ChatGPT deep research |
@@ -104,6 +105,12 @@ Example (Claude Desktop / Claude Code):
 - `zotero_get_pdf_outline`: A PDF's table of contents (`pdf-geometry`)
 - `zotero_get_attachment_path`: Local file paths of an item's attachments (local mode)
 - `zotero_export_bibliography`: Format references or in-text citations with Zotero's CSL engine, or export BibTeX
+
+In local mode, an item Zotero has flagged as retracted carries
+`"retracted": true` in JSON (`zotero_get_item_metadata`, `zotero-cli --json`)
+and a **Retraction** line in Markdown metadata. The flag is Zotero's own,
+from its last retraction check; no request is made, and an unflagged item is
+not proof the paper stands. A retraction hidden in Zotero is not flagged.
 
 ### 📝 Annotation & notes tools
 - `zotero_get_annotations`: Get annotations (including direct PDF extraction); `format="json"` returns normalized records

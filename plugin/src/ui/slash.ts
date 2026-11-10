@@ -3,6 +3,8 @@
 import { clear, h, icon, setKids } from "./dom.ts";
 import type { IconName } from "./dom.ts";
 import { rankItems } from "./skills-model.ts";
+import { t } from "../i18n.ts";
+import type { Key } from "../i18n.ts";
 
 export interface SlashItem {
   group: "Skills" | "Prompts" | "Agent";
@@ -16,10 +18,11 @@ export interface SlashItem {
 
 const GROUPS: SlashItem["group"][] = ["Skills", "Prompts", "Agent"];
 const ICON: Record<SlashItem["group"], IconName> = { Skills: "sparkle", Prompts: "note", Agent: "terminal" };
+const GROUP_LABEL: Record<SlashItem["group"], Key> = { Skills: "slash.skills", Prompts: "slash.prompts", Agent: "common.agent" };
 
 export class SlashMenu {
   readonly el: HTMLElement;
-  private list = h("ul.pop__list", { role: "listbox", id: "zmc-slash", "aria-label": "Skills, prompts and commands" });
+  private list = h("ul.pop__list", { role: "listbox", id: "zmc-slash", "aria-label": t("slash.label") });
   private status = h("div.pop__status", { role: "status" });
   private all: SlashItem[] | null = null;
   private shown: SlashItem[] = [];
@@ -46,10 +49,10 @@ export class SlashMenu {
       this.open_ = true;
       this.parent.prepend(this.el);
       this.all = null;
-      this.status.textContent = "Loading…";
+      this.status.textContent = t("common.loading");
       clear(this.list);
       this.load().then((items) => { if (this.open_) { this.all = items; this.paint(); } }, (e) => {
-        if (this.open_) this.status.textContent = `Couldn't read your skills: ${e instanceof Error ? e.message : String(e)}`;
+        if (this.open_) this.status.textContent = t("slash.readFailed", { error: e instanceof Error ? e.message : String(e) });
       });
       return;
     }
@@ -68,11 +71,11 @@ export class SlashMenu {
     const ranked = rankItems(this.all ?? [], this.q);
     this.shown = GROUPS.flatMap((g) => ranked.filter((it) => it.group === g));
     this.sel = 0;
-    this.status.textContent = this.shown.length ? "" : this.q ? `Nothing called “${this.q}”. Add skills and prompts in Settings.` : "No skills or prompts yet. Add them in Settings.";
+    this.status.textContent = this.shown.length ? "" : this.q ? t("slash.nothing", { q: this.q }) : t("slash.none");
     const kids: HTMLElement[] = [];
     let group = "";
     this.shown.forEach((it, i) => {
-      if (it.group !== group) { group = it.group; kids.push(h("li.pop__h", { role: "presentation" }, group)); }
+      if (it.group !== group) { group = it.group; kids.push(h("li.pop__h", { role: "presentation" }, t(GROUP_LABEL[it.group]))); }
       kids.push(h(`li.pop__i${i === this.sel ? ".pop__i--on" : ""}`, {
         role: "option", id: `zmc-slash-${i}`, "aria-selected": String(i === this.sel), dataset: { group: it.group, id: it.id },
         onmousedown: (e: Event) => { e.preventDefault(); this.pick(it); },

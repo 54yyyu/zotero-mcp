@@ -124,6 +124,8 @@ def project_item(item: dict, detail: str = "summary") -> dict:
         # A trashed item looks live in every other respect; a caller acting on
         # one without knowing is the failure mode this exists to prevent.
         out["deleted"] = True
+    if data.get("retracted"):
+        out["retracted"] = True
 
     if detail == "keys_only":
         return out

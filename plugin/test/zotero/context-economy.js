@@ -115,9 +115,13 @@ async function main(ctx) {
   root.querySelector('button[aria-label="Add a source"]').click();
   const row = await ctx.waitFor(() => [...root.querySelectorAll(".pop__i")].find((li) => li.textContent.startsWith(first.title)), "the page row");
   row.dispatchEvent(new win.MouseEvent("mousedown", { bubbles: true, cancelable: true }));
-  const card = await ctx.waitFor(() => [...root.querySelectorAll(".area")].find((el) => /Page \d+/.test(el.textContent) && el.querySelector("img.area__img")), "the page chip");
-  check(/Go to Page/.test(card.textContent), "its action says Page");
-  const pageImg = card.querySelector("img.area__img");
+  // A whole page is a thumbnail tile (its label is the tooltip); its preview offers Go to Page.
+  const card = await ctx.waitFor(() => [...root.querySelectorAll(".thumb")].find((el) => /Page \d+/.test(el.title) && el.querySelector("img.thumb__img")), "the page chip");
+  card.querySelector("button.thumb__main").click();
+  const lb = await ctx.waitFor(() => root.querySelector(".lb"), "the page preview");
+  check(/Go to Page/.test(lb.textContent), "its preview's action says Page");
+  lb.querySelector(".lb__x").click();
+  const pageImg = card.querySelector("img.thumb__img");
   await ctx.waitFor(() => pageImg.complete && pageImg.naturalWidth > 0, "the page image decodes");
   out.pageImage = [pageImg.naturalWidth, pageImg.naturalHeight];
   check(Math.max(pageImg.naturalWidth, pageImg.naturalHeight) <= 1568 && pageImg.naturalWidth > 200, "a real page image, at most 1568 px: " + out.pageImage);
