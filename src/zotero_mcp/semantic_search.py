@@ -2675,7 +2675,9 @@ class ZoteroSemanticSearch:
                             target.key, target.path, target.file_stamp, config_path=self.config_path
                         )
                 self._mark_reusable([unit for unit, _target in part], look_in_index=check)
-            to_extract = [target for unit, target in files if not unit.get("reuse_from")]
+            to_extract = [
+                target for unit, target in files if not unit.get("reuse_from") and not unit.get("refresh_only")
+            ]
             failed_now = 0
             done = 0
             for att_key, result in reader.extract_targets(to_extract):
@@ -2700,7 +2702,10 @@ class ZoteroSemanticSearch:
         finally:
             _extract_logger.setLevel(_prev_level)
 
-        units = [unit for unit, target in planned if target is None or unit["text"] or unit.get("reuse_from")]
+        units = [
+            unit for unit, target in planned
+            if target is None or unit["text"] or unit.get("reuse_from") or unit.get("refresh_only")
+        ]
         try:
             sys.stderr.write(f"\r{' ' * _term_width(120)}\r")
             parts = [f"  Extraction complete: {len(units)} records to write"]
@@ -4197,7 +4202,8 @@ class ZoteroSemanticSearch:
         """Mark the units whose file has the same bytes as one already indexed, or one written earlier this run.
 
         Sets ``reuse_from`` (the source's key) on those, and ``reuse_deferred``
-        when the source is still to be written this run. The first unit of a
+        when the source is still to be written this run. A unit whose own
+        record already has its hash gets ``refresh_only`` instead. The first unit of a
         run with a given hash is the one the others copy from. A unit that
         only fills a missing level is left alone: its record is current.
         """
@@ -4217,7 +4223,12 @@ class ZoteroSemanticSearch:
             for unit in part:
                 unit["_reuse_checked"] = True
                 key, value = unit["key"], unit["file_hash"]
-                if source := next((k for k in indexed.get(value, ()) if k != key), None):
+                if key in indexed.get(value, ()):
+                    # Its own record has these bytes (and, with passages
+                    # wanted, all its passages): only the stamp moved, as when
+                    # a backup is restored. Nothing to parse or embed.
+                    unit["refresh_only"] = True
+                elif source := next((k for k in indexed.get(value, ()) if k != key), None):
                     unit["reuse_from"] = source
                 elif (first := self._run_hash_first.get(value)) and first != key:
                     unit["reuse_from"] = first
@@ -4308,6 +4319,27 @@ class ZoteroSemanticSearch:
             written += len(records)
             existing |= had
         return copied, unresolved, written, existing
+
+    def _refresh_units(self, units: list[dict[str, Any]], stats: dict[str, Any]) -> list[dict[str, Any]]:
+        """Move the stamp (and date) of records whose file is unchanged; returns the units not refreshed.
+
+        Metadata only: no vector changes and the passages stay.
+        """
+        if not units:
+            return []
+        try:
+            with self._chroma_call_lock:
+                self.chroma_client.update_metadatas(
+                    [u["key"] for u in units],
+                    [{"file_stamp": u["file_stamp"], "date_modified": u.get("date_modified") or ""} for u in units],
+                )
+        except Exception as e:
+            logger.warning(f"Could not refresh the stamps of {len(units)} unchanged file(s): {e}")
+            return units
+        stats["refreshed_unchanged"] += len(units)
+        stats["processed_items"] += len(units)
+        stats["updated_items"] += len(units)
+        return []
 
     def _copy_reused_units(self, units: list[dict[str, Any]], stats: dict[str, Any]) -> list[dict[str, Any]]:
         """Copy the units' records from their sources and count them; returns the units not copied."""
@@ -4681,6 +4713,8 @@ class ZoteroSemanticSearch:
             "deleted_items": 0,
             # Files whose records were copied from an identical file's (#495).
             "reused_from_hash": {"attachments": 0, "records": 0},
+            # Files touched but byte-identical: only their stamp was updated.
+            "refreshed_unchanged": 0,
             "errors": 0,
             "start_time": start_time.isoformat(),
             "duration": None,
@@ -5104,6 +5138,13 @@ class ZoteroSemanticSearch:
             # in this run, are copied instead of embedded again (#495). The
             # local scan has marked its own; API units are marked here.
             self._mark_reusable(all_items, look_in_index=not force_full_rebuild)
+            refresh = [unit for unit in all_items if unit.get("refresh_only")]
+            all_items = [unit for unit in all_items if not unit.get("refresh_only")]
+            left_textless = 0
+            if refresh:
+                failed = self._refresh_units(refresh, stats)
+                all_items += [unit for unit in failed if unit.get("text")]
+                left_textless += sum(1 for unit in failed if not unit.get("text"))
             reuse_units = [unit for unit in all_items if unit.get("reuse_from")]
             all_items = [unit for unit in all_items if not unit.get("reuse_from")]
             if reuse_units and not batch_enabled:
@@ -5112,7 +5153,16 @@ class ZoteroSemanticSearch:
                 # ones that wait for this run's own files are copied below.
                 ready = [unit for unit in reuse_units if not unit.get("reuse_deferred")]
                 reuse_units = [unit for unit in reuse_units if unit.get("reuse_deferred")]
-                all_items += [unit for unit in self._copy_reused_units(ready, stats) if unit.get("text")]
+                failed = self._copy_reused_units(ready, stats)
+                all_items += [unit for unit in failed if unit.get("text")]
+                if lost := [unit for unit in failed if not unit.get("text")]:
+                    left_textless += len(lost)
+                    logger.warning(
+                        f"{len(lost)} file(s) could not be copied (their source left the index); "
+                        "the next update-db indexes them."
+                    )
+            if left_textless:
+                stats["reuse_left_for_next_run"] = left_textless
 
             if limit is not None:
                 # A limited run may index only a subset; promoting would strand
@@ -5121,7 +5171,10 @@ class ZoteroSemanticSearch:
                 # zero sends the next run back through a full scan.
                 target_sync_version = 0 if force_full_rebuild else None
 
-            stats["total_items"] = len(all_items) + len(reuse_units) + stats["reused_from_hash"]["attachments"]
+            stats["total_items"] = (
+                len(all_items) + len(reuse_units)
+                + stats["reused_from_hash"]["attachments"] + stats["refreshed_unchanged"]
+            )
             logger.info(f"Found {stats['total_items']} items to process")
             if waiting := self.update_config.get("gaps_waiting_for_text"):
                 _report(
@@ -5207,7 +5260,12 @@ class ZoteroSemanticSearch:
                 self._check_embedding_api()
 
             # User-friendly progress reporting
-            total = stats["total_items"] = len(all_items)
+            total = len(all_items)
+            # The copies and refreshes were counted in the total above.
+            stats["total_items"] = (
+                total + len(reuse_units)
+                + stats["reused_from_hash"]["attachments"] + stats["refreshed_unchanged"]
+            )
             try:
                 sys.stderr.write(f"\nIndexing {total} items...\n\n")
                 sys.stderr.flush()
@@ -5351,7 +5409,7 @@ class ZoteroSemanticSearch:
                     ):
                         stats[key] += batch_stats[name]
                 if waiting := len(left) - len(with_text):
-                    stats["reuse_left_for_next_run"] = waiting
+                    stats["reuse_left_for_next_run"] = stats.get("reuse_left_for_next_run", 0) + waiting
                     logger.warning(
                         f"{waiting} file(s) that copy a file from this run could not be copied; "
                         "the next update-db indexes them."
@@ -5423,6 +5481,8 @@ class ZoteroSemanticSearch:
                 )
                 if stats["recovered_items"]:
                     summary += f", {stats['recovered_items']} recovered"
+                if stats["refreshed_unchanged"]:
+                    summary += f", {stats['refreshed_unchanged']} unchanged (stamp refreshed)"
                 if reused := stats["reused_from_hash"]["attachments"]:
                     summary += (
                         f", {reused} reused from identical files "

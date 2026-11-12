@@ -585,6 +585,8 @@ def _print_batch_status(status: dict, provider: str = "openai") -> None:
 
 def _print_reused(stats: dict) -> None:
     """The files whose records were copied from an identical file's (#495)."""
+    if stats.get("refreshed_unchanged"):
+        print(f"- Unchanged files (stamp refreshed, not re-embedded): {stats['refreshed_unchanged']}")
     reused = stats.get("reused_from_hash") or {}
     if reused.get("attachments"):
         print(f"- Reused from identical files: {reused['attachments']} ({reused.get('records', 0)} records)")

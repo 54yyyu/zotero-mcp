@@ -612,3 +612,90 @@ def test_batch_import_logs_and_skips_a_copy_whose_source_never_landed(home, monk
     assert records(search, "ATT00002") == {}
     assert fake.manifest["reuse"][0]["state"] == "source_missing"
     assert any("ATT00002" in m and "ATT00001" in m for m in caplog.messages)
+
+
+# --- touched but unchanged files ---------------------------------------------------
+
+
+def test_a_touched_identical_file_only_gets_its_stamp_refreshed(env, home):
+    reader = Reader([Item("ITEM0001", 1)], targets={1: [real_target(home, "ATT00001")]})
+    search, _ = env(reader)
+    before = records(search, "ATT00001")
+
+    reader.targets[1] = [real_target(home, "ATT00001", stamp="9:100")]
+    search, stats = env(reader)
+
+    assert reader.extracted == []
+    assert search.chroma_client.embedded == []
+    after = records(search, "ATT00001")
+    assert after["ATT00001"][2]["file_stamp"] == "9:100"
+    assert {i: v[:2] for i, v in after.items()} == {i: v[:2] for i, v in before.items()}
+    assert len(after) == 1 + PASSAGES
+    assert stats["refreshed_unchanged"] == 1
+
+    search, _ = env(reader)
+    assert search.chroma_client.embedded == [] and reader.extracted == []
+
+
+def test_a_touched_and_changed_file_is_embedded_again(env, home):
+    reader = Reader([Item("ITEM0001", 1)], targets={1: [real_target(home, "ATT00001")]})
+    env(reader)
+
+    reader.targets[1] = [real_target(home, "ATT00001", content=b"different bytes", stamp="9:100")]
+    search, stats = env(reader)
+
+    assert reader.extracted == ["ATT00001"]
+    assert len(search.chroma_client.bodies) == 1 + PASSAGES
+    assert stats["refreshed_unchanged"] == 0
+
+
+def test_an_incomplete_record_is_not_refreshed(env, home):
+    reader = Reader([Item("ITEM0001", 1)], targets={1: [real_target(home, "ATT00001")]})
+    search, _ = env(reader)
+    search.chroma_client.delete_documents(["ATT00001#2"])
+
+    reader.targets[1] = [real_target(home, "ATT00001", stamp="9:100")]
+    _search, stats = env(reader)
+
+    assert "ATT00001" in reader.extracted
+    assert stats["refreshed_unchanged"] == 0
+
+
+def test_an_api_unit_with_a_local_file_is_refreshed_without_embedding(env, home):
+    reader = Reader([Item("ITEM0001", 1)], targets={1: [real_target(home, "ATT00001")]})
+    search, _ = env(reader)
+    sha = records(search, "ATT00001")["ATT00001"][2]["file_hash"]
+    search.chroma_client.embedded.clear()
+    unit = semantic_search._attachment_unit(
+        "ATT00001", TEXT, file_stamp="7:7", file_hash=sha, group_id=0, date_modified="2025-05-05"
+    )
+
+    search._run_hash_first = {}
+    search._mark_reusable([unit], look_in_index=True)
+    stats = {"processed_items": 0, "updated_items": 0, "refreshed_unchanged": 0}
+    left = search._refresh_units([unit], stats)
+
+    assert unit["refresh_only"] and "reuse_from" not in unit and left == []
+    assert search.chroma_client.embedded == []
+    meta = records(search, "ATT00001")["ATT00001"][2]
+    assert (meta["file_stamp"], meta["date_modified"]) == ("7:7", "2025-05-05")
+    assert stats["refreshed_unchanged"] == 1
+
+
+def test_a_copy_that_fails_without_text_is_counted_for_the_next_run(env, home, monkeypatch):
+    reader = Reader([Item("ITEM0001", 1)], targets={1: [real_target(home, "ATT00001")]})
+    env(reader)
+    original = Client.read_copy_sources
+    # The source passes the lookup, then is gone when the copy reads it.
+    monkeypatch.setattr(
+        Client,
+        "read_copy_sources",
+        lambda self, keys, passages, vectors=True: original(self, keys, passages, vectors) if not vectors else {},
+    )
+
+    reader.items.append(Item("ITEM0002", 2))
+    reader.targets[2] = [real_target(home, "ATT00002")]
+    search, stats = env(reader)
+
+    assert stats["reuse_left_for_next_run"] == 1
+    assert records(search, "ATT00002") == {}
