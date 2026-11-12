@@ -17,7 +17,8 @@
 //                            `modes` are pi's thinking levels, NOT permissions (ignored here);
 //                            session/set_config_option works. No permission frames at all.
 import type { BackendId, BuiltinBackendId, Spawner } from "../types.ts";
-import { findBinary } from "./env.ts";
+import { dirnameOf, findBinary } from "./env.ts";
+import { shimTarget } from "./windows.ts";
 import { t } from "../i18n.ts";
 import type { Key } from "../i18n.ts";
 
@@ -162,6 +163,25 @@ export async function findCli(spawner: Spawner, env: Record<string, string>, spe
   if (!spec.cli) return null;
   const home = env["HOME"];
   return findBinary(spawner, env, spec.cli.name, spec.id === "claude-code" && home ? [`${home}/.local/bin`] : []);
+}
+
+/** The ACP bridge spawns the override directly, so it cannot use a Windows batch file. */
+export async function findClaudeExecutable(spawner: Spawner, env: Record<string, string>, node: string): Promise<string | null> {
+  const cli = await findCli(spawner, env, BACKENDS["claude-code"]);
+  if (!cli || !spawner.windows || !/\.(cmd|bat)$/i.test(cli)) return cli;
+
+  try {
+    const opts = { env, timeoutMs: 10_000 };
+    const shim = await spawner.run(node, ["-e", 'process.stdout.write(require("fs").readFileSync(process.argv[1], "utf8"))', cli], opts);
+    const target = shim.code === 0 ? shimTarget(shim.stdout) : null;
+    if (!target || !/\.exe$/i.test(target)) return null;
+    const file = `${dirnameOf(cli)}\\${target}`;
+    const check = await spawner.run(node, ["-e", 'process.exit(require("fs").statSync(process.argv[1], {throwIfNoEntry:false})?.isFile() ? 0 : 1)', file], opts);
+    return check.code === 0 ? file : null;
+  } catch {
+    // The bridge can use its bundled CLI if this shim cannot be resolved.
+    return null;
+  }
 }
 
 /** `cd "<folder>" && <resume command>`: what to paste in a terminal to continue a chat started in the panel. */

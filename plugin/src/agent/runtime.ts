@@ -3,7 +3,7 @@
 import type { AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, CustomAgentConfig, Spawner, StartOpts } from "../types.ts";
 import { readCustomAgent } from "../custom-agent.ts";
 import { AcpClient } from "./acp.ts";
-import { BACKENDS, BACKEND_IDS, backendOf, findCli, probeLogin, type BackendSpec } from "./backends.ts";
+import { BACKENDS, BACKEND_IDS, backendOf, findClaudeExecutable, findCli, probeLogin, type BackendSpec } from "./backends.ts";
 import { ensureBridge, locateBridge, locateBundledCodex, systemCodexForChats } from "./bridges.ts";
 import { bridgeEnv, dirnameOf, findBinary, nodeEval, stripApiKeys, withPathFirst } from "./env.ts";
 import { AcpAgentSession } from "./session.ts";
@@ -178,7 +178,7 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
       if (!node) throw new Error(nodeMissing());
       const [bridge, claude] = await Promise.all([
         ensureBridge({ spawner, env, node, bridgeDir, spec, ...(opts.onProgress ? { onProgress: opts.onProgress } : {}) }),
-        spec.claudeMeta ? findCli(spawner, withPathFirst(env, dirnameOf(node)), spec) : null,
+        spec.claudeMeta ? findClaudeExecutable(spawner, withPathFirst(env, dirnameOf(node)), node) : null,
       ]);
       const extra: Record<string, string> = { ...start.env, ...(start.locked ? await lockedEnv(spawner, env, spec, start) : {}) };
       if (start.backend === "codex" && !extra.CODEX_PATH) {
