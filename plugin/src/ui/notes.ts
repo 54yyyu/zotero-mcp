@@ -8,7 +8,7 @@ import { t } from "../i18n.ts";
 /** An answer's markdown as a note request; diagram.ts is loaded only when the answer has a drawing. */
 export async function answerNote(markdown: string, question?: string): Promise<NoteRequest> {
   const srcs = noteDiagrams(markdown);
-  const images = srcs.length ? await import("./diagram.ts").then((d) => Promise.all(srcs.map((s) => d.pngOf(s).catch(() => null)))) : null;
+  const images = srcs.length ? await import("./diagram.ts").then((d) => Promise.all(srcs.map((s) => d.pngOf(s.src, undefined, s.lang).catch(() => null)))) : null;
   return { markdown, ...(question?.trim() ? { title: clip(question, 100) } : {}), ...(images ? { images } : {}) };
 }
 

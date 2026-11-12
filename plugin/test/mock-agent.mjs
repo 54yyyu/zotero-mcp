@@ -369,6 +369,13 @@ async function prompt(id, params) {
     chunk(JSON.stringify({ model: s?.model, mode: s?.mode, effort: s?.effort, images }));
     return end();
   }
+  if (text.includes("SCENARIO:mermaid")) { // fake-diagrams.ts's Mermaid samples, streamed in small chunks (#823)
+    const src = readFileSync(new URL("../src/ui/fake-diagrams.ts", import.meta.url), "utf8");
+    const body = (name) => new RegExp(`export const ${name} = \`([^\`]*)\``).exec(src)?.[1] ?? "";
+    const md = "As a chart:\n\n```mermaid\n" + body("MERMAID_FLOW") + "\n```\n\nAnd in time:\n\n```mermaid\n" + body("MERMAID_SEQ") + "\n```\n\nDone.";
+    for (let i = 0; i < md.length; i += 60) chunk(md.slice(i, i + 60));
+    return end();
+  }
   if (text.includes("SCENARIO:diagrams") || text.includes("SCENARIO:hostile-svg")) {
     // The sample drawings of src/ui/fake-diagrams.ts (read as text: plain template literals), streamed in small chunks.
     const src = readFileSync(new URL("../src/ui/fake-diagrams.ts", import.meta.url), "utf8");

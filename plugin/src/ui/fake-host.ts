@@ -3,7 +3,7 @@
 import { CATALOGS, bigPiCatalog, defaultSettings } from "./fake-catalog.ts";
 import { repeatLine } from "./economy.ts";
 import { t } from "../i18n.ts";
-import { DIAGRAM_ANSWER } from "./fake-diagrams.ts";
+import { DIAGRAM_ANSWER, MERMAID_ANSWER } from "./fake-diagrams.ts";
 import { FakeSkills } from "./fake-skills.ts";
 import type {
   AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, ChatEvent, ContextChip, DoctorCheck, ItemHit, NoteRequest, PanelHost,
@@ -261,7 +261,7 @@ class FakeSession implements AgentSession {
       }
     }
 
-    const body = long ? `${SAMPLE_ANSWER}\n\n${LONG_PARAS}` : /\b(draw|diagram)/.test(q) ? DIAGRAM_ANSWER : q.includes("math") ? "The estimator is\n\n$$\\hat{\\tau} = \\frac{1}{n}\\sum_{i=1}^{n}\\left(\\frac{T_i Y_i}{e(X_i)} - \\frac{(1-T_i)Y_i}{1-e(X_i)}\\right)$$\n\nwith propensity $e(X_i) = P(T_i = 1 \\mid X_i)$. An unclosed $$ stays text while it streams, and \\$5 is just five dollars." : SAMPLE_ANSWER;
+    const body = long ? `${SAMPLE_ANSWER}\n\n${LONG_PARAS}` : /\bmermaid\b/.test(q) ? MERMAID_ANSWER : /\b(draw|diagram)/.test(q) ? DIAGRAM_ANSWER : q.includes("math") ? "The estimator is\n\n$$\\hat{\\tau} = \\frac{1}{n}\\sum_{i=1}^{n}\\left(\\frac{T_i Y_i}{e(X_i)} - \\frac{(1-T_i)Y_i}{1-e(X_i)}\\right)$$\n\nwith propensity $e(X_i) = P(T_i = 1 \\mid X_i)$. An unclosed $$ stays text while it streams, and \\$5 is just five dollars." : SAMPLE_ANSWER;
     await this.stream(turn, "text", (this.cancelled ? "" : body));
     if (this.cancelled) return this.end(turn, "cancelled");
     this.emit({ t: "turn_end", turn, stop: "end_turn", usage: { inputTokens: 12840, outputTokens: 912, costUsd: 0.031, ...(this.sim.contextUsage ? { contextUsed: this.sim.contextUsage.used, contextSize: this.sim.contextUsage.size } : {}) } });

@@ -567,6 +567,7 @@ const zhHant: Catalog = {
   // diagram
   "diagram.label": "示意圖",
   "diagram.source": "顯示 SVG 原始碼",
+  "diagram.sourceMermaid": "顯示 Mermaid 原始碼",
   "diagram.copy": "複製為圖片",
   "diagram.saveAs": "儲存為 {format}",
   "diagram.note": "加入筆記",

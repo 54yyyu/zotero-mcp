@@ -296,6 +296,14 @@ sent once with the brief, never per turn; the brief's own cap stays about the co
   ends, or SVG with nothing drawable left, shows as a code block.
 - **Lazy**: `mdview.ts` imports `diagram.ts` dynamically on the first svg block; esbuild bundles it as a lazily initialised
   module, so a chat without diagrams never runs it, and its stylesheet is added to the shadow root on first use.
+- **Mermaid** (`ui/mermaid.ts`, #823): agents answer with ```` ```mermaid ```` anyway, so the common part is drawn: flowcharts
+  (layered layout: longest-path ranks with cycles reversed, a dummy per crossed rank and one per edge label, barycentre
+  ordering with subgraphs kept together, S-curves between ranks) and sequence diagrams (columns sized by their messages, blocks
+  as frames). The result is SVG text in palette names that goes through the same parse, sanitize, fit, card and export as an
+  agent's own; anything else is null and stays code. Not the mermaid library: 5.5 MB minified (1.6 MB gzipped, 2026-11-12,
+  12.3.0) against a 0.98 MB panel, measuring text with getBBox and handing back markup to parse; this is 22 kB, renders a
+  60-node chart in a few ms, and lives in the same lazy module. The guide says only that a plain flowchart or sequence may be
+  Mermaid.
 - Light and dark; follows Zotero's theme (`host.theme()`); keyboard accessible; works from 300 px to 700 px wide.
 - Appearance (`ui/appearance.ts` validates and applies it, `ui/styles-look.ts` draws it): glass (default on), accent (default
   Mono), background (default Plain), text size, density. `Look` writes data attributes and CSS variables on `.zmc`, so a change

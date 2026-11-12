@@ -567,6 +567,7 @@ const en = {
   // diagram
   "diagram.label": "Diagram",
   "diagram.source": "Show the SVG source",
+  "diagram.sourceMermaid": "Show the Mermaid source",
   "diagram.copy": "Copy as an image",
   "diagram.saveAs": "Save as {format}",
   "diagram.note": "Add to a note",

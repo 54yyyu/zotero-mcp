@@ -567,6 +567,7 @@ const zhHans: Catalog = {
   // diagram
   "diagram.label": "示意图",
   "diagram.source": "显示 SVG 源代码",
+  "diagram.sourceMermaid": "显示 Mermaid 源代码",
   "diagram.copy": "复制为图片",
   "diagram.saveAs": "保存为 {format}",
   "diagram.note": "添加到笔记",

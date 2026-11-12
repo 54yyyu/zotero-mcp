@@ -1297,6 +1297,32 @@ await test("a diagram streams as a quiet placeholder, never half drawn", async (
   assert.equal(await p.locator(".dg__fig svg").count(), 3);
 });
 
+await test("mermaid blocks render as figures (flowchart, sequence), stream as a placeholder, show their source; another type stays code", async (p) => {
+  await sim(p, () => { window.__zmc.sim.speed = 6; });
+  await send(p, "mermaid please");
+  await p.waitForSelector(".dg--pending", { timeout: 8000 });
+  await done(p);
+  assert.equal(await p.locator(".dg--pending").count(), 0);
+  assert.equal(await p.locator(".dg .dg__fig svg").count(), 2);
+  const texts = await p.locator(".dg__fig svg").evaluateAll((a) => a.map((s) => s.textContent));
+  assert.match(texts[0], /Research question[^]*Enough papers/);
+  assert.match(texts[1], /You[^]*Panel[^]*Agent/);
+  // colours are the theme's: nothing black, the styled node in the accent
+  const strokes = await p.evaluate(() => [...window.__zmc.shadow.querySelectorAll(".dg__fig svg rect")].map((r) => getComputedStyle(r).stroke));
+  assert.ok(strokes.length && strokes.every((c) => c !== "rgb(0, 0, 0)"), strokes.join(","));
+  // the pie chart is not drawn: it shows as a mermaid code block
+  assert.equal(await p.locator(".msg--assistant .code").count(), 1);
+  assert.match(await p.locator(".msg--assistant .code").innerText(), /pie title Sources/);
+  const src = p.locator(".dg").first().locator('button[aria-label="Show the Mermaid source"]');
+  await p.locator(".dg").first().hover();
+  await src.click();
+  assert.match(await p.locator(".dg").first().locator(".dg__src .code").innerText(), /flowchart TD[^]*Research question/);
+  await p.locator(".dg").first().locator('button[aria-label="Save as SVG"]').click();
+  await p.waitForFunction(() => window.__zmc.sim.saved.length === 1);
+  assert.match((await sim(p, () => window.__zmc.sim.saved))[0].head, /^<\?xml[^]*<svg /);
+  assert.deepEqual(p.errors, []);
+});
+
 await test("a hostile diagram is neutralised: no script runs, nothing external, only the drawing", async (p) => {
   await sim(p, (t) => { window.__zmc.sim.nextAnswer = "```svg\n" + t + "\n```"; }, HOSTILE);
   await send(p, "anything");

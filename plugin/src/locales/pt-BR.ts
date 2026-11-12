@@ -567,6 +567,7 @@ const ptBR: Catalog = {
   // diagram
   "diagram.label": "Diagrama",
   "diagram.source": "Mostrar o código SVG",
+  "diagram.sourceMermaid": "Mostrar o código Mermaid",
   "diagram.copy": "Copiar como imagem",
   "diagram.saveAs": "Salvar como {format}",
   "diagram.note": "Adicionar a uma nota",

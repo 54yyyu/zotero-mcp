@@ -567,6 +567,7 @@ const ja: Catalog = {
   // diagram
   "diagram.label": "図",
   "diagram.source": "SVG ソースを表示",
+  "diagram.sourceMermaid": "Mermaid ソースを表示",
   "diagram.copy": "画像としてコピー",
   "diagram.saveAs": "{format} として保存",
   "diagram.note": "メモに追加",

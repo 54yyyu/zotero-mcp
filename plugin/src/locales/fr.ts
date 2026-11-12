@@ -567,6 +567,7 @@ const fr: Catalog = {
   // diagram
   "diagram.label": "Schéma",
   "diagram.source": "Afficher la source SVG",
+  "diagram.sourceMermaid": "Afficher la source Mermaid",
   "diagram.copy": "Copier comme image",
   "diagram.saveAs": "Enregistrer en {format}",
   "diagram.note": "Ajouter à une note",

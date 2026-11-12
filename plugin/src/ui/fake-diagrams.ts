@@ -122,3 +122,48 @@ ${CAUSAL}
 \`\`\`
 
 The dashed node is not measured, which is why the instrument matters.`;
+
+/** Mermaid as agents write it (#823): a flowchart with a decision, a loop back and a subgraph, and a sequence diagram. */
+export const MERMAID_FLOW = `flowchart TD
+    Q[Research question] --> S{Enough papers<br/>in the library?}
+    S -- yes --> R[Read the PDFs]
+    S -- no --> F[Find and add papers]
+    F --> S
+    subgraph Write up
+      R --> N[Take notes]
+      N --> A([Cited answer])
+    end
+    style A fill:#e7f0ff,stroke:#3b5bdb`;
+
+export const MERMAID_SEQ = `sequenceDiagram
+    participant U as You
+    participant P as Panel
+    participant A as Agent
+    U->>P: Ask about the open paper
+    P->>A: Question + page context
+    loop until it can cite
+      A->>A: zotero-cli search / read
+    end
+    A-->>P: Answer with page links
+    Note over P,A: links open the PDF at the page
+    P-->>U: Rendered answer`;
+
+export const MERMAID_ANSWER = `Here is the flow as a chart:
+
+\`\`\`mermaid
+${MERMAID_FLOW}
+\`\`\`
+
+And who talks to whom:
+
+\`\`\`mermaid
+${MERMAID_SEQ}
+\`\`\`
+
+A diagram type the panel does not draw stays code:
+
+\`\`\`mermaid
+pie title Sources
+    "Library" : 42
+    "Web" : 8
+\`\`\``;

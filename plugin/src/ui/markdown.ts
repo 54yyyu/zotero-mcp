@@ -578,8 +578,12 @@ export function blockNodes(t: Token, depth = 0): MdNode[] {
       const c = t as Tokens.Code;
       const lang = (c.lang ?? "").trim().split(/\s+/)[0] ?? "";
       if (lang.toLowerCase() === "math") return [el("math", [c.text.trim()], { display: "1" })];
-      // A ```svg block is a diagram (diagram.ts). `open`: its closing fence has not arrived yet (still streaming).
-      if (lang.toLowerCase() === "svg") return [el("diagram", [c.text], /\n {0,3}(?:`{3,}|~{3,})[ \t]*\s*$/.test(c.raw) ? undefined : { open: "1" })];
+      // A ```svg or ```mermaid block is a diagram (diagram.ts). `open`: its closing fence has not arrived yet (still streaming).
+      const kind = lang.toLowerCase();
+      if (kind === "svg" || kind === "mermaid") {
+        const closed = /\n {0,3}(?:`{3,}|~{3,})[ \t]*\s*$/.test(c.raw);
+        return [el("diagram", [c.text], closed && kind === "svg" ? undefined : { ...(closed ? {} : { open: "1" }), ...(kind === "mermaid" ? { lang: "mermaid" } : {}) })];
+      }
       return [el("codeblock", [c.text], /^[\w+#.-]{1,24}$/.test(lang) ? { lang } : {})];
     }
     case "mathBlock": return [el("math", [(t as unknown as MathToken).tex.trim()], { display: "1" })];
