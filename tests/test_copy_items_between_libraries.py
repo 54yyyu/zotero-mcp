@@ -823,6 +823,71 @@ class TestCopiedFileGoesToWebDAVFirst:
         assert calls == [("TARGET", "paper.pdf", b"%PDF-1.4 fake", "KEY0000", "application/pdf")]
 
 
+class TestCopyWithWebDAVConfigured:
+    """The real _webdav_first_attach, with WebDAV set: the guard and the cleanup."""
+
+    @pytest.fixture(autouse=True)
+    def configured(self, monkeypatch):
+        monkeypatch.setenv("ZOTERO_WEBDAV_URL", "https://dav.example.com/zotero/")
+        monkeypatch.setenv("ZOTERO_WEBDAV_USERNAME", "alice")
+        monkeypatch.setenv("ZOTERO_WEBDAV_PASSWORD", "s3cret-pass")
+
+        def fake_download(key, tmp, filename, **kwargs):
+            path = Path(tmp) / filename
+            path.write_bytes(b"%PDF-1.4 fake")
+            return _client.AttachmentDownloadResult(path=path, source="web", errors=[])
+
+        monkeypatch.setattr(_client, "download_attachment_file", fake_download)
+
+    @staticmethod
+    def _child():
+        return {"key": "ATT_FILE", "data": {
+            "itemType": "attachment", "linkMode": "imported_file", "title": "paper.pdf",
+            "filename": "paper.pdf", "contentType": "application/pdf"}}
+
+    def test_a_group_target_never_goes_to_the_personal_webdav(self, monkeypatch, dummy_ctx):
+        """WebDAV settings belong to the personal library (#591)."""
+        monkeypatch.setattr(
+            "zotero_mcp.webdav.upload_attachment_to_webdav",
+            lambda **k: pytest.fail("a group's file went to the personal WebDAV"),
+        )
+        stored = []
+        monkeypatch.setattr(
+            _helpers, "_attach_and_verify",
+            lambda zot, name, *a, **k: stored.append(name) or (True, "", "NEWATT01"),
+        )
+        group = FakeZotero()
+        group.library_type = "groups"
+
+        assert _copy_attachment(self._child(), group, "KEY0000", [], (None, None), dummy_ctx) == (
+            "File: paper.pdf", None
+        )
+        assert stored == ["paper.pdf"]
+        assert group.created == []  # no WebDAV shell
+
+    def test_a_failed_put_deletes_the_shell_and_is_reported(self, monkeypatch, dummy_ctx):
+        def put_fails(**kwargs):
+            raise RuntimeError("507 Insufficient Storage")
+
+        monkeypatch.setattr("zotero_mcp.webdav.upload_attachment_to_webdav", put_fails)
+        monkeypatch.setattr(
+            _helpers, "_attach_and_verify", lambda *a, **k: pytest.fail("fell back to Zotero Storage")
+        )
+        deleted = []
+        personal = FakeZotero()
+        personal.library_type = "users"
+        personal.delete_item = lambda payload, **k: deleted.append(payload["key"])
+
+        name, reason = _copy_attachment(
+            self._child(), personal, "KEY0000", [], (None, None), dummy_ctx
+        )
+
+        assert name == "File: paper.pdf"
+        assert "507 Insufficient Storage" in reason and "KEY0000 was deleted" in reason
+        assert deleted == ["KEY0000"]
+        assert "s3cret-pass" not in reason
+
+
 # ---------------------------------------------------------------------------
 # 4b. Failures partway through a batch
 # ---------------------------------------------------------------------------
