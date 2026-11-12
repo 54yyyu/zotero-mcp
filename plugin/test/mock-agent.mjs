@@ -7,6 +7,8 @@
 //   MOCK_VARIANT=claude (default)  models are a config option; session/set_model -> -32601
 //   MOCK_VARIANT=codex             `models` block + session/set_model; set_config_option -> -32601
 //   MOCK_VARIANT=pi                config options only, `modes` are thinking levels, no permissions
+//   MOCK_VARIANT=opencode          `opencode acp` 1.19.5: config options only (model, mode build/plan, effort only for a model
+//                                  with variants), set_model / set_config_option / set_mode all work, no /compact advertised
 //   MOCK_CODEX_HIDE_DEFAULT=1      codex: the current model (gpt-6-sol) is missing from availableModels, as on the real bridge
 //   MOCK_INIT=hang                 never answer initialize (bad-handshake timeout)
 //   MOCK_INIT=badversion           answer initialize with protocolVersion 99
@@ -22,7 +24,7 @@ const BANNER = "STARTUP BANNER (must not be shown)";
 
 if (process.env.MOCK_DUMP) {
   const grandchild = process.env.MOCK_GRANDCHILD ? spawnChild("sleep", ["300"], { stdio: "ignore" }).pid : undefined;
-  const keys = Object.keys(process.env).filter((k) => k.startsWith("CLAUDE") || ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"].includes(k) || ["PATH", "MOCK_VARIANT", "CODEX_CONFIG", "PI_ACP_PI_COMMAND", "MAX_THINKING_TOKENS", "ANTHROPIC_MODEL"].includes(k));
+  const keys = Object.keys(process.env).filter((k) => k.startsWith("CLAUDE") || ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY"].includes(k) || ["PATH", "MOCK_VARIANT", "CODEX_CONFIG", "PI_ACP_PI_COMMAND", "MAX_THINKING_TOKENS", "ANTHROPIC_MODEL", "OPENCODE_CONFIG_CONTENT", "OPENCODE_DISABLE_CLAUDE_CODE"].includes(k));
   writeFileSync(process.env.MOCK_DUMP, JSON.stringify({ pid: process.pid, grandchild, argv: process.argv.slice(2), cwd: process.cwd(), env: Object.fromEntries(keys.map((k) => [k, process.env[k]])) }));
 }
 
@@ -49,6 +51,16 @@ const BASE_NAMES = { "gpt-6-sol": "6 Sol", "gpt-6-luna": "6 Luna", "gpt-5.5": "5
 const CODEX_MODELS = Object.entries(LEVELS).flatMap(([base, levels]) =>
   levels.map((l) => ({ modelId: `${base}[${l}]`, name: `${BASE_NAMES[base]} (${l})`, description: `Model ${base}. Reasoning ${l}` })),
 );
+const OC_MODELS = [
+  { value: "opencode/big-pickle", name: "OpenCode/Big Pickle" },
+  { value: "opencode/deepseek-v4.1-flash-free", name: "OpenCode/DeepSeek V4.1 Flash Free" },
+];
+const OC_MODES = [
+  { value: "build", name: "build", description: "The default agent. Executes tools based on configured permissions." },
+  { value: "plan", name: "plan", description: "Plan mode. Disallows all edit tools." },
+];
+/** OpenCode's model variants: only some models have them, and "default" is always offered with them. */
+const OC_VARIANTS = { "opencode/deepseek-v4.1-flash-free": ["low", "medium", "high"] };
 const EFFORT_OPTS = ["default", "low", "medium", "high", "xhigh", "max"].map((v) => ({ value: v, name: v }));
 
 /** sessionId -> state */
@@ -68,6 +80,14 @@ function update(sessionId, u) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function configOptions(s) {
+  if (variant === "opencode") {
+    const variants = OC_VARIANTS[s.model];
+    return [
+      { id: "model", name: "Model", category: "model", type: "select", currentValue: s.model, options: OC_MODELS },
+      { id: "mode", name: "Session Mode", category: "mode", type: "select", currentValue: s.mode, options: OC_MODES },
+      ...(variants ? [{ id: "effort", name: "Effort", description: "Available effort levels for this model", category: "thought_level", type: "select", currentValue: s.effort, options: [...variants, "default"].map((v) => ({ value: v, name: v })) }] : []),
+    ];
+  }
   if (variant === "pi") {
     return [
       { id: "model", name: "Model", category: "model", type: "select", currentValue: s.model, options: MODEL_OPTS.slice(1) },
@@ -97,9 +117,9 @@ function sessionResult(id, s) {
   return result;
 }
 
-const initialModel = () => (variant === "codex" ? "gpt-6-sol[medium]" : (variant === "claude" && process.env.ANTHROPIC_MODEL) || "opus"); // claude-agent-acp starts on ANTHROPIC_MODEL
+const initialModel = () => (variant === "opencode" ? "opencode/big-pickle" : variant === "codex" ? "gpt-6-sol[medium]" : (variant === "claude" && process.env.ANTHROPIC_MODEL) || "opus"); // claude-agent-acp starts on ANTHROPIC_MODEL
 const initialEffort = () => (variant === "pi" ? "high" : "medium");
-const initialMode = () => (variant === "codex" ? "agent" : "auto");
+const initialMode = () => (variant === "codex" ? "agent" : variant === "opencode" ? "build" : "auto");
 
 async function handle(msg) {
   const { id, method, params } = msg;
@@ -127,7 +147,7 @@ async function handle(msg) {
       send({ method: "_auth/status_update", params: { authStatus: { kind: "account", label: "Mock Max" } } });
       // The real bridges announce commands (and pi a banner) right after session/new: no turn is running.
       reply(sessionResult(sid, s));
-      update(sid, { sessionUpdate: "available_commands_update", availableCommands: [{ name: "compact", description: "Clear conversation history but keep a summary in context", input: null }] });
+      update(sid, { sessionUpdate: "available_commands_update", availableCommands: variant === "opencode" ? [{ name: "init", description: "guided AGENTS.md setup" }, { name: "review", description: "review changes [commit|branch|pr], defaults to uncommitted" }] : [{ name: "compact", description: "Clear conversation history but keep a summary in context", input: null }] });
       update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: BANNER } });
       return;
     }
@@ -151,6 +171,13 @@ async function handle(msg) {
     }
 
     case "session/set_model": {
+      if (variant === "opencode") {
+        const s = sessions.get(params.sessionId);
+        if (!OC_MODELS.some((o) => o.value === params.modelId)) return fail(-32602, "Invalid params: unknown model " + params.modelId);
+        s.model = params.modelId;
+        update(params.sessionId, { sessionUpdate: "config_option_update", configOptions: configOptions(s) });
+        return reply({});
+      }
       if (variant !== "codex") return fail(-32601, `"Method not found": ${method}`, { method });
       const s = sessions.get(params.sessionId);
       if (!CODEX_MODELS.some((m) => m.modelId === params.modelId)) return fail(-32602, "Invalid params: unknown model " + params.modelId);
@@ -161,6 +188,13 @@ async function handle(msg) {
     case "session/set_config_option": {
       if (variant === "codex") return fail(-32601, `"Method not found": ${method}`, { method });
       const s = sessions.get(params.sessionId);
+      if (variant === "opencode") {
+        if (params.configId === "model" && OC_MODELS.some((o) => o.value === params.value)) { s.model = params.value; s.effort = OC_VARIANTS[s.model]?.[0]; }
+        else if (params.configId === "mode" && OC_MODES.some((o) => o.value === params.value)) s.mode = params.value;
+        else if (params.configId === "effort" && OC_VARIANTS[s.model]?.includes(params.value)) s.effort = params.value;
+        else return fail(-32602, `Invalid params: ${params.configId} ${params.value}`);
+        return reply({ configOptions: configOptions(s) });
+      }
       if (params.configId === "model") {
         // like the real bridge: a full id lands on the matching alias option
         s.model = params.value === "claude-sonnet-5-5" ? "sonnet" : params.value;

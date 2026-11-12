@@ -168,7 +168,7 @@ Use the MCP server when your client speaks MCP but has no shell (Claude Desktop,
 
 ## Zotero Agent: chat inside Zotero
 
-A plugin that adds a chat panel to Zotero itself, driven by your own Claude Code, Codex or pi. It knows which item and page you have open and works your library through `zotero-cli`. Answers cite papers with real `zotero://` links, so a click opens the PDF at that page. It ships in the wheel: run `zotero-cli plugin` for the file and the install steps, or paste the one-paragraph prompt in the docs to your agent and let it do the setup. Details: [Zotero Agent plugin](https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md).
+A plugin that adds a chat panel to Zotero itself, driven by your own Claude Code, Codex, pi or OpenCode. It knows which item and page you have open and works your library through `zotero-cli`. Answers cite papers with real `zotero://` links, so a click opens the PDF at that page. It ships in the wheel: run `zotero-cli plugin` for the file and the install steps, or paste the one-paragraph prompt in the docs to your agent and let it do the setup. Details: [Zotero Agent plugin](https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md).
 
 <p align="center">
   <picture>

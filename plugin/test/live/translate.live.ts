@@ -53,8 +53,8 @@ for (const backend of backends) {
       const cwd = mkdtempSync(join(tmpdir(), "zmc-live-translate-"));
       dirs.push(cwd);
       // pi's models have no descriptions, so the translator takes its chat model: the one that works here (ZMC_LIVE_PI_MODEL).
-      const s: PanelSettings = { ...defaultSettings(), backend, auth: { "claude-code": "subscription", codex: "subscription", pi: "api-key" },
-        model: { "claude-code": "", codex: "", pi: process.env["ZMC_LIVE_PI_MODEL"] ?? "qwen38/qwen38-27b" } };
+      const s: PanelSettings = { ...defaultSettings(), backend, auth: { "claude-code": "subscription", codex: "subscription", pi: "api-key", opencode: "api-key" },
+        model: { "claude-code": "", codex: "", pi: process.env["ZMC_LIVE_PI_MODEL"] ?? "qwen38/qwen38-27b", opencode: process.env["ZMC_LIVE_OPENCODE_MODEL"] ?? "" } };
       const t = createTranslator({ runtime, settings: () => s, cwd: async () => cwd, env: async () => ({}) });
       const results: unknown[] = [];
       try {

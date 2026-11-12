@@ -553,7 +553,7 @@ await test("agent switch: an empty chat switches at once; a chat with messages a
   await p.locator(".pick--model").click();
   await p.waitForSelector(".mdd .menu__item");
   assert.deepEqual(await p.locator(".mdd__agent").evaluateAll((els) => els.map((e) => [e.textContent, e.dataset.state, e.getAttribute("aria-checked")])),
-    [["Claude Code", "ok", "true"], ["Codex", "bad", "false"], ["pi", "ok", "false"], ["Custom", "bad", "false"]], "every agent, with the status detect() gave (Custom unconfigured, #813)");
+    [["Claude Code", "ok", "true"], ["Codex", "bad", "false"], ["pi", "ok", "false"], ["OpenCode", "ok", "false"], ["Custom", "bad", "false"]], "every agent, with the status detect() gave (Custom unconfigured, #813)");
   // an agent that is not ready says why and stays unchosen
   await agentTab(p, "Codex").click();
   assert.match(await p.locator(".mdd__note").innerText(), /Codex isn't ready: codex is not installed/);
@@ -806,7 +806,7 @@ await test("settings: Translate: the switch, the target language, and the model 
   assert.deepEqual(await model.locator("option").allInnerTexts(), ["Fastest available (recommended)", "Claude Opus", "Claude Sonnet", "Claude Haiku", "Claude Opus 4.1", "Claude Sonnet 4", "Claude Haiku 3.5"]);
   assert.equal(await model.inputValue(), "", "Fastest available is the default");
   await model.selectOption("haiku");
-  assert.deepEqual((await settings(p)).translateModel, { "claude-code": "haiku", codex: "", pi: "" }, "saved per agent");
+  assert.deepEqual((await settings(p)).translateModel, { "claude-code": "haiku", codex: "", pi: "", opencode: "" }, "saved per agent");
   assert.equal((await settings(p)).model["claude-code"], "", "the chat's model is another setting");
 
   // Another agent: its own models, and its own (default) choice.
@@ -981,7 +981,7 @@ await test("history: each chat shows its folder; Copy terminal command copies th
 await test("welcome: first run shows it instead of the chat; the checks settle one by one; a failing check is fixed in place; Start chatting hands over", async (p) => {
   assert.equal(await p.locator(".cin").isVisible(), false, "the chat is not showing yet");
   assert.match(await p.locator(".wel h2").innerText(), /Chat with your library/);
-  assert.equal(await p.locator(".wcard").count(), 4); // the three built-ins and the user-configured agent (#813)
+  assert.equal(await p.locator(".wcard").count(), 5); // the four built-ins and the user-configured agent (#813)
   assert.equal(await p.locator(".wcard[aria-checked=true]").innerText().then((t) => t.split("\n")[0]), "Claude Code");
   await p.waitForSelector(".wrow--pending");
   await p.waitForSelector(".wrow--bad", { timeout: 4000 });

@@ -297,6 +297,7 @@ export class FakeHost implements PanelHost {
         { id: "claude-code", label: "Claude Code", available: true, account: "Claude Max" },
         { id: "codex", label: "Codex", available: false, reason: "codex is not installed" },
         { id: "pi", label: "pi", available: true },
+        { id: "opencode", label: "OpenCode", available: true },
       ],
       setContext: (k) => { this.ctx = k === "none" ? [] : k === "selection" ? [ITEM_CHIP, SELECTION_CHIP] : k === "area" ? [{ ...ITEM_CHIP, id: "reader:LUND2021", label: "Lundberg 2021 - The G…", ref: { libraryID: 1, itemKey: "LUND2021" } }, AREA_CHIP] : [ITEM_CHIP]; for (const cb of [...this.ctxCbs]) cb(); },
       setTheme: (t) => { this._theme = t; for (const cb of [...this.themeCbs]) cb(); },
@@ -448,7 +449,7 @@ export class FakeHost implements PanelHost {
   /** What each backend's own CLI takes to continue a session; the folder is quoted for the shell. */
   resumeCommand(s: SavedSession) {
     if (s.backend === "custom") return null;
-    const cmd = { "claude-code": `claude --resume ${s.agentSessionId}`, codex: `codex resume ${s.agentSessionId}`, pi: `pi --session ${s.agentSessionId}` }[s.backend];
+    const cmd = { "claude-code": `claude --resume ${s.agentSessionId}`, codex: `codex resume ${s.agentSessionId}`, pi: `pi --session ${s.agentSessionId}`, opencode: `opencode --session ${s.agentSessionId}` }[s.backend];
     return s.agentSessionId ? `cd '${s.cwd.replace(/'/g, "'\\''")}' && ${cmd}` : null;
   }
   async prepareSession(cwd?: string) { this.sim.preparedCwd.push(cwd); return { cwd: cwd ?? this.folder(), brief: "You are in a Zotero side panel.", env: {} }; }

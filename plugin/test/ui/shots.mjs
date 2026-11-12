@@ -61,6 +61,7 @@ const STATES = {
   "settings-error": { run: async (p) => { await openSettings(p); await pickBackend(p, "Codex"); await settle(p, 400); } },
   "settings-codex": { run: async (p) => { await p.evaluate(() => { window.__zmc.sim.statuses[1].available = true; }); await openSettings(p); await pickBackend(p, "Codex"); await settle(p, 400); } },
   "settings-pi": { run: async (p) => { await openSettings(p); await pickBackend(p, "pi"); await settle(p, 400); } },
+  "settings-opencode": { run: async (p) => { await openSettings(p); await pickBackend(p, "OpenCode"); await settle(p, 400); } },
   "settings-apikey": { run: async (p) => { await openSettings(p); await p.getByRole("radio", { name: "API key" }).click(); await settle(p, 300); await toSection(p, "Sign-in"); } },
   "settings-context": { run: async (p) => { await openSettings(p); await toSection(p, "Context"); } },
   "settings-chat": { run: async (p) => { await openSettings(p); await toSection(p, "Chat"); } },

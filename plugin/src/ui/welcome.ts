@@ -13,6 +13,7 @@ const ABOUT: Record<BackendId, { sub: Key; signIn: Key }> = {
   "claude-code": { sub: "welcome.claude.sub", signIn: "welcome.claude.signIn" },
   codex: { sub: "welcome.codex.sub", signIn: "welcome.codex.signIn" },
   pi: { sub: "welcome.pi.sub", signIn: "welcome.pi.signIn" },
+  opencode: { sub: "welcome.opencode.sub", signIn: "welcome.opencode.signIn" },
 };
 
 /** A tick that draws itself (the stroke grows from nothing). */

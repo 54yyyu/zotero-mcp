@@ -8,7 +8,11 @@ import type { Key } from "../i18n.ts";
 const MODE_HELP: Record<string, Key> = {
   default: "mode.default", acceptEdits: "mode.acceptEdits", plan: "mode.plan", auto: "mode.auto", bypassPermissions: "mode.bypassPermissions",
   "read-only": "mode.readOnly", "workspace-write": "mode.workspaceWrite", agent: "mode.agent", "agent-full-access": "mode.agentFullAccess",
+  build: "mode.build",
 };
+/** Backends with no subscription or API key of ours: they run on the providers set up in the agent itself. */
+export const ownProviders = (b: BackendId): boolean => b === "pi" || b === "opencode";
+
 export const modeHelp = (m: ModeOption): string => (MODE_HELP[m.id] ? t(MODE_HELP[m.id]!) : m.description ?? "");
 
 export type PerBackend = "model" | "mode" | "effort";

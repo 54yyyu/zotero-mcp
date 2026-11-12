@@ -5,6 +5,7 @@ import { clip, errMessage, nextId } from "./dom.ts";
 import { summary } from "./context.ts";
 import { chipHash, planContext } from "./economy.ts";
 import { Persister } from "./persist.ts";
+import { ownProviders } from "./settings-model.ts";
 import { applyEvent, emptyTranscript, promptFor, replay } from "./transcript.ts";
 import type { TranscriptState } from "./transcript.ts";
 import { t } from "../i18n.ts";
@@ -92,7 +93,7 @@ export class Chat {
         ...(set.model[set.backend] ? { model: set.model[set.backend] } : {}),
         ...(set.mode[set.backend] ? { mode: set.mode[set.backend] } : {}),
         ...(set.effort[set.backend] ? { effort: set.effort[set.backend] } : {}),
-        ...(set.backend !== "pi" ? { auth: set.auth[set.backend] } : {}),
+        ...(!ownProviders(set.backend) ? { auth: set.auth[set.backend] } : {}),
         ...(this.resume?.agentSessionId ? { resumeSessionId: this.resume.agentSessionId } : {}),
       });
       if (gen !== this.gen) { void sess.close().catch(() => {}); throw new Error("cancelled"); }

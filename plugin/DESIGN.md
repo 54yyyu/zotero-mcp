@@ -1,7 +1,7 @@
 # Zotero Agent plugin: design
 
 A side panel inside Zotero (library view and reader tabs) that chats with an agent. The agent is a normal
-ACP agent (Claude Code, Codex, pi) run on the user's own subscription, or on an API key. It uses `zotero-cli`
+ACP agent (Claude Code, Codex, pi, OpenCode) run on the user's own subscription, or on an API key. It uses `zotero-cli`
 and its skill for everything Zotero. The panel adds three things: the agent's **context** (what is open, which
 page, what is selected), a **good chat UI**, and **one-click setup**. Nothing in the agent is restricted: web,
 paper search outside the library, shell, files: it does what it would do in a terminal.
@@ -30,7 +30,8 @@ Zotero main window ── #tabs-deck lives in an hbox below the tab bar; we appe
 - A Dock-launched app has a short PATH. Resolve `node`, `npx`, `claude`, `codex`, `pi`, `uv`, `zotero-cli` through the
   login shell (`$SHELL -lc`), then pass that PATH to every child.
 - ACP bridge for Claude: npm `@agentclientprotocol/claude-agent-acp` (0.85.1 tested; `@zed-industries/claude-code-acp`
-  is deprecated). Codex: `@agentclientprotocol/codex-acp`. pi: `pi-acp`. Verify with `npm view` before pinning.
+  is deprecated). Codex: `@agentclientprotocol/codex-acp`. pi: `pi-acp`. Verify with `npm view` before pinning. OpenCode
+  needs no bridge: `opencode acp` is the agent (1.19.5 measured; backends.ts has the shape), so it needs no Node either.
 - `initialize` (protocolVersion 1) then `session/new {cwd, mcpServers: []}` works, and the bridge reports the signed-in
   account (`_auth/status_update`: "Claude Max") so subscription mode needs no key. `session/new` returns `modes`
   (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`) and `configOptions`.
@@ -481,7 +482,9 @@ languages for the translator, not the interface.
   unavailable") is a notice, never text in front of the translation. Codex: `CODEX_CONFIG` read-only
   sandbox, approval never, web search off (its rollout file is still kept; codex-acp has no ephemeral thread). pi: pi-acp's
   `PI_ACP_PI_COMMAND` is a script running the user's pi with `--no-tools --no-extensions --no-skills --no-prompt-templates
-  --no-context-files --no-session`. Every permission request is refused anyway. The selected text is untrusted PDF content;
+  --no-context-files --no-session`. OpenCode: `OPENCODE_CONFIG_CONTENT` denies every tool but read/glob/grep and anything
+  outside its folder, `OPENCODE_DISABLE_CLAUDE_CODE=1` (denying all tools makes Zen's free models refuse the request; live
+  test passed on Big Pickle 2026-11-12). Every permission request is refused anyway. The selected text is untrusted PDF content;
   the prompt says to translate instructions, never follow them.
 - **Prompt** (`TRANSLATOR_PROMPT`, the whole system prompt; Codex and pi get it on the first prompt): measured live on Claude
   Haiku, Codex 6 Luna (low) and pi qwen38-27b (off), `test/live/translate.live.ts`: a sentence, a word, a hyphen-broken

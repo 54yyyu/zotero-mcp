@@ -3,7 +3,7 @@
 import type { AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, CustomAgentConfig, Spawner, StartOpts } from "../types.ts";
 import { readCustomAgent } from "../custom-agent.ts";
 import { AcpClient } from "./acp.ts";
-import { BACKENDS, BACKEND_IDS, backendOf, findClaudeExecutable, findCli, probeLogin, type BackendSpec } from "./backends.ts";
+import { BACKENDS, BACKEND_IDS, backendOf, findClaudeExecutable, findCli, isNative, probeLogin, type BackendSpec } from "./backends.ts";
 import { ensureBridge, locateBridge, locateBundledCodex, systemCodexForChats } from "./bridges.ts";
 import { bridgeEnv, dirnameOf, findBinary, nodeEval, stripApiKeys, withPathFirst } from "./env.ts";
 import { AcpAgentSession } from "./session.ts";
@@ -37,11 +37,18 @@ export const CATALOG_CLEANUP = 'real=$(cd "$1" && pwd -P); d="$HOME/.claude/proj
  * from the start (the bridge then skips its own setModel; a switch after session/new rebuilds Claude Code, measured 2.25 s).
  * Codex: config overrides (codex-acp hands CODEX_CONFIG to thread/start). pi: pi-acp starts PI_ACP_PI_COMMAND, here a
  * script in the session's folder that runs the user's pi without tools, extensions, skills, templates or context files, and
- * keeps no session. (codex-acp cannot make a thread ephemeral: Codex keeps its usual session file.)
+ * keeps no session. OpenCode: a config (OPENCODE_CONFIG_CONTENT, laid over the user's) that denies every tool but read, glob
+ * and grep, and anything outside the session's own empty folder; no Claude Code files (CLAUDE.md, .claude/skills). Denying
+ * every tool would be tidier, but OpenCode Zen's free models then refuse the request ("Free usage limit reached", measured on
+ * 1.19.5). (codex-acp cannot make a thread ephemeral: Codex keeps its usual session file; OpenCode keeps its too.)
  */
+export const OPENCODE_LOCKED = JSON.stringify({ permission: Object.fromEntries(
+  ["edit", "bash", "webfetch", "websearch", "task", "skill", "todowrite", "question", "external_directory"].map((k) => [k, "deny"])) });
+
 async function lockedEnv(spawner: Spawner, env: Record<string, string>, spec: BackendSpec, { cwd, model }: StartOpts): Promise<Record<string, string>> {
   if (spec.id === "claude-code") return { MAX_THINKING_TOKENS: "0", ...(model ? { ANTHROPIC_MODEL: model } : {}) };
   if (spec.id === "codex") return { CODEX_CONFIG: JSON.stringify({ sandbox_mode: "read-only", approval_policy: "never", web_search: "disabled" }) };
+  if (spec.id === "opencode") return { OPENCODE_CONFIG_CONTENT: OPENCODE_LOCKED, OPENCODE_DISABLE_CLAUDE_CODE: "1" };
   if (spawner.windows) throw new Error(t("agent.piWindows"));
   const pi = await findCli(spawner, env, spec);
   if (!pi) throw new Error(t(spec.cli!.hint));
@@ -123,6 +130,10 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
         BACKEND_IDS.map(async (id): Promise<BackendStatus> => {
           const spec = BACKENDS[id];
           const base = { id, label: spec.label };
+          if (isNative(spec)) {
+            // Nothing to install, and no login that says more than "can chat" (probeLogin): found is ready.
+            return (await findCli(spawner, env, spec)) ? { ...base, available: true } : { ...base, available: false, reason: t(spec.cli.hint) };
+          }
           if (!node) return { ...base, available: false, reason: nodeMissing() };
           const cli = await findCli(spawner, env, spec);
           if (spec.cli && !cli) return { ...base, available: false, reason: t(spec.cli.hint) };
@@ -174,6 +185,14 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
       const login = await spawner.baseEnv();
       const keyed = start.auth === "subscription" ? stripApiKeys(login, spec.apiKeyVars) : login;
       const env = (start.path ?? []).reduceRight((e, dir) => withPathFirst(e, dir), keyed);
+      const timeout = opts.initTimeoutMs !== undefined ? { initTimeoutMs: opts.initTimeoutMs } : {};
+      if (isNative(spec)) {
+        const cli = await findCli(spawner, env, spec);
+        if (!cli) throw new Error(t(spec.cli.hint));
+        const extra = { ...start.env, ...(start.locked ? await lockedEnv(spawner, env, spec, start) : {}) };
+        const client = await AcpClient.spawn({ spawner, command: cli, args: spec.acpArgs, cwd: start.cwd, env: bridgeEnv(env, { extra }), ...timeout });
+        return AcpAgentSession.open(client, spec, start);
+      }
       const node = await resolveNode(env);
       if (!node) throw new Error(nodeMissing());
       const [bridge, claude] = await Promise.all([
@@ -195,7 +214,7 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
         args: [bridge.entry],
         cwd: start.cwd,
         env: childEnv,
-        ...(opts.initTimeoutMs !== undefined ? { initTimeoutMs: opts.initTimeoutMs } : {}),
+        ...timeout,
       });
       return AcpAgentSession.open(client, spec, start);
     },

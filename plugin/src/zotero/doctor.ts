@@ -1,6 +1,6 @@
 // "Is everything the chat needs in place?" Each check says what is wrong and, where we can, fixes it.
 import type { AgentRuntime, DoctorCheck, PanelSettings, Spawner } from "../types.ts";
-import { findBinary } from "../agent/index.ts";
+import { BACKENDS, findBinary, isNative } from "../agent/index.ts";
 import { t } from "../i18n.ts";
 
 const port = () => Number(Zotero.Prefs.get("httpServer.port")) || 23119;
@@ -117,14 +117,13 @@ export function createDoctor(deps: { win: any; spawner: Spawner; runtime: AgentR
       checks.push({ id: "cli", ok: false, label: t("doctor.cliMissing"), detail: t("doctor.cliMissingDetail"), fix: { label: t("doctor.installCli"), run: installCli(spawner) } });
     }
 
-    // 3. node: the bridges are Node programs
+    // 3. node: the bridges are Node programs (OpenCode is its own ACP agent: without Node it just goes unmentioned)
+    const chosen = deps.settings().backend;
     const node = await findBinary(spawner, env, "node");
-    checks.push(node
-      ? { id: "node", ok: true, label: t("doctor.nodeOk"), detail: node }
-      : { id: "node", ok: false, label: t("doctor.nodeMissing"), detail: t("doctor.nodeMissingDetail") });
+    if (node) checks.push({ id: "node", ok: true, label: t("doctor.nodeOk"), detail: node });
+    else if (chosen === "custom" || !isNative(BACKENDS[chosen])) checks.push({ id: "node", ok: false, label: t("doctor.nodeMissing"), detail: t("doctor.nodeMissingDetail") });
 
     // 4. the chosen agent
-    const chosen = deps.settings().backend;
     const status = (await runtime.detect()).find((s) => s.id === chosen);
     checks.push(status?.available
       ? { id: "backend", ok: true, label: t("pick.ready", { agent: status.label }), ...(status.account ? { detail: status.account } : {}) }

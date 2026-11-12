@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - unreleased
+
+### Added
+
+- **OpenCode is a built-in agent in the Zotero Agent panel** (#824). Choose it in the welcome or in Settings > Agent: the panel runs `opencode acp` directly, with no npm bridge and no Node.js needed, and finds the `opencode` command on your login PATH (on Windows through npm's `opencode.cmd`, run as the `opencode.exe` it wraps). Models are the ones OpenCode offers, OpenCode Zen's free ones when no provider is set up, with effort levels for a model that has them; the modes are OpenCode's **build** and **plan**. Chats continue after a restart, the history list gives `opencode --session <id>` to continue in a terminal, and Translate works, with only OpenCode's read and search tools in a folder of its own. Measured against OpenCode 1.19.5 without an account; paid providers' model lists and Windows were not tried. Thanks @HelloNVIC for the request.
+
 ## [0.17.0] - 2026-11-10
 
 ### Added

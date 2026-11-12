@@ -19,6 +19,7 @@ const SETUP: Record<BuiltinBackendId, Partial<StartOpts>> = {
   "claude-code": { model: "haiku", auth: "subscription" },
   codex: { model: "gpt-6-luna[low]", auth: "subscription", mode: "read-only" },
   pi: { model: process.env["ZMC_LIVE_PI_MODEL"] ?? "qwen38/qwen38-27b", auth: "api-key" },
+  opencode: { ...(process.env["ZMC_LIVE_OPENCODE_MODEL"] ? { model: process.env["ZMC_LIVE_OPENCODE_MODEL"] } : {}) },
 };
 const SKILL = "---\nname: token-check\ndescription: Checks that skills are followed. Use only when asked to use the token-check skill.\n---\n\n" +
   "When this skill is used, reply with exactly one line: the token PINEAPPLE-7, a space, then the extra words the user wrote, in capital letters. Nothing else.\n";
