@@ -93,6 +93,10 @@ _UNSET: Any = object()
 def _count_items(count: int) -> str:
     return f"{count:,} item" if count == 1 else f"{count:,} items"
 
+
+def _count_attachments(count: int) -> str:
+    return f"{count:,} attachment" if count == 1 else f"{count:,} attachments"
+
 # How each provider spells "ready to import", for error text only. OpenAI
 # reports "completed", Gemini "succeeded"; both normalize to
 # batch_common.STATE_SUCCEEDED, which is what decision logic actually uses.
@@ -7000,23 +7004,32 @@ class ZoteroSemanticSearch:
         the same items, one with articles alone and chunking off, or one still
         unmigrated gets no note; an index with passages alone is told no article
         records are indexed yet.
+
+        Both counts are of files (#826): attachments with an article record,
+        and keys with passages. Bibliographic records have no text, so they
+        are in neither and cannot make the article level look larger. A
+        legacy record built with full text counts as its item's file.
         """
         if layout["unmigrated_passages"] or layout["passage_items"] is None:
             # No passage count could be read: give no counts rather than wrong ones.
             return None
-        items = {SEARCH_ARTICLES: layout["article_records"], SEARCH_PASSAGES: layout["passage_items"]}
+        items = {SEARCH_ARTICLES: layout["article_text_items"], SEARCH_PASSAGES: layout["passage_items"]}
+        legacy = bool(layout["legacy_records"] or layout["legacy_passages"])
         other = SEARCH_PASSAGES if level == SEARCH_ARTICLES else SEARCH_ARTICLES
         searched, elsewhere = items[level], items[other]
         if not searched:
             return None
 
-        note = f"Searched {level} ({_count_items(searched)} in the index)."
+        def counted(count: int) -> str:
+            return _count_items(count) if legacy else _count_attachments(count)
+
+        note = f"Searched {level} ({counted(searched)} in the index)."
         if elsewhere:
             # Said only when it could change what the agent does next: every
             # search would otherwise pay for a line that tells it nothing.
             if elsewhere <= searched:
                 return None
-            return f'{note} The {other[:-1]} level has {_count_items(elsewhere)}, so level="{other}" may find more.'
+            return f'{note} The {other[:-1]} level has {counted(elsewhere)}, so level="{other}" may find more.'
         if level == SEARCH_PASSAGES:
             return f"{note} No article records are indexed yet."
         return f"{note} No passages are indexed yet." if self._chunking_enabled else None

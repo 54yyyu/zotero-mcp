@@ -1476,9 +1476,10 @@ def main():
             print(f"Document count: {collection_info.get('count', 0)}")
             print(f"  Article-level records: {collection_info.get('article_records', 0)}")
             print(f"  Passage-level records: {collection_info.get('passage_records', 0)}")
-            for label, key in (("Items with article records", "article_items"), ("Items with passages", "passage_items")):
-                if key in collection_info:
-                    print(f"  {label}: {'unknown' if collection_info[key] is None else collection_info[key]}")
+            from zotero_mcp.chroma_client import legacy_status_note, level_status_rows
+
+            for label, value in level_status_rows(collection_info):
+                print(f"  {label}: {value}")
             print(f"Embedding model: {collection_info.get('embedding_model', 'Unknown')}")
             print(f"Database path: {collection_info.get('persist_directory', 'Unknown')}")
             if collection_info.get("migration"):
@@ -1487,6 +1488,11 @@ def main():
 
                 print("\nIndex migration:")
                 for line in status_note(collection_info["migration"], "zotero-mcp update-db", local_mode=is_local_mode()):
+                    print(f"  {line}")
+
+            if legacy_lines := legacy_status_note(collection_info):
+                print("\nLegacy records:")
+                for line in legacy_lines:
                     print(f"  {line}")
 
             update_config = status.get("update_config", {})

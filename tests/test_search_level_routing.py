@@ -54,15 +54,17 @@ def build(monkeypatch, tmp_path):
     monkeypatch.setattr(semantic_search, "get_zotero_client", MagicMock)
     monkeypatch.setattr(chroma_client, "CUSTOM_EMBEDDING_FUNCTIONS", (SimpleNamespace,))
 
-    def _build(*, route=True, chunking=False, articles=(), passages=()):
+    def _build(*, route=True, chunking=False, articles=(), passages=(), bibliographic=()):
         client = ChromaClient(collection_name="levels", persist_directory=str(tmp_path / "chroma"))
         client.route_passages = False
         if not route and passages:
             _write(client, list(passages), [_passage_meta(p.split("#")[0], int(p.split("#")[1])) for p in passages])
         client = ChromaClient(collection_name="levels", persist_directory=str(tmp_path / "chroma"))
         client.route_passages = route
+        if bibliographic:
+            _write(client, list(bibliographic), [_meta(b) for b in bibliographic])
         if articles:
-            _write(client, list(articles), [_meta(a) for a in articles])
+            _write(client, list(articles), [_meta(a, file_stamp="1:1") for a in articles])
         if route and passages:
             _write(client, list(passages), [_passage_meta(p.split("#")[0], int(p.split("#")[1])) for p in passages])
         client.embedding_function = SimpleNamespace(embed_query_text=lambda _q: [1.0, 0.0])
@@ -140,8 +142,8 @@ def test_note_points_at_the_article_level_during_a_fill(build):
 
     note = search.search("q")["level_note"]
 
-    assert "Searched passages (1 item in the index)" in note
-    assert "article level has 12 items" in note
+    assert "Searched passages (1 attachment in the index)" in note
+    assert "article level has 12 attachments" in note
     assert "may find more" in note
     assert 'level="articles"' in note
 
@@ -164,7 +166,7 @@ def test_note_says_passages_are_not_there_yet(build):
 
     note = search.search("q")["level_note"]
 
-    assert "Searched articles (1 item in the index)" in note
+    assert "Searched articles (1 attachment in the index)" in note
     assert "No passages are indexed yet" in note
 
 
@@ -173,7 +175,7 @@ def test_note_says_articles_are_not_there_yet(build):
 
     note = search.search("q")["level_note"]
 
-    assert "Searched passages (1 item in the index)" in note
+    assert "Searched passages (1 attachment in the index)" in note
     assert "No article records are indexed yet" in note
 
 
@@ -183,7 +185,7 @@ def test_note_says_articles_are_not_there_yet_with_chunking_on(build):
 
     note = search.search("q")["level_note"]
 
-    assert "Searched passages (1 item in the index)" in note
+    assert "Searched passages (1 attachment in the index)" in note
     assert "No article records are indexed yet" in note
 
 
@@ -192,7 +194,7 @@ def test_passage_count_includes_an_item_missing_its_first_passage(build):
     search = build(chunking=True, articles=["A", "B", "C"], passages=["A#0", "A#1", "B#1"])
 
     assert search.chroma_client.index_layout()["passage_items"] == 2
-    assert "Searched passages (2 items in the index)" in search.search("q")["level_note"]
+    assert "Searched passages (2 attachments in the index)" in search.search("q")["level_note"]
 
 
 def test_passage_count_handles_keys_of_different_lengths(build):
@@ -238,7 +240,7 @@ def test_search_works_when_the_passage_item_count_cannot_be_read(build, monkeypa
     search.search("q")
 
     assert sorted(_keys(result)) == ["A", "B"]
-    assert "Searched passages (2 items in the index)" in result["level_note"]
+    assert "Searched passages (2 attachments in the index)" in result["level_note"]
     assert sum("passage" in r.getMessage() for r in caplog.records if r.levelname == "WARNING") == 1
 
 
@@ -310,15 +312,15 @@ def tool_output(monkeypatch, tmp_path):
 def test_tool_prints_the_note_above_the_results(tool_output):
     hit = {"item_key": "A", "similarity_score": 0.5, "matched_text": "text", "zotero_item": {"data": {"title": "T"}}}
 
-    text = tool_output([hit], "Searched passages (1 item in the index).")
+    text = tool_output([hit], "Searched passages (1 attachment in the index).")
 
-    assert "Searched passages (1 item in the index)." in text
+    assert "Searched passages (1 attachment in the index)." in text
     assert text.index("Searched passages") < text.index("T")
 
 
 def test_tool_prints_the_note_when_nothing_was_found(tool_output):
     """An empty result is when the other level matters most."""
-    text = tool_output([], "The article level has 12 items, so searching it may find more.")
+    text = tool_output([], "The article level has 12 attachments, so searching it may find more.")
 
     assert "No semantically similar items" in text
     assert "may find more" in text
@@ -545,7 +547,38 @@ def test_repeated_searches_read_the_layout_once_until_the_index_changes(build, m
     search.search("q")
     assert len(scans) == 1
 
-    _write(search.chroma_client, ["B"], [_meta("B")])
+    _write(search.chroma_client, ["B"], [_meta("B", file_stamp="1:1")])
     assert search.search("q")["level_note"] is not None
     assert len(scans) == 2
     assert search.chroma_client.index_layout()["article_records"] == 2
+
+
+def test_bibliographic_records_do_not_make_the_article_level_look_larger(build):
+    """Records with no file have no passages to compare with, so they never trigger the note."""
+    search = build(chunking=True, articles=["A", "B"], passages=["A#0", "B#0"], bibliographic=["P1", "P2", "P3"])
+
+    assert search.chroma_client.index_layout()["article_records"] == 5
+    assert search.search("q")["level_note"] is None
+
+
+def test_the_note_compares_attachments_with_attachments(build):
+    search = build(chunking=True, articles=["A", "B", "C"], passages=["A#0"], bibliographic=["P1", "P2"])
+
+    note = search.search("q")["level_note"]
+
+    assert "Searched passages (1 attachment in the index)" in note
+    assert "article level has 3 attachments" in note
+
+
+def test_a_legacy_record_with_text_counts_as_its_items_file(build):
+    search = build(chunking=True, passages=["OLD#0", "OLD#1"])
+    _write(
+        search.chroma_client, ["OLD", "NEW"],
+        [_meta("OLD", title="t", has_fulltext=True), _meta("NEW", title="t", has_fulltext=False)],
+    )
+
+    layout = search.chroma_client.index_layout()
+
+    assert layout["article_text_items"] == 1
+    assert layout["legacy_records"] == 2
+    assert search.search("q")["level_note"] is None
