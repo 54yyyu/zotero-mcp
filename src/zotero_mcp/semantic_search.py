@@ -555,6 +555,7 @@ def _api_file_stamp(row: Any) -> str:
 
 def _stamp_kind(stamp: Any) -> str:
     """``"api"`` for a stamp ``_api_file_stamp`` built, else ``"local"`` (``<mtime_ns>:<size>``)."""
+    # "api:..." and "api-version:..." from _api_file_stamp, and _API_UNKNOWN_STAMP.
     return "api" if str(stamp or "").startswith("api") else "local"
 
 
@@ -1543,6 +1544,10 @@ class ZoteroSemanticSearch:
     # Attachment keys an API run saw but did not select (outranked, trashed or
     # moved out of selection): their records go once the run's changes are in.
     _api_outranked: frozenset[str] | set[str] = frozenset()
+    # Requests of this run that failed for real (not Zotero's 404 for "no
+    # text") while reading files over the API: the sync version stays put so
+    # the next run lists those items again.
+    _api_fetch_failures: int = 0
     # A gap fill waiting for full text Zotero did not have is asked for it again
     # after this many days, doubling after each answer without text, up to the
     # cap. Zotero indexes PDFs some time after they are added.
@@ -3524,6 +3529,7 @@ class ZoteroSemanticSearch:
                 rows, failed = self._api_children(key)
                 if failed:
                     complete = False
+                    self._api_fetch_failures += 1
                     continue
             chosen = self._select_api_rows(rows, priority)
             chosen_keys = {self._row_key(row) for row in chosen}
@@ -3571,9 +3577,13 @@ class ZoteroSemanticSearch:
                 elif stored and "chunk_index" in stored and gap == {SEARCH_ARTICLES}:
                     # Its passages are there; only the attachment record is missing.
                     unit["_index_levels"] = gap
+            # The text always comes from Zotero's fulltext endpoint, even when
+            # the stamp is local: plain update-db does not extract files itself.
             text, failed = self._attachment_fulltext(akey)
             if failed:
-                # Asked again next run; what is stored stays.
+                # What is stored stays. The sync version must not move past
+                # this file, or no later run would list it again.
+                self._api_fetch_failures += 1
                 return None
             if not text.strip():
                 # Zotero has no text for it (yet). Unlike a local file that
@@ -3937,6 +3947,7 @@ class ZoteroSemanticSearch:
                 except Exception as e:
                     logger.debug(f"item({parent}) failed while following a changed attachment: {e}")
                     unresolved.add(self._row_key(row))
+                    self._api_fetch_failures += 1
                     continue
                 data = (owner or {}).get("data") or {}
                 if not owner or data.get("deleted") or data.get("itemType") in _NON_INDEXED_ITEM_TYPES:
@@ -4503,6 +4514,7 @@ class ZoteroSemanticSearch:
             # Set by this run's scan, if it covers the whole library.
             self._scan_desired_keys = None
             self._api_outranked = set()
+            self._api_fetch_failures = 0
 
             # An index ChromaDB cannot read fails every later step with an
             # error that does not say why (#747). Stop with one that does; a
@@ -4893,7 +4905,7 @@ class ZoteroSemanticSearch:
                 stats["batch_mode"] = True
                 stats["batch_provider"] = active_batch_provider
                 batch_label = _batch_adapter(active_batch_provider).label
-                if stats.get("deletion_skipped_reason"):
+                if stats.get("deletion_skipped_reason") or self._api_fetch_failures:
                     # The manifest's target_sync_version is promoted at import
                     # time; a skipped deletion pass must stay retryable there
                     # exactly as on the realtime path.
@@ -5171,7 +5183,7 @@ class ZoteroSemanticSearch:
             # Trade-off: an item that always fails keeps the watermark back
             # on every run. Persisting failed keys instead is a follow-up.
             self.update_config["last_update"] = datetime.now().isoformat()
-            if stats.get("deletion_skipped_reason") or retry_fail:
+            if stats.get("deletion_skipped_reason") or retry_fail or self._api_fetch_failures:
                 self._save_update_config()
             else:
                 self._save_update_config(

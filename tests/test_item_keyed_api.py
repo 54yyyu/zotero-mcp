@@ -590,3 +590,89 @@ def test_a_trashed_standalone_attachment_is_removed_by_an_incremental_run(env):
 
     assert records(search) == {"ITEM0001"}
     assert not any(i.startswith("LONEPDF1") for i in all_ids(search))
+
+
+def _watermark(env):
+    return env.search()._load_last_sync_version()
+
+
+def _fail_once_then_recover(env, monkeypatch, name, only=None):
+    """Make ``env.zot.<name>`` raise a non-404 error (for ``only``, if given) until the returned flag is cleared."""
+    original = getattr(env.zot, name)
+    broken = {"on": True}
+
+    def flaky(*args, **kwargs):
+        if broken["on"] and (only is None or args[0] == only):
+            raise RuntimeError("503 service unavailable")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(env.zot, name, flaky)
+    return broken
+
+
+def test_a_failed_fulltext_request_holds_back_the_sync_version_and_is_retried(env, monkeypatch):
+    library(env, paper("ITEM0001"))
+    env.update()
+    assert _watermark(env) == 5
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=6)
+    env.zot.texts["PDFAAAAA"] = TEXT
+    broken = _fail_once_then_recover(env, monkeypatch, "fulltext_item")
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001"}
+    assert _watermark(env) == 5
+
+    broken["on"] = False
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA"}
+    assert _watermark(env) == 6
+
+
+def test_a_failed_children_request_holds_back_the_sync_version_and_is_retried(env, monkeypatch):
+    library(env, paper("ITEM0001"))
+    env.update()
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=6)
+    env.zot.texts["PDFAAAAA"] = TEXT
+    broken = _fail_once_then_recover(env, monkeypatch, "children")
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001"}
+    assert _watermark(env) == 5
+
+    broken["on"] = False
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA"}
+    assert _watermark(env) == 6
+
+
+def test_a_failed_parent_request_holds_back_the_sync_version_and_is_retried(env, monkeypatch):
+    library(env, paper("ITEM0001"))
+    env.update()
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=6)
+    env.zot.texts["PDFAAAAA"] = TEXT
+    broken = _fail_once_then_recover(env, monkeypatch, "item", only="ITEM0001")
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001"}
+    assert _watermark(env) == 5
+
+    broken["on"] = False
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA"}
+    assert _watermark(env) == 6
+
+
+def test_zoteros_no_text_answer_does_not_hold_back_the_sync_version(env):
+    library(env, paper("ITEM0001"))
+    env.update()
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=6)
+
+    env.update()
+
+    assert _watermark(env) == 6
