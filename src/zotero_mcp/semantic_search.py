@@ -2496,7 +2496,8 @@ class ZoteroSemanticSearch:
             )
             gap = self._scan_gaps.get(target.key) if check else None
             stored = chroma_client.get_document_metadata(target.key) if check and not rewrite else None
-            if self._unit_is_current(unit, stored):
+            current = self._unit_is_current(unit, stored)
+            if current:
                 if not gap:
                     up_to_date += 1
                     return
@@ -2504,9 +2505,12 @@ class ZoteroSemanticSearch:
             elif stored and "chunk_index" in stored and gap == {SEARCH_ARTICLES}:
                 # Its passages are there; only the attachment record is missing.
                 unit["_index_levels"] = gap
-            if fulltext_cache.failed(target.key, target.file_stamp, config_path=self.config_path):
+            # A forced rebuild tries every file again.
+            if check and fulltext_cache.failed(target.key, target.file_stamp, config_path=self.config_path):
                 skipped_failed.append(label or target.key)
-                desired.discard(target.key)
+                if not current:
+                    # A record of an older version of the file is stale.
+                    desired.discard(target.key)
                 return
             planned.append((unit, target))
 

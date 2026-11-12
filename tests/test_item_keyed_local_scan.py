@@ -302,6 +302,17 @@ def test_a_failed_extraction_waits_for_the_file_to_change(env):
     assert "PDFAAAAA" in _ids(search)
 
 
+def test_a_forced_rebuild_tries_a_failed_file_again(env):
+    reader = _library(texts={"PDFAAAAA": None})
+    env(reader)
+    reader.texts = {}
+
+    search, _ = env(reader, force_full_rebuild=True, allow_mass_deletion=True)
+
+    assert reader.extracted == ["PDFAAAAA"]
+    assert "PDFAAAAA" in _ids(search)
+
+
 # --- legacy records -------------------------------------------------------------
 
 
