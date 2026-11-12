@@ -701,3 +701,25 @@ def test_a_run_cut_with_passages_keeps_them_though_chunking_is_off_now(env, monk
     texts = _passage_texts(search, "AAA")
     assert len(texts) == 5
     assert all("Sentence number" not in t for t in texts)
+
+
+def test_an_automatic_update_does_not_submit_the_whole_library_passage_fill(env):
+    """Startup and pre-search updates leave the fill to an update the user starts."""
+    zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
+    search = env.build(zotero, chunking=False)
+    search.update_database()
+    _land(env, search)
+    submitted = len(env.fake.jobs)
+
+    search = env.build(zotero, chunking=True)
+    stats = search.update_database(automatic=True)
+
+    assert len(env.fake.jobs) == submitted
+    assert stats["passage_gaps_held"] == 2
+
+    zotero.version = 6
+    zotero.changed = {"AAA"}
+    search.update_database(automatic=True)
+
+    new = [i for job_id in list(env.fake.jobs)[submitted:] for i in env.fake.ids_in(job_id)]
+    assert new == ["AAA"] + [f"AAA#{i}" for i in range(5)], "a changed item gets both levels, BBB nothing"
