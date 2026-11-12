@@ -593,6 +593,11 @@ class TestSetupKeepsWebDAVOnRerun:
         # Zotero drops a trailing /zotero from what is typed, so a share of that name is typed twice
         ("https://dav.example.com/zotero", "https://dav.example.com/zotero/"),
         ("https://dav.example.com/zotero/", "https://dav.example.com/zotero/"),
+        ("https://dav.example.com//", "https://dav.example.com/zotero/"),
+        ("https://dav.example.com/zotero//", "https://dav.example.com/zotero/"),
+        # A host called zotero is not a /zotero folder
+        ("https://zotero", "https://zotero/zotero/"),
+        ("zotero:8080", "https://zotero:8080/zotero/"),
         ("nas.local:5006/zotero/zotero", "https://nas.local:5006/zotero/zotero/"),
         ("https://dav.example.com/Zotero", "https://dav.example.com/Zotero/zotero/"),
         (

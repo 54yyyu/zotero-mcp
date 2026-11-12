@@ -763,9 +763,11 @@ def _zotero_folder_url(address: str) -> str:
     address; the upload writes <KEY>.zip straight into the folder it is given, so it
     needs that folder.
     """
-    url = re.sub(r"/zotero/?$|/$", "", address.strip())
+    url = address.strip()
     if "://" not in url:  # Zotero's settings pick the scheme in a separate menu
         url = "https://" + url
+    # Trailing slashes, then one /zotero path segment (not a host named zotero).
+    url = re.sub(r"(?<!/)/zotero$", "", url.rstrip("/"))
     return url + "/zotero/"
 
 
