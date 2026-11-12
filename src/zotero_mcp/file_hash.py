@@ -79,6 +79,22 @@ def _save(cache: Path, data: dict) -> None:
         logger.debug(f"Could not save file hash cache: {e}")
 
 
+def known_stamps(config_path: str | None = None) -> dict[str, str]:
+    """``{attachment key: file stamp}`` of every digest the cache holds, read once.
+
+    The stamp is the one the file had when it was last hashed, so a file whose
+    live stamp differs has changed since (the migration hashes what it re-keys).
+    """
+    cache = _cache_file(config_path)
+    with _LOCK:
+        state = _OPEN.get(cache)
+        entries = state[0] if state else _load(cache)
+    return {
+        key: entry["stamp"] for key, entry in entries.items()
+        if isinstance(entry, dict) and entry.get("stamp") and entry.get("sha256")
+    }
+
+
 def get_file_hash(
     attachment_key: str,
     path: str | Path,

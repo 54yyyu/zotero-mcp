@@ -432,6 +432,72 @@ def _rekey_item(client: Any, sources: LocalSources, item: LegacyItem, attachment
     client.delete_records(ids)
 
 
+def _split(
+    client: Any,
+    report: MigrationReport,
+    layout: dict[str, Any],
+    unmigrated: bool,
+    stray_articles: list[str],
+    stray_passages: list[str],
+    progress: Callable[[str], None],
+) -> None:
+    """The split proper: rename an unmigrated index's collection, then move what is in the wrong one."""
+    from .chroma_client import passage_collection_name
+
+    collection_name = client.collection_name
+    passages_name = passage_collection_name(collection_name)
+    if unmigrated:
+        if layout["passage_collection_exists"]:
+            # Empty, or the index would not count as unmigrated.
+            client.client.delete_collection(name=passages_name)
+        progress(f"Renaming {collection_name} to {passages_name} ...")
+        client.collection.modify(name=passages_name)
+        report.renamed = True
+        _after_rename()
+        progress(f"Creating a new {collection_name} for article vectors ...")
+        client.collection = client._open_collection(collection_name)
+        client._passage_collection = None
+        client._unmigrated = False
+
+    if stray_articles:
+        progress(f"Moving {len(stray_articles)} article records to {collection_name} ...")
+        report.moved_articles = _move(client._passages(), client.collection, stray_articles, progress)
+    if stray_passages:
+        progress(f"Moving {len(stray_passages)} passages to {passages_name} ...")
+        report.moved_passages = _move(
+            client.collection, client._passages(), stray_passages, progress, keep_existing=True
+        )
+
+
+def split_index(client: Any, progress: Callable[[str], None] = lambda _message: None) -> MigrationReport | None:
+    """Split ``client``'s index into an article and a passage collection if it needs it, else None.
+
+    What ``migrate-index`` does first, on a client that is already open (an
+    explicit ``update-db`` runs this before re-keying, in the plan's order).
+    Moves vectors; embeds nothing.
+    """
+    from .chroma_client import passage_collection_name, read_index_layout
+
+    layout = read_index_layout(client.persist_directory, client.collection_name)
+    unmigrated = layout["unmigrated_passages"] > 0
+    db = Path(client.persist_directory) / "chroma.sqlite3"
+    stray_passages = [] if unmigrated or not layout["passages_in_article_collection"] else _ids_in(
+        db, client.collection_name, passages=True
+    )
+    if not unmigrated and not stray_passages:
+        return None
+    report = MigrationReport(persist_directory=client.persist_directory, dry_run=False, needed=True)
+    report.passage_records = layout["passage_records"]
+    _split(client, report, layout, unmigrated, [], stray_passages, progress)
+    if unmigrated:
+        # Bare records beside the passages were article vectors: they move to the new collection.
+        bare = _ids_in(db, passage_collection_name(client.collection_name), passages=False)
+        if bare:
+            progress(f"Moving {len(bare)} article records to {client.collection_name} ...")
+            report.moved_articles = _move(client._passages(), client.collection, bare, progress)
+    return report
+
+
 def migrate_index(
     config_path: str | None = None,
     *,
@@ -501,28 +567,7 @@ def migrate_index(
         return report
 
     client = create_chroma_client(config_path, persist_directory=str(persist_dir))
-
-    if unmigrated:
-        if layout["passage_collection_exists"]:
-            # Empty, or the index would not count as unmigrated.
-            client.client.delete_collection(name=passages_name)
-        progress(f"Renaming {collection_name} to {passages_name} ...")
-        client.collection.modify(name=passages_name)
-        report.renamed = True
-        _after_rename()
-        progress(f"Creating a new {collection_name} for article vectors ...")
-        client.collection = client._open_collection(collection_name)
-        client._passage_collection = None
-        client._unmigrated = False
-
-    if stray_articles:
-        progress(f"Moving {len(stray_articles)} article records to {collection_name} ...")
-        report.moved_articles = _move(client._passages(), client.collection, stray_articles, progress)
-    if stray_passages:
-        progress(f"Moving {len(stray_passages)} passages to {passages_name} ...")
-        report.moved_passages = _move(
-            client.collection, client._passages(), stray_passages, progress, keep_existing=True
-        )
+    _split(client, report, layout, unmigrated, stray_articles, stray_passages, progress)
 
     if report.legacy_passages:
         progress(f"Re-keying the passages of {report.legacy_items} items to their attachments ...")

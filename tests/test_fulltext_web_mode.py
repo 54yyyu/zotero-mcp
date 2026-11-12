@@ -637,3 +637,35 @@ def test_a_changed_legacy_item_without_selected_files_loses_its_passages(monkeyp
     bib = _planned_bib(monkeypatch, selected=[], written=[])
 
     assert "keep_legacy_passages" not in bib
+
+
+class PassagesOnlyChroma(FakeChromaClient):
+    """PA has both its passages and no attachment record: what the migration leaves."""
+
+    def get_metadatas(self, ids):
+        return {"PA#0": {"item_key": "PA", "group_id": 0, "chunk_index": 0, "n_chunks": 2}} if "PA#0" in ids else {}
+
+    def get_existing_ids(self, ids):
+        return {i for i in ids if i in ("PA#0", "PA#1")}
+
+
+@pytest.mark.parametrize("automatic", [True, False])
+def test_the_api_path_holds_or_fills_the_record_of_migrated_passages(monkeypatch, automatic):
+    zot = FakeZoteroClient()
+    zot.load_scenario(
+        [_paper("A")], fulltext={"PA": {"content": "Abody"}}, children={"A": [_pdf("PA", parent="A")]}
+    )
+    search = _build_search(monkeypatch, zot, PassagesOnlyChroma())
+    search._automatic_run = automatic
+    search._scan_gaps = {}
+
+    item = _paper("A")
+    search._api_attachment_units([item], force_rebuild=False)
+
+    if automatic:
+        assert "_api_attachments" not in item, "the passages are paid for: nothing is fetched or embedded"
+        assert search._records_held == 1
+        assert [c for c in zot.calls if c[0] == "fulltext_item"] == []
+    else:
+        [unit] = item["_api_attachments"]
+        assert unit["_index_levels"] == {"articles"}, "only the attachment record is written"
