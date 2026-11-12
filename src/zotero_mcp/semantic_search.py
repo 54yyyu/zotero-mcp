@@ -934,6 +934,31 @@ def _drop_missing_documents(results: dict) -> int:
     return dropped
 
 
+def _collect_hits(chroma_results: dict) -> list[dict[str, Any]]:
+    """One dict per ChromaDB result: its record key, library, text, scores."""
+    ids = (chroma_results.get("ids") or [[]])[0] or []
+    distances = (chroma_results.get("distances") or [[]])[0] or []
+    documents = (chroma_results.get("documents") or [[]])[0] or []
+    metadatas = (chroma_results.get("metadatas") or [[]])[0] or []
+    rerank_scores = (chroma_results.get("rerank_scores") or [[]])[0] or []
+    hits: list[dict[str, Any]] = []
+    for i, raw_id in enumerate(ids):
+        meta = metadatas[i] if i < len(metadatas) else {}
+        meta = meta if isinstance(meta, dict) else {}
+        group_id = meta.get("group_id")
+        hit = {
+            "record_key": raw_id.split("#", 1)[0],
+            "meta": meta,
+            "library": int(group_id) if group_id is not None else None,
+            "document": documents[i] if i < len(documents) else "",
+            "distance": distances[i] if i < len(distances) else None,
+        }
+        if i < len(rerank_scores):
+            hit["rerank_score"] = rerank_scores[i]
+        hits.append(hit)
+    return hits
+
+
 def _is_trashed(item: dict) -> bool:
     return bool((item.get("data") or {}).get("deleted"))
 
@@ -5499,7 +5524,12 @@ class ZoteroSemanticSearch:
             where = combine(where_parts)
             # A post-filter can discard most candidates, so it may ask again
             # for more; a pre-filtered query already holds only matches.
-            rounds = FILTER_QUERY_ROUNDS if live_where and prefilter_keys is None else 1
+            post_filter = bool(live_where) and prefilter_keys is None
+            rounds = FILTER_QUERY_ROUNDS if post_filter else 1
+            # Post-filtering re-ranks only the hits that passed the filter, at
+            # most this many: the candidate set grows ×4 a round, and hosted
+            # re-rankers cap and bill per document.
+            rerank_bound = limit * max(4, multiplier)
 
             enriched_results: list[dict[str, Any]] = []
             rerank_info: dict[str, Any] | None = None
@@ -5507,13 +5537,30 @@ class ZoteroSemanticSearch:
             candidates = 0
             if prefilter_keys is None or prefilter_keys:
                 for _ in range(rounds):
-                    results, rerank_info, load_note, candidates = self._query_candidates(
-                        query, fetch_limit, where, search_level, reranker
+                    if not post_filter:
+                        results, rerank_info, load_note, candidates = self._query_candidates(
+                            query, fetch_limit, where, search_level, reranker
+                        )
+                        # Enrich results with full Zotero item data, collapsing
+                        # hits to their owners and capping at `limit` owners.
+                        enriched_results = self._enrich_search_results(results, query, limit)
+                        break
+                    results, _, load_note, candidates = self._query_candidates(
+                        query, fetch_limit, where, search_level, None
                     )
-                    # Enrich results with full Zotero item data, collapsing
-                    # hits to their owners and capping at `limit` owners.
-                    enriched_results = self._enrich_search_results(results, query, limit, live_where)
-                    if len(enriched_results) >= limit or candidates < fetch_limit:
+                    survivors = self._filter_hits(self._resolve_hits(_collect_hits(results)), live_where)
+                    enough = len({h["owner_key"] for h in survivors}) >= limit
+                    if reranker and survivors:
+                        survivors = survivors[:rerank_bound]
+                        order, scores, rerank_info = self._rerank(
+                            query, [h["document"] for h in survivors], reranker
+                        )
+                        survivors = [survivors[i] for i in order]
+                        if scores is not None:
+                            for hit, score in zip(survivors, scores):
+                                hit["rerank_score"] = score
+                    enriched_results = self._build_results(survivors, query, limit)
+                    if enough or candidates < fetch_limit:
                         break
                     fetch_limit *= 4
 
@@ -5596,28 +5643,37 @@ class ZoteroSemanticSearch:
 
         rerank_info: dict[str, Any] | None = None
         if reranker and results.get("documents") and results["documents"][0]:
-            documents = results["documents"][0]
             # Rank every candidate at either level: collapsing to `limit`
             # owners happens in enrichment, after trashed hits are dropped.
-            top_k = len(documents)
-            if isinstance(reranker, (APIReranker, CrossEncoderReranker)):
-                pairs, rerank_error = reranker.rerank_detailed(query, documents, top_k)
-            else:  # any other object honouring the plain rerank() contract
-                pairs = [(i, 0.0) for i in reranker.rerank(query, documents, top_k=top_k)]
-                rerank_error = None
-            ranked_indices = [i for i, _ in pairs]
+            ranked_indices, scores, rerank_info = self._rerank(query, results["documents"][0], reranker)
             for key in ["ids", "distances", "documents", "metadatas"]:
                 if results.get(key) and results[key][0]:
                     results[key][0] = [results[key][0][i] for i in ranked_indices]
-            if rerank_error is None and isinstance(reranker, (APIReranker, CrossEncoderReranker)):
-                results["rerank_scores"] = [[score for _, score in pairs]]
-            rerank_info = {
-                "model": getattr(reranker, "label", type(reranker).__name__),
-                "applied": rerank_error is None,
-                "error": rerank_error,
-                "candidates": len(documents),
-            }
+            if scores is not None:
+                results["rerank_scores"] = [scores]
         return results, rerank_info, load_note, candidates
+
+    @staticmethod
+    def _rerank(
+        query: str, documents: list[str], reranker: Any
+    ) -> tuple[list[int], list[float] | None, dict[str, Any]]:
+        """Re-rank ``documents``: ``(order, scores or None, rerank info)``."""
+        top_k = len(documents)
+        if isinstance(reranker, (APIReranker, CrossEncoderReranker)):
+            pairs, rerank_error = reranker.rerank_detailed(query, documents, top_k)
+        else:  # any other object honouring the plain rerank() contract
+            pairs = [(i, 0.0) for i in reranker.rerank(query, documents, top_k=top_k)]
+            rerank_error = None
+        scores = None
+        if rerank_error is None and isinstance(reranker, (APIReranker, CrossEncoderReranker)):
+            scores = [score for _, score in pairs]
+        info = {
+            "model": getattr(reranker, "label", type(reranker).__name__),
+            "applied": rerank_error is None,
+            "error": rerank_error,
+            "candidates": len(documents),
+        }
+        return [i for i, _ in pairs], scores, info
 
     def _prefilter_keys(self, live_where: dict[str, Any] | None, group_id: int | None) -> set[str] | None:
         """Record keys a live filter can match, from zotero.sqlite; None if unknown.
@@ -5761,53 +5817,46 @@ class ZoteroSemanticSearch:
         dropped. ``live_where`` is then evaluated per hit, against the owner's
         current data with passage fields read from the hit. Results collapse
         by owner, the best-ranked hit winning, and are capped at ``limit``.
+        """
+        hits = _collect_hits(chroma_results)
+        if not hits:
+            return []
+        return self._build_results(self._filter_hits(self._resolve_hits(hits), live_where), query, limit)
+
+    def _filter_hits(
+        self, resolved: list[dict[str, Any]], live_where: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
+        """The resolved hits that pass ``live_where``, in order (all of them without one)."""
+        if not live_where:
+            return resolved
+        fulltext_owners = {
+            h["owner_key"] for h in resolved
+            if "owner" in h and self._hit_has_fulltext(h["meta"], h["record"])
+        }
+        kept = []
+        for hit in resolved:
+            if "owner" not in hit:
+                continue  # unresolvable, so it cannot be shown to match
+            fields = {
+                **hit["meta"],
+                **live_fields(hit["owner"]),
+                "has_fulltext": hit["owner_key"] in fulltext_owners,
+            }
+            if matches(live_where, fields):
+                kept.append(hit)
+        return kept
+
+    def _build_results(
+        self, resolved: list[dict[str, Any]], query: str, limit: int | None
+    ) -> list[dict[str, Any]]:
+        """Collapse resolved hits by owner, best first, and cap at ``limit``.
 
         Each result describes its owner (``item_key``, ``zotero_item``) and
         the hit that found it: the matched text, a grounded
         ``matched_passage``, passage provenance from the hit's metadata, and
-        ``matched_attachment`` when the hit's record is an attachment.
+        ``matched_attachment`` when the hit's record is an attachment of the
+        owner (not the owner itself).
         """
-        if not chroma_results.get("ids") or not chroma_results["ids"][0]:
-            return []
-
-        ids = chroma_results["ids"][0]
-        distances = chroma_results.get("distances", [[]])[0]
-        documents = chroma_results.get("documents", [[]])[0]
-        metadatas = chroma_results.get("metadatas", [[]])[0]
-        rerank_scores = (chroma_results.get("rerank_scores") or [[]])[0] or []
-
-        hits: list[dict[str, Any]] = []
-        for i, raw_id in enumerate(ids):
-            meta = metadatas[i] if i < len(metadatas) else {}
-            meta = meta if isinstance(meta, dict) else {}
-            group_id = meta.get("group_id")
-            hits.append({
-                "index": i,
-                "record_key": raw_id.split("#", 1)[0],
-                "meta": meta,
-                "library": int(group_id) if group_id is not None else None,
-            })
-
-        resolved = self._resolve_hits(hits)
-
-        if live_where:
-            fulltext_owners = {
-                h["owner_key"] for h in resolved
-                if "owner" in h and self._hit_has_fulltext(h["meta"], h["record"])
-            }
-            kept = []
-            for hit in resolved:
-                if "owner" not in hit:
-                    continue  # unresolvable, so it cannot be shown to match
-                fields = {
-                    **hit["meta"],
-                    **live_fields(hit["owner"]),
-                    "has_fulltext": hit["owner_key"] in fulltext_owners,
-                }
-                if matches(live_where, fields):
-                    kept.append(hit)
-            resolved = kept
-
         enriched: list[dict[str, Any]] = []
         seen_owners: set[str] = set()
         for hit in resolved:
@@ -5815,9 +5864,7 @@ class ZoteroSemanticSearch:
                 continue
             seen_owners.add(hit["owner_key"])
 
-            i, meta = hit["index"], hit["meta"]
-            distance = distances[i] if i < len(distances) else None
-            document = documents[i] if i < len(documents) else ""
+            meta, document, distance = hit["meta"], hit["document"], hit["distance"]
             passage, passage_offset = best_snippet(query, document)
 
             enriched_result: dict[str, Any] = {
@@ -5828,8 +5875,8 @@ class ZoteroSemanticSearch:
                 "metadata": meta,
                 "query": query,
             }
-            if i < len(rerank_scores):
-                enriched_result["rerank_score"] = rerank_scores[i]
+            if "rerank_score" in hit:
+                enriched_result["rerank_score"] = hit["rerank_score"]
             # Passage provenance — present only on a chunk-indexed collection.
             for mk in ("chunk_index", "n_chunks", "char_start", "char_end", "page", "section"):
                 if mk in meta:
@@ -5840,7 +5887,7 @@ class ZoteroSemanticSearch:
             if "owner" in hit:
                 enriched_result["zotero_item"] = hit["owner"]
                 record_data = hit["record"].get("data") or {}
-                if record_data.get("itemType") == "attachment":
+                if hit["record_key"] != hit["owner_key"] and record_data.get("itemType") == "attachment":
                     enriched_result["matched_attachment"] = {
                         "key": hit["record_key"],
                         "title": record_data.get("title", ""),

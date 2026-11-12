@@ -79,7 +79,11 @@ def split_filters(where: dict[str, Any] | None) -> tuple[dict[str, Any] | None, 
     live: list[dict[str, Any]] = []
     for clause in _conjuncts(where):
         (live if referenced_fields(clause) & LIVE_FIELDS else chroma).append(clause)
-    return combine(chroma), combine(live)
+    live_where = combine(live)
+    # Checked up front: evaluation only meets a bad condition when a hit
+    # reaches it, so a search with no hits would hide the mistake.
+    validate(live_where)
+    return combine(chroma), live_where
 
 
 def matches(where: dict[str, Any] | None, fields: dict[str, Any]) -> bool:
@@ -104,13 +108,38 @@ def matches(where: dict[str, Any] | None, fields: dict[str, Any]) -> bool:
     return True
 
 
-def _field_matches(value: Any, cond: Any) -> bool:
-    if isinstance(cond, dict) and len(cond) == 1 and next(iter(cond)).startswith("$"):
+_OPERATORS = ("$eq", "$ne", "$in", "$nin", "$gt", "$gte", "$lt", "$lte")
+
+
+def _condition(cond: Any) -> tuple[str, Any]:
+    """``(operator, operand)`` of one field condition, validated as Chroma would."""
+    if isinstance(cond, dict) and any(str(k).startswith("$") for k in cond):
+        if len(cond) != 1:
+            raise ValueError(f"A filter condition takes one operator, got {sorted(cond)}; combine them with $and")
         ((op, operand),) = cond.items()
     else:
         op, operand = "$eq", cond
-    if op not in ("$eq", "$ne", "$in", "$nin", "$gt", "$gte", "$lt", "$lte"):
+    if op not in _OPERATORS:
         raise ValueError(f"Unsupported filter operator {op!r}")
+    if op in ("$in", "$nin") and not isinstance(operand, (list, tuple)):
+        raise ValueError(f"{op} takes a list, got {operand!r}")
+    return op, operand
+
+
+def validate(where: dict[str, Any] | None) -> None:
+    """Raise ValueError for a condition ``matches`` cannot evaluate, at any depth."""
+    for key, cond in (where or {}).items():
+        if key in ("$and", "$or"):
+            if not isinstance(cond, list):
+                raise ValueError(f"{key} takes a list of conditions, got {cond!r}")
+            for sub in cond:
+                validate(sub)
+        else:
+            _condition(cond)
+
+
+def _field_matches(value: Any, cond: Any) -> bool:
+    op, operand = _condition(cond)
     if value is _MISSING or value is None:
         return False
     if isinstance(value, (set, frozenset)):

@@ -221,6 +221,8 @@ def test_standalone_attachment_hit_renders_as_the_attachment(monkeypatch, tmp_pa
 
     assert _keys(out) == ["STAND1"]
     assert out["results"][0]["zotero_item"]["data"]["itemType"] == "attachment"
+    # It is its own owner, so naming it again as the matched file says nothing.
+    assert "matched_attachment" not in out["results"][0]
 
 
 def test_reparented_attachment_resolves_to_its_new_parent(monkeypatch, tmp_path):
@@ -376,6 +378,28 @@ def test_evaluator_operators():
     assert not matches({"$or": [{"page": 9}, {"item_type": "x"}]}, f)
     # A field the hit does not carry matches nothing, as in Chroma.
     assert not matches({"section": {"$ne": "Methods"}}, f)
+
+
+def test_evaluator_rejects_several_operators_in_one_condition():
+    with pytest.raises(ValueError, match="one operator"):
+        matches({"page": {"$gte": 3, "$lte": 5}}, {"page": 4})
+    with pytest.raises(ValueError, match="one operator"):
+        split_filters({"tags": {"$in": ["a"], "$nin": ["b"]}})
+
+
+def test_evaluator_rejects_a_non_list_operand_to_in_and_nin():
+    with pytest.raises(ValueError, match=r"\$in takes a list"):
+        matches({"item_type": {"$in": "book"}}, {"item_type": "book"})
+    with pytest.raises(ValueError, match=r"\$nin takes a list"):
+        split_filters({"tags": {"$nin": "x"}})
+
+
+def test_a_bad_live_filter_is_an_error_even_without_hits(monkeypatch, tmp_path):
+    s, _ = _search(monkeypatch, tmp_path, [], [])
+
+    out = s.search("q", limit=5, filters={"doi": {"$in": "10.1/x"}})
+
+    assert "takes a list" in out["error"]
 
 
 def test_evaluator_tags_are_membership():
@@ -565,6 +589,59 @@ def test_web_post_filter_requeries_up_to_three_rounds(monkeypatch, tmp_path):
     assert sizes[1] == sizes[0] * 4 and sizes[2] == sizes[1] * 4
     assert _keys(out) == ["PARKEEP1"]
     assert "1" in out["filter_note"]
+
+
+class _RecordingReranker:
+    """Plain rerank() contract; records how many documents each call got."""
+
+    def __init__(self):
+        self.sizes: list[int] = []
+
+    def rerank(self, query, documents, top_k=10):
+        self.sizes.append(len(documents))
+        return list(range(len(documents)))[:top_k]
+
+
+def test_post_filter_reranks_only_bounded_survivors(monkeypatch, tmp_path):
+    # 100 non-matching passages, then 60 matching passages of ONE owner: the
+    # search stays short of limit=2 owners and runs all three rounds (8, 32,
+    # 128 candidates); the last round has 28 survivors.
+    hits = [_hit(f"ATT{n:03d}#0", item_key=f"ATT{n:03d}") for n in range(100)]
+    hits += [_hit(f"ATTKEEP#{n}", item_key="ATTKEEP", chunk_index=n, n_chunks=60) for n in range(60)]
+    zot = [_regular(f"PAR{n:03d}") for n in range(100)] + [
+        _attachment(f"ATT{n:03d}", f"PAR{n:03d}") for n in range(100)
+    ]
+    zot += [_regular("PARKEEP1", tags=["keep"]), _attachment("ATTKEEP", "PARKEEP1")]
+    s, _ = _search(monkeypatch, tmp_path, hits, zot)
+    s._reranker_config = {"enabled": True, "candidate_multiplier": 3}
+    s._reranker = reranker = _RecordingReranker()
+
+    out = s.search("q", limit=2, filters={"tags": "keep"})
+
+    assert len(s.chroma_client.calls) == 3
+    bound = 2 * max(4, 3)
+    # Rounds 1 and 2 had no survivors, so nothing was sent to re-rank there.
+    assert reranker.sizes == [bound]
+    assert _keys(out) == ["PARKEEP1"]
+    assert out["rerank"]["candidates"] == bound
+
+
+def test_unfiltered_search_still_reranks_every_candidate(monkeypatch, tmp_path):
+    hits, zot = _filter_corpus()
+    s, _ = _search(monkeypatch, tmp_path, hits, zot)
+    s._reranker_config = {"enabled": True, "candidate_multiplier": 3}
+    s._reranker = reranker = _RecordingReranker()
+
+    s.search("q", limit=1)
+
+    assert reranker.sizes == [3]
+
+
+def test_no_test_can_find_a_real_zotero_database():
+    # conftest points HOME and Path.home at a temporary directory and clears
+    # ZOTERO_LOCAL / ZOTERO_DB_PATH, so auto-detection finds nothing.
+    with pytest.raises(FileNotFoundError):
+        LocalZoteroReader(db_path=None)._find_zotero_db()
 
 
 def test_web_post_filter_stops_once_limit_is_met(monkeypatch, tmp_path):

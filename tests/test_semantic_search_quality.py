@@ -595,10 +595,18 @@ def _zotero_serving_every_key():
 
 
 class TestReranking:
+    @pytest.fixture(autouse=True)
+    def _isolated(self, monkeypatch, tmp_path):
+        """Searches resolve hits through zotero.sqlite in local mode (#826)."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.delenv("ZOTERO_LOCAL", raising=False)
+        self._config_path = str(tmp_path / "config.json")
+
     def _make_search_with_reranker(self, enabled=True):
         fake_client = FakeChromaClient()
         with patch.object(semantic_search, "get_zotero_client", return_value=MagicMock()):
-            s = semantic_search.ZoteroSemanticSearch(chroma_client=fake_client)
+            s = semantic_search.ZoteroSemanticSearch(chroma_client=fake_client, config_path=self._config_path)
         s._reranker_config = {
             "enabled": enabled,
             "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
