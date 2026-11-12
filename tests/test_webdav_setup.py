@@ -363,6 +363,26 @@ class TestSetupKeepsWebDAVOnRerun:
         assert f"[{folder}]" in asked[1]
         assert _webdav_in(_client_env(cfg)) == stored
 
+    @pytest.mark.parametrize(
+        "folder, noted",
+        [
+            ("https://dav.example.com/", True),
+            ("https://dav.example.com/files/", True),
+            ("https://dav.example.com/zotero/", False),
+            ("https://dav.example.com/zotero", False),
+        ],
+    )
+    def test_a_stored_folder_zotero_cannot_read_is_pointed_out(
+        self, monkeypatch, tmp_path, capsys, folder, noted
+    ):
+        cfg = _home(monkeypatch, tmp_path)
+        _saved_config(cfg, {**SAVED, "ZOTERO_WEBDAV_URL": folder})
+        _answers(monkeypatch, ["", "", ""], password="")
+
+        assert setup_helper.main(_Args()) == 0
+
+        assert ("does not end in /zotero/" in capsys.readouterr().out) is noted
+
     def test_the_shown_folder_typed_again_is_the_same_folder(self, monkeypatch, tmp_path):
         cfg = _home(monkeypatch, tmp_path)
         _saved_config(cfg)

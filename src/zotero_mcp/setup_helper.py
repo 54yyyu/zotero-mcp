@@ -819,6 +819,10 @@ def setup_webdav(existing: dict | None) -> dict | None:
             return {}
         if raw == "" and not existing:
             return None
+        if existing and not stored_url.rstrip("/").endswith("/zotero"):
+            # Zotero reads <address>/zotero/, so files put anywhere else never reach it.
+            print("Note: the stored folder does not end in /zotero/, where Zotero keeps its files.")
+            print("Type the address from Zotero's settings to use its zotero folder.")
         while True:
             if existing:
                 address = input(f"WebDAV address, as in Zotero's settings [{stored_url}]: ").strip()
