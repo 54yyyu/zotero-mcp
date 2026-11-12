@@ -517,6 +517,7 @@ def _print_update_stats(stats: dict) -> None:
         print(f"- Added: {stats.get('added_items', 0)}")
         print(f"- Updated: {stats.get('updated_items', 0)}")
     print(f"- Skipped: {stats.get('skipped_items', 0)}")
+    _print_reused(stats)
     print(f"- Errors: {stats.get('errors', 0)}")
     print(f"- Duration: {stats.get('duration', 'Unknown')}")
     if stats.get("batch_submitted"):
@@ -582,6 +583,15 @@ def _print_batch_status(status: dict, provider: str = "openai") -> None:
         print(f"\nPending chunks (throttled): {len(pending)} (~{pending_tokens:,} tokens)")
 
 
+def _print_reused(stats: dict) -> None:
+    """The files whose records were copied from an identical file's (#495)."""
+    reused = stats.get("reused_from_hash") or {}
+    if reused.get("attachments"):
+        print(f"- Reused from identical files: {reused['attachments']} ({reused.get('records', 0)} records)")
+    if stats.get("reuse_left_for_next_run"):
+        print(f"- Left for the next update: {stats['reuse_left_for_next_run']} (their source was not written)")
+
+
 def _print_batch_import(stats: dict, provider: str = "openai") -> None:
     print(f"=== {_provider_label(provider)} Batch Import ===")
     print(f"Run: {stats.get('run_id')}")
@@ -594,6 +604,7 @@ def _print_batch_import(stats: dict, provider: str = "openai") -> None:
     print(f"- Imported items: {stats.get('imported_items', 0)}")
     print(f"- Added: {stats.get('added_items', 0)}")
     print(f"- Updated: {stats.get('updated_items', 0)}")
+    _print_reused(stats)
     print(f"- Failed rows: {stats.get('failed_items', 0)}")
     print(f"- Missing rows: {stats.get('missing_items', 0)}")
     if stats.get("deferred"):

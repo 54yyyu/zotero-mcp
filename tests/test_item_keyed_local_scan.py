@@ -193,7 +193,8 @@ def test_every_pdf_is_indexed_under_its_own_key_and_the_snapshot_is_skipped(env,
     storage = tmp_path / "storage"
     for key, name in (("PDFAAAAA", "a.pdf"), ("PDFBBBBB", "b.pdf"), ("SNAPSHOT", "s.html")):
         (storage / key).mkdir(parents=True)
-        (storage / key / name).write_bytes(b"file bytes")
+        # Different bytes: identical files are copied, not parsed (#495).
+        (storage / key / name).write_bytes(f"file bytes of {key}".encode())
     real = LocalZoteroReader(db_path=str(db))
     real._get_storage_dir = lambda: storage
     reader = LibReader([Item("ITEM0001", 1)], texts={"PDFAAAAA": (TEXT, "pdf"), "PDFBBBBB": (TEXT, "pdf")})
