@@ -88,6 +88,9 @@ def test_download_attachment_file_falls_back_to_webdav(tmp_path, monkeypatch):
         "zotero_mcp.client.download_attachment_from_webdav",
         lambda attachment_key, destination_dir, expected_filename=None: webdav_path,
     )
+    # Skip the local-storage step: in local mode it opens the machine's real
+    # zotero.sqlite, and without one it adds its own error to the list below.
+    monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
 
     result = client.download_attachment_file(
         "ABCD1234",
