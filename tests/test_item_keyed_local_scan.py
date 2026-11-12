@@ -111,7 +111,8 @@ class FakeZotero:
         self.reader = reader
 
     def item_versions(self, since=None, **kwargs):
-        return {key: 5 for key in self.reader.all_keys()}
+        # Zotero still has files the priority no longer selects.
+        return {key: 5 for key in self.reader.all_keys() | getattr(self.reader, "unselected", set())}
 
     def last_modified_version(self, **kwargs):
         return 5
@@ -365,3 +366,66 @@ def test_a_changed_legacy_item_is_rewritten_and_its_old_passages_dropped_after(e
 
     search, _ = env(reader)
     assert search.chroma_client.embedded == [], "the rewritten item is current from now on"
+
+
+# --- the deletion pass ------------------------------------------------------------
+
+
+def test_an_outranked_file_loses_its_records(env):
+    """A snapshot indexed while it was the best file goes once a PDF outranks it."""
+    reader = LibReader([Item("ITEM0001", 1)], targets={1: [target("SNAPSHOT", category="html")]})
+    env(reader)
+
+    reader.targets[1] = [target("PDFAAAAA")]
+    reader.unselected = {"SNAPSHOT"}
+    search, stats = env(reader)
+
+    assert _ids(search) == {"ITEM0001", "PDFAAAAA"}
+    assert {p.split("#")[0] for p in _ids(search, f"{NAME}_passages")} == {"PDFAAAAA"}
+    assert stats["deleted_items"] == 1
+
+
+def test_a_trashed_file_loses_its_records_and_its_item_keeps_its_own(env):
+    reader = _library()
+    env(reader)
+
+    reader.targets[1] = []
+    reader.unselected = {"PDFAAAAA"}
+    search, _ = env(reader)
+
+    assert _all_ids(search) == {"ITEM0001"}
+
+
+def test_a_file_that_now_fails_loses_the_records_of_its_old_version(env):
+    reader = _library()
+    env(reader)
+
+    reader.targets[1] = [target("PDFAAAAA", stamp="2:200")]
+    reader.texts = {"PDFAAAAA": None}
+    search, _ = env(reader)
+
+    assert _all_ids(search) == {"ITEM0001"}
+
+
+def test_legacy_passages_stay_while_their_item_exists(env):
+    reader = _library()
+    search, _ = env(reader, update=False)
+    _seed_legacy(search)
+
+    search, stats = env(reader)
+
+    assert stats.get("deleted_items", 0) == 0
+    assert _all_ids(search) == {"ITEM0001", "ITEM0001#0", "ITEM0001#1", "ITEM0001#2"}
+
+
+def test_the_mass_deletion_guard_still_trips(env):
+    items = [Item(f"ITEM{n:04d}", n) for n in range(30)]
+    reader = LibReader(items, targets={n: [target(f"PDF{n:05d}")] for n in range(30)})
+    env(reader)
+
+    reader.unselected = {f"PDF{n:05d}" for n in range(30)}
+    reader.targets = {}
+    search, stats = env(reader)
+
+    assert stats["deletion_skipped_reason"] == "mass_deletion_guard"
+    assert {f"PDF{n:05d}" for n in range(30)} <= _ids(search)

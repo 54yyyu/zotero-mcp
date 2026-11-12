@@ -3776,9 +3776,12 @@ class ZoteroSemanticSearch:
         the incremental one, so a full scan (every local-mode update from the
         MCP tool, which extracts fulltext) never removed deleted items, and
         still promoted the watermark, which then gave the incremental path
-        nothing left to reconcile (#457). ``current_library_keys`` of None
-        means the key set could not be fetched; that records a skip reason,
-        and a skipped pass keeps the watermark where it was.
+        nothing left to reconcile (#457). ``current_library_keys`` is the
+        record keys that may stay: a full local scan's desired set (regular
+        items and the files selected for indexing, #826), else every key
+        ``item_versions()`` lists. Stored records are compared by their own
+        record key. None means the key set could not be fetched; that records
+        a skip reason, and a skipped pass keeps the watermark where it was.
         """
         # Delete docs of THIS library that are no longer present in
         # it. Scope is the run's group_id, applied DB-side: only docs
@@ -3982,6 +3985,8 @@ class ZoteroSemanticSearch:
             # zotero_switch_library cannot re-point half a run at another
             # library.
             self._run_group_id = self._client_group_id()
+            # Set by this run's local scan, if it covers the whole library.
+            self._scan_desired_keys = None
 
             # An index ChromaDB cannot read fails every later step with an
             # error that does not say why (#747). Stop with one that does; a
@@ -4317,16 +4322,23 @@ class ZoteroSemanticSearch:
                 # limited run is a test run; everything else reconciles
                 # deletions here too (#457).
                 if not force_full_rebuild and limit is None:
-                    try:
-                        current_library_keys = set(
-                            (self.zotero_client.item_versions() or {}).keys()
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to fetch current item_versions for deletion check: {e}; "
-                            "skipping deletion detection this run."
-                        )
-                        current_library_keys = None
+                    if self._scan_desired_keys is not None:
+                        # Every record key the library should have (#826):
+                        # what the scan left out (trashed, deleted, outranked
+                        # or unreadable files) goes. item_versions() would keep
+                        # an outranked file, which Zotero still has.
+                        current_library_keys = self._scan_desired_keys
+                    else:
+                        try:
+                            current_library_keys = set(
+                                (self.zotero_client.item_versions() or {}).keys()
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to fetch current item_versions for deletion check: {e}; "
+                                "skipping deletion detection this run."
+                            )
+                            current_library_keys = None
                     self._run_deletion_pass(stats, current_library_keys, allow_mass_deletion)
 
             # From here on the run works on units: a bibliographic record per
