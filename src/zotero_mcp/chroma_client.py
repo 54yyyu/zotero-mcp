@@ -296,6 +296,10 @@ class ChromaClient:
         """Item keys with an article record, and item keys with passages, from SQLite."""
         return read_item_keys_by_level(self.persist_directory, self.collection_name)
 
+    def passage_bearing_keys(self) -> set[str]:
+        """Article-level records whose text is chunked: attachment and legacy records."""
+        return read_passage_bearing_keys(self.persist_directory, self.collection_name)
+
     def _collection_for_level(self, level: str):
         return self._passages() if level == PASSAGES and self.separate_passages() else self.collection
 
@@ -551,16 +555,13 @@ class ChromaClient:
         Called after an item's new passages ``<item_key>#0..keep-1`` have been
         upserted, so a document that shrank leaves no orphaned tail, while a
         failed re-embed leaves the old passages searchable instead of none.
-        On an index with passages in the article collection, also drops a bare
-        ``<item_key>`` document left by a pre-chunking index. Where passages
-        have their own collection, that record is the item's article vector.
+        The bare ``<item_key>`` record is never touched: in every layout it is
+        the record's current article-level vector (#826).
         """
         where = {"$and": [{"item_key": item_key}, {"chunk_index": {"$gte": int(keep)}}]}
         try:
             for collection in self.collections():
                 collection.delete(where=where)
-            if not self.separate_passages():
-                self.collection.delete(ids=[item_key])
         except Exception as e:
             logger.warning(f"prune_item_chunks({item_key}) failed: {e}")
 
@@ -1315,6 +1316,38 @@ def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tup
     finally:
         con.close()
     return articles, {key for key, count in found.items() if count >= expected.get(key, 1)}
+
+
+def read_passage_bearing_keys(persist_directory: str, collection_name: str) -> set[str]:
+    """Article-level records that can have passages, read-only from SQLite.
+
+    Passages are cut from a file's text (#826): an attachment record (it has
+    ``file_stamp``) has them, and so does a legacy record built with full
+    text (``has_fulltext`` true). A bibliographic record never has any, so it
+    is never missing them.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return set()
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        return {
+            row[0]
+            for row in con.execute(
+                """
+                SELECT DISTINCT e.embedding_id
+                FROM embeddings e
+                JOIN segments s ON e.segment_id = s.id
+                JOIN collections c ON s.collection = c.id
+                JOIN embedding_metadata m ON m.id = e.id
+                WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id NOT LIKE '%#%'
+                  AND (m.key = 'file_stamp' OR (m.key = 'has_fulltext' AND m.bool_value = 1))
+                """,
+                (collection_name,),
+            )
+        }
+    finally:
+        con.close()
 
 
 def read_collection_status(

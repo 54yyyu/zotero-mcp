@@ -2227,6 +2227,103 @@ class LocalZoteroReader:
         for item_id, item_key, chosen in deferred:
             yield item_id, self._zotero_ft_cache_fallback(item_id, chosen, item_key)
 
+    def _extract_target(self, target: ExtractionTarget) -> tuple[str, str] | None:
+        """``(text, source)`` of one attachment file, or None.
+
+        The transient cache, then the parser, then that attachment's own
+        ``.zotero-ft-cache``, never a sibling's. Cache entries are stored under
+        the attachment's key, which is also its record key (#826).
+        """
+        hit = self._cache_lookup(target.path, target.key)
+        if hit:
+            return hit
+        doc = self._extract_doc_from_file(target.path)
+        if doc:
+            source = _source_for_path(target.path)
+            self._cache_store(target.path, target.key, target.key, doc.text, source)
+            return doc.text, source
+        return self._zotero_ft_cache_fallback(0, (target.path, target.key), target.key)
+
+    def extract_targets(
+        self, targets: list[ExtractionTarget]
+    ) -> Iterator[tuple[str, tuple[str, str] | None]]:
+        """Extract many attachment files, fanning out over ``extraction_workers``.
+
+        Yields ``(attachment_key, (text, source) | None)`` as results arrive;
+        the order is not the input order once workers > 1. Same division of
+        labour as :meth:`extract_fulltext_for_items`: sqlite, the filesystem
+        index and the caches stay in this process, workers get a path.
+        """
+        if self.extraction_workers <= 1:
+            for target in targets:
+                yield target.key, self._extract_target(target)
+            return
+
+        max_pages = self._resolve_pdf_max_pages()
+        pending: dict[Any, ExtractionTarget] = {}
+        deferred: list[ExtractionTarget] = []
+        stranded: list[ExtractionTarget] = []
+        with ProcessPoolExecutor(
+            max_workers=self.extraction_workers, initializer=_init_extraction_worker
+        ) as pool:
+            for target in targets:
+                hit = self._cache_lookup(target.path, target.key)
+                if hit:
+                    yield target.key, hit
+                    continue
+                pending[pool.submit(_extract_worker, str(target.path), max_pages)] = target
+
+            settled: set[Any] = set()
+            for future in as_completed(pending):
+                target = pending[future]
+                try:
+                    text = future.result()
+                except BrokenProcessPool as e:
+                    # As in extract_fulltext_for_items: redo what is left here.
+                    logger.warning(
+                        f"Extraction worker pool died ({e}); re-extracting the "
+                        f"remaining {len(pending) - len(settled)} file(s) in-process"
+                    )
+                    stranded = [t for f, t in pending.items() if f not in settled]
+                    break
+                except Exception as e:
+                    logger.debug(f"Extraction worker failed for {target.key}: {e}")
+                    text = ""
+                settled.add(future)
+                if text:
+                    source = _source_for_path(target.path)
+                    self._cache_store(target.path, target.key, target.key, text, source)
+                    yield target.key, (text, source)
+                else:
+                    deferred.append(target)
+
+        for target in stranded:
+            yield target.key, self._extract_target(target)
+        for target in deferred:
+            yield target.key, self._zotero_ft_cache_fallback(0, (target.path, target.key), target.key)
+
+    def get_date_modified_by_key(self) -> dict[str, str]:
+        """``dateModified`` of every item, by key: an attachment record's own version stamp."""
+        conn = self._get_connection()
+        return {row[0]: row[1] for row in conn.execute("SELECT key, dateModified FROM items")}
+
+    def get_collection_item_keys(self, collection_keys: list[str]) -> set[str]:
+        """Keys of the items in these collections or any of their subcollections."""
+        conn = self._get_connection()
+        seen: set[int] = set()
+        ids: list[int] = []
+        for ckey in collection_keys:
+            ids.extend(self._resolve_collection_ids(conn, ckey, seen=seen))
+        if not ids:
+            return set()
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT DISTINCT i.key FROM collectionItems ci JOIN items i ON i.itemID = ci.itemID "
+            f"WHERE ci.collectionID IN ({placeholders})",
+            ids,
+        )
+        return {row[0] for row in rows}
+
     def get_attachment_paths(self, parent_key: str) -> list[dict]:
         """Return resolved filesystem paths for a parent item's attachments.
 
