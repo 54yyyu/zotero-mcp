@@ -639,6 +639,21 @@ def test_a_changed_legacy_item_without_selected_files_loses_its_passages(monkeyp
     assert "keep_legacy_passages" not in bib
 
 
+@pytest.mark.parametrize("flag,automatic,indexed", [(False, True, False), (False, False, True), (True, True, True)])
+def test_the_api_path_indexes_standalone_files_after_one_explicit_run(monkeypatch, flag, automatic, indexed):
+    zot = FakeZoteroClient()
+    zot.load_scenario([_paper("A"), _pdf("SA")], fulltext={"SA": {"content": "Lone body"}})
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    search._automatic_run = automatic
+    search.update_config["standalone_files_indexed"] = flag
+
+    items = search._get_items_from_api(include_fulltext=True)
+
+    assert any(item.get("key") == "SA" for item in items) is indexed
+    assert search._standalone_held == (0 if indexed else 1)
+    assert search._standalone_covered is (not automatic)
+
+
 class PassagesOnlyChroma(FakeChromaClient):
     """PA has both its passages and no attachment record: what the migration leaves."""
 

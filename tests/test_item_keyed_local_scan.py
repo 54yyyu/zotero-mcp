@@ -233,6 +233,63 @@ def test_a_standalone_pdf_is_indexed_and_records_nothing_of_a_parent(env):
     assert "parent_item_key" not in passage
 
 
+def _with_standalone(key="LONEPDF1"):
+    return LibReader(
+        [],
+        standalone=[(key, "storage:x.pdf", "application/pdf", DATE, 1)],
+        standalone_targets={key: target(key)},
+    )
+
+
+def _update_config(tmp_path):
+    return json.loads((tmp_path / "config.json").read_text())["semantic_search"].get("update_config", {})
+
+
+def test_standalone_files_wait_for_one_explicit_run_after_an_upgrade(env, tmp_path):
+    """The first automatic run after upgrading must not bulk-embed every newly in-scope file."""
+    reader = _with_standalone()
+
+    search, stats = env(reader, automatic=True)
+
+    assert _ids(search) == set()
+    assert search.chroma_client.embedded == []
+    assert reader.extracted == []
+    assert stats["standalone_files_held"] == 1
+    assert not _update_config(tmp_path).get("standalone_files_indexed")
+
+
+def test_a_held_standalone_files_existing_records_are_not_deleted(env):
+    reader = _with_standalone()
+    search, _ = env(reader)  # explicit: indexed
+    assert "LONEPDF1" in _ids(search)
+
+    search, _ = env(reader, automatic=True)
+
+    assert "LONEPDF1" in _ids(search)
+
+
+def test_after_one_explicit_run_automatic_runs_index_new_standalone_files(env, tmp_path):
+    reader = _with_standalone()
+    env(reader)
+    assert _update_config(tmp_path)["standalone_files_indexed"] is True
+
+    reader.standalone.append(("LONEPDF2", "storage:y.pdf", "application/pdf", DATE, 1))
+    reader.standalone_targets["LONEPDF2"] = target("LONEPDF2", stamp="2:200")
+    search, stats = env(reader, automatic=True)
+
+    assert {"LONEPDF1", "LONEPDF2"} <= _ids(search)
+    assert "standalone_files_held" not in stats
+
+
+def test_a_limited_explicit_run_does_not_count_as_standalone_coverage(env, tmp_path):
+    reader = _with_standalone()
+    reader.items = []
+
+    env(reader, limit=1)
+
+    assert not _update_config(tmp_path).get("standalone_files_indexed")
+
+
 # --- change detection -------------------------------------------------------------
 
 

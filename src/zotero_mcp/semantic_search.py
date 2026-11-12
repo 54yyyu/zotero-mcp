@@ -1554,6 +1554,10 @@ class ZoteroSemanticSearch:
     # Attachments with all their passages and no attachment record that an
     # automatic run left alone, counted per run.
     _records_held = 0
+    # Standalone files an automatic run left for the first explicit one, and
+    # whether this run covered them, counted per run.
+    _standalone_held = 0
+    _standalone_covered = False
     # The gaps a local scan should keep items for, set per run by update_database.
     _scan_gaps: dict[str, set[str]] = {}
     # Items a run only adds a missing level to, set per run by update_database.
@@ -2703,10 +2707,14 @@ class ZoteroSemanticSearch:
                         prefetch([key for key, _t, _d in part])
                     for key, target, date_modified in part:
                         desired.add(key)
+                        if self._standalone_files_wait():
+                            self._standalone_held += 1
+                            continue
                         queue_file(
                             target, group_id=key_group_map.get(key), owner=None,
                             label=Path(target.path).name, date_modified=date_modified, rewrite=False,
                         )
+                self._standalone_covered = not self._automatic_run
 
             # Parse the files. With extraction_workers == 1 a sequential
             # walk; above 1 a process pool, results arriving out of order.
@@ -3280,6 +3288,16 @@ class ZoteroSemanticSearch:
             return False
         return _same_moment(existing.get("date_modified"), unit.get("data", {}).get("dateModified"))
 
+    def _standalone_files_wait(self) -> bool:
+        """Whether an automatic run leaves standalone files alone: no explicit full run has indexed them yet.
+
+        Before #826 they were not indexed, so after the upgrade the whole
+        collection of them is new, and a paid embedding API bills for it. One
+        run the user starts covers them; from then on automatic runs keep
+        them up to date like any other file.
+        """
+        return self._automatic_run and not self.update_config.get("standalone_files_indexed")
+
     def _passages_only_action(
         self, key: str, stored: dict[str, Any] | None, file_stamp: str, stamps: dict[str, str],
         gap: set[str] | None,
@@ -3734,6 +3752,10 @@ class ZoteroSemanticSearch:
             if self._api_category(row)
         ]
         selected |= {self._row_key(row) for row in standalone}
+        if standalone and self._standalone_files_wait():
+            # Kept (not outranked or deleted), but not indexed before an explicit run.
+            self._standalone_held += len(standalone)
+            standalone = []
 
         # The stored state of everything about to be judged, read in bulk.
         lookup_keys = [item["key"] for item, chosen in chosen_by_item if chosen]
@@ -4031,6 +4053,8 @@ class ZoteroSemanticSearch:
                 ] if whole_library else [],
                 force_rebuild=force_rebuild,
             )
+            if whole_library and complete and not self._automatic_run:
+                self._standalone_covered = True
             all_items.extend(standalone)
             if whole_library and complete:
                 # Every record key this library should have: what is not here
@@ -4955,6 +4979,8 @@ class ZoteroSemanticSearch:
             self._run_group_id = self._client_group_id()
             self._automatic_run = automatic
             self._records_held = 0
+            self._standalone_held = 0
+            self._standalone_covered = False
             # Set by this run's scan, if it covers the whole library.
             self._scan_desired_keys = None
             self._run_hash_first = {}
@@ -5332,6 +5358,13 @@ class ZoteroSemanticSearch:
                     item for item in all_items if not (item.get("unit") and item.get("key") in outranked)
                 ]
 
+            if self._standalone_held:
+                stats["standalone_files_held"] = self._standalone_held
+                logger.info(
+                    "%d standalone file(s) are not indexed yet; run `zotero-mcp update-db` once "
+                    "to index them (automatic updates leave this to you)",
+                    self._standalone_held,
+                )
             if self._records_held:
                 stats["attachment_records_held"] = self._records_held
                 logger.info(
@@ -5717,6 +5750,8 @@ class ZoteroSemanticSearch:
             # Trade-off: an item that always fails keeps the watermark back
             # on every run. Persisting failed keys instead is a follow-up.
             self.update_config["last_update"] = datetime.now().isoformat()
+            if self._standalone_covered and limit is None and not retry_fail and not self._api_fetch_failures:
+                self.update_config["standalone_files_indexed"] = True
             if stats.get("deletion_skipped_reason") or retry_fail or self._api_fetch_failures:
                 self._save_update_config()
             else:
