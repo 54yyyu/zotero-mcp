@@ -90,7 +90,9 @@ def test_download_attachment_file_falls_back_to_webdav(tmp_path, monkeypatch):
     )
     # Skip the local-storage step: in local mode it opens the machine's real
     # zotero.sqlite, and without one it adds its own error to the list below.
-    monkeypatch.setattr("zotero_mcp.utils.is_local_mode", lambda: False)
+    # Cleared via the env var, which is_local_mode reads: some test modules
+    # swap zotero_mcp.utils in sys.modules, so patching the function misses.
+    monkeypatch.delenv("ZOTERO_LOCAL", raising=False)
 
     result = client.download_attachment_file(
         "ABCD1234",
