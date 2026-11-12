@@ -70,6 +70,9 @@ class MigrationReport:
     rekeyed_passages: int = 0
     dropped_items: int = 0
     dropped_passages: int = 0
+    # Left as they are because Zotero could not be asked (unreachable).
+    skipped_items: int = 0
+    skipped_passages: int = 0
 
 
 def _after_rename() -> None:
@@ -148,13 +151,23 @@ _FIRST_PASSAGE_FIELDS = (
 )
 
 
+class _Unknown:
+    """Zotero could not be asked which attachment an item's passages came from."""
+
+    def __repr__(self) -> str:
+        return "UNKNOWN"
+
+
+UNKNOWN = _Unknown()
+
+
 @dataclass
 class LegacyItem:
     """One regular item's legacy passages, as stored."""
 
     key: str
     passages: list[tuple[str, str]]  # (id, collection name), in chunk order
-    first: dict[str, Any]  # stored fields of ``KEY#0``; empty when it is gone
+    first: dict[str, Any]  # stored fields of the first surviving passage (chunk 0 unless it is gone)
 
 
 def legacy_items(persist_dir: str, collection_name: str) -> list[LegacyItem]:
@@ -162,12 +175,10 @@ def legacy_items(persist_dir: str, collection_name: str) -> list[LegacyItem]:
     from .chroma_client import read_legacy_passage_ids, read_stored_fields
 
     found = read_legacy_passage_ids(persist_dir, collection_name)
-    firsts = [passages[0] for passages in found.values() if passages[0][0].endswith("#0")]
+    # Every passage carries the item's metadata, so whichever survives says as much as chunk 0.
+    firsts = [passages[0] for passages in found.values()]
     stored = read_stored_fields(persist_dir, firsts, _FIRST_PASSAGE_FIELDS)
-    return [
-        LegacyItem(key, passages, stored.get(passages[0], {}) if passages[0][0].endswith("#0") else {})
-        for key, passages in sorted(found.items())
-    ]
+    return [LegacyItem(key, passages, stored.get(passages[0], {})) for key, passages in sorted(found.items())]
 
 
 class LocalSources:
@@ -184,14 +195,20 @@ class LocalSources:
         self._targets: dict[str, Any] = {}
         self._prefixes: dict[str, str] = {}
 
-    def attachment_for(self, item: LegacyItem) -> str | None:
+    def attachment_for(self, item: LegacyItem) -> str | None | _Unknown:
         """The attachment ``item``'s passages came from, if it can be told for certain.
 
         A web-API index recorded it (``fulltext_source`` is
-        ``web-api:attachment:<key>``). A local index recorded only a
-        fingerprint of the item's attachments and the priority they were
-        chosen under, so the choice is made again and trusted only when the
-        fingerprint and priority are unchanged and exactly one file is chosen.
+        ``web-api:attachment:<key>``). A local index recorded a fingerprint
+        of the item's attachments (records of the oldest versions did not) and
+        the priority they were chosen under, so the choice is made again and
+        trusted only when a recorded fingerprint and priority are unchanged
+        and exactly one file is chosen.
+
+        None is a positive finding (the item is gone from Zotero, the choice
+        is ambiguous or has changed): its passages cannot be kept.
+        ``UNKNOWN`` means Zotero could not be asked, which says nothing about
+        the item: its passages must be left as they are.
         """
         from .semantic_search import _WEB_ATTACHMENT_SOURCE
 
@@ -199,7 +216,7 @@ class LocalSources:
         if source.startswith(_WEB_ATTACHMENT_SOURCE):
             return source[len(_WEB_ATTACHMENT_SOURCE):] or None
         if self.reader is None or not item.first:
-            return None
+            return UNKNOWN
         try:
             local = self.reader.get_item_by_key(item.key)
             if local is None:
@@ -207,15 +224,16 @@ class LocalSources:
             fingerprint = ",".join(
                 sorted(row[0] for row in self.reader.get_fulltext_meta_for_item(local.item_id))
             )
-            if item.first.get("attachment_keys") != fingerprint:
+            stored = item.first.get("attachment_keys")
+            if stored is not None and stored != fingerprint:
                 return None
             priority = item.first.get("attachment_priority")
             if priority is not None and priority != ",".join(self.reader.attachment_priority):
                 return None
             targets = self.reader._resolve_extraction_targets(local.item_id)
         except Exception as e:
-            logger.warning(f"Could not look up {item.key} in Zotero ({e}); its passages will be embedded again")
-            return None
+            logger.warning(f"Could not look up {item.key} in Zotero ({e}); its passages are left as they are")
+            return UNKNOWN
         if len(targets) != 1:
             return None
         self._targets[targets[0].key] = targets[0]
@@ -361,7 +379,10 @@ def rekey_legacy_passages(
         for number, item in enumerate(items, 1):
             attachment = sources.attachment_for(item)
             ids = [doc_id for doc_id, _name in item.passages]
-            if attachment is None:
+            if attachment is UNKNOWN:
+                report.skipped_items += 1
+                report.skipped_passages += len(ids)
+            elif attachment is None:
                 report.dropped_items += 1
                 report.dropped_passages += len(ids)
                 if client is not None:

@@ -45,6 +45,7 @@ PREFIX = f"{TITLE} {format_creators([{'creatorType': 'author', 'firstName': 'Jan
 BODY = " ".join(f"Sentence {i} of the file." for i in range(12))
 DOC = PREFIX + "\n\n" + BODY
 SPANS = [(0, 120), (100, 220), (200, len(DOC))]
+MINIMAL = {"item_key", "group_id", "chunk_index", "n_chunks", "char_start", "char_end"}
 
 
 @pytest.fixture(autouse=True)
@@ -309,6 +310,9 @@ def test_a_run_that_stopped_after_writing_the_new_ids_finishes_on_the_next(index
     assert set(stored) == {f"{ATT}#{n}" for n in range(3)}
     assert stored[f"{ATT}#0"][2] == pytest.approx(vectors[f"{ITEM}#0"], abs=1e-5)
     assert report.rekeyed_items == 1
+    # Written over the ids the first run left, and still nothing but the minimal set.
+    for n, (_doc, meta, _vector) in enumerate(stored[f"{ATT}#{k}"] for k in range(3)):
+        assert set(meta) == MINIMAL | ({"page"} if n == 1 else {"section"} if n == 2 else set())
     assert migrate_index(config, **QUIET).needed is False
 
 
@@ -327,6 +331,78 @@ def test_dry_run_reports_both_steps_and_changes_nothing(index):
     assert len(_read(directory, PASSAGES)) == 6
 
 
+def test_dry_run_creates_no_cache_file(index, tmp_path):
+    directory, config = index
+    _seed_split(directory)
+    path = tmp_path / "file.pdf"
+    path.write_bytes(b"the file")
+    live = ExtractionTarget(
+        key=ATT, path=path, content_type="application/pdf", category="pdf", file_stamp="1:8", size=8
+    )
+    before = _all_files(tmp_path)
+
+    migrate_index(config, dry_run=True, sources=_sources(config, targets=[live]), **QUIET)
+
+    assert _all_files(tmp_path) == before, "no hash or fulltext cache file, nor anything else, was written"
+
+
+def test_a_local_record_without_a_stored_fingerprint_is_rekeyed_when_one_file_is_selected(index):
+    directory, config = index
+    _seed_split(directory, att_keys=None)
+
+    report = migrate_index(config, sources=_sources(config), **QUIET)
+
+    assert (report.rekeyed_items, report.dropped_items) == (1, 0)
+    assert set(_read(directory, PASSAGES)) == {f"{ATT}#{n}" for n in range(3)}
+
+
+def test_a_local_record_without_a_stored_fingerprint_and_two_files_is_dropped(index):
+    directory, config = index
+    _seed_split(directory, att_keys=None)
+    reader = MigReader([_item()], targets={1: [target(ATT), target("ATTACH02")]})
+
+    report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+
+    assert (report.rekeyed_items, report.dropped_items) == (0, 1)
+
+
+class BrokenReader(MigReader):
+    def get_item_by_key(self, key):
+        raise RuntimeError("database is locked")
+
+
+@pytest.mark.parametrize("why", ["no reader", "reader raises"])
+def test_nothing_is_dropped_while_zotero_cannot_be_asked(index, why):
+    directory, config = index
+    vectors = _seed_split(directory)
+    sources = LocalSources(None if why == "no reader" else BrokenReader([_item()]), config)
+    before = _all_files(directory)
+
+    dry = migrate_index(config, dry_run=True, sources=sources, **QUIET)
+    assert (dry.skipped_items, dry.skipped_passages, dry.dropped_items, dry.rekeyed_items) == (1, 3, 0, 0)
+    assert _all_files(directory) == before
+
+    report = migrate_index(config, sources=sources, **QUIET)
+
+    assert (report.skipped_items, report.skipped_passages, report.dropped_items) == (1, 3, 0)
+    stored = _read(directory, PASSAGES)
+    assert set(stored) == {f"{ITEM}#{n}" for n in range(3)}
+    assert stored[f"{ITEM}#0"][2] == pytest.approx(vectors[f"{ITEM}#0"], abs=1e-5)
+    assert "title" in stored[f"{ITEM}#0"][1], "left exactly as it was"
+    assert read_index_layout(directory, NAME)["legacy_passages"] == 3
+
+
+def test_the_source_is_read_from_a_surviving_passage_when_the_first_is_gone(index):
+    directory, config = index
+    _seed_split(directory, source=f"web-api:attachment:{ATT}", att_keys=None)
+    ChromaClient(collection_name=NAME, persist_directory=directory).delete_records([f"{ITEM}#0"])
+
+    report = migrate_index(config, sources=LocalSources(None, config), **QUIET)
+
+    assert (report.rekeyed_items, report.dropped_items, report.skipped_items) == (1, 0, 0)
+    assert set(_read(directory, PASSAGES)) == {f"{ATT}#1", f"{ATT}#2"}
+
+
 def test_dry_run_of_an_unmigrated_index_changes_nothing(index):
     directory, config = index
     legacy = ChromaClient(collection_name=NAME, persist_directory=directory)
@@ -338,6 +414,42 @@ def test_dry_run_of_an_unmigrated_index_changes_nothing(index):
 
     assert report.rekeyed_items == 1
     assert _all_files(directory) == before
+
+
+def _searcher(config, directory, monkeypatch):
+    from zotero_mcp import semantic_search
+
+    monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: None)
+    cfg = json.loads(Path(config).read_text())
+    cfg["semantic_search"]["chunking"] = {"enabled": True}
+    Path(config).write_text(json.dumps(cfg))
+    client = ChromaClient(collection_name=NAME, persist_directory=directory)
+    return semantic_search.ZoteroSemanticSearch(chroma_client=client, config_path=config)
+
+
+def test_article_records_the_migration_leaves_missing_wait_for_an_explicit_update(index, monkeypatch):
+    directory, config = index
+    legacy = ChromaClient(collection_name=NAME, persist_directory=directory)
+    legacy.route_passages = False
+    _seed_split(directory, client=legacy, bare=False)
+    migrate_index(config, sources=_sources(config), **QUIET)
+    search = _searcher(config, directory, monkeypatch)
+
+    automatic = search._find_index_gaps(limit=None, force_rebuild=False, fill_passages=False)
+    explicit = search._find_index_gaps(limit=None, force_rebuild=False, fill_passages=True)
+
+    assert automatic == {}
+    assert explicit == {ATT: {"articles"}}
+
+
+def test_an_item_the_0_17_split_left_without_an_article_is_still_filled_automatically(index, monkeypatch):
+    directory, config = index
+    _seed_split(directory, bare=False)
+    search = _searcher(config, directory, monkeypatch)
+
+    gaps = search._find_index_gaps(limit=None, force_rebuild=False, fill_passages=False)
+
+    assert gaps == {ITEM: {"articles"}}
 
 
 def test_the_layout_counts_legacy_passages(index):

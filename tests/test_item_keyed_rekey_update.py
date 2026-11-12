@@ -110,6 +110,24 @@ def test_an_explicit_update_rekeys_the_passages_and_embeds_nothing(env, zotero):
     assert _all_ids(search) == {"ITEM0001", "PDFAAAAA#0", "PDFAAAAA#1", "PDFAAAAA#2"}
 
 
+def test_an_explicit_update_drops_nothing_while_zotero_cannot_be_asked(env, monkeypatch):  # noqa: F811
+    @contextlib.contextmanager
+    def no_zotero(config_path, db_path=None):
+        yield index_migration.LocalSources(None, config_path)
+
+    monkeypatch.setattr(index_migration, "open_sources", no_zotero)
+    reader = _library()
+    search, _ = env(reader, update=False)
+    _seed_legacy(search)
+
+    search, stats = env(reader)
+
+    assert stats["passages_rekeyed"]["skipped_items"] == 1
+    assert stats["passages_rekeyed"]["dropped_items"] == 0
+    assert {"ITEM0001#0", "ITEM0001#1", "ITEM0001#2"} <= _all_ids(search)
+    assert search.chroma_client.embedded == []
+
+
 def test_an_automatic_update_leaves_legacy_passages_where_they_are(env, zotero):  # noqa: F811
     reader = _library()
     zotero(reader)

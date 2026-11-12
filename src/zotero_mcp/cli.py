@@ -453,6 +453,12 @@ def _print_migration_report(report) -> None:
                 f"- Items whose passages {verb} re-keyed to their attachment, vectors unchanged: "
                 f"{report.rekeyed_items} ({report.rekeyed_passages} passages)"
             )
+            if report.skipped_items:
+                print(
+                    f"- Items skipped because Zotero could not be asked about them (Zotero unreachable): "
+                    f"{report.skipped_items} ({report.skipped_passages} passages left as they are; "
+                    "start Zotero and run this again)"
+                )
             if report.dropped_items:
                 print(
                     f"- Items whose attachment could not be told for certain, so their {report.dropped_passages} "

@@ -2806,6 +2806,7 @@ class ZoteroSemanticSearch:
             "items": report.rekeyed_items,
             "passages": report.rekeyed_passages,
             "dropped_items": report.dropped_items,
+            "skipped_items": report.skipped_items,
         }
 
     def _find_index_gaps(
@@ -2824,9 +2825,14 @@ class ZoteroSemanticSearch:
         # Passages the migration moved to an attachment's key belong to a
         # legacy item and have no attachment record, by design (#826).
         moved = getattr(self.chroma_client, "rekeyed_targets", None)
-        gaps: dict[str, set[str]] = {
-            key: {SEARCH_ARTICLES} for key in passages - articles - (moved() if moved else set())
-        }
+        missing_articles = passages - articles - (moved() if moved else set())
+        if not fill_passages and missing_articles:
+            # The migration's re-keying leaves attachments with passages and no
+            # article record; an automatic run must not embed one for each. An
+            # item the 0.17 split left without one (legacy passages) still is.
+            legacy_keys = getattr(self.chroma_client, "legacy_passage_keys", None)
+            missing_articles &= legacy_keys() if legacy_keys else missing_articles
+        gaps: dict[str, set[str]] = {key: {SEARCH_ARTICLES} for key in missing_articles}
         # An automatic run (startup, pre-search) leaves passage gaps alone:
         # after chunking is switched on that is the whole library, which a paid
         # embedding API bills; it waits for an update the user starts.

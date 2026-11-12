@@ -745,6 +745,10 @@ class ChromaClient:
             for start in range(0, len(ids), 500):
                 collection.delete(ids=ids[start:start + 500])
 
+    def legacy_passage_keys(self) -> set[str]:
+        """Item keys that still have legacy passages; see :func:`read_index_layout`."""
+        return set(read_legacy_passage_ids(self.persist_directory, self.collection_name))
+
     def rekeyed_targets(self) -> set[str]:
         """Attachment keys the migration moved legacy passages to; see :func:`read_rekeyed_targets`."""
         return read_rekeyed_targets(self.persist_directory, self.collection_name)
