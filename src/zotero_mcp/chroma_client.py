@@ -491,6 +491,18 @@ class ChromaClient:
             logger.error(f"Error deleting documents from ChromaDB: {e}")
             raise
 
+    def passage_documents(self, item_key: str) -> list[tuple[str, str]]:
+        """``(id, text)`` of every passage of one item, in any collection.
+
+        Raises on a ChromaDB error: a caller deleting what it finds must know
+        it found nothing.
+        """
+        found: list[tuple[str, str]] = []
+        for collection in self.collections():
+            got = collection.get(where={"parent_item_key": item_key}, include=["documents"])
+            found.extend(zip(got["ids"], got["documents"] or []))
+        return found
+
     def delete_item_chunks(self, item_key: str, group_id: int | None = None) -> None:
         """Delete all passage chunks belonging to one item (chunked collections).
 

@@ -37,10 +37,10 @@ def test_chunking_row_shows_the_sizes_when_enabled():
     assert rows["Passage chunking"] == "enabled (800 chars, overlap 50, up to 60 passages per item)"
 
 
-def test_chunking_row_says_when_the_batch_api_overrides_it():
+def test_chunking_row_stays_enabled_when_batch_api_is_enabled():
     config = {"embedding_model": "openai", "openai_batch": {"enabled": True},
               "chunking": {"enabled": True}}
-    assert "NOT applied" in _rows(config)["Passage chunking"]
+    assert _rows(config)["Passage chunking"].startswith("enabled")
 
 
 def test_runtime_batch_state_overrides_the_config():

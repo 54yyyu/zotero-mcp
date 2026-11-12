@@ -263,12 +263,12 @@ def _prompt_choice(label: str, valid: list[str], default: str | None) -> str:
         print("Please enter " + ", ".join(valid[:-1]) + f", or {valid[-1]}")
 
 
-def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool) -> dict:
+def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool = False) -> dict:
     """Ask whether to index documents as overlapping passages.
 
     Starts from the existing ``chunking`` block (hand-edited keys survive) and
-    only asks for the sizes when chunking is switched on. Enabling or disabling
-    it changes the record layout, so the user is told a rebuild is needed.
+    only asks for the sizes when chunking is switched on, and says what the
+    next update embeds.
     """
     existing = dict((existing_semantic_config or {}).get("chunking") or {})
     was_enabled = bool(existing.get("enabled", False))
@@ -288,11 +288,8 @@ def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool)
     print("each, so long PDFs stay searchable and results can quote the matching passage.")
     print("Warning: on a large library chunking multiplies the index: many more embeddings")
     print("to pay for and wait on, and the index sits in memory (about 6 GB per million")
-    print("passages). Changing it needs 'zotero-mcp update-db --force-rebuild'.")
-    print(
-        "The Batch API is enabled here and ignores chunking; use 'update-db --no-batch'."
-        if batch_enabled else "The Batch API ignores chunking."
-    )
+    print("passages). After turning it on, the next 'zotero-mcp update-db' embeds the")
+    print("passages for the whole library, on the realtime or the Batch API path.")
     hint = "Y/n" if was_enabled else "y/N"
     raw = input(f"Index full text as passages? [{hint}]: ").strip().lower()
     enabled = was_enabled if raw == "" else raw in ("y", "yes")
@@ -626,10 +623,9 @@ def setup_semantic_search(
     #   reranker: local cross-encoder re-rank of candidates for higher
     #             precision (needs sentence-transformers; adds a model load).
     #   chunking: index each item as overlapping passages so search returns
-    #             grounded quotes and long PDFs stay searchable. Enabling it
-    #             requires a one-time `update-db --force-rebuild`. It has no
-    #             effect while `openai_batch.enabled` is true: that path
-    #             indexes item-level and update-db warns about it (#416).
+    #             grounded quotes and long PDFs stay searchable. After enabling
+    #             it, the next `update-db` adds the passages, on either the
+    #             realtime or the Batch API path.
     if existing_semantic_config and existing_semantic_config.get("reranker"):
         config["reranker"] = existing_semantic_config["reranker"]
     else:
