@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - unreleased
+
+### Added
+
+- **Passage chunking works on the Batch API path** (#416, #819). With `chunking.enabled` and OpenAI or Gemini batch embeddings, `update-db` now submits passages as well as article records, and the import ends in the same index a realtime run would: the same ids, metadata and collections, old passages of a changed item dropped, and a shrunk item's extra passages pruned. Article records go in the first files, so article search is complete once they land; passage files can follow days later on a large library, and `update-db --auto-loop` or an occasional `batch-import` carries the run through. Automatic updates still leave the whole-library passage fill to an update you start. If your config already had chunking on with batch enabled, which until now was ignored with a warning, your next `zotero-mcp update-db` embeds passages for the whole library, and the provider bills for them. A run that a later one supersedes keeps the passages of items the later run does not carry, so nothing that already landed is paid for twice. `batch-import` and the `update-db` summary now say which counts are records and which are items. Thanks @mronkko.
+
 ## [0.17.0] - 2026-11-10
 
 ### Added

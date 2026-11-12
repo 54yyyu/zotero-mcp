@@ -265,8 +265,8 @@ def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool 
     """Ask whether to index documents as overlapping passages.
 
     Starts from the existing ``chunking`` block (hand-edited keys survive) and
-    only asks for the sizes when chunking is switched on. Enabling or disabling
-    it changes the record layout, so the user is told a rebuild is needed.
+    only asks for the sizes when chunking is switched on, and says what the
+    next update embeds.
     """
     existing = dict((existing_semantic_config or {}).get("chunking") or {})
     was_enabled = bool(existing.get("enabled", False))
@@ -286,7 +286,8 @@ def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool 
     print("each, so long PDFs stay searchable and results can quote the matching passage.")
     print("Warning: on a large library chunking multiplies the index: many more embeddings")
     print("to pay for and wait on, and the index sits in memory (about 6 GB per million")
-    print("passages). Changing it needs 'zotero-mcp update-db --force-rebuild'.")
+    print("passages). After turning it on, the next 'zotero-mcp update-db' embeds the")
+    print("passages for the whole library, on the realtime or the Batch API path.")
     hint = "Y/n" if was_enabled else "y/N"
     raw = input(f"Index full text as passages? [{hint}]: ").strip().lower()
     enabled = was_enabled if raw == "" else raw in ("y", "yes")
