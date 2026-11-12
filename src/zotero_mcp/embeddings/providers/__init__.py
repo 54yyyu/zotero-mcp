@@ -3,7 +3,7 @@
 Each submodule defines exactly one embedding function decorated with
 ``@register_embedding_function``, so importing a submodule has the side effect
 of claiming that provider's name in ChromaDB's own embedding-function registry.
-Importing this package imports all four at once.
+Importing this package imports all five at once.
 
 Note the two distinct registries in play, which are easy to confuse:
 
@@ -24,6 +24,7 @@ import logging
 
 from chromadb.utils.embedding_functions import register_embedding_function
 
+from zotero_mcp.embeddings.providers.default import DefaultEmbeddingFunction
 from zotero_mcp.embeddings.providers.gemini import GeminiEmbeddingFunction
 from zotero_mcp.embeddings.providers.huggingface import HuggingFaceEmbeddingFunction
 from zotero_mcp.embeddings.providers.ollama import OllamaEmbeddingFunction
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CUSTOM_EMBEDDING_FUNCTIONS",
+    "DefaultEmbeddingFunction",
     "GeminiEmbeddingFunction",
     "HuggingFaceEmbeddingFunction",
     "OllamaEmbeddingFunction",

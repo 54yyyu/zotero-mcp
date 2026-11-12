@@ -111,6 +111,9 @@ Environment variables set in the shell you launch a client from (for example `cl
 - `GEMINI_BASE_URL`: Custom Gemini endpoint URL (optional, for use with compatible APIs)
 - `OLLAMA_EMBEDDING_MODEL`: Ollama embedding model name (qwen3-embedding by default)
 - `OLLAMA_BASE_URL`: Ollama server URL (default: http://localhost:11434)
+- `ZOTERO_ONNX_THREADS`: Thread count for the default model's ONNX Runtime (optional).
+  Where zotero-mcp may run on only some CPUs (a container's cpuset, a Slurm job, taskset),
+  set it to that number of CPUs to stop the `pthread_setaffinity_np failed` errors
 - `ZOTERO_DB_PATH`: Custom `zotero.sqlite` path (optional). When unset, the
   database is located automatically: a data directory configured in Zotero's
   preferences (read from the profile's `prefs.js`) is tried first, then the
