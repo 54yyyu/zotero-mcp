@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.17.1] - unreleased
+## [0.17.1] - 2026-11-12
 
 ### Added
 
@@ -16,9 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The Zotero Agent panel starts Claude Code on Windows when npm installed it** (#825, #827). The bridge was handed `claude.cmd` and Node refused to spawn it (`spawn EINVAL`), though the setup check was green. The panel now passes the `claude.exe` the shim wraps, or lets the bridge use its own Claude Code when it can't find one. Thanks @FFXFF1, and @Sebastian-Faeh for the report.
+- **A DOI that ends in a bracket it opened keeps it when read from a page's metadata** (#817, #818). `add_by_url` cut `10.3319/TAO.2009.05.25.02(IWNOP)` to `...(IWNOP`, so CrossRef found nothing and the item was saved with the truncated DOI. Thanks @goranai.
 - **Re-running `zotero-mcp setup` keeps your WebDAV settings** (#820). Setup rebuilds the env section of the configs it writes and dropped `ZOTERO_WEBDAV_*` added by hand, so uploads went back to Zotero Storage. Thanks @ShoRoy.
 - **WebDAV passwords are masked in full** (#820) in `zotero-mcp setup-info`, `zotero-cli config` (`--json` too) and the client env line setup prints. They showed their first four characters, like an API key. Thanks @ShoRoy.
 - **`zotero_copy_items_between_libraries` writes copied files to WebDAV** (#820) when your personal library syncs files there, as the attach tools have since 0.16.0. It uploaded to Zotero Storage first, which an account over its quota refuses with a 413 for every file. A failed WebDAV upload removes the empty attachment and is listed under "Not copied". Copies into a group library still go to Zotero Storage. Thanks @ShoRoy.
+
+### Documentation
+
+- **VS Code and GitHub Copilot setup** in the getting-started guide (#250, #821), for both Copilot's personal config and a workspace `.vscode/mcp.json`. Thanks @kskszq.
+- **Custom agents on Windows:** the guide recommends the agent's `.exe` over a `.cmd` launcher (#822). Thanks @kskszq.
 
 ## [0.17.0] - 2026-11-10
 
