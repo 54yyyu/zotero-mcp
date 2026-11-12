@@ -4508,17 +4508,32 @@ class ZoteroSemanticSearch:
             return []
         try:
             with self._chroma_call_lock:
-                self.chroma_client.update_metadatas(
-                    [u["key"] for u in units],
-                    [{"file_stamp": u["file_stamp"], "date_modified": u.get("date_modified") or ""} for u in units],
-                )
+                # The whole stored metadata goes back with the two fields: a
+                # ChromaDB that replaces rather than merges would otherwise
+                # wipe item_key, group_id and the hash.
+                stored = self.chroma_client.get_metadatas([u["key"] for u in units])
+                # A record that vanished meanwhile is written normally.
+                gone = [u for u in units if u["key"] not in stored]
+                present = [u for u in units if u["key"] in stored]
+                if present:
+                    self.chroma_client.update_metadatas(
+                        [u["key"] for u in present],
+                        [
+                            {
+                                **stored[u["key"]],
+                                "file_stamp": u["file_stamp"],
+                                "date_modified": u.get("date_modified") or "",
+                            }
+                            for u in present
+                        ],
+                    )
         except Exception as e:
             logger.warning(f"Could not refresh the stamps of {len(units)} unchanged file(s): {e}")
             return units
-        stats["refreshed_unchanged"] += len(units)
-        stats["processed_items"] += len(units)
-        stats["updated_items"] += len(units)
-        return []
+        stats["refreshed_unchanged"] += len(present)
+        stats["processed_items"] += len(present)
+        stats["updated_items"] += len(present)
+        return gone
 
     def _copy_reused_units(self, units: list[dict[str, Any]], stats: dict[str, Any]) -> list[dict[str, Any]]:
         """Copy the units' records from their sources and count them; returns the units not copied."""
