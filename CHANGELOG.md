@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - unreleased
+
+### Added
+
+- **`zotero-mcp setup` asks for your WebDAV settings** (#820, #806). In web mode with a personal library, setup asks whether Zotero syncs your attachment files over WebDAV, then for the address as Zotero's File Syncing settings show it, the username and the password (not echoed). It stores the `zotero/` folder under that address, the one Zotero reads, so files you attach are written there instead of counting against your Zotero Storage quota. A re-run offers the stored settings as defaults: Enter keeps them, a blank password keeps the stored one, and answering no removes them. It also says when a stored folder does not end in `/zotero/`. Complete `ZOTERO_WEBDAV_*` variables in the environment are used without asking. Local mode and group libraries are not asked, and a script that pipes answers to the earlier questions works as before. Thanks @ShoRoy.
+
+### Fixed
+
+- **Re-running `zotero-mcp setup` keeps your WebDAV settings** (#820). Setup rebuilds the env section of the configs it writes and dropped `ZOTERO_WEBDAV_*` added by hand, so uploads went back to Zotero Storage. Thanks @ShoRoy.
+- **WebDAV passwords are masked in full** (#820) in `zotero-mcp setup-info`, `zotero-cli config` (`--json` too) and the client env line setup prints. They showed their first four characters, like an API key. Thanks @ShoRoy.
+- **`zotero_copy_items_between_libraries` writes copied files to WebDAV** (#820) when your personal library syncs files there, as the attach tools have since 0.16.0. It uploaded to Zotero Storage first, which an account over its quota refuses with a 413 for every file. A failed WebDAV upload removes the empty attachment and is listed under "Not copied". Copies into a group library still go to Zotero Storage. Thanks @ShoRoy.
+
 ## [0.17.0] - 2026-11-10
 
 ### Added
