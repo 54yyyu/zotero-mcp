@@ -85,6 +85,9 @@ FILTER_QUERY_ROUNDS = 3
 _ITEMKEY_BATCH = 50
 #: Keys per zotero.sqlite lookup, well under SQLite's bound-parameter limit.
 _LOCAL_KEY_BATCH = 500
+# Items whose stored state a local scan reads ahead in one batched lookup.
+_SCAN_SLICE = 500
+_UNSET: Any = object()
 
 
 def _count_items(count: int) -> str:
@@ -2486,6 +2489,35 @@ class ZoteroSemanticSearch:
         planned: list[tuple[dict[str, Any], Any]] = []
         up_to_date = 0
         skipped_failed: list[str] = []
+        # Targets whose record is current and only lacks a level: a failed
+        # extraction of one must not drop what is already paid for.
+        current_keys: set[str] = set()
+        # Stored metadata read ahead for a slice of items in few batched gets
+        # (#368), instead of two or three single gets per item.
+        prefetched: dict[str, dict[str, Any]] = {}
+        passage_keys: set[str] | None = None
+        if check:
+            try:
+                passage_keys = chroma_client.item_keys_by_level()[1]
+            except Exception:
+                passage_keys = None  # unknown: probe every key's first passage
+
+        def prefetch(keys: list[str]) -> None:
+            """Load the stored state of ``keys`` (and first passages of those that have any)."""
+            ids = list(keys)
+            ids += [f"{k}#0" for k in keys if passage_keys is None or k in passage_keys]
+            batched = getattr(chroma_client, "get_metadatas", None)
+            if batched is not None:
+                prefetched.update(batched(ids))
+            else:
+                for doc_id in ids:
+                    meta = chroma_client.get_document_metadata(doc_id)
+                    if meta is not None:
+                        prefetched[doc_id] = meta
+
+        def stored_of(key: str) -> dict[str, Any] | None:
+            """The record of ``key``, else its first passage, as ``get_document_metadata`` finds it."""
+            return prefetched.get(key) or prefetched.get(f"{key}#0")
 
         def queue_file(target: Any, *, group_id: int | None, owner: str | None, label: str,
                        date_modified: str | None, rewrite: bool) -> None:
@@ -2495,13 +2527,14 @@ class ZoteroSemanticSearch:
                 group_id=group_id, owner_key=owner, label=label,
             )
             gap = self._scan_gaps.get(target.key) if check else None
-            stored = chroma_client.get_document_metadata(target.key) if check and not rewrite else None
+            stored = stored_of(target.key) if check and not rewrite else None
             current = self._unit_is_current(unit, stored)
             if current:
                 if not gap:
                     up_to_date += 1
                     return
                 unit["_index_levels"] = gap
+                current_keys.add(target.key)
             elif stored and "chunk_index" in stored and gap == {SEARCH_ARTICLES}:
                 # Its passages are there; only the attachment record is missing.
                 unit["_index_levels"] = gap
@@ -2521,18 +2554,33 @@ class ZoteroSemanticSearch:
         _extract_logger.setLevel(logging.CRITICAL)
         try:
             total = len(local_items)
+            resolved: dict[str, list[Any]] = {}
             for item_idx, it in enumerate(local_items, 1):
                 display = self._scan_display(it)
                 self._scan_progress(item_idx, total, up_to_date, len(planned), display)
 
+                if (item_idx - 1) % _SCAN_SLICE == 0:
+                    resolved = {
+                        other.key: reader._resolve_extraction_targets(other.item_id)
+                        for other in local_items[item_idx - 1:item_idx - 1 + _SCAN_SLICE]
+                    }
+                    if check:
+                        prefetch([
+                            k for key, found in resolved.items()
+                            for k in (key, *(t.key for t in found))
+                        ])
+
                 group_id = key_group_map.get(it.key)
                 bib = self._local_item_unit(it, group_id)
-                targets = reader._resolve_extraction_targets(it.item_id)
+                targets = resolved[it.key]
                 desired.add(it.key)
                 desired.update(target.key for target in targets)
 
-                existing = chroma_client.get_document_metadata(it.key) if check else None
-                legacy = self._legacy_metadata(it.key, existing) if existing else None
+                existing = stored_of(it.key) if check else None
+                legacy = (
+                    self._legacy_metadata(it.key, existing, passage=prefetched.get(f"{it.key}#0"))
+                    if existing else None
+                )
                 rewrite = False
                 if legacy is not None:
                     gap = self._scan_gaps.get(it.key)
@@ -2566,17 +2614,23 @@ class ZoteroSemanticSearch:
             if limit is None:
                 # Standalone files, in the configured collections if any.
                 members = reader.get_collection_item_keys(collection_keys) if collection_keys else None
+                standalone = []
                 for key, path, ctype, date_modified, _library_id in reader._iter_standalone_attachments():
                     if key in excluded_keys or (members is not None and key not in members):
                         continue
                     target = reader._resolve_standalone_target(key, path, ctype)
-                    if target is None:
-                        continue
-                    desired.add(key)
-                    queue_file(
-                        target, group_id=key_group_map.get(key), owner=None,
-                        label=Path(target.path).name, date_modified=date_modified, rewrite=False,
-                    )
+                    if target is not None:
+                        standalone.append((key, target, date_modified))
+                for start in range(0, len(standalone), _SCAN_SLICE):
+                    part = standalone[start:start + _SCAN_SLICE]
+                    if check:
+                        prefetch([key for key, _t, _d in part])
+                    for key, target, date_modified in part:
+                        desired.add(key)
+                        queue_file(
+                            target, group_id=key_group_map.get(key), owner=None,
+                            label=Path(target.path).name, date_modified=date_modified, rewrite=False,
+                        )
 
             # Parse the files. With extraction_workers == 1 a sequential
             # walk; above 1 a process pool, results arriving out of order.
@@ -2590,6 +2644,12 @@ class ZoteroSemanticSearch:
                     unit["file_hash"] = file_hash.get_file_hash(
                         att_key, target.path, target.file_stamp, config_path=self.config_path
                     )
+                elif att_key in current_keys:
+                    # A gap fill of a record that is current: the file read at
+                    # this stamp before, so the failure is probably transient.
+                    # Keep the paid-for record and leave no failure marker, or
+                    # the gap would stay open until the file changes.
+                    pass
                 else:
                     # Not tried again until the file changes; a stale record
                     # of it is outside the desired set and goes.
@@ -2998,21 +3058,28 @@ class ZoteroSemanticSearch:
         return lookup(key) if lookup else None
 
     def _legacy_metadata(
-        self, key: str, existing: dict[str, Any] | None = None
+        self,
+        key: str,
+        existing: dict[str, Any] | None = None,
+        *,
+        passage: dict[str, Any] | None | Any = _UNSET,
     ) -> dict[str, Any] | None:
         """The metadata of a record of ``key`` written before #826, or None.
 
         A regular item is legacy while any of its records carries ``title``:
         its bare record, or, beside a new bibliographic record written by an
         article-level fill, its parent-keyed passages. ``existing`` is the
-        item's ``get_document_metadata`` result when the caller has it.
+        item's ``get_document_metadata`` result when the caller has it, and
+        ``passage`` the stored metadata of ``KEY#0`` (None when absent), so
+        a caller that read ahead spares the extra lookup.
         """
         if existing is None:
             existing = self._stored_metadata(key)
         if _is_legacy_record(existing):
             return existing
         if existing and "chunk_index" not in existing:
-            passage = self._stored_metadata(f"{key}#0")
+            if passage is _UNSET:
+                passage = self._stored_metadata(f"{key}#0")
             if _is_legacy_record(passage):
                 return passage
         return None
@@ -3553,8 +3620,9 @@ class ZoteroSemanticSearch:
         if article:
             metadata = _own_metadata(key, group_id, item.get("date_modified"))
             metadata["file_stamp"] = item["file_stamp"]
-            if item.get("file_hash"):
-                metadata["file_hash"] = item["file_hash"]
+            # Always present, None when unknown: ChromaDB's upsert merges
+            # metadata, so an omitted key would keep the previous file's hash.
+            metadata["file_hash"] = item.get("file_hash") or None
             records.append({
                 "id": key,
                 "document": self.chroma_client.truncate_text(text),
@@ -3578,12 +3646,9 @@ class ZoteroSemanticSearch:
             cmeta["n_chunks"] = len(passages)
             cmeta["char_start"] = c0
             cmeta["char_end"] = c1
-            page = _page_for_offset(text, c0)
-            if page is not None:
-                cmeta["page"] = page
-            section = _section_at(section_marks, c0)
-            if section is not None:
-                cmeta["section"] = section
+            # None removes a stale value left by an earlier version (upsert merges).
+            cmeta["page"] = _page_for_offset(text, c0)
+            cmeta["section"] = _section_at(section_marks, c0)
             records.append({
                 "id": f"{key}#{ci}",
                 "document": self.chroma_client.truncate_text(chunk_text),

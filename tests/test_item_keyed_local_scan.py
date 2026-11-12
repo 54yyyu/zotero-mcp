@@ -31,7 +31,7 @@ if importlib.util.find_spec("chromadb") is None:
 from _scan_fakes import ScanReader, target  # noqa: E402
 from chromadb import EmbeddingFunction  # noqa: E402
 
-from zotero_mcp import semantic_search  # noqa: E402
+from zotero_mcp import file_hash, semantic_search  # noqa: E402
 from zotero_mcp.chroma_client import ChromaClient  # noqa: E402
 from zotero_mcp.local_db import LocalZoteroReader  # noqa: E402
 
@@ -274,6 +274,38 @@ def test_a_new_pdf_on_an_unchanged_item_embeds_only_that_file(env):
     assert "PDFBBBBB" in _ids(search)
 
 
+PAGED = "\f".join(
+    f"{heading}\n\n" + " ".join(f"Page {p} sentence {i}." for i in range(60))
+    for p, heading in enumerate(("Introduction", "Methods", "Results"))
+)
+
+
+def _passage_metas(search, key):
+    got = search.chroma_client.client.get_collection(f"{NAME}_passages").get(
+        where={"item_key": key}, include=["metadatas"]
+    )
+    return got["metadatas"]
+
+
+def test_a_rewrite_leaves_no_stale_page_section_or_hash(env, monkeypatch):
+    """ChromaDB's upsert merges metadata: what a new version lacks must be cleared."""
+    reader = _library(texts={"PDFAAAAA": (PAGED, "pdf")})
+    monkeypatch.setattr(file_hash, "get_file_hash", lambda *a, **k: "ab" * 32)
+    search, _ = env(reader)
+    assert any("page" in m for m in _passage_metas(search, "PDFAAAAA"))
+    assert any("section" in m for m in _passage_metas(search, "PDFAAAAA"))
+    assert _meta(search, "PDFAAAAA")["file_hash"] == "ab" * 32
+
+    # A new version of the file: no page markers, no headings, hash unknown.
+    reader.targets[1] = [target("PDFAAAAA", stamp="2:200")]
+    reader.texts = {}
+    monkeypatch.setattr(file_hash, "get_file_hash", lambda *a, **k: None)
+    search, _ = env(reader)
+
+    assert not any("page" in m or "section" in m for m in _passage_metas(search, "PDFAAAAA"))
+    assert "file_hash" not in _meta(search, "PDFAAAAA")
+
+
 def test_a_replaced_file_is_re_embedded_by_its_stamp(env):
     reader = _library()
     env(reader)
@@ -300,6 +332,24 @@ def test_a_failed_extraction_waits_for_the_file_to_change(env):
     search, _ = env(reader)
     assert reader.extracted == ["PDFAAAAA"]
     assert "PDFAAAAA" in _ids(search)
+
+
+def test_a_gap_fill_that_fails_keeps_the_current_record_and_retries(env):
+    """A file that extracted at this stamp before fails only transiently."""
+    reader = _library()
+    search, _ = env(reader)
+    search.chroma_client.delete_documents(["PDFAAAAA#3"])  # a passage gap
+
+    reader.texts = {"PDFAAAAA": None}
+    search, _ = env(reader)
+    assert reader.extracted == ["PDFAAAAA"]
+    assert "PDFAAAAA" in _ids(search), "the paid-for record stays"
+    assert len(_ids(search, f"{NAME}_passages")) == 4
+
+    reader.texts = {}
+    search, _ = env(reader)
+    assert reader.extracted == ["PDFAAAAA"], "no failure marker holds the gap back"
+    assert len(_ids(search, f"{NAME}_passages")) == 5
 
 
 def test_a_forced_rebuild_tries_a_failed_file_again(env):
@@ -440,3 +490,62 @@ def test_the_mass_deletion_guard_still_trips(env):
 
     assert stats["deletion_skipped_reason"] == "mass_deletion_guard"
     assert {f"PDF{n:05d}" for n in range(30)} <= _ids(search)
+
+
+def test_the_deletion_pass_leaves_another_librarys_records_alone(env):
+    reader = _library()
+    search, _ = env(reader, update=False)
+    search.chroma_client.upsert_embeddings(
+        documents=["other library"],
+        metadatas=[{"item_key": "OTHER001", "group_id": 7, "date_modified": DATE, "file_stamp": "1:1"}],
+        ids=["OTHER001"],
+        embeddings=[[0.0, 1.0]],
+    )
+
+    search, stats = env(reader)
+
+    assert "OTHER001" in _ids(search)
+    assert stats.get("deleted_items", 0) == 0
+
+
+def test_a_collection_filtered_scan_deletes_by_item_versions(env, tmp_path, monkeypatch):
+    reader = _library()
+    env(reader)
+    config = tmp_path / "config.json"
+    cfg = json.loads(config.read_text())
+    cfg["semantic_search"]["collection_keys"] = ["COLL0001"]
+    config.write_text(json.dumps(cfg))
+    asked = []
+    original = FakeZotero.item_versions
+    monkeypatch.setattr(FakeZotero, "item_versions", lambda self, *a, **kw: asked.append(1) or original(self, *a, **kw))
+
+    search, _ = env(reader)
+
+    assert asked, "a filtered scan sees part of the library: it keeps item_versions()"
+    assert "PDFAAAAA" in _ids(search)
+
+
+def test_a_scan_reads_stored_state_per_slice_not_per_item(env, monkeypatch):
+    monkeypatch.setattr(semantic_search, "_SCAN_SLICE", 10)
+    items = [Item(f"ITEM{n:04d}", n) for n in range(25)]
+    reader = LibReader(items, targets={n: [target(f"PDF{n:05d}")] for n in range(25)})
+    env(reader)
+
+    single, batched = [], []
+    original_single = ChromaClient.get_document_metadata
+    original_batched = ChromaClient.get_metadatas
+    monkeypatch.setattr(
+        ChromaClient,
+        "get_document_metadata",
+        lambda self, doc_id: single.append(doc_id) or original_single(self, doc_id),
+    )
+    monkeypatch.setattr(
+        ChromaClient,
+        "get_metadatas",
+        lambda self, ids: batched.append(len(ids)) or original_batched(self, ids),
+    )
+    search, _ = env(reader)
+
+    assert search.chroma_client.embedded == []
+    assert single == []
+    assert len(batched) == 3, "25 items in slices of 10"

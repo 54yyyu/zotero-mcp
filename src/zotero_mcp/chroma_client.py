@@ -701,6 +701,21 @@ class ChromaClient:
         except Exception:
             return set()
 
+    def get_metadatas(self, ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Stored metadata of every id in ``ids`` that exists, in as few reads as possible.
+
+        One bounded ``get`` per collection and 5000 ids (#368), for a scan
+        that needs many records' state. Raises on a ChromaDB error: reading
+        "nothing stored" from a failure would re-embed everything.
+        """
+        found: dict[str, dict[str, Any]] = {}
+        for collection, part in self._group_existing(ids):
+            for start in range(0, len(part), 5000):
+                result = collection.get(ids=part[start:start + 5000], include=["metadatas"])
+                for doc_id, meta in zip(result.get("ids", []), result.get("metadatas") or []):
+                    found[doc_id] = meta or {}
+        return found
+
     def item_group_ids(self, item_keys: list[str]) -> dict[str, int]:
         """The library (``group_id``) of each indexed item in ``item_keys`` that has one.
 

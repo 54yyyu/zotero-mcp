@@ -2242,7 +2242,11 @@ class LocalZoteroReader:
             source = _source_for_path(target.path)
             self._cache_store(target.path, target.key, target.key, doc.text, source)
             return doc.text, source
-        return self._zotero_ft_cache_fallback(0, (target.path, target.key), target.key)
+        return self._zotero_ft_cache_fallback(
+            item_id=0,  # unused: ``chosen`` names the file
+            chosen=(target.path, target.key),
+            item_key=target.key,
+        )
 
     def extract_targets(
         self, targets: list[ExtractionTarget]
@@ -2300,7 +2304,11 @@ class LocalZoteroReader:
         for target in stranded:
             yield target.key, self._extract_target(target)
         for target in deferred:
-            yield target.key, self._zotero_ft_cache_fallback(0, (target.path, target.key), target.key)
+            yield target.key, self._zotero_ft_cache_fallback(
+                item_id=0,  # unused: ``chosen`` names the file
+                chosen=(target.path, target.key),
+                item_key=target.key,
+            )
 
     def get_date_modified_by_key(self) -> dict[str, str]:
         """``dateModified`` of every item, by key: an attachment record's own version stamp."""

@@ -121,10 +121,11 @@ def test_attachment_record_is_file_text_under_its_own_key(make_search):
     }
 
 
-def test_attachment_without_a_hash_omits_it(make_search):
+def test_attachment_without_a_hash_clears_it(make_search):
+    """None, not absent: ChromaDB's upsert merges, so absent would keep an old hash."""
     records = make_search(chunking=False)._build_item_records(_att(file_hash=None), chunking=False)
 
-    assert "file_hash" not in records[0]["metadata"]
+    assert records[0]["metadata"]["file_hash"] is None
     assert records[0]["metadata"]["file_stamp"] == "123:456"
 
 
@@ -179,6 +180,7 @@ def test_web_api_text_becomes_a_unit_of_its_attachment(make_search):
         "group_id": 0,
         "date_modified": "2024-02-01T00:00:00Z",
         "file_stamp": "api:md5x:99",
+        "file_hash": None,
     }
     assert "Body of the PDF." not in records[0]["document"]
 
