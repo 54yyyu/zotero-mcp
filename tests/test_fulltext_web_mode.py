@@ -280,28 +280,30 @@ def test_get_items_from_api_without_fulltext_leaves_data_untouched(monkeypatch):
         assert "fulltext" not in it["data"]
 
 
-def test_get_items_from_api_with_fulltext_populates_data(monkeypatch):
+def test_get_items_from_api_with_fulltext_reads_each_selected_attachment(monkeypatch):
     zot = FakeZoteroClient()
     zot.load_scenario(
         [_paper("A"), _paper("B")],
         fulltext={"PA": {"content": "Abody"}, "PB": {"content": "Bbody"}},
-        children={"A": [_pdf("PA")], "B": [_pdf("PB")]},
+        children={"A": [_pdf("PA", parent="A")], "B": [_pdf("PB", parent="B")]},
     )
     search = _build_search(monkeypatch, zot, FakeChromaClient())
     items = search._get_items_from_api(include_fulltext=True)
     by_key = {it["key"]: it for it in items}
-    assert by_key["A"]["data"]["fulltext"] == "Abody"
-    assert by_key["A"]["data"]["fulltextSource"] == "web-api:attachment:PA"
-    assert by_key["B"]["data"]["fulltext"] == "Bbody"
+    # The text is the attachment's own unit, not a field of the item (#826).
+    assert "fulltext" not in by_key["A"]["data"]
+    [unit] = by_key["A"]["_api_attachments"]
+    assert (unit["key"], unit["text"], unit["owner_key"]) == ("PA", "Abody", "A")
+    assert by_key["B"]["_api_attachments"][0]["text"] == "Bbody"
 
 
-def test_get_items_from_api_with_fulltext_marks_misses_as_attempted(monkeypatch):
+def test_get_items_from_api_with_fulltext_leaves_an_item_without_text_alone(monkeypatch):
     zot = FakeZoteroClient()
-    zot.load_scenario([_paper("A")], fulltext={})  # no fulltext for A
+    zot.load_scenario([_paper("A")], fulltext={}, children={"A": [_pdf("PA", parent="A")]})
     search = _build_search(monkeypatch, zot, FakeChromaClient())
     items = search._get_items_from_api(include_fulltext=True)
-    assert items[0]["data"].get("fulltext", "") == ""
-    assert items[0]["data"]["fulltext_attempted"] is True
+    assert [c for c in zot.calls if c[0] == "fulltext_item"] == [("fulltext_item", "PA")]
+    assert "_api_attachments" not in items[0]
 
 
 def test_get_items_from_api_filters_out_attachments_notes_and_annotations(monkeypatch):

@@ -52,7 +52,7 @@ from .config_light import (  # noqa: F401
 )
 from .embeddings.base import EmbeddingAPIUnreachable
 from .embeddings.registry import batch_capable_providers
-from .extract import PAGE_SEPARATOR
+from .extract import PAGE_SEPARATOR, categorize_attachment, normalize_attachment_priority, select_by_priority
 from .identifiers import metadata_match_keys
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 from .semantic_filters import OWNER_FIELDS, combine, live_fields, matches, referenced_fields, split_filters
@@ -551,6 +551,11 @@ def _api_file_stamp(row: Any) -> str:
     if version is not None:
         return f"api-version:{version}"
     return _API_UNKNOWN_STAMP
+
+
+def _stamp_kind(stamp: Any) -> str:
+    """``"api"`` for a stamp ``_api_file_stamp`` built, else ``"local"`` (``<mtime_ns>:<size>``)."""
+    return "api" if str(stamp or "").startswith("api") else "local"
 
 
 def _is_attachment_unit(unit: dict[str, Any]) -> bool:
@@ -1535,6 +1540,9 @@ class ZoteroSemanticSearch:
     # Record keys a full local scan wants indexed, for the deletion pass;
     # None when the scan did not produce a complete set.
     _scan_desired_keys: set[str] | None = None
+    # Attachment keys an API run saw but did not select (outranked, trashed or
+    # moved out of selection): their records go once the run's changes are in.
+    _api_outranked: frozenset[str] | set[str] = frozenset()
     # A gap fill waiting for full text Zotero did not have is asked for it again
     # after this many days, doubling after each answer without text, up to the
     # cap. Zotero indexes PDFs some time after they are added.
@@ -2229,7 +2237,9 @@ class ZoteroSemanticSearch:
                 limit, extract_fulltext=extract_fulltext, chroma_client=chroma_client, force_rebuild=force_rebuild
             )
         else:
-            return self._get_items_from_api(limit, include_fulltext=include_fulltext_via_api)
+            return self._get_items_from_api(
+                limit, include_fulltext=include_fulltext_via_api, force_rebuild=force_rebuild
+            )
 
     def _get_items_from_local_db(
         self,
@@ -3001,14 +3011,14 @@ class ZoteroSemanticSearch:
         kept: list[dict[str, Any]] = []
         for item in items:
             data = item.get("data", {})
-            existing = self.chroma_client.get_document_metadata(item.get("key", ""))
-            if not existing or not _same_moment(existing.get("date_modified"), data.get("dateModified")):
+            # Attachment units, and items with files to write, were judged
+            # against their own records when they were read: attaching a file
+            # does not change the item.
+            if item.get("unit") == UNIT_ATTACHMENT or item.get("_api_attachments"):
                 kept.append(item)
                 continue
-            # New text for an item indexed without it: never indexed with
-            # text, or "failed" (asked, none then). Attaching a PDF doesn't
-            # change the item, so this is where its text comes in.
-            if (data.get("fulltext") or "").strip() and existing.get("has_fulltext") is not True:
+            existing = self.chroma_client.get_document_metadata(item.get("key", ""))
+            if not existing or not _same_moment(existing.get("date_modified"), data.get("dateModified")):
                 kept.append(item)
                 continue
             if item.get("key") in gaps:
@@ -3021,6 +3031,7 @@ class ZoteroSemanticSearch:
         """Keys ``items`` already cover: each item, and the attachment its text came from."""
         keys = {item.get("key") for item in items}
         for item in items:
+            keys.update(unit.get("key") for unit in item.get("_api_attachments") or [])
             source = (item.get("data") or {}).get("fulltextSource") or ""
             if source.startswith(_WEB_ATTACHMENT_SOURCE):
                 keys.add(source[len(_WEB_ATTACHMENT_SOURCE):])
@@ -3098,18 +3109,30 @@ class ZoteroSemanticSearch:
         if _is_legacy_record(existing):
             return False
         if _is_attachment_unit(unit):
-            return existing.get("file_stamp") == unit.get("file_stamp")
+            stored_stamp, stamp = existing.get("file_stamp"), unit.get("file_stamp")
+            if stored_stamp == stamp:
+                return True
+            # One file seen from a machine that has it (a local stamp) and from
+            # one that has not (an API stamp) would otherwise be re-embedded
+            # back and forth. Stamps of different kinds say nothing about the
+            # file, so the attachment's own dateModified decides.
+            if stored_stamp and stamp and _stamp_kind(stored_stamp) != _stamp_kind(stamp):
+                modified = unit.get("date_modified")
+                return bool(modified) and _same_moment(existing.get("date_modified"), modified)
+            return False
         return _same_moment(existing.get("date_modified"), unit.get("data", {}).get("dateModified"))
 
     def _plan_units(self, items: list[dict[str, Any]], *, force_rebuild: bool) -> list[dict[str, Any]]:
         """The work units an API-fetched list of items needs written this run.
 
-        Units the local scan made pass through: it already decided. For an
-        API item (#826, transitional until the API paths select attachments
-        themselves): a legacy item missing only its article record gets a new
-        bibliographic record and keeps its passages; any other legacy item
-        here has changed and is rewritten in full, its legacy passages going
-        once its new record is in. Records already current are left alone.
+        Units the local scan or ``_api_attachment_units`` made pass through:
+        they already decided. For an API item (#826): a legacy item missing
+        only its article record gets a new bibliographic record and keeps its
+        passages; a legacy item that has changed (``_legacy_action``) is
+        rewritten in full with its selected files, its legacy passages going
+        once its new record is in; an unchanged one is left alone. Records
+        already current are left alone. Files an item carries in
+        ``_api_attachments`` were judged against their records when read.
         """
         units: list[dict[str, Any]] = []
         for item in items:
@@ -3118,22 +3141,34 @@ class ZoteroSemanticSearch:
                 continue
             bib, *attachments = self._as_units([item])
             levels = bib.pop("_index_levels", None)
+            # Files the API paths already selected and read (and judged
+            # against their records), ahead of any the item's own text names.
+            for flag in ("_attachments_changed", "_api_attachments"):
+                bib.pop(flag, None)
+            fetched = item.get("_api_attachments") or []
             if force_rebuild:
                 units.append(bib)
+                units.extend(fetched)
                 units.extend(attachments)
                 continue
             existing = self._stored_metadata(bib["key"])
-            if self._legacy_metadata(bib["key"], existing) is not None:
-                if levels == {SEARCH_ARTICLES}:
+            legacy = self._legacy_metadata(bib["key"], existing)
+            if legacy is not None:
+                action = self._legacy_action(item, legacy)
+                if action == "skip":
+                    continue
+                if action == "article":
                     bib["_index_levels"] = levels
                     units.append(bib)
                     continue
                 bib["legacy_rewrite"] = True
                 units.append(bib)
+                units.extend(fetched)
                 units.extend(attachments)
                 continue
             if not self._unit_is_current(bib, existing):
                 units.append(bib)
+            units.extend(fetched)
             for attachment in attachments:
                 stored = self._stored_metadata(attachment["key"])
                 if not self._unit_is_current(attachment, stored):
@@ -3277,6 +3312,323 @@ class ZoteroSemanticSearch:
     # of the attachments is cheaper than asking for each item's children.
     _BULK_ATTACHMENT_WALK_MIN_ITEMS = 25
 
+    def _extraction_setting(self, name: str) -> Any:
+        """``semantic_search.extraction.<name>`` from the config file, or None."""
+        extraction = self._semantic_setting("extraction")
+        return extraction.get(name) if isinstance(extraction, dict) else None
+
+    def _semantic_setting(self, name: str) -> Any:
+        """``semantic_search.<name>`` from the config file, or None."""
+        if not self.config_path or not os.path.exists(self.config_path):
+            return None
+        try:
+            with open(self.config_path) as f:
+                return json.load(f).get("semantic_search", {}).get(name)
+        except Exception:
+            return None
+
+    def _attachment_priority(self) -> tuple[str, ...]:
+        """The configured ``attachment_priority``, as the local reader reads it."""
+        return normalize_attachment_priority(self._extraction_setting("attachment_priority"))
+
+    @staticmethod
+    def _row_key(row: Any) -> str:
+        if not isinstance(row, dict):
+            return ""
+        return str(row.get("key") or (row.get("data") or {}).get("key") or "")
+
+    @staticmethod
+    def _api_category(row: Any) -> str | None:
+        """The ``attachment_priority`` category of an API attachment row, or None.
+
+        None for what can't be indexed: a bare link (no file), a trashed
+        attachment, or a file of no readable kind. The same categorisation
+        the local path applies to the file itself (content type, filename).
+        """
+        data = (row.get("data") if isinstance(row, dict) else None) or {}
+        if data.get("itemType") != "attachment" or data.get("deleted") or data.get("linkMode") == "linked_url":
+            return None
+        return categorize_attachment(data.get("filename") or "", data.get("contentType"))
+
+    def _select_api_rows(self, rows: list[dict[str, Any]], priority: tuple[str, ...]) -> list[dict[str, Any]]:
+        """Every attachment row ``priority`` selects: all readable files of the first category that has any."""
+        candidates = [(category, 0, row) for row in rows if (category := self._api_category(row))]
+        return select_by_priority(candidates, priority, sort_key=self._row_key)
+
+    def _api_children(self, item_key: str) -> tuple[list[dict[str, Any]], bool]:
+        """``(attachment rows, request failed)`` for the children of one item."""
+        try:
+            children = _paginate(self.zotero_client.children, item_key) or []
+        except ResourceNotFoundError:
+            return [], False
+        except Exception as e:
+            logger.debug(f"children({item_key}) failed: {e}")
+            return [], True
+        return [
+            child for child in children
+            if isinstance(child, dict) and (child.get("data") or {}).get("itemType") == "attachment"
+        ], False
+
+    def _attachment_listing(self) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]] | None:
+        """Every attachment of the library from one paged listing.
+
+        ``(rows by parent key, standalone rows)``; None when the listing
+        fails, so the caller can ask per item instead (and then sees no
+        standalone files, which no per-item request can reach).
+        """
+        try:
+            rows = _paginate(self.zotero_client.items, itemType="attachment") or []
+        except Exception as e:
+            logger.debug(f"attachment listing failed, asking per item: {e}")
+            return None
+        return self._group_attachments(rows)
+
+    @staticmethod
+    def _group_attachments(rows: list[Any]) -> tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]]:
+        """``(rows by parent key, standalone rows)`` of the attachment rows among ``rows``."""
+        by_parent: dict[str, list[dict[str, Any]]] = {}
+        standalone: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict) or (row.get("data") or {}).get("itemType") != "attachment":
+                continue
+            parent = (row.get("data") or {}).get("parentItem")
+            if parent:
+                by_parent.setdefault(parent, []).append(row)
+            else:
+                standalone.append(row)
+        return by_parent, standalone
+
+    @contextlib.contextmanager
+    def _local_file_stamps(self):
+        """Yield ``locate(attachment_key) -> (file_stamp, path) | None`` for files on this machine.
+
+        In local mode the API paths can see the attachment file itself. Its
+        stamp is then the local ``<mtime_ns>:<size>`` the SQLite scan writes,
+        so an index kept up to date by both (``update-db --fulltext`` and plain
+        ``update-db``, or the MCP server and the CLI) does not embed shared
+        files twice. Anything else (web mode, no database, a file not
+        downloaded) is None and gets an API stamp. The reader is opened on the
+        first lookup, and only in local mode.
+        """
+        reader: Any = None
+        tried = False
+
+        def locate(key: str) -> tuple[str, Path] | None:
+            nonlocal reader, tried
+            if not is_local_mode():
+                return None
+            if not tried:
+                tried = True
+                try:
+                    db_path = self.db_path or self._semantic_setting("zotero_db_path")
+                    with suppress_stdout():
+                        reader = LocalZoteroReader(db_path=db_path)
+                except Exception as e:
+                    logger.debug(f"No local reader for file stamps: {e}")
+            if reader is None:
+                return None
+            try:
+                path = reader.resolve_attachment_file(key)
+                if path is None:
+                    return None
+                st = Path(path).stat()
+            except Exception:
+                return None
+            return f"{st.st_mtime_ns}:{st.st_size}", Path(path)
+
+        try:
+            yield locate
+        finally:
+            if reader is not None:
+                with contextlib.suppress(Exception):
+                    reader.close()
+
+    def _attachment_fulltext(self, key: str) -> tuple[str, bool]:
+        """``(text, request failed)`` for one attachment from Zotero's fulltext endpoint.
+
+        Zotero's 404 for an attachment without text is an answer (empty text),
+        not a failure.
+        """
+        try:
+            resp = self.zotero_client.fulltext_item(key)
+        except ResourceNotFoundError:
+            return "", False
+        except Exception as e:
+            logger.debug(f"fulltext_item({key}) failed: {e}")
+            return "", True
+        if isinstance(resp, dict):
+            return str(resp.get("content", "") or ""), False
+        return (resp if isinstance(resp, str) else ""), False
+
+    def _legacy_action(self, item: dict[str, Any], legacy: dict[str, Any]) -> str:
+        """What an API-fetched item whose records are legacy needs: ``"skip"``, ``"article"`` or ``"rewrite"``.
+
+        An unchanged legacy item keeps its records until ``--force-rebuild``
+        (#826). It has changed when it has no library attribution, its
+        ``date_modified`` moved, one of its attachments changed
+        (``_attachments_changed``: attaching a file does not bump the parent),
+        or chunking is on and it was indexed with text but has no passages.
+        """
+        levels = item.get("_index_levels")
+        if levels == {SEARCH_ARTICLES}:
+            # Only its article record is missing: write that, and leave its
+            # passages, which cost money, as they are.
+            return "article"
+        data = item.get("data") or {}
+        if (
+            "group_id" not in legacy
+            or item.get("_attachments_changed")
+            or not _same_moment(legacy.get("date_modified"), data.get("dateModified"))
+            or (levels == {SEARCH_PASSAGES} and legacy.get("has_fulltext") is True)
+        ):
+            return "rewrite"
+        return "skip"
+
+    def _api_attachment_units(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        listing: tuple[dict[str, list[dict[str, Any]]], list[dict[str, Any]]] | None = None,
+        standalone_rows: list[dict[str, Any]] | None = None,
+        force_rebuild: bool = False,
+    ) -> tuple[list[dict[str, Any]], set[str], set[str], bool]:
+        """Select and read the files of ``items`` over the API (#826).
+
+        For each regular item, every readable attachment ``attachment_priority``
+        selects (all of the first category that has any) is an attachment
+        unit; each goes in the item's ``_api_attachments``. With ``listing``
+        (the whole library's attachments, see ``_attachment_listing``) the
+        children come from it and its standalone files are units too; with
+        ``standalone_rows`` those files are. Text is fetched only for a file
+        whose record is not current; one Zotero has no text for gets no
+        record. An unchanged legacy item gets nothing.
+
+        Returns ``(standalone units, selected attachment keys, outranked
+        keys, complete)``: ``outranked`` is the keys of attachments seen but
+        not selected, whose records must go; ``complete`` is False when a
+        request failed, so the selection can't stand for the whole library.
+        """
+        priority = self._attachment_priority()
+        group_id = self._pinned_group_id()
+        selected: set[str] = set()
+        outranked: set[str] = set()
+        complete = True
+        chosen_by_item: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+        for item in items:
+            key = item.get("key", "")
+            if not key or item.get("unit") or (item.get("data") or {}).get("itemType") in _NON_INDEXED_ITEM_TYPES:
+                continue
+            if listing is not None:
+                rows = listing[0].get(key, [])
+            else:
+                rows, failed = self._api_children(key)
+                if failed:
+                    complete = False
+                    continue
+            chosen = self._select_api_rows(rows, priority)
+            chosen_keys = {self._row_key(row) for row in chosen}
+            selected |= chosen_keys
+            outranked |= {self._row_key(row) for row in rows} - chosen_keys
+            chosen_by_item.append((item, chosen))
+        standalone = [
+            row for row in (standalone_rows if standalone_rows is not None else (listing[1] if listing else []))
+            if self._api_category(row)
+        ]
+        selected |= {self._row_key(row) for row in standalone}
+
+        # The stored state of everything about to be judged, read in bulk.
+        lookup_keys = [item["key"] for item, chosen in chosen_by_item if chosen]
+        lookup_keys += [self._row_key(row) for _item, chosen in chosen_by_item for row in chosen]
+        lookup_keys += [self._row_key(row) for row in standalone]
+        batched = getattr(self.chroma_client, "get_metadatas", None)
+        prefetched: dict[str, dict[str, Any]] = {}
+        if batched is not None and lookup_keys and not force_rebuild:
+            prefetched = batched([*lookup_keys, *(f"{k}#0" for k in lookup_keys)])
+
+            def stored_of(key: str) -> dict[str, Any] | None:
+                return prefetched.get(key) or prefetched.get(f"{key}#0")
+        else:
+            stored_of = self._stored_metadata
+
+        def build(row: dict[str, Any], owner: str | None, label: str, locate: Any) -> dict[str, Any] | None:
+            akey = self._row_key(row)
+            data = row.get("data") or {}
+            located = locate(akey)
+            stamp = located[0] if located else _api_file_stamp(row)
+            unit = _attachment_unit(
+                akey, "", file_stamp=stamp, date_modified=data.get("dateModified"),
+                group_id=group_id, owner_key=owner, label=label or data.get("filename") or akey,
+            )
+            current = False
+            if not force_rebuild:
+                stored = stored_of(akey)
+                gap = self._scan_gaps.get(akey)
+                current = self._unit_is_current(unit, stored)
+                if current:
+                    if not gap:
+                        return None
+                    unit["_index_levels"] = gap
+                elif stored and "chunk_index" in stored and gap == {SEARCH_ARTICLES}:
+                    # Its passages are there; only the attachment record is missing.
+                    unit["_index_levels"] = gap
+            text, failed = self._attachment_fulltext(akey)
+            if failed:
+                # Asked again next run; what is stored stays.
+                return None
+            if not text.strip():
+                # Zotero has no text for it (yet). Unlike a local file that
+                # can't be read, that is not settled by the file's stamp:
+                # Zotero extracts text after the file arrives, with the stamp
+                # unchanged. So it is no failure marker, and a full scan asks
+                # again; an incremental run only asks when the file changes.
+                # An older record of it is stale and goes.
+                if not current:
+                    selected.discard(akey)
+                return None
+            unit["text"] = text
+            if located:
+                from . import file_hash
+
+                unit["file_hash"] = file_hash.get_file_hash(akey, located[1], stamp, config_path=self.config_path)
+            return unit
+
+        standalone_units: list[dict[str, Any]] = []
+        with self._local_file_stamps() as locate:
+            for item, chosen in chosen_by_item:
+                if not chosen:
+                    continue
+                key = item["key"]
+                existing = None if force_rebuild else stored_of(key)
+                if existing:
+                    legacy = self._legacy_metadata(
+                        key, existing, passage=prefetched.get(f"{key}#0") if batched is not None else _UNSET
+                    )
+                    if legacy is not None and self._legacy_action(item, legacy) != "rewrite":
+                        continue
+                label = (item.get("data") or {}).get("title", "")
+                units = [unit for row in chosen if (unit := build(row, key, label, locate))]
+                if units:
+                    item["_api_attachments"] = units
+            for row in standalone:
+                if unit := build(row, None, "", locate):
+                    standalone_units.append(unit)
+        return standalone_units, selected, outranked, complete
+
+    def _delete_records(self, keys: set[str]) -> int:
+        """Delete the records (and passages) of these attachment keys, those present.
+
+        Returns how many keys had any.
+        """
+        if not keys:
+            return 0
+        present = sorted(self._existing_item_keys(sorted(keys)))
+        group_id = int(self._run_group_id) if getattr(self, "_run_group_id", None) is not None else None
+        for key in present:
+            self.chroma_client.delete_item_chunks(key, group_id=group_id)
+        if present:
+            self.chroma_client.delete_documents(present)
+        return len(present)
+
     def _pdf_attachment_keys_by_parent(self) -> dict[str, list[str]] | None:
         """PDF attachment keys grouped by parent key, from one paged listing.
 
@@ -3376,16 +3728,22 @@ class ZoteroSemanticSearch:
         for item in items:
             item.setdefault("data", {})["group_id"] = group_id
 
-    def _get_items_from_api(self, limit: int | None = None, include_fulltext: bool = False) -> list[dict[str, Any]]:
+    def _get_items_from_api(
+        self, limit: int | None = None, include_fulltext: bool = False, force_rebuild: bool = False
+    ) -> list[dict[str, Any]]:
         """
         Get items from Zotero API (original implementation).
 
         Args:
             limit: Optional limit on number of items
-            include_fulltext: If True, fetch server-side extracted PDF text
-                via pyzotero's fulltext_item endpoint for each returned
-                top-level item. Enables full-text semantic indexing without
-                requiring local Zotero mode.
+            include_fulltext: If True, select every attachment the configured
+                ``attachment_priority`` picks for each item, and every
+                standalone one, and read its server-side extracted text via
+                pyzotero's fulltext_item endpoint (#826). The files come back
+                as attachment units after the items, each item carrying its
+                own in ``_api_attachments``. Enables full-text semantic
+                indexing without requiring local Zotero mode.
+            force_rebuild: Read every file again, whatever is stored.
 
         Returns:
             List of items from API
@@ -3396,6 +3754,7 @@ class ZoteroSemanticSearch:
         batch_size = 100
         start = 0
         all_items = []
+        attachment_rows: list[dict[str, Any]] = []
 
         while True:
             batch_params = {"start": start, "limit": batch_size}
@@ -3418,7 +3777,11 @@ class ZoteroSemanticSearch:
             if not items:
                 break
 
-            # Filter out attachments, notes and annotations
+            # Regular items only; the attachments in the pages are kept
+            # aside, for the standalone files and the children (#826).
+            attachment_rows.extend(
+                item for item in items if item.get("data", {}).get("itemType") == "attachment"
+            )
             filtered_items = [
                 item for item in items if item.get("data", {}).get("itemType") not in _NON_INDEXED_ITEM_TYPES
             ]
@@ -3432,10 +3795,31 @@ class ZoteroSemanticSearch:
         if limit:
             all_items = all_items[:limit]
 
-        if include_fulltext:
-            self._attach_web_fulltext(all_items, whole_library=not limit)
-
         self._tag_group_id(all_items)
+
+        if include_fulltext:
+            whole_library = not limit
+            listing = None
+            if whole_library and any((row.get("data") or {}).get("parentItem") for row in attachment_rows):
+                # The pages held the library's attachments already.
+                listing = self._group_attachments(attachment_rows)
+            elif whole_library and len(all_items) >= self._BULK_ATTACHMENT_WALK_MIN_ITEMS:
+                listing = self._attachment_listing()
+            standalone, selected, outranked, complete = self._api_attachment_units(
+                all_items,
+                listing=listing,
+                standalone_rows=[
+                    row for row in attachment_rows if not (row.get("data") or {}).get("parentItem")
+                ] if whole_library else [],
+                force_rebuild=force_rebuild,
+            )
+            all_items.extend(standalone)
+            if whole_library and complete:
+                # Every record key this library should have: what is not here
+                # (trashed, outranked or textless files) goes in the deletion
+                # pass, which item_versions() alone would not remove.
+                self._scan_desired_keys = {item["key"] for item in all_items if not item.get("unit")} | selected
+            self._api_outranked = self._api_outranked | outranked
 
         logger.info(f"Retrieved {len(all_items)} items from API")
         return all_items
@@ -3478,6 +3862,7 @@ class ZoteroSemanticSearch:
             return [], current_keys
 
         changed_items: list[dict[str, Any]] = []
+        changed_attachments: list[dict[str, Any]] = []
         for key in changed_versions.keys():
             try:
                 item = self.zotero_client.item(key)
@@ -3487,18 +3872,79 @@ class ZoteroSemanticSearch:
             if not item:
                 continue
             item_type = item.get("data", {}).get("itemType")
-            # Don't index attachments/notes as standalone entries; only
-            # top-level research items participate in semantic search.
+            if item_type == "attachment":
+                changed_attachments.append(item)
+                continue
+            # Notes and annotations are never indexed (#604); only regular
+            # items get a bibliographic record.
             if item_type in _NON_INDEXED_ITEM_TYPES:
                 continue
             changed_items.append(item)
 
-        if include_fulltext and changed_items:
-            self._attach_web_fulltext(changed_items)
-
+        if include_fulltext and changed_attachments:
+            owners, unresolved = self._owners_of_changed_attachments(changed_attachments, changed_items)
+            changed_items.extend(owners)
+        else:
+            unresolved = set()
         self._tag_group_id(changed_items)
 
+        if include_fulltext:
+            standalone_rows = [
+                row for row in changed_attachments if not (row.get("data") or {}).get("parentItem")
+            ]
+            standalone, selected, outranked, complete = self._api_attachment_units(
+                changed_items, standalone_rows=standalone_rows
+            )
+            changed_items.extend(standalone)
+            self._api_outranked = self._api_outranked | outranked
+            if complete:
+                # A changed attachment that selection no longer picks
+                # (trashed, outranked, moved out of reach) loses its records.
+                # When a request failed the selection is not known, and
+                # nothing is deleted on its strength.
+                self._api_outranked = self._api_outranked | {
+                    self._row_key(row) for row in changed_attachments
+                    if self._row_key(row) not in selected | unresolved
+                }
+
         return changed_items, current_keys
+
+    def _owners_of_changed_attachments(
+        self, attachments: list[dict[str, Any]], changed_items: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        """``(parents not yet in changed_items, keys of attachments whose parent is unknown)``.
+
+        A changed file changes what its parent's selection is, though the
+        parent itself did not change, so the parent is fetched and judged
+        again; it is flagged so a legacy parent counts as changed too. A
+        parent that is gone or trashed has no selection: its attachment's
+        records go. One that can't be fetched leaves its attachment's records
+        alone (the key comes back in the second set).
+        """
+        by_key = {item.get("key"): item for item in changed_items}
+        owners: list[dict[str, Any]] = []
+        unresolved: set[str] = set()
+        for row in attachments:
+            parent = (row.get("data") or {}).get("parentItem")
+            if not parent:
+                continue
+            owner = by_key.get(parent)
+            if owner is None:
+                try:
+                    owner = self.zotero_client.item(parent)
+                except ResourceNotFoundError:
+                    continue
+                except Exception as e:
+                    logger.debug(f"item({parent}) failed while following a changed attachment: {e}")
+                    unresolved.add(self._row_key(row))
+                    continue
+                data = (owner or {}).get("data") or {}
+                if not owner or data.get("deleted") or data.get("itemType") in _NON_INDEXED_ITEM_TYPES:
+                    continue
+                by_key[parent] = owner
+                owners.append(owner)
+            owner["_attachments_changed"] = True
+        return owners, unresolved
 
     def _verify_local_snapshot_version(self, target_sync_version: int) -> int | None:
         """Decide whether the local sqlite snapshot supports promoting the
@@ -4054,8 +4500,9 @@ class ZoteroSemanticSearch:
             # zotero_switch_library cannot re-point half a run at another
             # library.
             self._run_group_id = self._client_group_id()
-            # Set by this run's local scan, if it covers the whole library.
+            # Set by this run's scan, if it covers the whole library.
             self._scan_desired_keys = None
+            self._api_outranked = set()
 
             # An index ChromaDB cannot read fails every later step with an
             # error that does not say why (#747). Stop with one that does; a
@@ -4410,6 +4857,17 @@ class ZoteroSemanticSearch:
                             current_library_keys = None
                     self._run_deletion_pass(stats, current_library_keys, allow_mass_deletion)
 
+            # Files an API run saw and did not select (outranked, trashed, moved
+            # out of reach) lose their records, and no gap fill may bring them back.
+            if outranked := set(self._api_outranked):
+                if not force_full_rebuild:
+                    removed = self._delete_records(outranked)
+                    if removed:
+                        stats["deleted_items"] = stats.get("deleted_items", 0) + removed
+                all_items = [
+                    item for item in all_items if not (item.get("unit") and item.get("key") in outranked)
+                ]
+
             # From here on the run works on units: a bibliographic record per
             # regular item, an attachment record (and passages) per file (#826).
             all_items = self._plan_units(all_items, force_rebuild=force_full_rebuild)
@@ -4748,6 +5206,7 @@ class ZoteroSemanticSearch:
             self._level_fill_keys = frozenset()
             self._legacy_rewrites = frozenset()
             self._scan_desired_keys = None
+            self._api_outranked = frozenset()
             # The server keeps one instance: the next run starts without these.
             self._undropped_passages = frozenset()
             if self._held_text is not None:
