@@ -5107,12 +5107,16 @@ class ZoteroSemanticSearch:
         try:
             client = adapter.create_client(self.chroma_client.embedding_config)
             # A separate-collection index imported with chunking off drops the
-            # passages of items it rewrites, as a realtime run would.
+            # passages of items it rewrites, as a realtime run would. What
+            # counts is the setting the run was cut with: a run without
+            # passages leaves a changed item's old ones stale whatever the
+            # setting is now, and one with passages must not delete its own.
+            # A run from before passages went through batches had none.
             layout_of = getattr(self.chroma_client, "index_layout", None)
             layout = layout_of() if layout_of else None
             self._drop_passages_on_write = (
                 self._separate_passages()
-                and not self._chunking_enabled
+                and not manifest.get("chunking", False)
                 and isinstance(layout, dict)
                 and bool(layout.get("passage_records"))
             )

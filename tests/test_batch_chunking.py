@@ -671,3 +671,33 @@ def test_a_superseded_run_from_before_item_lists_writes_no_passages(env, monkeyp
     search._import_batch("openai", fill_jobs)
 
     assert search.chroma_client.item_keys_by_level()[1] == set()
+
+
+def _change_aaa(env, monkeypatch, tmp_path, *, submit_chunking, import_chunking):
+    _isolate_home(monkeypatch, tmp_path)
+    zotero = FakeZotero({"AAA": LONG})
+    search = env.build(zotero, chunking=True)
+    search.update_database()
+    _land(env, search)
+    zotero.version = 6
+    zotero.changed = {"AAA"}
+    zotero.abstracts["AAA"] = CHANGED
+    env.build(zotero, chunking=submit_chunking).update_database()
+    search = env.build(zotero, chunking=import_chunking)
+    _land(env, search)
+    return search
+
+
+def test_a_run_cut_without_passages_drops_stale_ones_though_chunking_is_on_now(env, monkeypatch, tmp_path):
+    search = _change_aaa(env, monkeypatch, tmp_path, submit_chunking=False, import_chunking=True)
+
+    assert _passage_texts(search, "AAA") == []
+    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
+
+
+def test_a_run_cut_with_passages_keeps_them_though_chunking_is_off_now(env, monkeypatch, tmp_path):
+    search = _change_aaa(env, monkeypatch, tmp_path, submit_chunking=True, import_chunking=False)
+
+    texts = _passage_texts(search, "AAA")
+    assert len(texts) == 5
+    assert all("Sentence number" not in t for t in texts)
