@@ -582,3 +582,13 @@ def test_a_legacy_record_with_text_counts_as_its_items_file(build):
     assert layout["article_text_items"] == 1
     assert layout["legacy_records"] == 2
     assert search.search("q")["level_note"] is None
+
+
+def test_a_legacy_index_without_full_text_or_passages_still_says_no_passages_yet(build):
+    search = build(chunking=True)
+    _write(search.chroma_client, ["OLD"], [_meta("OLD", title="t", has_fulltext=False)])
+
+    note = search.search("q")["level_note"]
+
+    assert "Searched articles (1 item in the index)" in note
+    assert "No passages are indexed yet" in note

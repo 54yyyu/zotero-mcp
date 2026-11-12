@@ -1181,7 +1181,15 @@ WHERE m.key = ? AND m.string_value IS NOT NULL
   AND s.scope = 'METADATA' AND c.name = ? AND instr(e.embedding_id, '#') = 0
 """
 
-_LEGACY_TEXT_RECORDS = _BARE_KEY_COUNT + """
+# Kinds are exclusive: a record with ``file_stamp`` is an attachment record
+# even if it still carries a ``title``; the rest with a ``title`` are legacy.
+_NO_FILE_STAMP = """
+  AND NOT EXISTS (SELECT 1 FROM embedding_metadata f WHERE f.id = e.id AND f.key = 'file_stamp')
+"""
+
+_LEGACY_RECORDS = _BARE_KEY_COUNT + _NO_FILE_STAMP
+
+_LEGACY_TEXT_RECORDS = _LEGACY_RECORDS + """
   AND EXISTS (SELECT 1 FROM embedding_metadata h
               WHERE h.id = e.id AND h.key = 'has_fulltext' AND h.bool_value = 1)
 """
@@ -1196,7 +1204,7 @@ def _record_kind_counts(con: sqlite3.Connection, collection_name: str) -> tuple[
     has text when it was built with full text.
     """
     attachments = con.execute(_BARE_KEY_COUNT, ("file_stamp", collection_name)).fetchone()[0]
-    legacy = con.execute(_BARE_KEY_COUNT, ("title", collection_name)).fetchone()[0]
+    legacy = con.execute(_LEGACY_RECORDS, ("title", collection_name)).fetchone()[0]
     legacy_text = con.execute(_LEGACY_TEXT_RECORDS, ("title", collection_name)).fetchone()[0]
     return attachments, legacy, legacy_text
 
@@ -1332,6 +1340,7 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
         "legacy_records": 0,
         "bibliographic_records": 0,
         "article_text_items": 0,
+        "article_level_items": 0,
         "passage_collection_exists": False,
         "article_collection_id": None,
         "passage_collection_id": None,
@@ -1357,7 +1366,10 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
     layout.update(
         attachment_records=attachments,
         legacy_records=legacy_records,
-        bibliographic_records=max(0, bare - attachments - legacy_records),
+        bibliographic_records=bare - attachments - legacy_records,
+        # Every attachment record and every legacy record is an item's article
+        # record, whether or not it has text; this is what status shows.
+        article_level_items=attachments + legacy_records,
         # Records that stand for a file's text at article level, to compare
         # with the keys that have passages: an attachment record, or a legacy
         # record built with full text (#826).
@@ -1545,15 +1557,15 @@ def level_item_counts(
 ) -> dict[str, Any]:
     """Items per level for status, and on an unmigrated index what migrating costs.
 
-    ``article_items`` and ``passage_items`` compare like with like (#826):
-    attachments (or legacy items) whose text has an article record, and the
-    keys that have passages. Bibliographic records have no text and are in
-    neither. ``migration`` is there only while passages are still in the
+    ``article_items`` is the attachments (or legacy items) that have an
+    article record, ``passage_items`` the keys that have passages. Bibliographic
+    records are in neither. (The level note compares ``article_text_items``,
+    which leaves out legacy records built without full text.) ``migration`` is there only while passages are still in the
     article collection, and is what the status note about ``migrate-index``
     reads.
     """
     counts: dict[str, Any] = {
-        "article_items": layout["article_text_items"],
+        "article_items": layout["article_level_items"],
         "passage_items": layout.get("passage_items"),
         "attachment_records": layout["attachment_records"],
         "bibliographic_records": layout["bibliographic_records"],

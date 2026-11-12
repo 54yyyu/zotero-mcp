@@ -99,7 +99,7 @@ def test_a_mixed_legacy_and_new_index(index):
     assert info["bibliographic_records"] == 1
     assert info["attachment_records"] == 1
     assert info["legacy_records"] == 2
-    assert info["article_items"] == 2  # ATT1, and OLD1 (built with full text)
+    assert info["article_items"] == 3  # ATT1, OLD1 and OLD2: every one has an article record
     assert info["passage_items"] == 2
     assert info["legacy_passages"] == 2
     assert info["legacy_passage_items"] == 1
@@ -194,3 +194,36 @@ def test_the_clis_show_the_same(index, monkeypatch, capsys, which):
     assert "Legacy records: 1" in out
     assert "Items with passages: 1" in out
     assert "zotero-mcp migrate-index" in out
+
+
+def test_a_legacy_index_without_full_text_shows_its_article_records(index):
+    directory, config = index
+    meta = {"title": "t", "has_fulltext": False}
+    _write(directory, [("OLD1", meta), ("OLD2", meta), ("OLD3", meta)])
+
+    info = read_collection_status(config)
+    rows = dict(level_status_rows(info))
+
+    assert info["article_items"] == 3
+    assert rows["Items with article records"] == "3"
+    assert rows["Legacy records"] == "3"
+
+
+def test_a_mixed_index_counts_every_article_level_item(index):
+    directory, config = index
+    _write(directory, [("BIB1", BIB), ("ATT1", ATT), ("OLD1", LEGACY), ("OLD2", {"title": "t", "has_fulltext": False})])
+
+    info = read_collection_status(config)
+
+    assert info["article_items"] == 3  # ATT1, OLD1, OLD2; BIB1 has no article text
+    assert info["bibliographic_records"] == 1
+
+
+def test_record_kinds_are_exclusive(index):
+    directory, config = index
+    # A record with a file_stamp is an attachment record even if it still carries a title.
+    _write(directory, [("ATT1", {**ATT, "title": "t"}), ("OLD1", LEGACY), ("BIB1", BIB)])
+
+    info = read_collection_status(config)
+
+    assert (info["attachment_records"], info["legacy_records"], info["bibliographic_records"]) == (1, 1, 1)

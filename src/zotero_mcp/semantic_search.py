@@ -7013,8 +7013,11 @@ class ZoteroSemanticSearch:
         if layout["unmigrated_passages"] or layout["passage_items"] is None:
             # No passage count could be read: give no counts rather than wrong ones.
             return None
-        items = {SEARCH_ARTICLES: layout["article_text_items"], SEARCH_PASSAGES: layout["passage_items"]}
         legacy = bool(layout["legacy_records"] or layout["legacy_passages"])
+        # A legacy index built without full text has no text records to count;
+        # its article records are still what a search covers.
+        articles = layout["article_text_items"] or (layout["article_level_items"] if legacy else 0)
+        items = {SEARCH_ARTICLES: articles, SEARCH_PASSAGES: layout["passage_items"]}
         other = SEARCH_PASSAGES if level == SEARCH_ARTICLES else SEARCH_ARTICLES
         searched, elsewhere = items[level], items[other]
         if not searched:
