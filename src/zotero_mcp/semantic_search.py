@@ -568,6 +568,8 @@ _LEGACY_METADATA_KEYS = (
     "item_type", "title", "date", "date_added", "creators", "publication", "url", "doi",
     "tags", "citation_key", "has_fulltext", "fulltext_source", "attachment_keys",
     "attachment_priority", "parent_item_key",
+    # Set by the migration on a legacy record whose passages it moved (index_migration).
+    "rekeyed_to",
 )
 
 
@@ -2773,6 +2775,39 @@ class ZoteroSemanticSearch:
         except Exception:
             pass
 
+    def _rekey_legacy_passages(self, stats: dict[str, Any]) -> None:
+        """Move passages stored under their parent item to their attachment (``migrate-index``'s second step).
+
+        Embeds nothing. A failure is logged and the run goes on: legacy
+        passages keep working where they are.
+        """
+        layout_of = getattr(self.chroma_client, "index_layout", None)
+        layout = layout_of() if layout_of else None
+        if not isinstance(layout, dict) or not layout.get("legacy_passages"):
+            return
+        from . import index_migration
+
+        report = index_migration.MigrationReport(self.chroma_client.persist_directory, dry_run=False)
+        try:
+            _report(f"Re-keying the passages of {layout['legacy_passage_items']} items to their attachments.\n")
+            with index_migration.open_sources(self.config_path, db_path=self.db_path) as sources:
+                index_migration.rekey_legacy_passages(
+                    self.chroma_client.persist_directory,
+                    self.chroma_client.collection_name,
+                    self.chroma_client,
+                    sources,
+                    report,
+                    lambda _message: None,
+                    config_path=self.config_path,
+                )
+        except Exception as e:
+            logger.error(f"Re-keying legacy passages failed ({e}); they stay as they are")
+        stats["passages_rekeyed"] = {
+            "items": report.rekeyed_items,
+            "passages": report.rekeyed_passages,
+            "dropped_items": report.dropped_items,
+        }
+
     def _find_index_gaps(
         self, *, limit: int | None, force_rebuild: bool, fill_passages: bool = True
     ) -> dict[str, set[str]]:
@@ -2786,7 +2821,12 @@ class ZoteroSemanticSearch:
         if limit is not None or force_rebuild or not self._separate_passages():
             return {}
         articles, passages = self.chroma_client.item_keys_by_level()
-        gaps: dict[str, set[str]] = {key: {SEARCH_ARTICLES} for key in passages - articles}
+        # Passages the migration moved to an attachment's key belong to a
+        # legacy item and have no attachment record, by design (#826).
+        moved = getattr(self.chroma_client, "rekeyed_targets", None)
+        gaps: dict[str, set[str]] = {
+            key: {SEARCH_ARTICLES} for key in passages - articles - (moved() if moved else set())
+        }
         # An automatic run (startup, pre-search) leaves passage gaps alone:
         # after chunking is switched on that is the whole library, which a paid
         # embedding API bills; it waits for an update the user starts.
@@ -4950,6 +4990,12 @@ class ZoteroSemanticSearch:
                     )
                 except Exception:
                     pass
+
+            # Passages stored the old way move to their attachments first: it
+            # costs no embedding, and the scan below then sees them in place.
+            # Only a run somebody asked for does this (#826).
+            if not automatic and not force_full_rebuild:
+                self._rekey_legacy_passages(stats)
 
             # Pick up a layout changed by another process (a migration) before
             # deciding where this run writes.

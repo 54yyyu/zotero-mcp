@@ -442,11 +442,22 @@ def _print_migration_report(report) -> None:
         print("Nothing to migrate: this index already keeps passages in their own collection, or has none.")
     else:
         print(f"\nMigration {'check (dry run)' if report.dry_run else 'completed'}:")
-        print(f"- Passages kept, with their vectors: {report.passage_records}")
+        print(f"- Passages kept, with their vectors: {report.passage_records - report.dropped_passages}")
         if report.moved_articles:
             print(f"- Article records moved to the article-level ChromaDB collection: {report.moved_articles}")
         if report.moved_passages:
             print(f"- Passages moved out of the article-level ChromaDB collection: {report.moved_passages}")
+        if report.legacy_items:
+            verb = "would be" if report.dry_run else "were"
+            print(
+                f"- Items whose passages {verb} re-keyed to their attachment, vectors unchanged: "
+                f"{report.rekeyed_items} ({report.rekeyed_passages} passages)"
+            )
+            if report.dropped_items:
+                print(
+                    f"- Items whose attachment could not be told for certain, so their {report.dropped_passages} "
+                    f"passages {verb} dropped and embedded again by the next update-db: {report.dropped_items}"
+                )
     if report.items_needing_articles:
         print(f"- Items without an article vector: {report.items_needing_articles}")
     if report.dry_run:
@@ -1509,6 +1520,9 @@ def main():
         from zotero_mcp.index_migration import MigrationError, migrate_index
         from zotero_mcp.semantic_search import _acquire_update_lock, _update_lock_path
 
+        # Local mode decides whether the Zotero database can say which
+        # attachment a passage came from.
+        setup_zotero_environment()
         config_path = _semantic_config_path(args.config_path)
         with _acquire_update_lock(_update_lock_path()) as acquired:
             if not acquired:

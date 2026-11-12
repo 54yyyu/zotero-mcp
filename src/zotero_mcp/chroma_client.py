@@ -716,6 +716,39 @@ class ChromaClient:
                     found[doc_id] = meta or {}
         return found
 
+    def read_records(self, ids: list[str]) -> list[dict[str, Any]]:
+        """``{"id", "document", "embedding", "metadata"}`` of each of ``ids`` that exists, in any collection.
+
+        Looks in every collection, not where the id belongs: a passage
+        stranded in the article collection is still found. Raises on a
+        ChromaDB error.
+        """
+        found: dict[str, dict[str, Any]] = {}
+        for collection in self.collections():
+            for start in range(0, len(ids), 500):
+                result = collection.get(
+                    ids=ids[start:start + 500], include=["documents", "metadatas", "embeddings"]
+                )
+                embeddings = result.get("embeddings")
+                for i, doc_id in enumerate(result.get("ids", [])):
+                    found[doc_id] = {
+                        "id": doc_id,
+                        "document": (result.get("documents") or [""] * (i + 1))[i],
+                        "embedding": [float(x) for x in embeddings[i]],
+                        "metadata": (result.get("metadatas") or [{}] * (i + 1))[i] or {},
+                    }
+        return [found[doc_id] for doc_id in ids if doc_id in found]
+
+    def delete_records(self, ids: list[str]) -> None:
+        """Delete ``ids`` from every collection, wherever they are. Raises on a ChromaDB error."""
+        for collection in self.collections():
+            for start in range(0, len(ids), 500):
+                collection.delete(ids=ids[start:start + 500])
+
+    def rekeyed_targets(self) -> set[str]:
+        """Attachment keys the migration moved legacy passages to; see :func:`read_rekeyed_targets`."""
+        return read_rekeyed_targets(self.persist_directory, self.collection_name)
+
     def find_by_file_hash(self, hashes: list[str]) -> dict[str, list[str]]:
         """``{file_hash: [attachment keys]}`` of the attachment records that carry these hashes.
 
@@ -1109,6 +1142,131 @@ def _passage_item_count(con: sqlite3.Connection, segment: str) -> int | None:
     return None
 
 
+# Passages written before #826 are the only passages that carry ``title``. The
+# partial index on (key, string_value) makes this a walk over titled records
+# alone, not over every passage. Both collections: an unmigrated index keeps
+# its passages in the article collection.
+_LEGACY_PASSAGES_FROM = """
+FROM embedding_metadata m
+JOIN embeddings e ON e.id = m.id
+JOIN segments s ON e.segment_id = s.id
+JOIN collections c ON s.collection = c.id
+WHERE m.key = 'title' AND m.string_value IS NOT NULL
+  AND s.scope = 'METADATA' AND c.name IN (?, ?) AND instr(e.embedding_id, '#') > 0
+"""
+
+
+def _legacy_passage_counts(con: sqlite3.Connection, collection_name: str) -> tuple[int, int]:
+    """``(legacy passages, items they belong to)``, in either collection."""
+    names = (collection_name, passage_collection_name(collection_name))
+    return con.execute(
+        "SELECT count(*), count(DISTINCT substr(e.embedding_id, 1, instr(e.embedding_id, '#') - 1)) "
+        + _LEGACY_PASSAGES_FROM,
+        names,
+    ).fetchone()
+
+
+def read_legacy_passage_ids(persist_directory: str, collection_name: str) -> dict[str, list[tuple[str, str]]]:
+    """``{item key: [(passage id, collection name)]}`` of the legacy passages, read-only from SQLite.
+
+    Passages are in chunk order. See :func:`read_index_layout` for what makes
+    a passage legacy.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return {}
+    names = (collection_name, passage_collection_name(collection_name))
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        rows = con.execute("SELECT e.embedding_id, c.name " + _LEGACY_PASSAGES_FROM, names).fetchall()
+    finally:
+        con.close()
+    found: dict[str, list[tuple[str, str]]] = {}
+    for doc_id, name in rows:
+        found.setdefault(record_key(doc_id), []).append((doc_id, name))
+
+    def chunk_number(passage: tuple[str, str]) -> int:
+        tail = passage[0].rsplit("#", 1)[1]
+        return int(tail) if tail.isdigit() else -1
+
+    for passages in found.values():
+        passages.sort(key=chunk_number)
+    return found
+
+
+def read_stored_fields(
+    persist_directory: str, records: list[tuple[str, str]], keys: tuple[str, ...]
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """The stored ``keys`` of records given as ``(id, collection name)``, read-only from SQLite.
+
+    The document is ``"chroma:document"``. A key a record lacks is absent.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+    if not db.exists() or not records:
+        return found
+    by_collection: dict[str, list[str]] = {}
+    for doc_id, name in records:
+        by_collection.setdefault(name, []).append(doc_id)
+    key_marks = ",".join("?" * len(keys))
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        for name, ids in by_collection.items():
+            for start in range(0, len(ids), 400):
+                part = ids[start:start + 400]
+                marks = ",".join("?" * len(part))
+                rows = con.execute(
+                    f"""
+                    SELECT e.embedding_id, m.key,
+                           coalesce(m.string_value, m.int_value, m.float_value, m.bool_value)
+                    FROM embeddings e
+                    JOIN segments s ON e.segment_id = s.id
+                    JOIN collections c ON s.collection = c.id
+                    JOIN embedding_metadata m ON m.id = e.id
+                    WHERE c.name = ? AND s.scope = 'METADATA'
+                      AND e.embedding_id IN ({marks}) AND m.key IN ({key_marks})
+                    """,
+                    (name, *part, *keys),
+                ).fetchall()
+                for doc_id, key, value in rows:
+                    found.setdefault((doc_id, name), {})[key] = value
+    finally:
+        con.close()
+    return found
+
+
+def read_rekeyed_targets(persist_directory: str, collection_name: str) -> set[str]:
+    """Attachment keys that legacy records say their passages were moved to, read-only from SQLite.
+
+    The migration marks a legacy item's article record ``rekeyed_to`` when it
+    moves the item's passages to its attachment's key. Those attachments have
+    passages and, by design (#826, decision 1), no attachment record of their
+    own: that is not a gap to fill.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return set()
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        return {
+            row[0]
+            for row in con.execute(
+                """
+                SELECT DISTINCT m.string_value
+                FROM embedding_metadata m
+                JOIN embeddings e ON e.id = m.id
+                JOIN segments s ON e.segment_id = s.id
+                JOIN collections c ON s.collection = c.id
+                WHERE m.key = 'rekeyed_to' AND m.string_value IS NOT NULL
+                  AND c.name = ? AND s.scope = 'METADATA'
+                """,
+                (collection_name,),
+            )
+        }
+    finally:
+        con.close()
+
+
 def read_index_layout(persist_directory: str, collection_name: str) -> dict[str, Any]:
     """Count an index's records per level from SQLite, read-only.
 
@@ -1121,6 +1279,11 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
     empty; once it holds records the index has been split, so any left behind
     are reported but no longer decide where passages go. ``passage_items`` is
     None when ChromaDB's tables could not be read for it.
+
+    ``legacy_passages`` counts the passages written before the item-keyed
+    index (#826), keyed by their parent item: they carry ``title``, which no
+    record written since does. ``legacy_passage_items`` is how many items
+    they belong to.
     """
     layout: dict[str, Any] = {
         "article_records": 0,
@@ -1128,6 +1291,8 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
         "passage_items": 0,
         "unmigrated_passages": 0,
         "passages_in_article_collection": 0,
+        "legacy_passages": 0,
+        "legacy_passage_items": 0,
         "passage_collection_exists": False,
         "article_collection_id": None,
         "passage_collection_id": None,
@@ -1146,9 +1311,12 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
     try:
         article_id, bare, in_articles = _level_counts(con, collection_name)
         passage_id, in_passages, passage_items = _passage_counts(con, passage_collection_name(collection_name))
+        legacy_passages, legacy_items = _legacy_passage_counts(con, collection_name)
     finally:
         con.close()
     layout.update(
+        legacy_passages=legacy_passages,
+        legacy_passage_items=legacy_items,
         article_records=bare,
         passage_records=in_articles + in_passages,
         passage_items=passage_items,
@@ -1401,7 +1569,9 @@ def read_passage_bearing_keys(persist_directory: str, collection_name: str) -> s
     Passages are cut from a file's text (#826): an attachment record (it has
     ``file_stamp``) has them, and so does a legacy record built with full
     text (``has_fulltext`` true). A bibliographic record never has any, so it
-    is never missing them.
+    is never missing them. A legacy record whose passages the migration moved
+    to its attachment's key (``rekeyed_to``) has none under its own key and
+    is not missing them either.
     """
     db = Path(persist_directory) / "chroma.sqlite3"
     if not db.exists():
@@ -1419,6 +1589,9 @@ def read_passage_bearing_keys(persist_directory: str, collection_name: str) -> s
                 JOIN embedding_metadata m ON m.id = e.id
                 WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id NOT LIKE '%#%'
                   AND (m.key = 'file_stamp' OR (m.key = 'has_fulltext' AND m.bool_value = 1))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM embedding_metadata r WHERE r.id = e.id AND r.key = 'rekeyed_to'
+                  )
                 """,
                 (collection_name,),
             )
