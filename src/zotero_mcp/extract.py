@@ -707,6 +707,26 @@ def pick_by_priority(candidates, priority=DEFAULT_ATTACHMENT_PRIORITY):
     return None
 
 
+def select_by_priority(candidates, priority=DEFAULT_ATTACHMENT_PRIORITY, sort_key=str):
+    """Like :func:`pick_by_priority`, but return *every* match.
+
+    The first priority entry with any candidate wins and all of that bucket's
+    values come back (an item with two PDFs indexes both), ordered by
+    ``sort_key`` so the result does not depend on input order. ``"other"``
+    keeps its catch-all meaning. ``[]`` when nothing matched.
+    """
+    candidates = list(candidates)
+    named = {entry for entry in priority if entry != "other"}
+    for entry in priority:
+        if entry == "other":
+            bucket = [c for c in candidates if c[0] not in named]
+        else:
+            bucket = [c for c in candidates if c[0] == entry]
+        if bucket:
+            return sorted((c[2] for c in bucket), key=sort_key)
+    return []
+
+
 def extract_file(
     file_path: str | Path,
     ctype: str | None = None,

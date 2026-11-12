@@ -33,6 +33,7 @@ from .extract import (
     extract_file,
     normalize_attachment_priority,
     pick_by_priority,
+    select_by_priority,
 )
 from .utils import _generate_search_variants, _normalize_for_search, is_local_mode
 
@@ -59,6 +60,19 @@ DEFAULT_PDF_MAX_PAGES = 50
 # else the Zotero server-assigned groupID. This matches Zotero's own
 # sentinel for the account-less personal library.
 PERSONAL_LIBRARY_GROUP_ID = 0
+
+
+@dataclass(frozen=True)
+class ExtractionTarget:
+    """One attachment file resolved for extraction (see
+    ``_resolve_extraction_targets``). ``file_stamp`` is ``"<mtime_ns>:<size>"``."""
+
+    key: str
+    path: Path
+    content_type: str | None
+    category: str
+    file_stamp: str
+    size: int
 
 
 class KeyGroupMap(NamedTuple):
@@ -1519,6 +1533,101 @@ class LocalZoteroReader:
         # rather than a stub or thumbnail.
         return max(candidates, key=lambda p: p.stat().st_size)
 
+    def _resolve_attachment_file(
+        self, key: str, path: str | None, ctype: str | None
+    ) -> tuple[Path, str] | None:
+        """``(resolved_path, category)`` for one attachment row, or None when
+        the file is missing or not in a readable category."""
+        resolved = self._resolve_attachment_path(key, path or "")
+        if not resolved or not resolved.exists():
+            # Filename drift fallback: scan the storage folder.
+            resolved = self._scan_storage_for_attachment(key, ctype)
+            if not resolved or not resolved.exists():
+                return None
+        category = categorize_attachment(resolved, ctype)
+        if category is None:
+            return None
+        return resolved, category
+
+    def _build_target(
+        self, key: str, path: str | None, ctype: str | None
+    ) -> ExtractionTarget | None:
+        found = self._resolve_attachment_file(key, path, ctype)
+        if found is None:
+            return None
+        resolved, category = found
+        try:
+            st = resolved.stat()
+        except OSError:
+            return None
+        return ExtractionTarget(
+            key=key,
+            path=resolved,
+            content_type=ctype,
+            category=category,
+            file_stamp=f"{st.st_mtime_ns}:{st.st_size}",
+            size=st.st_size,
+        )
+
+    def _resolve_extraction_targets(self, item_id: int) -> list[ExtractionTarget]:
+        """Every attachment of an item to index, by configured priority.
+
+        All readable, non-trashed files in the first priority category that
+        has any, ordered by attachment key. Same cheap, parent-process-only
+        resolution as :meth:`_resolve_extraction_target`.
+        """
+        candidates = []
+        for key, path, ctype in self._iter_parent_attachments(item_id):
+            target = self._build_target(key, path, ctype)
+            if target is not None:
+                candidates.append((target.category, target.size, target))
+        return select_by_priority(
+            candidates, self.attachment_priority, sort_key=lambda t: t.key
+        )
+
+    def _resolve_standalone_target(
+        self, key: str, path: str | None, ctype: str | None
+    ) -> ExtractionTarget | None:
+        """Target for a standalone attachment, or None when its file is
+        missing or in no readable category."""
+        return self._build_target(key, path, ctype)
+
+    def _iter_standalone_attachments(self, library_ids: list[int] | None = None):
+        """Yield ``(attachment_key, path, content_type, date_modified,
+        library_id)`` for attachments with no parent item.
+
+        Trashed attachments are excluded (the attachment's own deletedItems
+        row, as in :meth:`_iter_parent_attachments`). ``library_ids`` limits
+        the scan to those local libraries; None means all.
+        """
+        conn = self._get_connection()
+        query = (
+            """
+            SELECT att.key as attachmentKey, ia.path as path,
+                   ia.contentType as contentType,
+                   att.dateModified as dateModified,
+                   att.libraryID as libraryID
+            FROM itemAttachments ia
+            JOIN items att ON att.itemID = ia.itemID
+            LEFT JOIN deletedItems d ON d.itemID = ia.itemID
+            WHERE ia.parentItemID IS NULL AND d.itemID IS NULL
+            """
+        )
+        params: list[Any] = []
+        if library_ids is not None:
+            placeholders = ",".join("?" * len(library_ids))
+            query += f" AND att.libraryID IN ({placeholders})"
+            params.extend(library_ids)
+        query += " ORDER BY att.libraryID, att.key"
+        for row in conn.execute(query, params):
+            yield (
+                row["attachmentKey"],
+                row["path"],
+                row["contentType"],
+                row["dateModified"],
+                row["libraryID"],
+            )
+
     def _resolve_extraction_target(self, item_id: int) -> tuple[Path, str] | None:
         """Pick the attachment to extract for an item, by configured priority.
 
@@ -1532,15 +1641,10 @@ class LocalZoteroReader:
         candidates = []
         keys: dict[Path, str] = {}
         for key, path, ctype in self._iter_parent_attachments(item_id):
-            resolved = self._resolve_attachment_path(key, path or "")
-            if not resolved or not resolved.exists():
-                # Filename drift fallback: scan the storage folder.
-                resolved = self._scan_storage_for_attachment(key, ctype)
-                if not resolved or not resolved.exists():
-                    continue
-            category = categorize_attachment(resolved, ctype)
-            if category is None:
+            found = self._resolve_attachment_file(key, path, ctype)
+            if found is None:
                 continue
+            resolved, category = found
             try:
                 size = resolved.stat().st_size
             except OSError:
@@ -1624,13 +1728,19 @@ class LocalZoteroReader:
         in a library to parse. Keying on the chosen attachment keeps the
         entry invalidating normally when the file changes.
         """
+        if chosen:
+            # Only the chosen attachment's own cache: another attachment's
+            # text stored under this key would index the wrong document.
+            cached = self._read_zotero_ft_cache(chosen[1])
+            if not cached:
+                return None
+            self._cache_store(chosen[0], chosen[1], item_key, cached, "zotero-cache")
+            return cached, "zotero-cache"
+        # Nothing resolvable on disk: any attachment's cache will do.
         for key, _path, _ctype in self._iter_parent_attachments(item_id):
             cached = self._read_zotero_ft_cache(key)
             if cached:
-                result = (cached, "zotero-cache")
-                if chosen:
-                    self._cache_store(chosen[0], chosen[1], item_key, cached, "zotero-cache")
-                return result
+                return cached, "zotero-cache"
         return None
 
     def extract_fulltext_detailed(

@@ -186,6 +186,34 @@ def get_cached_text(
     return text, entry.get("source", "pdf")
 
 
+def record_failure(
+    attachment_key: str, file_stamp: str, config_path: str | None = None
+) -> None:
+    """Remember that extracting this file produced nothing, as of ``file_stamp``.
+
+    Per file rather than per item: one unreadable scan must not stop its
+    sibling attachments being indexed. Keyed on the stamp so the file is
+    retried only once it changes. Kept in the index under ``failures`` (one
+    stamp per attachment); :func:`clear_all` drops it with everything else.
+    """
+    root = get_fulltext_cache_root(config_path)
+    with _INDEX_LOCK:
+        index = _load_index_unlocked(root)
+        failures = index.get("failures")
+        if not isinstance(failures, dict):
+            failures = index["failures"] = {}
+        failures[attachment_key] = file_stamp
+        _save_index_unlocked(root, index)
+
+
+def failed(attachment_key: str, file_stamp: str, config_path: str | None = None) -> bool:
+    """True if this exact file state already failed extraction."""
+    root = get_fulltext_cache_root(config_path)
+    with _INDEX_LOCK:
+        failures = _load_index_unlocked(root).get("failures")
+    return isinstance(failures, dict) and failures.get(attachment_key) == file_stamp
+
+
 def evict_many(item_keys: Iterable[str], config_path: str | None = None) -> int:
     """Remove every cache entry belonging to the given item keys.
 
