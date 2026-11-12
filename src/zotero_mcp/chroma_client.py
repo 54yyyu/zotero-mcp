@@ -56,6 +56,25 @@ def passage_collection_name(collection_name: str) -> str:
     return f"{collection_name}_passages"
 
 
+def record_key(doc_id: str) -> str:
+    """The item key a record belongs to: ``KEY`` for ``KEY`` and ``KEY#n``.
+
+    Every record is keyed by its own item (#826): an attachment's passages
+    carry the attachment's key, not the parent's. Legacy passages ``KEY#n``
+    were keyed by their parent, which is then the record key too.
+    """
+    return doc_id.split("#", 1)[0]
+
+
+def _passages_of(item_key: str) -> dict[str, Any]:
+    """Where-filter for every passage whose own ``item_key`` is ``item_key``.
+
+    ``chunk_index`` exists only on passages, so a bare record with the same
+    ``item_key`` (the article or bibliographic record) never matches.
+    """
+    return {"$and": [{"item_key": item_key}, {"chunk_index": {"$gte": 0}}]}
+
+
 class ChromaClient:
     """ChromaDB client for Zotero semantic search.
 
@@ -499,29 +518,27 @@ class ChromaClient:
         """
         found: list[tuple[str, str]] = []
         for collection in self.collections():
-            got = collection.get(where={"parent_item_key": item_key}, include=["documents"])
+            got = collection.get(where=_passages_of(item_key), include=["documents"])
             found.extend(zip(got["ids"], got["documents"] or []))
         return found
 
     def delete_item_chunks(self, item_key: str, group_id: int | None = None) -> None:
-        """Delete all passage chunks belonging to one item (chunked collections).
+        """Delete every passage ``<item_key>#<n>`` of one record key.
 
-        Passage chunks carry ``parent_item_key`` in their metadata; deleting by
-        that key clears every ``<item_key>#<n>`` entry for the item before its
-        chunks are re-upserted, so a document that shrank to fewer passages
-        never leaves orphaned chunks behind. No-op-safe on item-level
-        collections (nothing matches the filter).
+        Selects on the passage's own ``item_key``: an attachment's passages
+        for an attachment key, and legacy passages (keyed by their parent)
+        for a regular item's key. Bare records are never touched.
 
         Args:
-            item_key: Parent item whose chunks to delete.
+            item_key: Record key whose passages to delete.
             group_id: When given, restrict the delete to chunks attributed to
                 that library — the deletion pass passes its run scope so a
                 mixed-attribution chunk set (partial rewrite, key collision)
                 never loses another library's chunks.
         """
-        where: dict[str, Any] = {"parent_item_key": item_key}
+        where: dict[str, Any] = _passages_of(item_key)
         if group_id is not None:
-            where = {"$and": [{"parent_item_key": item_key}, {"group_id": int(group_id)}]}
+            where = {"$and": [*where["$and"], {"group_id": int(group_id)}]}
         try:
             for collection in self.collections():
                 collection.delete(where=where)
@@ -538,7 +555,7 @@ class ChromaClient:
         ``<item_key>`` document left by a pre-chunking index. Where passages
         have their own collection, that record is the item's article vector.
         """
-        where = {"$and": [{"parent_item_key": item_key}, {"chunk_index": {"$gte": int(keep)}}]}
+        where = {"$and": [{"item_key": item_key}, {"chunk_index": {"$gte": int(keep)}}]}
         try:
             for collection in self.collections():
                 collection.delete(where=where)
@@ -699,7 +716,7 @@ class ChromaClient:
                     for doc_id, meta in zip(result.get("ids", []), result.get("metadatas") or []):
                         group_id = (meta or {}).get("group_id")
                         if group_id is not None:
-                            groups.setdefault(doc_id.split("#", 1)[0], int(group_id))
+                            groups.setdefault(record_key(doc_id), int(group_id))
             return groups
         except Exception as e:
             logger.debug(f"Error reading item libraries: {e}")
@@ -1291,7 +1308,7 @@ def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tup
             """,
             (passage_collection_name(collection_name),),
         ):
-            key = doc_id.split("#", 1)[0]
+            key = record_key(doc_id)
             found[key] = found.get(key, 0) + 1
             if n_chunks is not None:
                 expected[key] = n_chunks

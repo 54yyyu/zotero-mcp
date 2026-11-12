@@ -33,6 +33,7 @@ from . import batch_common, chroma_worker, fulltext_cache, gemini_batch, openai_
 from .chroma_client import (
     ChromaClient,
     create_chroma_client,
+    record_key,
     unreadable_index_facts,
     unreadable_index_message,
 )
@@ -947,7 +948,7 @@ def _collect_hits(chroma_results: dict) -> list[dict[str, Any]]:
         meta = meta if isinstance(meta, dict) else {}
         group_id = meta.get("group_id")
         hit = {
-            "record_key": raw_id.split("#", 1)[0],
+            "record_key": record_key(raw_id),
             "meta": meta,
             "library": int(group_id) if group_id is not None else None,
             "document": documents[i] if i < len(documents) else "",
@@ -1930,7 +1931,7 @@ class ZoteroSemanticSearch:
                 meta = dict(meta or {})
                 if "group_id" in meta:
                     continue
-                item_key = meta.get("item_key") or doc_id.split("#", 1)[0]
+                item_key = meta.get("item_key") or record_key(doc_id)
                 if key_group_map is not None and item_key in key_group_map:
                     group_id = key_group_map[item_key]
                 else:
@@ -2895,7 +2896,7 @@ class ZoteroSemanticSearch:
                 continue
             data = item.get("data", {})
             existing = self.chroma_client.get_document_metadata(key)
-            if not existing or "parent_item_key" in existing:
+            if not existing or "chunk_index" in existing:
                 continue
             if not _same_moment(existing.get("date_modified"), data.get("dateModified")):
                 continue
@@ -3417,7 +3418,7 @@ class ZoteroSemanticSearch:
         found = self.chroma_client.get_existing_ids(
             [*item_keys, *(f"{key}#0" for key in item_keys)]
         )
-        return {doc_id.split("#", 1)[0] for doc_id in found}
+        return {record_key(doc_id) for doc_id in found}
 
     def _submit_batch_index(
         self,
@@ -3458,7 +3459,7 @@ class ZoteroSemanticSearch:
         with_article = {record["id"] for record in records if "#" not in record["id"]}
         follow: dict[str, dict[str, str]] = {}
         for record in records:
-            key = record["id"].split("#", 1)[0]
+            key = record_key(record["id"])
             if "#" in record["id"] and key in with_article:
                 follow.setdefault(key, {})[record["id"]] = _passage_digest(record["document"])
                 if record["id"].endswith("#0"):
@@ -3466,7 +3467,7 @@ class ZoteroSemanticSearch:
         for record in records:
             if record["id"] in follow:
                 record["passages_follow"] = follow[record["id"]]
-        item_keys = sorted({record["id"].split("#", 1)[0] for record in records})
+        item_keys = sorted({record_key(record["id"]) for record in records})
         existing_items = (
             self._existing_item_keys(item_keys) if not force_full_rebuild else set()
         )
@@ -3556,10 +3557,10 @@ class ZoteroSemanticSearch:
             stored_ids = self.chroma_client.get_all_ids(
                 where={"group_id": int(self._run_group_id)}
             )
-            stored_item_keys = {i.split("#", 1)[0] for i in stored_ids}
+            stored_item_keys = {record_key(i) for i in stored_ids}
             # Which kind of delete a key needs comes from what is stored, not
             # from the chunking setting, which may have changed since.
-            keys_with_passages = {i.split("#", 1)[0] for i in stored_ids if "#" in i}
+            keys_with_passages = {record_key(i) for i in stored_ids if "#" in i}
             if current_library_keys is None:
                 # item_versions() failed: unknown is not "empty".
                 stats["deletion_skipped_reason"] = "item_versions_unavailable"
@@ -4323,7 +4324,7 @@ class ZoteroSemanticSearch:
 
                 _retry_time.sleep(1)  # Brief pause before retry
                 # Articles first here too.
-                _failed_docs.sort(key=lambda failed: "parent_item_key" in failed[1])
+                _failed_docs.sort(key=lambda failed: "chunk_index" in failed[1])
 
                 retry_ok = 0
                 # Items whose passages all got written, and items with any
@@ -4332,7 +4333,8 @@ class ZoteroSemanticSearch:
                 retried_metas: dict[str, dict[str, Any]] = {}
                 still_failing: set[str] = set()
                 for doc, meta, doc_id in _failed_docs:
-                    parent = meta.get("parent_item_key")
+                    # A passage's own item_key names the record it belongs to.
+                    parent = meta.get("item_key") if "chunk_index" in meta else None
                     try:
                         self.chroma_client.upsert_documents([doc], [meta], [doc_id])
                         if parent is not None:
@@ -4533,11 +4535,11 @@ class ZoteroSemanticSearch:
                     # An item is indexed if it has a record at either level.
                     probe_ids = item_keys_order + [f"{k}#0" for k in item_keys_order]
                     found = self.chroma_client.get_existing_ids(probe_ids)
-                    existing_item_keys = {doc_id.split("#", 1)[0] for doc_id in found}
+                    existing_item_keys = {record_key(doc_id) for doc_id in found}
                 elif chunking:
                     probe_ids = [f"{k}#0" for k in item_keys_order]
                     existing_chunk0 = self.chroma_client.get_existing_ids(probe_ids)
-                    existing_item_keys = {cid.split("#", 1)[0] for cid in existing_chunk0}
+                    existing_item_keys = {record_key(cid) for cid in existing_chunk0}
                 else:
                     existing_item_keys = self.chroma_client.get_existing_ids(ids)
 
@@ -4814,7 +4816,7 @@ class ZoteroSemanticSearch:
             self.chroma_client.prune_item_chunks(item_key, 0)
         # The delete logs its errors and goes on, so check that it happened.
         try:
-            left = {doc_id.split("#", 1)[0] for doc_id in self.chroma_client.get_existing_ids(
+            left = {record_key(doc_id) for doc_id in self.chroma_client.get_existing_ids(
                 [f"{item_key}#0" for item_key in item_keys]
             )}
         except Exception as e:
@@ -4887,15 +4889,15 @@ class ZoteroSemanticSearch:
                 m["item_key"]: m.get("group_id")
                 for m in metadatas
                 if m.get("item_key")
-                and "parent_item_key" not in m
+                and "chunk_index" not in m
                 and m["item_key"] not in self._level_fill_keys
             }
             for item_key, group_id in scopes.items():
                 self.chroma_client.delete_item_chunks(item_key, group_id=group_id)
         counts = {
-            m["parent_item_key"]: m["n_chunks"]
+            m["item_key"]: m["n_chunks"]
             for m in metadatas
-            if "parent_item_key" in m and "n_chunks" in m
+            if "chunk_index" in m and "n_chunks" in m and m.get("item_key")
         }
         for item_key, n_chunks in counts.items():
             self.chroma_client.prune_item_chunks(item_key, n_chunks)
@@ -5280,7 +5282,7 @@ class ZoteroSemanticSearch:
                     # its article record, or its first passage when the run had
                     # no article for it.
                     first_records = {
-                        doc_id.split("#", 1)[0]
+                        record_key(doc_id)
                         for doc_id in ids
                         if "#" not in doc_id
                         or (doc_id.endswith("#0") and not records[doc_id].get("counted_with_article"))
@@ -5297,7 +5299,7 @@ class ZoteroSemanticSearch:
                     # carries its item's new length, so this is safe with the
                     # item's other passages still in a later file.
                     self._level_fill_keys = {
-                        doc_id.split("#", 1)[0] for doc_id in ids if records[doc_id].get("level_fill")
+                        record_key(doc_id) for doc_id in ids if records[doc_id].get("level_fill")
                     }
                     self._prune_stale_chunks(metadatas)
                     followed = [
@@ -5319,7 +5321,7 @@ class ZoteroSemanticSearch:
                     # they may still need to be extracted or rebuilt.
                     try:
                         fulltext_cache.evict_many(
-                            {doc_id.split("#", 1)[0] for doc_id in ids if doc_id not in followed},
+                            {record_key(doc_id) for doc_id in ids if doc_id not in followed},
                             config_path=self.config_path,
                         )
                     except Exception as e:
@@ -5809,7 +5811,7 @@ class ZoteroSemanticSearch:
     ) -> list[dict[str, Any]]:
         """Resolve hits to their owners live, filter, collapse, cap (#826).
 
-        A hit's record key is ``id.split("#", 1)[0]``: an attachment's own key
+        A hit's record key is ``record_key(id)``: an attachment's own key
         for a new record, the parent's for a legacy one. It is resolved
         against Zotero now, not from anything stored: its owner is its parent
         if it has one, else the item itself, so a re-parented attachment shows
