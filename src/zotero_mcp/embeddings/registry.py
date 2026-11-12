@@ -27,6 +27,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from zotero_mcp.embeddings.providers.default import DefaultEmbeddingFunction
 from zotero_mcp.embeddings.providers.gemini import GeminiEmbeddingFunction
 from zotero_mcp.embeddings.providers.huggingface import HuggingFaceEmbeddingFunction
 from zotero_mcp.embeddings.providers.ollama import OllamaEmbeddingFunction
@@ -189,9 +190,7 @@ def _huggingface_ef_factory(config: dict[str, Any]) -> Any:
 
 
 def _default_ef_factory(config: dict[str, Any]) -> Any:
-    from chromadb.utils import embedding_functions
-
-    ef = embedding_functions.DefaultEmbeddingFunction()
+    ef = DefaultEmbeddingFunction()
     ef.max_input_tokens = 256  # all-MiniLM-L6-v2 max_seq_length
     return ef
 
