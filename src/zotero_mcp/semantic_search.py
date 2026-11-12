@@ -3412,6 +3412,10 @@ class ZoteroSemanticSearch:
             # The manifest's group_id keys the watermark save at import time;
             # it must carry the run's pinned identity, not the live override.
             group_id=self._pinned_group_id(),
+            # The import acts on what this run was cut with, not on the
+            # settings of the day it lands: whether it carries passages, and
+            # which items an older run it supersedes must leave to it.
+            run_info={"chunking": self._chunking_enabled, "item_keys": item_keys},
             **submit_kwargs,
         )
         stats["batch_provider"] = provider
@@ -4971,6 +4975,21 @@ class ZoteroSemanticSearch:
         )
         return str(newest.get("run_id")) if _is_superseded(manifest, newest) else None
 
+    def _items_newer_run_covers(self, provider: str, manifest: dict[str, Any]) -> set[str] | None:
+        """Item keys of the run that supersedes ``manifest``; ``None`` means every item.
+
+        A newer incremental run re-sends the items changed since the shared
+        sync watermark, but not an older run's gap fill, which only a run the
+        user starts makes. A force rebuild, or a run from before the manifest
+        listed its items, is taken to cover everything.
+        """
+        newest = _batch_module(provider).newest_manifest_for_group(
+            config_path=self.config_path, group_id=manifest.get("group_id")
+        )
+        if not newest or newest.get("force_full_rebuild") or not isinstance(newest.get("item_keys"), list):
+            return None
+        return set(newest["item_keys"])
+
     def _submit_pending_chunks(
         self,
         provider: str,
@@ -5029,6 +5048,13 @@ class ZoteroSemanticSearch:
         # watermark must stay where it is. Settled once here, before the
         # refresh, so every decision in this import agrees.
         superseded_by = self._superseded_by(provider, manifest)
+        # Items whose current records the newer run carries. This run's
+        # passages of the others, such as a gap fill, are still current.
+        covered = self._items_newer_run_covers(provider, manifest) if superseded_by else set()
+
+        def _newer_run_has(doc_id: str) -> bool:
+            return bool(superseded_by) and (covered is None or doc_id.split("#", 1)[0] in covered)
+
         manifest = module.refresh_manifest_status(
             manifest,
             embedding_config=self.chroma_client.embedding_config,
@@ -5177,7 +5203,7 @@ class ZoteroSemanticSearch:
                     # The newer run has these items' current passages. Writing
                     # these over them could bring back text from before the
                     # change, and passages past the item's new length.
-                    ids = [doc_id for doc_id in ids if "#" not in doc_id]
+                    ids = [doc_id for doc_id in ids if "#" not in doc_id or not _newer_run_has(doc_id)]
                 unexpected_output_ids = [doc_id for doc_id in embeddings_by_id if doc_id not in records]
                 failure_ids = {
                     failure.get("custom_id")
@@ -5229,8 +5255,8 @@ class ZoteroSemanticSearch:
                     followed = [
                         doc_id for doc_id in ids if records[doc_id].get("passages_follow")
                     ]
-                    if not superseded_by:
-                        for doc_id in followed:
+                    for doc_id in followed:
+                        if not _newer_run_has(doc_id):
                             self._drop_unlike_passages(doc_id, records[doc_id]["passages_follow"])
                     stats["imported_items"] += len(ids)
                     stats["updated_items"] += len(existing_items)

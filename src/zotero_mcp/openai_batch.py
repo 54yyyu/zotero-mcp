@@ -312,6 +312,7 @@ def submit_embedding_batches(
     client: Any | None = None,
     max_enqueued_tokens: int | None = None,
     max_requests: int = OPENAI_BATCH_MAX_REQUESTS,
+    run_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Upload JSONL files and create one or more OpenAI embedding batches.
 
@@ -331,6 +332,7 @@ def submit_embedding_batches(
         client=client,
         max_enqueued_tokens=max_enqueued_tokens,
         max_requests=max_requests,
+        run_info=run_info,
     )
 
 

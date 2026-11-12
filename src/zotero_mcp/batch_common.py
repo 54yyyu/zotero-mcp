@@ -408,6 +408,7 @@ def submit_embedding_batches(
     client: Any | None = None,
     max_enqueued_tokens: int | None = None,
     max_requests: int | None = None,
+    run_info: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Upload JSONL files and create one or more embedding batches for ``adapter``.
 
@@ -446,6 +447,10 @@ def submit_embedding_batches(
         "manifest_path": str(run_dir / "manifest.json"),
         "batches": [],
     }
+    # What the caller needs to know about the run at import time, saved with
+    # its first chunk so an interrupted submission still records it.
+    for key, value in (run_info or {}).items():
+        manifest.setdefault(key, value)
 
     chunks = split_embedding_records(
         records,
