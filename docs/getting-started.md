@@ -111,6 +111,89 @@ If you want to connect to your Zotero library via the web API:
 
 If your agent has a shell (Claude Code, Cursor, Codex …), you can use `zotero-cli` through an agent skill instead of the MCP server, at a fraction of the context cost: `zotero-mcp install-skill`. See [CLI and agent skill](cli.md).
 
+## Integrating with VS Code and GitHub Copilot
+
+Install Zotero MCP and complete [local Zotero setup](#option-1-local-zotero-recommended)
+above, then open a local project folder in VS Code with GitHub Copilot enabled.
+These examples use local reads, so no Zotero API key is needed.
+
+### Copilot personal configuration
+
+In current VS Code, run **MCP: Add Server** from the Command Palette, choose
+**Command (stdio)**, enter `zotero-mcp serve --transport stdio`, and name the
+server `zotero`. Choose **Global > Copilot Global** for a personal configuration.
+Run **Chat: Open Customizations**, select **MCP Servers**, and edit the entry to
+set `ZOTERO_LOCAL` in its environment. The resulting entry in
+`$COPILOT_HOME/mcp-config.json` (or `~/.copilot/mcp-config.json` when unset) is:
+
+```json
+{
+  "mcpServers": {
+    "zotero": {
+      "command": "zotero-mcp",
+      "args": ["serve", "--transport", "stdio"],
+      "env": {
+        "ZOTERO_LOCAL": "true"
+      }
+    }
+  }
+}
+```
+
+Merge the entry into an existing file rather than replacing other servers.
+On Windows, the default personal file is
+`%USERPROFILE%\.copilot\mcp-config.json`.
+
+### VS Code workspace configuration
+
+For a VS Code workspace/Local harness configuration, create `.vscode/mcp.json`
+in the project folder and merge this entry. This format uses `servers`:
+
+```json
+{
+  "servers": {
+    "zotero": {
+      "type": "stdio",
+      "command": "zotero-mcp",
+      "args": ["serve", "--transport", "stdio"],
+      "env": {
+        "ZOTERO_LOCAL": "true"
+      }
+    }
+  }
+}
+```
+
+Newer VS Code versions label these VS Code-specific destinations deprecated in
+the guided setup, while retaining compatibility. Eligible entries are also
+forwarded to Copilot sessions; entries requiring interactive input variables
+are not. See VS Code's [configuration formats](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)
+and [configuration destinations](https://code.visualstudio.com/docs/agent-customization/mcp-servers#choose-a-configuration-destination)
+when choosing a scope. `zotero-mcp setup` configures Claude clients; it is not
+required for either VS Code configuration.
+
+### Start and verify
+
+Run **MCP: List Servers**, select `zotero`, and choose **Start Server** (or restart
+it after a configuration change). Review any trust prompt, then use the same
+agent harness for which you configured the server. Ask it to
+"Use `zotero_get_collections` to list the collections in my Zotero library."
+Inspect the tool call and result to confirm that the server can read your
+library, rather than relying only on the chat's answer.
+
+If startup fails, select the server's **Show Output** action. A command-not-found
+error usually means VS Code did not inherit the installation's `PATH`. Find the
+executable with `zotero-mcp setup-info`, `Get-Command zotero-mcp` (PowerShell), or
+`command -v zotero-mcp` (macOS/Linux). Put its full path in `command`, keeping
+`args` separate; Windows JSON paths can use forward slashes, for example
+`"command": "C:/full/path/to/zotero-mcp.exe"`.
+
+With WSL, SSH or Dev Containers, check where the server command runs: its
+`localhost` and Zotero database paths belong to that environment. The examples
+above assume the server can access the desktop Zotero installation locally.
+See [VS Code's server troubleshooting](https://code.visualstudio.com/docs/agents/run/manage-mcp-servers#troubleshoot-mcp-servers)
+and this project's [Troubleshooting](troubleshooting.md) for more diagnostics.
+
 ## Authenticated HTTP clients
 
 For clients that connect over HTTP, set `ZOTERO_MCP_AUTH_TOKEN` on the server and
