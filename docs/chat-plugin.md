@@ -68,14 +68,20 @@ variables as a JSON object of strings. Press **Save custom agent**. For example,
 [Qoder's documented ACP command](https://docs.qoder.com/zh/cli/acp) is:
 
 - Name: `Qoder CLI`
-- Command: `qoder` (or the full path to the executable; on Windows this may be `qoder.cmd`)
+- Command: `qoder` (or the full path to the executable)
 - Arguments: `["--acp"]`
 - Environment: `{}`
 
+**Windows:** Prefer the agent's `.exe` when available (use its full path if
+needed). A `.cmd` or `.bat` launcher that is not handled as an npm shim runs
+through `cmd.exe`, so arguments containing spaces, quotes or `&` may not arrive
+unchanged.
+
 Install the agent and sign in through its own CLI first. The plugin starts the
 command directly over stdio, without installing an npm bridge. A command must be
-on the login PATH or be an absolute path; arguments are literal entries, not a
-shell command. The agent inherits your login environment plus the extra variables.
+on the login PATH or be an absolute path; enter arguments as separate array
+entries, not as a shell command. The agent inherits your login environment plus
+the extra variables.
 Extras are saved in Zotero preferences, **not** the keychain; prefer the agent's
 own credential storage for secrets.
 
