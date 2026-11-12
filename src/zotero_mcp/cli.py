@@ -64,6 +64,10 @@ def obfuscate_config_for_display(config):
         if key == "ZOTERO_MCP_AUTH_TOKEN":
             # Also hide invalid non-string values that HTTP startup rejects.
             obfuscated[key] = "********"
+        elif key.upper().endswith("_PASSWORD") and obfuscated[key]:
+            # A password is short and chosen by a person: its first
+            # characters and its length give too much away.
+            obfuscated[key] = "********"
         elif _is_sensitive_key(key):
             obfuscated[key] = obfuscate_sensitive_value(obfuscated[key])
     return obfuscated

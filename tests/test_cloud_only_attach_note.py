@@ -35,7 +35,6 @@ def profiles(tmp_path, monkeypatch):
 @pytest.fixture
 def hybrid(monkeypatch):
     monkeypatch.setattr(_helpers._utils, "is_local_mode", lambda: True)
-    monkeypatch.setattr(_helpers, "_maybe_upload_to_webdav", lambda *a, **k: "")
 
 
 def test_bool_pref_reader(tmp_path):

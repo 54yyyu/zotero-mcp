@@ -4999,11 +4999,11 @@ def _upload_attachment(write_zot, item_key, display_name, filepath, ctx):
             f"'{existing_name}'{key_note} — '{display_name}' not re-uploaded."
         )
     # WebDAV users: write the file to WebDAV directly, as zotero_add_item does.
-    # The default path below uploads to Zotero Storage first and copies to
-    # WebDAV afterwards, so an account over its Zotero Storage quota gets a
-    # 413 for every attach and pyzotero leaves an empty attachment shell on
-    # the item. _webdav_first_attach returns None when WebDAV is not
-    # configured and for local or group clients, which keep the default path.
+    # The default path below uploads to Zotero Storage, where an account over
+    # its quota gets a 413 for every attach and pyzotero leaves an empty
+    # attachment shell on the item. _webdav_first_attach returns None when
+    # WebDAV is not configured and for local or group clients, which keep the
+    # default path.
     webdav_suffix = _helpers._webdav_first_attach(
         write_zot,
         display_name,
@@ -6716,10 +6716,22 @@ def _copy_attachment(child, target_zot, target_key, tags, file_clients, ctx) -> 
             if download.path is None:
                 tried = "; ".join(download.errors) or "no source had the file"
                 return f"File: {filename}", f"could not fetch the file ({tried})"
-            ok, suffix, _new_key = _helpers._attach_and_verify(
+            # WebDAV first, as the other attach paths do: an upload to Zotero
+            # Storage is refused with a 413 on an account over its quota.
+            suffix = _helpers._webdav_first_attach(
                 target_zot, filename, str(download.path), target_key, ctx,
-                content_type=data.get("contentType"),
+                content_type=data.get("contentType") or _helpers._guess_content_type(filename),
             )
+            if suffix is None:
+                ok, suffix, _new_key = _helpers._attach_and_verify(
+                    target_zot, filename, str(download.path), target_key, ctx,
+                    content_type=data.get("contentType"),
+                )
+            elif suffix.lstrip().startswith("(WARNING"):
+                ok = False
+                suffix = suffix.strip().removeprefix("(WARNING: ").removesuffix(")")
+            else:
+                ok = True
     except _RATE_LIMIT_ERRORS:
         raise
     except Exception as exc:

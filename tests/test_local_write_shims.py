@@ -132,25 +132,10 @@ class TestWebdavSkip:
         """Bytes uploaded through the local API are already in Zotero's own
         storage; the desktop syncs them to WebDAV itself."""
         monkeypatch.setattr("zotero_mcp.webdav.is_webdav_configured", lambda: True)
-        result = _helpers._maybe_upload_to_webdav(
-            {"success": [{"key": "ATT1"}]}, "/tmp/x.pdf", DummyContext(),
-            write_zot=fake_local_zot,
+        result = _helpers._webdav_first_attach(
+            fake_local_zot, "x.pdf", "/tmp/x.pdf", "ITEM1", DummyContext()
         )
-        assert result == ""
-
-    def test_still_runs_for_web_uploads(self, monkeypatch, fake_zot):
-        monkeypatch.setattr("zotero_mcp.webdav.is_webdav_configured", lambda: True)
-        uploaded = []
-        monkeypatch.setattr(
-            "zotero_mcp.webdav.upload_attachment_to_webdav",
-            lambda attachment_key, file_path: uploaded.append(attachment_key),
-        )
-        result = _helpers._maybe_upload_to_webdav(
-            {"success": [{"key": "ATT1"}]}, "/tmp/x.pdf", DummyContext(),
-            write_zot=fake_zot,
-        )
-        assert uploaded == ["ATT1"]
-        assert "uploaded to WebDAV" in result
+        assert result is None
 
 
 class TestTrashItem:

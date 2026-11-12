@@ -1994,78 +1994,6 @@ def _is_group_client(write_zot) -> bool:
     return str(getattr(write_zot, "library_type", "") or "").startswith("group")
 
 
-def _maybe_upload_to_webdav(attach_result, file_path, ctx, write_zot=None):
-    """Suffix to append to a user-facing 'file attached' message.
-
-    PR #279 added WebDAV-aware upload to ``zotero_add_item``. The same
-    treatment is needed everywhere else ``attachment_both`` is called: the
-    Web API's file upload lands bytes in Zotero Storage, which a desktop
-    client with File Syncing set to WebDAV never consults.
-
-    That reasoning is specific to the web API. An upload through the local API
-    hands the bytes to the running Zotero, which files them in its own storage
-    and syncs them to WebDAV itself, so pass ``write_zot`` and the workaround
-    steps aside.
-
-    Returns ``""`` when WebDAV is not configured, when the attachment key
-    cannot be extracted, or after a successful PUT with logging via ``ctx``
-    (callers that don't surface the suffix can ignore the return value).
-    On a successful PUT returns ``" (uploaded to WebDAV as <key>.zip)"``;
-    on PUT failure returns ``" (WARNING: WebDAV upload failed — <err>; ...)"``
-    so callers can keep the user-visible signal without re-implementing the
-    branch.
-    """
-    from zotero_mcp import webdav as _webdav
-
-    if getattr(write_zot, "local", False) or _is_group_client(write_zot):
-        return ""
-
-    if not _webdav.is_webdav_configured():
-        return ""
-
-    attachment_key = _extract_attachment_key(attach_result)
-    if not attachment_key:
-        return ""
-
-    try:
-        _webdav.upload_attachment_to_webdav(
-            attachment_key=attachment_key,
-            file_path=file_path,
-        )
-        ctx.info(f"WebDAV PUT: {attachment_key}.zip uploaded")
-        return f" (uploaded to WebDAV as {attachment_key}.zip)"
-    except Exception as e:
-        ctx.info(f"WebDAV PUT failed for {attachment_key}: {e}")
-        # A failed PUT leaves the attachment item with no file bytes — an
-        # orphan that confuses the Zotero UI and breaks sync. Clean it up,
-        # and only fall back to the "no file bytes" warning if the delete
-        # itself fails.
-        try:
-            attachment_version = next(
-                (
-                    entry.get("version")
-                    for status in ("success", "unchanged")
-                    for entry in (attach_result.get(status, []) or [])
-                    if isinstance(entry, dict) and entry.get("key") == attachment_key
-                ),
-                None,
-            )
-            if write_zot is not None:
-                if attachment_version is None:
-                    attachment_version = write_zot.item(attachment_key)["version"]
-                write_zot.delete_item({"key": attachment_key, "version": attachment_version})
-                ctx.info(f"Cleaned up orphan attachment {attachment_key}")
-                return f" (WARNING: WebDAV upload failed — {e}; attachment {attachment_key} was deleted)"
-            raise RuntimeError("no writable client available for cleanup")
-        except Exception as del_err:
-            ctx.info(f"Cleanup of orphan attachment {attachment_key} failed: {del_err}")
-            return (
-                f" (WARNING: WebDAV upload failed — {e}; "
-                f"attachment {attachment_key} exists but has no file bytes on WebDAV "
-                f"and could not be deleted: {del_err})"
-            )
-
-
 def _guess_content_type(filename):
     """Guess a Zotero ``contentType`` from a filename's extension.
 
@@ -2103,8 +2031,7 @@ def _webdav_first_attach(write_zot, filename, file_path, parent_key, ctx, conten
 
     # An upload through the local API hands the bytes to the running Zotero,
     # which files them in its own storage and syncs them to WebDAV itself;
-    # the workaround below is a web-API-only concern. See
-    # ``_maybe_upload_to_webdav`` for the same reasoning on the other side.
+    # the workaround below is a web-API-only concern.
     if getattr(write_zot, "local", False) or _is_group_client(write_zot):
         return None
 
@@ -2323,6 +2250,10 @@ def _attach_and_verify(
     tail to append to a "file attached" message when ``ok``; when not
     ``ok`` it is the reason the attach failed, and the caller must NOT
     claim success (#403, the root cause behind #278 / #306 / #399).
+
+    The file goes to Zotero Storage, or to the running Zotero for a local
+    client. Callers try ``_webdav_first_attach`` first, which takes the
+    upload when WebDAV is configured.
     """
     _assert_upload_capable(write_zot)
 
@@ -2333,10 +2264,7 @@ def _attach_and_verify(
     )
     reason = _describe_attach_failure(attach_result)
     if reason is None:
-        suffix = _maybe_upload_to_webdav(
-            attach_result, file_path, ctx, write_zot=write_zot
-        )
-        return True, suffix + _cloud_only_note(write_zot), _extract_attachment_key(attach_result)
+        return True, _cloud_only_note(write_zot), _extract_attachment_key(attach_result)
 
     ctx.info(f"attachment upload failed ({reason}); retrying as create + upload")
     attachment_key, fallback_reason = _two_step_attach(
@@ -2345,10 +2273,7 @@ def _attach_and_verify(
     if attachment_key is None:
         return False, f"{reason}; two-step retry also failed: {fallback_reason}", None
 
-    suffix = _maybe_upload_to_webdav(
-        {"success": [{"key": attachment_key}]}, file_path, ctx, write_zot=write_zot
-    )
-    return True, suffix + _cloud_only_note(write_zot), attachment_key
+    return True, _cloud_only_note(write_zot), attachment_key
 
 
 def _file_md5(path):
