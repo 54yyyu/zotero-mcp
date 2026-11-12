@@ -125,11 +125,15 @@ def test_batch_path_submits_what_the_builder_builds(make_search):
     assert stats == {"processed": 1, "skipped": 0, "errors": 0}
 
 
-def test_batch_path_stays_item_level_with_chunking_on(make_search):
-    """Unchanged by the refactor; chunking on this path is a later change (#416)."""
-    records, _ = make_search(chunking=True)._prepare_index_records([_item()])
+def test_batch_path_builds_the_same_passages_as_the_realtime_path(make_search):
+    search = make_search(chunking=True)
 
-    assert [r["id"] for r in records] == ["ITEM0001"]
+    records, _ = search._prepare_index_records([_item()])
+    prepared = search._prepare_and_classify_slice([_item()], force_rebuild=True)
+
+    assert [r["id"] for r in records] == prepared["ids"]
+    assert [r["document"] for r in records] == prepared["documents"]
+    assert [r["metadata"] for r in records] == prepared["metadatas"]
 
 
 def test_failure_part_way_through_an_item_keeps_later_items_aligned(make_search):

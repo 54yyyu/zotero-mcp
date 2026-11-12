@@ -75,9 +75,11 @@ def update_running():
             _last_update_end = _clock()
 
 
-# Calls that delete passages whatever their arguments, and calls that write
+# Calls that touch passages whatever their arguments, and calls that write
 # or delete the records named by ``ids``, where a ``KEY#n`` id is a passage.
-_PASSAGE_CALLS = frozenset({"delete_item_chunks", "prune_item_chunks", "reset_collection"})
+_PASSAGE_CALLS = frozenset({
+    "delete_item_chunks", "passage_documents", "prune_item_chunks", "reset_collection",
+})
 _CALLS_BY_ID = frozenset({
     "add_documents", "upsert_documents", "upsert_embeddings", "delete_documents", "update_metadatas",
 })

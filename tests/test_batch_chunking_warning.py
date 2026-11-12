@@ -1,18 +1,4 @@
-"""`semantic_search.chunking` is ignored on the Batch API path (issue #416).
-
-`_prepare_index_records`, the record builder behind
-`_submit_openai_batch_index`, never reads the chunking config and truncates
-each document at the embedding limit. `_process_item_batch` on the realtime
-path does the opposite. So with `openai_batch.enabled: true`, turning
-`chunking.enabled` on changed nothing and said nothing: the reporter found it
-only by diffing the generated `batch-001-input.jsonl` by hand and measuring 30
-of 58 documents truncated.
-
-Making the batch path chunk-aware is tracked separately. These tests cover the
-signal: an `update-db` run that takes the batch path with chunking requested
-must say so once, and `db-status` must report the effective behaviour rather
-than the requested setting.
-"""
+"""`db-status` wording for chunking, and the warning for full text on a small model."""
 
 import json
 import sys
@@ -162,79 +148,17 @@ def _build_search(monkeypatch, tmp_path, *, batch, chunking, embedding_model="op
 
 
 # ---------------------------------------------------------------------------
-# update-db warning
+# db-status
 # ---------------------------------------------------------------------------
 
-def test_batch_run_with_chunking_requested_warns_on_stderr(monkeypatch, tmp_path, capsys):
-    search = _build_search(monkeypatch, tmp_path, batch=True, chunking=True)
+def test_db_status_reports_chunking_enabled_on_either_path(monkeypatch, tmp_path):
+    for batch in (True, False):
+        search = _build_search(monkeypatch, tmp_path, batch=batch, chunking=True)
 
-    stats = search.update_database()
+        status = search.get_database_status()
 
-    assert stats["batch_submitted"] is True
-    assert stats["chunking_ignored"] is True
-    err = capsys.readouterr().err
-    assert "Passage chunking is NOT applied on the OpenAI Batch API path" in err
-    # The user has to be told what to do about it, not only that it happened.
-    assert "--no-batch" in err
-    # Warned exactly once per run.
-    assert err.count("Passage chunking is NOT applied") == 1
-
-
-def test_batch_run_without_chunking_stays_silent(monkeypatch, tmp_path, capsys):
-    search = _build_search(monkeypatch, tmp_path, batch=True, chunking=False)
-
-    stats = search.update_database()
-
-    assert stats["batch_submitted"] is True
-    assert "chunking_ignored" not in stats
-    assert "Passage chunking" not in capsys.readouterr().err
-
-
-def test_realtime_run_with_chunking_stays_silent(monkeypatch, tmp_path, capsys):
-    """Chunking works on the realtime path, so there is nothing to warn about."""
-    search = _build_search(monkeypatch, tmp_path, batch=False, chunking=True)
-
-    stats = search.update_database()
-
-    assert not stats.get("batch_submitted")
-    assert "chunking_ignored" not in stats
-    assert "Passage chunking" not in capsys.readouterr().err
-
-
-def test_no_warning_when_batch_is_configured_but_inapplicable(monkeypatch, tmp_path, capsys):
-    """`openai_batch.enabled` with a non-OpenAI model never takes the batch
-    path, so chunking still applies and the warning would be wrong."""
-    search = _build_search(
-        monkeypatch, tmp_path, batch=True, chunking=True, embedding_model="gemini"
-    )
-
-    stats = search.update_database()
-
-    assert not stats.get("batch_submitted")
-    assert "chunking_ignored" not in stats
-    assert "Passage chunking" not in capsys.readouterr().err
-
-
-# ---------------------------------------------------------------------------
-# db-status reports effective behaviour
-# ---------------------------------------------------------------------------
-
-def test_db_status_reports_chunking_as_not_applied_on_batch_path(monkeypatch, tmp_path):
-    search = _build_search(monkeypatch, tmp_path, batch=True, chunking=True)
-
-    status = search.get_database_status()
-
-    assert status["chunking"] == {"enabled": True, "effective": False, "max_tokens": 8000}
-    assert "NOT applied" in _format_chunking_status(status)
-
-
-def test_db_status_reports_chunking_as_effective_off_the_batch_path(monkeypatch, tmp_path):
-    search = _build_search(monkeypatch, tmp_path, batch=False, chunking=True)
-
-    status = search.get_database_status()
-
-    assert status["chunking"] == {"enabled": True, "effective": True, "max_tokens": 8000}
-    assert _format_chunking_status(status) == "enabled"
+        assert status["chunking"] == {"enabled": True, "max_tokens": 8000}
+        assert _format_chunking_status(status) == "enabled"
 
 
 def test_db_status_reports_chunking_disabled(monkeypatch, tmp_path):
@@ -242,7 +166,7 @@ def test_db_status_reports_chunking_disabled(monkeypatch, tmp_path):
 
     status = search.get_database_status()
 
-    assert status["chunking"] == {"enabled": False, "effective": False, "max_tokens": 8000}
+    assert status["chunking"] == {"enabled": False, "max_tokens": 8000}
     assert _format_chunking_status(status) == "disabled (item-level indexing)"
 
 
@@ -277,7 +201,6 @@ def test_fulltext_warning_not_shown_without_fulltext_chunking_or_for_large_model
         ({}, False),  # no --fulltext
         ({"chunking": True}, True),  # chunking on
         ({"max_tokens": 8000}, True),  # model limit is large
-        ({"batch": True}, True),  # batch path has its own warning
     ]:
         search = _fit_search(monkeypatch, tmp_path, **kwargs)
         stats = search.update_database(extract_fulltext=extract)

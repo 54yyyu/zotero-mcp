@@ -140,17 +140,9 @@ def test_setup_chunking_warns_about_embeddings_and_memory(monkeypatch, capsys):
     assert "memory" in out
     assert "up to 600,000 embeddings per 10,000 items" in out
     assert "update-db --force-rebuild" in out
-    assert "The Batch API ignores chunking" in out
-    warning = out[out.index("Warning:"):out.index("ignores chunking")].splitlines()
+    assert "ignores chunking" not in out
+    warning = out[out.index("Warning:"):out.index("Max passages per item bounds")].splitlines()
     assert len(warning) <= 4
-
-
-def test_setup_chunking_warning_names_the_enabled_batch_api(monkeypatch, capsys):
-    monkeypatch.setattr(builtins, "input", lambda *a: "")
-    setup_helper._prompt_chunking(None, batch_enabled=True)
-    out = capsys.readouterr().out
-    assert "Batch API is enabled here and ignores chunking" in out
-    assert "--no-batch" in out
 
 
 def _openai_existing(**extra):
