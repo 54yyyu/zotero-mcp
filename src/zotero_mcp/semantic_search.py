@@ -54,6 +54,7 @@ from .embeddings.registry import batch_capable_providers
 from .extract import PAGE_SEPARATOR
 from .identifiers import metadata_match_keys
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
+from .semantic_filters import OWNER_FIELDS, combine, live_fields, matches, referenced_fields, split_filters
 from .utils import (
     _paginate,
     ensure_private_dir,
@@ -73,6 +74,16 @@ _BATCH_MODULES = {"openai": openai_batch, "gemini": gemini_batch}
 
 SEARCH_ARTICLES = "articles"
 SEARCH_PASSAGES = "passages"
+
+#: Above this many record keys the local pre-filter's ``item_key $in`` clause
+#: is left out and the filter is applied to the hits instead (#826).
+PREFILTER_MAX_KEYS = 5000
+#: A post-filtered search queries at most this many times, ×4 candidates each.
+FILTER_QUERY_ROUNDS = 3
+#: Zotero's cap on keys per ``itemKey`` parameter.
+_ITEMKEY_BATCH = 50
+#: Keys per zotero.sqlite lookup, well under SQLite's bound-parameter limit.
+_LOCAL_KEY_BATCH = 500
 
 
 def _count_items(count: int) -> str:
@@ -921,6 +932,44 @@ def _drop_missing_documents(results: dict) -> int:
             "the index while this server was running.", dropped,
         )
     return dropped
+
+
+def _is_trashed(item: dict) -> bool:
+    return bool((item.get("data") or {}).get("deleted"))
+
+
+def _fetch_items_via_client(client, keys: list[str]) -> tuple[dict[str, dict], dict[str, Exception]]:
+    """Fetch ``keys`` through a pyzotero client: ``(found, failed)``.
+
+    Batches of 50 via ``itemKey``. That listing leaves trashed items out, so
+    a key absent from a batch's answer is trashed or deleted, and either way
+    not a result. Where the batch call itself fails, keys are asked for one
+    at a time, so that one failure is reported per key and a not-found key
+    is simply missing.
+    """
+    found: dict[str, dict] = {}
+    failed: dict[str, Exception] = {}
+    for start in range(0, len(keys), _ITEMKEY_BATCH):
+        batch = keys[start:start + _ITEMKEY_BATCH]
+        wanted = set(batch)
+        try:
+            # Paged, not one call: the local API can list the requested
+            # items' children first, past the end of a capped page (#499).
+            for item in _paginate(client.items, itemKey=",".join(batch)) or []:
+                # An itemKey query also returns the items' child notes.
+                if isinstance(item, dict) and item.get("key") in wanted:
+                    found[item["key"]] = item
+            continue
+        except Exception as e:
+            logger.debug(f"Batched item lookup failed, asking per key: {e}")
+        for key in batch:
+            try:
+                found[key] = client.item(key)
+            except ResourceNotFoundError:
+                continue
+            except Exception as e:
+                failed[key] = e
+    return found, failed
 
 
 class CrossEncoderReranker:
@@ -5404,7 +5453,9 @@ class ZoteroSemanticSearch:
         Args:
             query: Search query text
             limit: Maximum number of results to return
-            filters: Optional metadata filters
+            filters: Optional filters. Stored fields (library, passage
+                location) are filtered by ChromaDB; bibliographic fields are
+                evaluated against each hit's owner as Zotero has it now (#826).
             group_id: Restrict results to one library (0 = personal, else
                 groupID). ``None`` (default) searches every indexed library —
                 DB-side filtering via a ChromaDB ``where`` clause, never a
@@ -5417,7 +5468,7 @@ class ZoteroSemanticSearch:
             Search results with Zotero item details
         """
         try:
-            search_level, chunked, level_note, level_error = self._resolve_search_level(level)
+            search_level, _chunked, level_note, level_error = self._resolve_search_level(level)
             if level_error:
                 return {
                     "query": query,
@@ -5430,64 +5481,49 @@ class ZoteroSemanticSearch:
                 }
             reranker = self._get_reranker()
             multiplier = max(1, int(self._reranker_config.get("candidate_multiplier", 3) or 3))
-            fetch_limit = limit
-            if chunked:
-                # Passages are grouped back to items downstream, so fetch
-                # several chunks per desired item to still surface ~limit
-                # distinct papers.
-                fetch_limit = max(fetch_limit, limit * 4)
+            # Hits collapse to their owners and trashed ones are dropped, at
+            # either level: an attachment's record and its parent's
+            # bibliographic record are two hits of one owner, and passages
+            # several more. So fetch several candidates per wanted result.
+            fetch_limit = limit * 4
             if reranker:
                 fetch_limit = max(fetch_limit, limit * multiplier)
 
-            where = filters
+            chroma_filters, live_where = split_filters(filters)
+            where_parts = [chroma_filters]
             if group_id is not None:
-                group_clause = {"group_id": int(group_id)}
-                where = {"$and": [filters, group_clause]} if filters else group_clause
+                where_parts.append({"group_id": int(group_id)})
+            prefilter_keys = self._prefilter_keys(live_where, group_id) if live_where else None
+            if prefilter_keys is not None:
+                where_parts.append({"item_key": {"$in": sorted(prefilter_keys)}})
+            where = combine(where_parts)
+            # A post-filter can discard most candidates, so it may ask again
+            # for more; a pre-filtered query already holds only matches.
+            rounds = FILTER_QUERY_ROUNDS if live_where and prefilter_keys is None else 1
 
-            # Perform semantic search
-            search_kwargs: dict[str, Any] = {}
-            # On an unmigrated index everything is in the article collection,
-            # which is what the client searches by default.
-            if search_level == SEARCH_PASSAGES and self.chroma_client.separate_passages():
-                search_kwargs["level"] = SEARCH_PASSAGES
-            results = self.chroma_client.search(
-                query_texts=[query], n_results=fetch_limit, where=where, **search_kwargs
-            )
-            load_note = None
-            if isinstance(results, dict):
-                results.pop("embedding_seconds", None)  # in-process; the worker drops it itself
-                load_note = _passage_load_note(results.pop("passage_load", None))
-
-            _drop_missing_documents(results)
-
+            enriched_results: list[dict[str, Any]] = []
             rerank_info: dict[str, Any] | None = None
-            if reranker and results.get("documents") and results["documents"][0]:
-                documents = results["documents"][0]
-                # Chunked: rank every surviving passage (grouping to `limit`
-                # papers happens in enrichment). Item-level: the historical
-                # top-k = limit.
-                top_k = len(documents) if chunked else limit
-                if isinstance(reranker, (APIReranker, CrossEncoderReranker)):
-                    pairs, rerank_error = reranker.rerank_detailed(query, documents, top_k)
-                else:  # any other object honouring the plain rerank() contract
-                    pairs = [(i, 0.0) for i in reranker.rerank(query, documents, top_k=top_k)]
-                    rerank_error = None
-                ranked_indices = [i for i, _ in pairs]
-                for key in ["ids", "distances", "documents", "metadatas"]:
-                    if results.get(key) and results[key][0]:
-                        results[key][0] = [results[key][0][i] for i in ranked_indices]
-                if rerank_error is None and isinstance(reranker, (APIReranker, CrossEncoderReranker)):
-                    results["rerank_scores"] = [[score for _, score in pairs]]
-                rerank_info = {
-                    "model": getattr(reranker, "label", type(reranker).__name__),
-                    "applied": rerank_error is None,
-                    "error": rerank_error,
-                    "candidates": len(documents),
-                }
+            load_note = None
+            candidates = 0
+            if prefilter_keys is None or prefilter_keys:
+                for _ in range(rounds):
+                    results, rerank_info, load_note, candidates = self._query_candidates(
+                        query, fetch_limit, where, search_level, reranker
+                    )
+                    # Enrich results with full Zotero item data, collapsing
+                    # hits to their owners and capping at `limit` owners.
+                    enriched_results = self._enrich_search_results(results, query, limit, live_where)
+                    if len(enriched_results) >= limit or candidates < fetch_limit:
+                        break
+                    fetch_limit *= 4
 
-            # Enrich results with full Zotero item data, grouping passages back
-            # to their parent items and capping at `limit` distinct papers.
-            enriched_results = self._enrich_search_results(results, query, limit)
+            filter_note = None
+            if rounds > 1 and len(enriched_results) < limit:
+                found = len(enriched_results)
+                filter_note = (
+                    f"Only {found} item{'' if found == 1 else 's'} matched the filters among the "
+                    f"{candidates} closest records searched."
+                )
 
             return {
                 "query": query,
@@ -5500,6 +5536,7 @@ class ZoteroSemanticSearch:
                 "level": search_level,
                 "level_note": level_note,
                 "load_note": load_note,
+                "filter_note": filter_note,
             }
 
         except Exception as e:
@@ -5527,6 +5564,96 @@ class ZoteroSemanticSearch:
                 # The index is local, but each query is embedded by the API.
                 "embedding_api_unreachable": isinstance(e, EmbeddingAPIUnreachable),
             }
+
+    def _query_candidates(
+        self,
+        query: str,
+        fetch_limit: int,
+        where: dict[str, Any] | None,
+        search_level: str | None,
+        reranker: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None, int]:
+        """Query ChromaDB and re-rank: ``(results, rerank info, load note, candidates)``.
+
+        ``candidates`` is how many records ChromaDB returned, so a caller can
+        tell a short answer from an exhausted index.
+        """
+        search_kwargs: dict[str, Any] = {}
+        # On an unmigrated index everything is in the article collection,
+        # which is what the client searches by default.
+        if search_level == SEARCH_PASSAGES and self.chroma_client.separate_passages():
+            search_kwargs["level"] = SEARCH_PASSAGES
+        results = self.chroma_client.search(
+            query_texts=[query], n_results=fetch_limit, where=where, **search_kwargs
+        )
+        load_note = None
+        if isinstance(results, dict):
+            results.pop("embedding_seconds", None)  # in-process; the worker drops it itself
+            load_note = _passage_load_note(results.pop("passage_load", None))
+        candidates = len((results.get("ids") or [[]])[0] or [])
+
+        _drop_missing_documents(results)
+
+        rerank_info: dict[str, Any] | None = None
+        if reranker and results.get("documents") and results["documents"][0]:
+            documents = results["documents"][0]
+            # Rank every candidate at either level: collapsing to `limit`
+            # owners happens in enrichment, after trashed hits are dropped.
+            top_k = len(documents)
+            if isinstance(reranker, (APIReranker, CrossEncoderReranker)):
+                pairs, rerank_error = reranker.rerank_detailed(query, documents, top_k)
+            else:  # any other object honouring the plain rerank() contract
+                pairs = [(i, 0.0) for i in reranker.rerank(query, documents, top_k=top_k)]
+                rerank_error = None
+            ranked_indices = [i for i, _ in pairs]
+            for key in ["ids", "distances", "documents", "metadatas"]:
+                if results.get(key) and results[key][0]:
+                    results[key][0] = [results[key][0][i] for i in ranked_indices]
+            if rerank_error is None and isinstance(reranker, (APIReranker, CrossEncoderReranker)):
+                results["rerank_scores"] = [[score for _, score in pairs]]
+            rerank_info = {
+                "model": getattr(reranker, "label", type(reranker).__name__),
+                "applied": rerank_error is None,
+                "error": rerank_error,
+                "candidates": len(documents),
+            }
+        return results, rerank_info, load_note, candidates
+
+    def _prefilter_keys(self, live_where: dict[str, Any] | None, group_id: int | None) -> set[str] | None:
+        """Record keys a live filter can match, from zotero.sqlite; None if unknown.
+
+        Local mode only: the filter is evaluated over every owner in scope,
+        and the matches expand to the owners' keys plus their child
+        attachments' keys, which covers every record an owner can have (a
+        legacy record's ``item_key`` is its parent's, so it matches too).
+        None, so that the caller post-filters instead, outside local mode,
+        when the filter needs hit-time data (``has_fulltext``, or passage
+        fields under a mixed ``$or``), or above ``PREFILTER_MAX_KEYS`` keys.
+        """
+        if not live_where or referenced_fields(live_where) - OWNER_FIELDS:
+            return None
+        try:
+            reader = self._open_local_reader()
+        except Exception as e:
+            logger.debug(f"Filter pre-check: no local database ({e})")
+            return None
+        if reader is None:
+            return None
+        try:
+            owners = reader.get_filter_owners(group_id=group_id)
+        except Exception as e:
+            logger.warning(f"Filter pre-check against zotero.sqlite failed: {e}")
+            return None
+        finally:
+            reader.close()
+        keys: set[str] = set()
+        for owner in owners:
+            if matches(live_where, live_fields(owner)):
+                keys.add(owner["key"])
+                keys.update(owner.get("attachment_keys") or ())
+                if len(keys) > PREFILTER_MAX_KEYS:
+                    return None
+        return keys
 
     def _resolve_search_level(
         self, requested: str | None
@@ -5618,22 +5745,30 @@ class ZoteroSemanticSearch:
         return f"{note} No passages are indexed yet." if self._chunking_enabled else None
 
     def _enrich_search_results(
-        self, chroma_results: dict[str, Any], query: str, limit: int | None = None
+        self,
+        chroma_results: dict[str, Any],
+        query: str,
+        limit: int | None = None,
+        live_where: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Enrich ChromaDB results with full Zotero item data.
+        """Resolve hits to their owners live, filter, collapse, cap (#826).
 
-        Chunk-aware: when the collection is indexed as passages, ids look like
-        ``<item_key>#<n>``. Results are grouped back to their parent item — the
-        first (best-ranked) passage per item wins — and capped at ``limit``
-        distinct items. For every hit a grounded ``matched_passage`` quote and,
-        when available, the passage's character offset and page are attached so
-        callers can cite precisely. Item-level collections (ids without ``#``)
-        flow through unchanged.
+        A hit's record key is ``id.split("#", 1)[0]``: an attachment's own key
+        for a new record, the parent's for a legacy one. It is resolved
+        against Zotero now, not from anything stored: its owner is its parent
+        if it has one, else the item itself, so a re-parented attachment shows
+        under its new parent. Hits whose item or owner is trashed or gone are
+        dropped. ``live_where`` is then evaluated per hit, against the owner's
+        current data with passage fields read from the hit. Results collapse
+        by owner, the best-ranked hit winning, and are capped at ``limit``.
+
+        Each result describes its owner (``item_key``, ``zotero_item``) and
+        the hit that found it: the matched text, a grounded
+        ``matched_passage``, passage provenance from the hit's metadata, and
+        ``matched_attachment`` when the hit's record is an attachment.
         """
-        enriched: list[dict[str, Any]] = []
-
         if not chroma_results.get("ids") or not chroma_results["ids"][0]:
-            return enriched
+            return []
 
         ids = chroma_results["ids"][0]
         distances = chroma_results.get("distances", [[]])[0]
@@ -5641,154 +5776,222 @@ class ZoteroSemanticSearch:
         metadatas = chroma_results.get("metadatas", [[]])[0]
         rerank_scores = (chroma_results.get("rerank_scores") or [[]])[0] or []
 
-        seen_items: set[str] = set()
+        hits: list[dict[str, Any]] = []
         for i, raw_id in enumerate(ids):
-            item_key = raw_id.split("#", 1)[0]
-            if item_key in seen_items:
-                continue
-            seen_items.add(item_key)
+            meta = metadatas[i] if i < len(metadatas) else {}
+            meta = meta if isinstance(meta, dict) else {}
+            group_id = meta.get("group_id")
+            hits.append({
+                "index": i,
+                "record_key": raw_id.split("#", 1)[0],
+                "meta": meta,
+                "library": int(group_id) if group_id is not None else None,
+            })
 
+        resolved = self._resolve_hits(hits)
+
+        if live_where:
+            fulltext_owners = {
+                h["owner_key"] for h in resolved
+                if "owner" in h and self._hit_has_fulltext(h["meta"], h["record"])
+            }
+            kept = []
+            for hit in resolved:
+                if "owner" not in hit:
+                    continue  # unresolvable, so it cannot be shown to match
+                fields = {
+                    **hit["meta"],
+                    **live_fields(hit["owner"]),
+                    "has_fulltext": hit["owner_key"] in fulltext_owners,
+                }
+                if matches(live_where, fields):
+                    kept.append(hit)
+            resolved = kept
+
+        enriched: list[dict[str, Any]] = []
+        seen_owners: set[str] = set()
+        for hit in resolved:
+            if hit["owner_key"] in seen_owners:
+                continue
+            seen_owners.add(hit["owner_key"])
+
+            i, meta = hit["index"], hit["meta"]
             distance = distances[i] if i < len(distances) else None
             document = documents[i] if i < len(documents) else ""
-            meta = metadatas[i] if i < len(metadatas) else {}
-
             passage, passage_offset = best_snippet(query, document)
 
             enriched_result: dict[str, Any] = {
-                "item_key": item_key,
+                "item_key": hit["owner_key"],
                 "similarity_score": (1 - distance) if distance is not None else 0,
                 "matched_text": document,
                 "matched_passage": passage,
-                "metadata": meta if isinstance(meta, dict) else {},
+                "metadata": meta,
                 "query": query,
             }
             if i < len(rerank_scores):
                 enriched_result["rerank_score"] = rerank_scores[i]
             # Passage provenance — present only on a chunk-indexed collection.
-            if isinstance(meta, dict):
-                for mk in ("chunk_index", "n_chunks", "char_start", "char_end", "page", "section"):
-                    if mk in meta:
-                        enriched_result[mk] = meta[mk]
+            for mk in ("chunk_index", "n_chunks", "char_start", "char_end", "page", "section"):
+                if mk in meta:
+                    enriched_result[mk] = meta[mk]
             if "char_start" not in enriched_result and passage_offset:
                 enriched_result["passage_offset"] = passage_offset
+
+            if "owner" in hit:
+                enriched_result["zotero_item"] = hit["owner"]
+                record_data = hit["record"].get("data") or {}
+                if record_data.get("itemType") == "attachment":
+                    enriched_result["matched_attachment"] = {
+                        "key": hit["record_key"],
+                        "title": record_data.get("title", ""),
+                        "filename": record_data.get("filename", ""),
+                    }
+            else:
+                logger.error(f"Error enriching result for item {hit['owner_key']}: {hit['error']}")
+                enriched_result["error"] = f"Could not fetch full item data: {hit['error']}"
 
             enriched.append(enriched_result)
             if limit and len(enriched) >= limit:
                 break
-
-        self._attach_zotero_items(enriched)
         return enriched
 
-    def _attach_zotero_items(self, enriched: list[dict[str, Any]]) -> None:
-        """Fill in each result's ``zotero_item``, in place.
+    @staticmethod
+    def _hit_has_fulltext(meta: dict[str, Any], record: dict[str, Any]) -> bool:
+        """Whether one hit shows its owner has indexed full text.
 
-        Hits from the library ``self.zotero_client`` is scoped to are fetched
-        through it, as before. Hits from any *other* library cannot be: the
-        client is bound to one library and a foreign key simply 404s, which is
-        why a group-library paper was found by semantic search and then
-        reported as an error rather than a result (#163). Those are hydrated
-        from ``zotero.sqlite`` instead, in one batched query, and arrive
-        already carrying their ``library`` attribution.
-
-        Where the local database cannot serve a foreign hit — every web-API
-        install, since there is no ``zotero.sqlite`` there — a client scoped
-        to the hit's *own* library is tried instead (#492). Failures on that
-        path name the library and the credential requirement, because the
-        alternative is the silent 404 this exists to remove.
-
-        A document whose ``group_id`` is missing cannot be recognised as
-        foreign up front — every index built before #396 is untagged, which
-        is most of them. Those go to the client first and fall back to the
-        local database when it cannot serve them, so the fix does not depend
-        on having re-indexed.
+        Defined from what a hit carries, since nothing else is known at search
+        time: an attachment's record is file text; a legacy record says so in
+        its own ``has_fulltext``; a bibliographic record alone does not. An
+        owner has full text when any of its candidate hits does, so one whose
+        attachment records were not among the candidates reads as False.
         """
+        return meta.get("has_fulltext") is True or (record.get("data") or {}).get("itemType") == "attachment"
+
+    def _resolve_hits(self, hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Attach ``record``, ``owner`` and ``owner_key`` to each hit, in place.
+
+        Two batched lookups per library: the hits' own keys, then the parents
+        not already fetched. Trashed or missing hits and owners are left out
+        of the returned list. A hit that could not be looked up at all, such
+        as one from a library this configuration cannot reach, stays with an
+        ``error`` and its record key as owner, so the failure is reported
+        rather than silently dropped (#492).
+        """
+        wanted: dict[int | None, set[str]] = {}
+        for hit in hits:
+            wanted.setdefault(hit["library"], set()).add(hit["record_key"])
+        items, errors = self._resolve_items(wanted)
+
+        parents: dict[int | None, set[str]] = {}
+        for (library, _key), item in items.items():
+            parent = (item.get("data") or {}).get("parentItem")
+            if parent and not _is_trashed(item) and (library, parent) not in items and (library, parent) not in errors:
+                parents.setdefault(library, set()).add(parent)
+        if parents:
+            more_items, more_errors = self._resolve_items(parents)
+            items.update(more_items)
+            errors.update(more_errors)
+
+        resolved: list[dict[str, Any]] = []
+        for hit in hits:
+            library, key = hit["library"], hit["record_key"]
+            record = items.get((library, key))
+            if record is None:
+                if (library, key) in errors:
+                    resolved.append({**hit, "owner_key": key, "error": errors[(library, key)]})
+                continue  # gone from Zotero since it was indexed
+            owner_key = (record.get("data") or {}).get("parentItem") or key
+            owner = items.get((library, owner_key))
+            if owner is None:
+                if (library, owner_key) in errors:
+                    resolved.append({**hit, "owner_key": owner_key, "error": errors[(library, owner_key)]})
+                continue
+            if _is_trashed(record) or _is_trashed(owner):
+                continue
+            resolved.append({**hit, "record": record, "owner": owner, "owner_key": owner_key})
+        return resolved
+
+    def _resolve_items(
+        self, wanted: dict[int | None, set[str]]
+    ) -> tuple[dict[tuple[int | None, str], dict], dict[tuple[int | None, str], str]]:
+        """Look up ``{library: keys}``: ``(items, errors)``, both keyed ``(library, key)``.
+
+        Trashed items may be returned, flagged ``data.deleted``; missing ones
+        are in neither mapping. ``library`` None is a hit whose record names no
+        library (indexes from before #396).
+
+        Local mode reads zotero.sqlite first, every library in one place. What
+        it cannot serve (no database, or a snapshot older than the item) goes
+        to the API in batches of 50: through the bound client for its own
+        library and untagged hits, and through a client scoped to the hit's
+        library for any other (#492), whose failures name that library.
+        """
+        items: dict[tuple[int | None, str], dict] = {}
+        errors: dict[tuple[int | None, str], str] = {}
+        wanted = {library: keys for library, keys in wanted.items() if keys}
+        if not wanted:
+            return items, errors
+        items.update(self._read_local_items(wanted))
+
         try:
             client_group_id = self._client_group_id()
         except ValueError:
             client_group_id = None
-
-        def _is_foreign(result: dict[str, Any]) -> bool:
-            group_id = (result.get("metadata") or {}).get("group_id")
-            if group_id is None or client_group_id is None:
-                return False
-            return int(group_id) != int(client_group_id)
-
-        already_tried = {r["item_key"] for r in enriched if _is_foreign(r)}
-        local_items = self._hydrate_locally(sorted(already_tried))
-
-        unresolved: list[dict[str, Any]] = []
-        for result in enriched:
-            item_key = result["item_key"]
-            if item_key in local_items:
-                result["zotero_item"] = local_items[item_key]
+        for library, keys in wanted.items():
+            rest = sorted(k for k in keys if (library, k) not in items)
+            if not rest:
                 continue
-            if _is_foreign(result):
-                # Local hydration came up empty for a hit known to be
-                # foreign. The bound client cannot serve it — that 404 is
-                # the #492 symptom — so ask a client scoped to the hit's own
-                # library instead. Outside local mode this is the only path
-                # that can serve the hit at all.
-                self._fetch_via_scoped_client(result)
+            foreign = library is not None and client_group_id is not None and library != client_group_id
+            client = self._client_for_group(library) if foreign else self.zotero_client
+            if client is None:
+                for key in rest:
+                    errors[(library, key)] = (
+                        f"item belongs to library {library}, which cannot be "
+                        "reached from this configuration — no local Zotero "
+                        "database, and the web API needs ZOTERO_API_KEY plus, for "
+                        "the personal library, a user-scoped ZOTERO_LIBRARY_ID"
+                    )
                 continue
-            try:
-                result["zotero_item"] = self.zotero_client.item(item_key)
-            except Exception as e:
-                result["_enrich_error"] = e
-                unresolved.append(result)
-
-        # Second chance for anything the client could not serve: on an
-        # untagged index that is exactly how a foreign hit presents itself.
-        # Keys the pass above already looked up are skipped — they are known
-        # to be absent, and asking twice cannot change that.
-        retry = [r for r in unresolved if r["item_key"] not in already_tried]
-        if retry:
-            recovered = self._hydrate_locally([r["item_key"] for r in retry])
-            for result in retry:
-                item = recovered.get(result["item_key"])
-                if item is not None:
-                    result["zotero_item"] = item
-                    result.pop("_enrich_error", None)
-
-        for result in enriched:
-            error = result.pop("_enrich_error", None)
-            if error is not None:
-                logger.error(
-                    f"Error enriching result for item {result['item_key']}: {error}"
+            found, failed = _fetch_items_via_client(client, rest)
+            items.update(((library, key), item) for key, item in found.items())
+            for key, error in failed.items():
+                errors[(library, key)] = (
+                    f"item belongs to library {library}, and the configured "
+                    f"credentials could not read it from there: {error}"
+                    if foreign else str(error)
                 )
-                result["error"] = f"Could not fetch full item data: {error}"
+        return items, errors
 
-    def _fetch_via_scoped_client(self, result: dict[str, Any]) -> None:
-        """Hydrate one foreign hit through a client scoped to its library.
-
-        Reached only when ``_hydrate_locally`` could not serve a hit whose
-        ``group_id`` names a library other than the bound client's. Fills in
-        ``zotero_item`` on success; on failure records an ``_enrich_error``
-        that names the library and, where relevant, the credential
-        requirement — a foreign hit must never surface as a bare 404 from a
-        library that was never going to have it.
-        """
-        group_id = int((result.get("metadata") or {})["group_id"])
-        client = self._client_for_group(group_id)
-        if client is None:
-            result["_enrich_error"] = RuntimeError(
-                f"item belongs to library {group_id}, which cannot be "
-                "reached from this configuration — no local Zotero "
-                "database, and the web API needs ZOTERO_API_KEY plus, for "
-                "the personal library, a user-scoped ZOTERO_LIBRARY_ID"
-            )
-            return
+    def _read_local_items(
+        self, wanted: dict[int | None, set[str]]
+    ) -> dict[tuple[int | None, str], dict]:
+        """``wanted`` from zotero.sqlite, trashed items included; {} outside local mode."""
         try:
-            result["zotero_item"] = client.item(result["item_key"])
+            reader = self._open_local_reader()
         except Exception as e:
-            result["_enrich_error"] = RuntimeError(
-                f"item belongs to library {group_id}, and the configured "
-                f"credentials could not read it from there: {e}"
-            )
+            logger.debug(f"Resolving search hits: no local database ({e})")
+            return {}
+        if reader is None:
+            return {}
+        found: dict[tuple[int | None, str], dict] = {}
+        try:
+            for library, keys in wanted.items():
+                ordered = sorted(keys)
+                for start in range(0, len(ordered), _LOCAL_KEY_BATCH):
+                    batch = ordered[start:start + _LOCAL_KEY_BATCH]
+                    # group_id=None reads every library, for untagged hits.
+                    for key, item in reader.get_full_items(batch, group_id=library).items():
+                        found[(library, key)] = item
+        except Exception as e:
+            logger.warning(f"Resolving search hits from zotero.sqlite failed: {e}")
+        finally:
+            reader.close()
+        return found
 
     def _client_for_group(self, group_id: int):
         """A pyzotero client scoped to the library ``group_id`` names, or None.
 
-        The per-library complement of ``_hydrate_locally`` (#492): the bound
+        The per-library complement of ``_read_local_items`` (#492): the bound
         client can only serve its own library, and outside local mode there
         is no ``zotero.sqlite`` to fall back on, so a foreign hit needs a
         client of its own. 0 is the personal library; anything else is a
@@ -5829,25 +6032,6 @@ class ZoteroSemanticSearch:
                 )
         self._scoped_clients[group_id] = client
         return client
-
-    def _hydrate_locally(self, keys: list[str]) -> dict[str, dict]:
-        """Hydrate `keys` from zotero.sqlite, or {} if that is not possible."""
-        if not keys:
-            return {}
-        try:
-            reader = self._open_local_reader()
-        except Exception as e:
-            logger.debug(f"Cross-library enrichment: no local database ({e})")
-            return {}
-        if reader is None:
-            return {}
-        try:
-            return reader.get_items_by_keys(keys)
-        except Exception as e:
-            logger.warning(f"Cross-library enrichment failed: {e}")
-            return {}
-        finally:
-            reader.close()
 
     def _open_local_reader(self) -> LocalZoteroReader | None:
         """A reader over this install's ``zotero.sqlite``, or None outside

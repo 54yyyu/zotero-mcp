@@ -37,6 +37,15 @@ def _write(client, ids, metadatas):
     )
 
 
+def _each_key_its_own_owner(wanted):
+    """Resolution stub: every record key is a live, top-level Zotero item."""
+    items = {
+        (library, key): {"key": key, "data": {"itemType": "journalArticle"}}
+        for library, keys in wanted.items() for key in keys
+    }
+    return items, {}
+
+
 @pytest.fixture()
 def build(monkeypatch, tmp_path):
     """A search over a real index, embedding queries with a stub so nothing downloads."""
@@ -60,7 +69,7 @@ def build(monkeypatch, tmp_path):
         search = semantic_search.ZoteroSemanticSearch(chroma_client=client, config_path=str(tmp_path / "config.json"))
         search._chunking_config = {"enabled": chunking}
         search._reranker_config = {"enabled": False}
-        search._attach_zotero_items = lambda enriched: None
+        search._resolve_items = _each_key_its_own_owner
         return search
 
     return _build
@@ -366,8 +375,10 @@ def test_passage_search_fetches_enough_for_grouping(build):
     search.search("q", limit=5, level="passages")
     assert seen["n_results"] == 20
 
+    # Articles too (#826): an attachment's record and its parent's
+    # bibliographic record are two hits that collapse to one owner.
     search.search("q", limit=5, level="articles")
-    assert seen["n_results"] == 5
+    assert seen["n_results"] == 20
 
 
 # --- an unmigrated index ---------------------------------------------------------

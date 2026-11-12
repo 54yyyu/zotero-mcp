@@ -3144,6 +3144,88 @@ class LocalZoteroReader:
         ).fetchall()
         return {item["key"]: item for item in self._build_full_items(conn, rows)}
 
+    #: The owner fields semantic-search filters read (semantic_filters.live_fields).
+    _FILTER_OWNER_FIELDS = ("title", "DOI", "publicationTitle", "extra", "citationKey")
+
+    def get_filter_owners(self, *, group_id: int | None = PERSONAL_LIBRARY_GROUP_ID) -> list[dict]:
+        """Every item a semantic hit can resolve to, for filtering by live data (#826).
+
+        An owner is a regular item or a standalone attachment that is not in
+        the trash; notes and annotations are never indexed. Each is
+        pyzotero-shaped with just the filterable fields, plus
+        ``attachment_keys``: its non-trashed child attachments, whose records
+        a filter on the owner must also let through.
+
+        Scoped by library rather than by an id list, so a large library does
+        not run into SQLite's bound-parameter limit.
+        """
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return []
+        lib_ph = ",".join("?" * len(lib_ids))
+        rows = conn.execute(
+            f"""
+            SELECT i.itemID, i.key, it.typeName
+            FROM items i
+            JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+            LEFT JOIN deletedItems del ON del.itemID = i.itemID
+            LEFT JOIN itemAttachments ia ON ia.itemID = i.itemID
+            WHERE i.libraryID IN ({lib_ph}) AND del.itemID IS NULL
+              AND it.typeName NOT IN ('note', 'annotation')
+              AND ia.parentItemID IS NULL
+            """,
+            lib_ids,
+        ).fetchall()
+        owners: dict[int, dict] = {
+            row["itemID"]: {
+                "key": row["key"],
+                "data": {"key": row["key"], "itemType": row["typeName"], "tags": []},
+                "attachment_keys": [],
+            }
+            for row in rows
+        }
+        field_ph = ",".join("?" * len(self._FILTER_OWNER_FIELDS))
+        for row in conn.execute(
+            f"""
+            SELECT id.itemID, f.fieldName, idv.value
+            FROM itemData id
+            JOIN items i ON i.itemID = id.itemID
+            JOIN fields f ON f.fieldID = id.fieldID
+            JOIN itemDataValues idv ON idv.valueID = id.valueID
+            WHERE i.libraryID IN ({lib_ph}) AND f.fieldName IN ({field_ph})
+            """,
+            list(lib_ids) + list(self._FILTER_OWNER_FIELDS),
+        ):
+            if (owner := owners.get(row["itemID"])) is not None:
+                owner["data"][row["fieldName"]] = row["value"]
+        for row in conn.execute(
+            f"""
+            SELECT itg.itemID, t.name
+            FROM itemTags itg
+            JOIN items i ON i.itemID = itg.itemID
+            JOIN tags t ON t.tagID = itg.tagID
+            WHERE i.libraryID IN ({lib_ph})
+            """,
+            lib_ids,
+        ):
+            if (owner := owners.get(row["itemID"])) is not None:
+                owner["data"]["tags"].append({"tag": row["name"]})
+        for row in conn.execute(
+            f"""
+            SELECT ia.parentItemID, i.key
+            FROM itemAttachments ia
+            JOIN items i ON i.itemID = ia.itemID
+            LEFT JOIN deletedItems del ON del.itemID = i.itemID
+            WHERE i.libraryID IN ({lib_ph}) AND ia.parentItemID IS NOT NULL AND del.itemID IS NULL
+            ORDER BY i.itemID
+            """,
+            lib_ids,
+        ):
+            if (owner := owners.get(row["parentItemID"])) is not None:
+                owner["attachment_keys"].append(row["key"])
+        return list(owners.values())
+
     def get_children_of(
         self,
         parent_keys: list[str],
