@@ -52,7 +52,13 @@ from .config_light import (  # noqa: F401
 )
 from .embeddings.base import EmbeddingAPIUnreachable
 from .embeddings.registry import batch_capable_providers
-from .extract import PAGE_SEPARATOR, categorize_attachment, normalize_attachment_priority, select_by_priority
+from .extract import (
+    PAGE_SEPARATOR,
+    categorize_attachment,
+    normalize_attachment_priority,
+    select_attachment_rows,
+    select_by_priority,
+)
 from .identifiers import metadata_match_keys
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 from .semantic_filters import OWNER_FIELDS, combine, live_fields, matches, referenced_fields, split_filters
@@ -2523,6 +2529,9 @@ class ZoteroSemanticSearch:
         planned: list[tuple[dict[str, Any], Any]] = []
         up_to_date = 0
         skipped_failed: list[str] = []
+        # Legacy items being rewritten, with the files their passages must be
+        # replaced by before the old ones may go.
+        legacy_rewrites: list[tuple[dict[str, Any], list[str]]] = []
         # Targets whose record is current and only lacks a level: a failed
         # extraction of one must not drop what is already paid for.
         current_keys: set[str] = set()
@@ -2552,6 +2561,10 @@ class ZoteroSemanticSearch:
         def stored_of(key: str) -> dict[str, Any] | None:
             """The record of ``key``, else its first passage, as ``get_document_metadata`` finds it."""
             return prefetched.get(key) or prefetched.get(f"{key}#0")
+
+        def selected_keys(item: Any) -> list[str]:
+            """The files the priority selects for ``item`` in Zotero's database, on disk or not."""
+            return select_attachment_rows(reader.get_fulltext_meta_for_item(item.item_id), reader.attachment_priority)
 
         def queue_file(target: Any, *, group_id: int | None, owner: str | None, label: str,
                        date_modified: str | None, rewrite: bool) -> None:
@@ -2626,6 +2639,7 @@ class ZoteroSemanticSearch:
                     lacks_passages = gap == {SEARCH_PASSAGES} and legacy.get("has_fulltext") is True
                     if self._legacy_changed(legacy, it, att_keys, priority_tag) or lacks_passages:
                         bib["legacy_rewrite"] = rewrite = True
+                        legacy_rewrites.append((bib, selected_keys(it)))
                     elif gap == {SEARCH_ARTICLES}:
                         # Only its article record is missing: write that, and
                         # leave its passages, which cost money, as they are.
@@ -2712,6 +2726,13 @@ class ZoteroSemanticSearch:
             unit for unit, target in planned
             if target is None or unit["text"] or unit.get("reuse_from") or unit.get("refresh_only")
         ]
+        # A legacy item's passages go only once every file its text now comes
+        # from is written. A file out of reach, or one that yielded no text,
+        # leaves them as the only copy of what was paid for.
+        written = {unit["key"] for unit in units}
+        for bib, wanted in legacy_rewrites:
+            if not set(wanted) <= written:
+                bib["keep_legacy_passages"] = True
         try:
             sys.stderr.write(f"\r{' ' * _term_width(120)}\r")
             parts = [f"  Extraction complete: {len(units)} records to write"]
@@ -3226,7 +3247,7 @@ class ZoteroSemanticSearch:
             levels = bib.pop("_index_levels", None)
             # Files the API paths already selected and read (and judged
             # against their records), ahead of any the item's own text names.
-            for flag in ("_attachments_changed", "_api_attachments"):
+            for flag in ("_attachments_changed", "_api_attachments", "_api_selected"):
                 bib.pop(flag, None)
             fetched = item.get("_api_attachments") or []
             if force_rebuild:
@@ -3245,6 +3266,11 @@ class ZoteroSemanticSearch:
                     units.append(bib)
                     continue
                 bib["legacy_rewrite"] = True
+                # Its passages go once the files its text comes from are
+                # written; with one unread, they are the only copy.
+                written = {unit["key"] for unit in (*fetched, *attachments)}
+                if not set(item.get("_api_selected") or ()) <= written:
+                    bib["keep_legacy_passages"] = True
                 units.append(bib)
                 units.extend(fetched)
                 units.extend(attachments)
@@ -3614,6 +3640,9 @@ class ZoteroSemanticSearch:
             selected |= chosen_keys
             outranked |= {self._row_key(row) for row in rows} - chosen_keys
             chosen_by_item.append((item, chosen))
+            if chosen:
+                # What the item's text must come from before its legacy passages may go.
+                item["_api_selected"] = sorted(chosen_keys)
         standalone = [
             row for row in (standalone_rows if standalone_rows is not None else (listing[1] if listing else []))
             if self._api_category(row)
@@ -4425,7 +4454,7 @@ class ZoteroSemanticSearch:
                     # The import must not treat this as a rewrite of the item.
                     for record in item_records:
                         record["level_fill"] = True
-                if item.get("legacy_rewrite"):
+                if item.get("legacy_rewrite") and not item.get("keep_legacy_passages"):
                     # The import drops the item's legacy passages once this lands.
                     item_records[0]["legacy_rewrite"] = True
                 records.extend(item_records)
@@ -5188,7 +5217,10 @@ class ZoteroSemanticSearch:
             # From here on the run works on units: a bibliographic record per
             # regular item, an attachment record (and passages) per file (#826).
             all_items = self._plan_units(all_items, force_rebuild=force_full_rebuild)
-            self._legacy_rewrites = {unit["key"] for unit in all_items if unit.get("legacy_rewrite")}
+            self._legacy_rewrites = {
+                unit["key"] for unit in all_items
+                if unit.get("legacy_rewrite") and not unit.get("keep_legacy_passages")
+            }
 
             # Files with the bytes of one already indexed, or written earlier
             # in this run, are copied instead of embedded again (#495). The

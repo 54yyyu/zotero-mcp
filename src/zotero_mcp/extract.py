@@ -727,6 +727,27 @@ def select_by_priority(candidates, priority=DEFAULT_ATTACHMENT_PRIORITY, sort_ke
     return []
 
 
+#: Category of an attachment row whose kind is not a readable one (an EPUB): only
+#: ``"other"`` in a priority list can select it, and only through its text cache.
+UNREADABLE_CATEGORY = "unreadable"
+
+
+def row_category(path: str | None, ctype: str | None) -> str:
+    """The category of an attachment row from what Zotero's database says, without touching the disk."""
+    return categorize_attachment(path or "", ctype) or UNREADABLE_CATEGORY
+
+
+def select_attachment_rows(rows, priority=DEFAULT_ATTACHMENT_PRIORITY) -> list[str]:
+    """Keys of the attachments ``priority`` selects among database rows ``[key, path, content type]``.
+
+    The choice ``select_by_priority`` makes among the files on disk, made
+    among the rows instead, so a file that is out of reach (an unmounted
+    drive, files kept on demand) is still counted. Sorted by key.
+    """
+    candidates = [(row_category(row[1], row[2]), 0, row[0]) for row in rows]
+    return select_by_priority(candidates, priority)
+
+
 def extract_file(
     file_path: str | Path,
     ctype: str | None = None,

@@ -41,6 +41,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .extract import select_attachment_rows
+
 logger = logging.getLogger(__name__)
 
 _MOVE_BATCH = 500
@@ -221,18 +223,26 @@ class LocalSources:
             local = self.reader.get_item_by_key(item.key)
             if local is None:
                 return None
-            fingerprint = ",".join(
-                sorted(row[0] for row in self.reader.get_fulltext_meta_for_item(local.item_id))
-            )
+            rows = self.reader.get_fulltext_meta_for_item(local.item_id)
+            fingerprint = ",".join(sorted(row[0] for row in rows))
             stored = item.first.get("attachment_keys")
             if stored is not None and stored != fingerprint:
                 return None
             priority = item.first.get("attachment_priority")
             if priority is not None and priority != ",".join(self.reader.attachment_priority):
                 return None
+            if not rows:
+                return None
             targets = self.reader._resolve_extraction_targets(local.item_id)
+            # What the database selects, not what happens to be on disk: a file
+            # on an unmounted drive, kept on demand, or in a format only
+            # Zotero's text cache covers says nothing about where the passages
+            # came from, and must not cost the user them.
+            selected = select_attachment_rows(rows, self.reader.attachment_priority)
         except Exception as e:
             logger.warning(f"Could not look up {item.key} in Zotero ({e}); its passages are left as they are")
+            return UNKNOWN
+        if sorted(t.key for t in targets) != selected:
             return UNKNOWN
         if len(targets) != 1:
             return None

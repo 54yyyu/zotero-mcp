@@ -28,11 +28,13 @@ from . import fulltext_cache
 from . import search_semantics as _semantics
 from .config import load_config
 from .extract import (
+    UNREADABLE_CATEGORY,
     ExtractedDoc,
     categorize_attachment,
     extract_file,
     normalize_attachment_priority,
     pick_by_priority,
+    row_category,
     select_by_priority,
 )
 from .utils import _generate_search_variants, _normalize_for_search, is_local_mode
@@ -73,6 +75,9 @@ class ExtractionTarget:
     category: str
     file_stamp: str
     size: int
+    #: ``path`` is the attachment's own ``.zotero-ft-cache``, because its file is
+    #: not on disk (or in a format only that cache covers). Its text is that cache.
+    ft_cache: bool = False
 
 
 class KeyGroupMap(NamedTuple):
@@ -1550,11 +1555,11 @@ class LocalZoteroReader:
         return resolved, category
 
     def _build_target(
-        self, key: str, path: str | None, ctype: str | None
+        self, key: str, path: str | None, ctype: str | None, *, unreadable_ok: bool = False
     ) -> ExtractionTarget | None:
         found = self._resolve_attachment_file(key, path, ctype)
         if found is None:
-            return None
+            return self._build_cache_target(key, path, ctype, unreadable_ok=unreadable_ok)
         resolved, category = found
         try:
             st = resolved.stat()
@@ -1569,16 +1574,50 @@ class LocalZoteroReader:
             size=st.st_size,
         )
 
+    def _build_cache_target(
+        self, key: str, path: str | None, ctype: str | None, *, unreadable_ok: bool
+    ) -> ExtractionTarget | None:
+        """Target for an attachment whose file we cannot read, from its own ``.zotero-ft-cache``.
+
+        The file is missing (unmounted drive, kept on demand) or in no
+        format we parse (an EPUB), but Zotero extracted its text. Never
+        another attachment's cache. The stamp is the cache file's, so the
+        record follows the text it was made from. ``unreadable_ok`` lets an
+        attachment of an unreadable kind in (a regular item's child can be
+        chosen for its cache; a standalone file is indexed only if readable).
+        """
+        category = row_category(path, ctype)
+        if category == UNREADABLE_CATEGORY and not unreadable_ok:
+            return None
+        try:
+            cache = self._get_storage_dir() / key / ".zotero-ft-cache"
+            st = cache.stat()
+        except Exception:
+            return None
+        if not cache.is_file() or st.st_size == 0:
+            return None
+        return ExtractionTarget(
+            key=key,
+            path=cache,
+            content_type=ctype,
+            category=category,
+            file_stamp=f"{st.st_mtime_ns}:{st.st_size}",
+            size=st.st_size,
+            ft_cache=True,
+        )
+
     def _resolve_extraction_targets(self, item_id: int) -> list[ExtractionTarget]:
         """Every attachment of an item to index, by configured priority.
 
         All readable, non-trashed files in the first priority category that
-        has any, ordered by attachment key. Same cheap, parent-process-only
-        resolution as :meth:`_resolve_extraction_target`.
+        has any, ordered by attachment key. An attachment whose file cannot be
+        read but has its own ``.zotero-ft-cache`` counts too, with that cache
+        as its text. Same cheap, parent-process-only resolution as
+        :meth:`_resolve_extraction_target`.
         """
         candidates = []
         for key, path, ctype in self._iter_parent_attachments(item_id):
-            target = self._build_target(key, path, ctype)
+            target = self._build_target(key, path, ctype, unreadable_ok=True)
             if target is not None:
                 candidates.append((target.category, target.size, target))
         return select_by_priority(
@@ -2237,7 +2276,7 @@ class LocalZoteroReader:
         hit = self._cache_lookup(target.path, target.key)
         if hit:
             return hit
-        doc = self._extract_doc_from_file(target.path)
+        doc = None if target.ft_cache else self._extract_doc_from_file(target.path)
         if doc:
             source = _source_for_path(target.path)
             self._cache_store(target.path, target.key, target.key, doc.text, source)
@@ -2274,6 +2313,9 @@ class LocalZoteroReader:
                 hit = self._cache_lookup(target.path, target.key)
                 if hit:
                     yield target.key, hit
+                    continue
+                if target.ft_cache:
+                    deferred.append(target)  # nothing to parse: its text is the cache
                     continue
                 pending[pool.submit(_extract_worker, str(target.path), max_pages)] = target
 

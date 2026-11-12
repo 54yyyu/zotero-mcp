@@ -475,3 +475,45 @@ def test_the_note_names_the_command():
     assert "40" in lines[0] and "2" in lines[0]
     assert any("migrate-index" in line for line in lines)
     assert index_migration.rekey_note(0, 0) == []
+
+
+# --- a file out of reach is no evidence about the item (final review C1) ------------
+
+PDF_ROW = [ATT, "storage:a.pdf", "application/pdf"]
+OTHER_ROW = ["ATTACH02", "storage:b.pdf", "application/pdf"]
+
+
+def _unreachable(index, rows, targets, **seed):
+    directory, config = index
+    _seed_split(directory, **seed)
+    reader = MigReader([_item()], targets={1: targets}, rows={1: rows})
+    return directory, config, LocalSources(reader, config)
+
+
+def test_a_file_missing_on_disk_leaves_the_passages_where_they_are(index):
+    """An unmounted drive, a file kept on demand, an EPUB: the database still lists the attachment."""
+    directory, config, sources = _unreachable(index, [PDF_ROW], [])
+
+    report = migrate_index(config, sources=sources, **QUIET)
+
+    assert (report.skipped_items, report.skipped_passages, report.dropped_items) == (1, 3, 0)
+    assert set(_read(directory, PASSAGES)) == {f"{ITEM}#{n}" for n in range(3)}
+
+
+def test_one_of_two_selected_files_out_of_reach_leaves_the_passages_where_they_are(index):
+    directory, config, sources = _unreachable(
+        index, [PDF_ROW, OTHER_ROW], [target(ATT)], att_keys="ATTACH01,ATTACH02"
+    )
+
+    report = migrate_index(config, sources=sources, **QUIET)
+
+    assert (report.skipped_items, report.dropped_items, report.rekeyed_items) == (1, 0, 0)
+    assert len(_read(directory, PASSAGES)) == 3
+
+
+def test_an_item_without_any_attachment_still_loses_its_passages(index):
+    directory, config, sources = _unreachable(index, [], [], att_keys="")
+
+    report = migrate_index(config, sources=sources, **QUIET)
+
+    assert (report.dropped_items, report.skipped_items) == (1, 0)

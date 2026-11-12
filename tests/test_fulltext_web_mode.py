@@ -594,3 +594,46 @@ def test_attach_web_fulltext_does_not_walk_every_attachment_for_a_few_items(monk
     assert names.count("items") == 0
     assert names.count("children") == 60
     assert papers[3]["data"]["fulltext"] == "text 3"
+
+
+# --------- A legacy item's passages are replaced before they go (#826, final review C1) ----------
+
+
+class LegacyChroma(FakeChromaClient):
+    def get_document_metadata(self, doc_id):
+        if doc_id == "A":
+            return {"item_key": "A", "title": "Old title", "group_id": 0, "date_modified": "2023-01-01T00:00:00Z"}
+        return None
+
+
+def _planned_bib(monkeypatch, selected, written):
+    search = _build_search(monkeypatch, FakeZoteroClient(), LegacyChroma())
+    item = _paper("A")
+    if selected:
+        item["_api_selected"] = selected
+    if written:
+        item["_api_attachments"] = [
+            semantic_search._attachment_unit(key, "text", file_stamp="api-version:1") for key in written
+        ]
+    units = search._plan_units([item], force_rebuild=False)
+    return next(u for u in units if u["key"] == "A")
+
+
+def test_a_changed_legacy_item_whose_file_gave_no_text_keeps_its_passages(monkeypatch):
+    bib = _planned_bib(monkeypatch, selected=["PA"], written=[])
+
+    assert bib["legacy_rewrite"] is True
+    assert bib["keep_legacy_passages"] is True
+
+
+def test_a_changed_legacy_item_whose_files_are_all_written_loses_its_passages(monkeypatch):
+    bib = _planned_bib(monkeypatch, selected=["PA"], written=["PA"])
+
+    assert bib["legacy_rewrite"] is True
+    assert "keep_legacy_passages" not in bib
+
+
+def test_a_changed_legacy_item_without_selected_files_loses_its_passages(monkeypatch):
+    bib = _planned_bib(monkeypatch, selected=[], written=[])
+
+    assert "keep_legacy_passages" not in bib

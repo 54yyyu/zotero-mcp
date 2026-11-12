@@ -37,8 +37,11 @@ class ScanReader:
 
     attachment_priority = DEFAULT_ATTACHMENT_PRIORITY
 
-    def __init__(self, targets=None, texts=None, standalone=(), standalone_targets=None, dates=None):
+    def __init__(self, targets=None, texts=None, standalone=(), standalone_targets=None, dates=None, rows=None):
         self.targets = dict(targets or {})
+        # item_id -> the item's attachment rows in Zotero's database as [key, path, content type],
+        # for files that are not on disk (so have no target); by default the targets'.
+        self.rows = dict(rows or {})
         self.texts = dict(texts or {})
         self.standalone = list(standalone)
         self.standalone_targets = dict(standalone_targets or {})
@@ -71,6 +74,8 @@ class ScanReader:
         return set()
 
     def get_fulltext_meta_for_item(self, item_id):
+        if item_id in self.rows:
+            return [list(row) for row in self.rows[item_id]]
         return [[t.key, str(t.path), t.content_type] for t in self.targets.get(item_id, [])]
 
     def extract_targets(self, targets):

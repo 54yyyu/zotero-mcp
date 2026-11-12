@@ -431,6 +431,40 @@ def test_a_changed_legacy_item_is_rewritten_and_its_old_passages_dropped_after(e
     assert search.chroma_client.embedded == [], "the rewritten item is current from now on"
 
 
+def test_a_changed_legacy_item_keeps_its_passages_while_a_selected_file_cannot_be_read(env):
+    """No attachment record lands for a file out of reach: the paid passages are the only copy."""
+    reader = LibReader(
+        [Item("ITEM0001", 1)], targets={1: []}, rows={1: [["PDFAAAAA", "storage:a.pdf", "application/pdf"]]}
+    )
+    search, _ = env(reader, update=False)
+    _seed_legacy(search, date_modified="2023-01-01 00:00:00")
+
+    search, _ = env(reader)
+
+    assert set(_meta(search, "ITEM0001")) == {"item_key", "group_id", "date_modified"}
+    assert _ids(search, f"{NAME}_passages") == {f"ITEM0001#{n}" for n in range(3)}
+
+
+def test_a_changed_legacy_item_keeps_its_passages_when_its_file_yields_no_text(env):
+    reader = _library(texts={"PDFAAAAA": None})
+    search, _ = env(reader, update=False)
+    _seed_legacy(search, date_modified="2023-01-01 00:00:00")
+
+    search, _ = env(reader)
+
+    assert _ids(search, f"{NAME}_passages") == {f"ITEM0001#{n}" for n in range(3)}
+
+
+def test_a_changed_legacy_item_without_any_attachment_loses_its_passages(env):
+    reader = LibReader([Item("ITEM0001", 1)], targets={1: []}, rows={1: []})
+    search, _ = env(reader, update=False)
+    _seed_legacy(search, date_modified="2023-01-01 00:00:00")
+
+    search, _ = env(reader)
+
+    assert _ids(search, f"{NAME}_passages") == set()
+
+
 # --- the deletion pass ------------------------------------------------------------
 
 
