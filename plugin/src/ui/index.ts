@@ -16,6 +16,7 @@ import { Feed } from "./messages.ts";
 import { answerNote } from "./notes.ts";
 import { answerText, promptFor } from "./transcript.ts";
 import { settingsView } from "./settings.ts";
+import { ownProviders } from "./settings-model.ts";
 import { BACKEND_LABEL, BACKENDS, emptyState, historyView, setupCard, statusView } from "./views.ts";
 import { welcomeView } from "./welcome.ts";
 import { enabledSkills, invocationText, parseInvocation, pinned, skillPath } from "./skills-model.ts";
@@ -256,8 +257,8 @@ class Panel {
     const s = this.host.getSettings();
     const st = this.health.backend();
     this.statusBtn.dataset.state = this.health.state;
-    // Say plainly who pays: a subscription's account name, or "API key". pi has neither: it uses the user's own provider keys.
-    const label = s.backend === "custom" ? s.customAgent?.label || t("agent.custom.label") : s.backend === "pi" ? "pi" : s.auth[s.backend] === "api-key" ? t("header.apiKey", { agent: BACKEND_LABEL[s.backend] }) : st?.account || t("header.subscription", { agent: BACKEND_LABEL[s.backend] });
+    // Say plainly who pays: a subscription's account name, or "API key". pi and OpenCode have neither: they use the providers set up in them.
+    const label = s.backend === "custom" ? s.customAgent?.label || t("agent.custom.label") : ownProviders(s.backend) ? BACKEND_LABEL[s.backend] : s.auth[s.backend] === "api-key" ? t("header.apiKey", { agent: BACKEND_LABEL[s.backend] }) : st?.account || t("header.subscription", { agent: BACKEND_LABEL[s.backend] });
     this.accountEl.textContent = label;
     const bad = this.health.failing;
     const tip = { ok: t("status.allSet"), checking: t("common.checking"), unknown: t("header.statusUnknown"), warn: "", bad: "" }[this.health.state] || bad.map((c) => c.label).join(", ");

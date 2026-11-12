@@ -91,7 +91,7 @@ if (flag("mock-agent")) {
   // A bridge package that is really test/mock-agent.mjs, at the version the runtime pins, so ensureBridge finds it installed.
   const { BACKENDS } = await import(pathToFileURL(join(root, "src", "agent", "backends.ts")).href);
   const mock = pathToFileURL(join(root, "test", "mock-agent.mjs")).href;
-  for (const spec of Object.values(BACKENDS)) {
+  for (const spec of Object.values(BACKENDS).filter((s) => s.pkg)) { // OpenCode has no bridge
     const pkg = join(bridges, "node_modules", ...spec.pkg.split("/"));
     mkdirSync(join(pkg, "dist"), { recursive: true });
     writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: spec.pkg, version: spec.version, type: "module", bin: { bridge: "dist/index.js" } }));

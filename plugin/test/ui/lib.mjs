@@ -3,7 +3,7 @@ import { pathToFileURL } from "node:url";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const PW = "/Users/yiyu/Documents/projects/autorev-video/node_modules/playwright/index.mjs";
+export const PW = process.env.ZMC_PLAYWRIGHT ?? "/Users/yiyu/Documents/projects/autorev-video/node_modules/playwright/index.mjs";
 export const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const shotsDir = join(root, "preview", "shots");
 export const pageUrl = (params = {}) => {

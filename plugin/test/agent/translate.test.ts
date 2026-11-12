@@ -5,7 +5,8 @@ import { readFileSync } from "node:fs";
 import { after, test } from "node:test";
 import { TRANSLATE_CAP, TRANSLATOR_PROMPT, pickLowEffort, pickTranslateModel, translationRequest, translatorPrompt } from "../../src/agent/translate.ts";
 import { createRuntime } from "../../src/agent/index.ts";
-import type { BuiltinBackendId, Catalog, PanelSettings } from "../../src/types.ts";
+import type { BridgedBackendId } from "../../src/agent/backends.ts";
+import type { Catalog, PanelSettings } from "../../src/types.ts";
 import { CATALOGS, defaultSettings } from "../../src/ui/fake-catalog.ts";
 import { LANGUAGES, languageForLocale, setFlag, setPerBackend } from "../../src/ui/settings-model.ts";
 import { withDefaults } from "../../src/zotero/defaults.ts";
@@ -57,17 +58,17 @@ test("translate settings are validated like the others: defaults, a known langua
   const d = withDefaults({}, "de-DE");
   assert.equal(d.translate, true);
   assert.equal(d.translateTo, "de");
-  assert.deepEqual(d.translateModel, { "claude-code": "", codex: "", pi: "", custom: "" });
+  assert.deepEqual(d.translateModel, { "claude-code": "", codex: "", pi: "", opencode: "", custom: "" });
   const s = withDefaults({ translate: false, translateTo: "ko", translateModel: { codex: "gpt-6-luna" } as never }, "de-DE");
-  assert.deepEqual([s.translate, s.translateTo, s.translateModel], [false, "ko", { "claude-code": "", codex: "gpt-6-luna", pi: "", custom: "" }]);
+  assert.deepEqual([s.translate, s.translateTo, s.translateModel], [false, "ko", { "claude-code": "", codex: "gpt-6-luna", pi: "", opencode: "", custom: "" }]);
   const bad = withDefaults({ translate: "yes" as never, translateTo: "klingon" }, "ja");
   assert.deepEqual([bad.translate, bad.translateTo], [true, "ja"]);
   assert.deepEqual(setFlag("translate", false), { translate: false });
-  assert.deepEqual(setPerBackend(defaultSettings(), "translateModel", "pi", "small").translateModel, { "claude-code": "", codex: "", pi: "small" });
+  assert.deepEqual(setPerBackend(defaultSettings(), "translateModel", "pi", "small").translateModel, { "claude-code": "", codex: "", pi: "small", opencode: "" });
 });
 
 test("a locked session: Claude's prompt is replaced and it has no tools; Codex is read-only; pi runs without tools", async () => {
-  for (const backend of ["claude-code", "codex", "pi"] as BuiltinBackendId[]) {
+  for (const backend of ["claude-code", "codex", "pi"] as BridgedBackendId[]) {
     const dir = tempDir();
     const dump = `${dir}/dump.json`, newDump = `${dir}/new.json`;
     const pi = fakeBin({ pi: "exit 0" });

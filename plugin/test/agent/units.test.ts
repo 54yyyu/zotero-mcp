@@ -188,7 +188,7 @@ describe("bridges", () => {
 
   it("pins are the versions measured", () => {
     assert.deepEqual(
-      Object.values(BACKENDS).map((b) => `${b.pkg}@${b.version}`),
+      Object.values(BACKENDS).flatMap((b) => ("pkg" in b ? [`${b.pkg}@${b.version}`] : [])),
       ["@agentclientprotocol/claude-agent-acp@0.85.1", "@agentclientprotocol/codex-acp@2.1.1", "pi-acp@0.0.34"],
     );
   });
@@ -225,11 +225,12 @@ describe("detect()", () => {
     assert.match(b.reason!, /not signed in/i);
   });
 
-  it("no node: every backend is unavailable with the same explanation", async () => {
+  it("no node: every bridged backend is unavailable with the same explanation; OpenCode needs none", async () => {
     const rt = createRuntime({ spawner: hermeticSpawner({ PATH: "/nonexistent" }), bridgeDir: tempDir() });
     const all = await rt.detect();
-    assert.equal(all.length, 3);
-    assert.ok(all.every((s) => !s.available && /node was not found/.test(s.reason!)));
+    assert.equal(all.length, 4);
+    assert.ok(all.filter((s) => s.id !== "opencode").every((s) => !s.available && /node was not found/.test(s.reason!)));
+    assert.match(all.find((s) => s.id === "opencode")!.reason!, /Install OpenCode/);
   });
 
   it("an uninstalled bridge needs npm", async () => {

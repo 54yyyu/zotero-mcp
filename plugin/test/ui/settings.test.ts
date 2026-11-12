@@ -12,9 +12,9 @@ test("model, mode and effort are saved per backend and never leak across backend
   await h.setSettings(setPerBackend(h.getSettings(), "mode", "claude-code", "plan"));
   await h.setSettings(setPerBackend(h.getSettings(), "effort", "codex", "high"));
   const s = h.getSettings();
-  assert.deepEqual(s.model, { "claude-code": "haiku", codex: "", pi: "" });
-  assert.deepEqual(s.mode, { "claude-code": "plan", codex: "", pi: "" });
-  assert.deepEqual(s.effort, { "claude-code": "", codex: "high", pi: "" });
+  assert.deepEqual(s.model, { "claude-code": "haiku", codex: "", pi: "", opencode: "" });
+  assert.deepEqual(s.mode, { "claude-code": "plan", codex: "", pi: "", opencode: "" });
+  assert.deepEqual(s.effort, { "claude-code": "", codex: "high", pi: "", opencode: "" });
 });
 
 test("effective() is the saved choice, else the catalog default, else empty", () => {
@@ -55,7 +55,7 @@ test("flags and sign-in mode patch only what they name", async () => {
   await h.setSettings(setAuth(h.getSettings(), "codex", "api-key"));
   const s = h.getSettings();
   assert.deepEqual([s.enterToSend, s.showThinking, s.expandTools, s.openAtStart, s.attachAreas, s.followFocus, s.attachSelection], [false, false, true, true, false, true, true]);
-  assert.deepEqual(s.auth, { "claude-code": "subscription", codex: "api-key", pi: "subscription" });
+  assert.deepEqual(s.auth, { "claude-code": "subscription", codex: "api-key", pi: "subscription", opencode: "subscription" });
 });
 
 test("prompt edits: add, edit and delete return new lists and keep the pins", () => {

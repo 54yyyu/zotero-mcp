@@ -4,7 +4,7 @@
 import type { Appearance, BackendId, BackendStatus, Catalog, PanelSettings, SettingsHost } from "../types.ts";
 import type { Look } from "./appearance.ts";
 import { clear, env, errMessage, h, icon, isMac } from "./dom.ts";
-import { LANGUAGES, effective, modeHelp, setAuth, setFlag, setFolder, setPerBackend, shortPath, shortcuts } from "./settings-model.ts";
+import { LANGUAGES, effective, modeHelp, ownProviders, setAuth, setFlag, setFolder, setPerBackend, shortPath, shortcuts } from "./settings-model.ts";
 import type { FlagKey } from "./settings-model.ts";
 import { confirmAction, hint, radios, row, section, seg, select, selectField, sub, switchRow } from "./settings-parts.ts";
 import { appearanceCard } from "./settings-look.ts";
@@ -130,7 +130,7 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
 
   function signIn(s: PanelSettings): HTMLElement {
     const b = s.backend;
-    if (b === "pi") return sub(t("settings.signIn"), hint(t("settings.signIn.pi")));
+    if (ownProviders(b)) return sub(t("settings.signIn"), hint(t(b === "pi" ? "settings.signIn.pi" : "settings.signIn.opencode")));
     const mode = s.auth[b] ?? "subscription";
     const st = o.statuses()?.find((x) => x.id === b);
     const input = h("input.input", { type: "password", autocomplete: "off", spellcheck: "false", placeholder: keys[b] ? t("settings.key.replace") : t("settings.key.paste"), "aria-label": t("settings.key.label", { agent: BACKEND_LABEL[b] }), value: keyDraft, oninput: () => { keyDraft = input.value; } }) as HTMLInputElement;

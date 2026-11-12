@@ -87,7 +87,7 @@ export type ChatEvent =
 
 // ───────────────────────────── agent/ ─────────────────────────────
 
-export type BuiltinBackendId = "claude-code" | "codex" | "pi";
+export type BuiltinBackendId = "claude-code" | "codex" | "pi" | "opencode";
 export type BackendId = BuiltinBackendId | "custom";
 export type BackendValues<T> = Record<BuiltinBackendId, T> & Partial<Record<"custom", T>>;
 

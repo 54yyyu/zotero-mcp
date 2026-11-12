@@ -126,5 +126,20 @@ async function main(ctx) {
   const attrs = [evil, ...evil.querySelectorAll("*")].flatMap((e) => [...e.attributes].map((a) => `${a.name}=${a.value}`));
   check(!attrs.some((a) => /^on|^class=|javascript:|https?:|evil/i.test(a)), "no handlers or external references: " + attrs.join(" "));
   out.hostile = tags;
+
+  // 6. mermaid blocks (#823): a flowchart and a sequence diagram drawn by the same card, in the theme's colours, with their source
+  await say("SCENARIO:mermaid");
+  await ctx.waitFor(() => $$(".dg .dg__fig svg").length === 6 && !$(".dg--pending"), "two mermaid figures");
+  const mm = $$(".dg .dg__fig svg").slice(4);
+  check(/Research question/.test(mm[0].textContent) && /Panel/.test(mm[1].textContent), "flowchart and sequence drawn: " + mm.map((s) => s.textContent.slice(0, 40)));
+  const mmStroke = win.getComputedStyle(mm[0].querySelector("rect")).stroke;
+  check(mmStroke !== "rgb(0, 0, 0)" && mmStroke !== "none", "themed: " + mmStroke);
+  const mmCard = mm[0].closest(".dg");
+  mmCard.querySelector('button[aria-label="Show the Mermaid source"]').click();
+  await ctx.waitFor(() => /flowchart TD/.test(mmCard.querySelector(".dg__src")?.textContent ?? ""), "mermaid source shown");
+  mmCard.scrollIntoView();
+  await ctx.sleep(300);
+  await snap("diagram-3-mermaid");
+  out.mermaid = mm.map((s) => s.getAttribute("viewBox"));
   return out;
 }

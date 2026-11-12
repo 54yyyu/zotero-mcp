@@ -553,7 +553,7 @@ await test("agent switch: an empty chat switches at once; a chat with messages a
   await p.locator(".pick--model").click();
   await p.waitForSelector(".mdd .menu__item");
   assert.deepEqual(await p.locator(".mdd__agent").evaluateAll((els) => els.map((e) => [e.textContent, e.dataset.state, e.getAttribute("aria-checked")])),
-    [["Claude Code", "ok", "true"], ["Codex", "bad", "false"], ["pi", "ok", "false"], ["Custom", "bad", "false"]], "every agent, with the status detect() gave (Custom unconfigured, #813)");
+    [["Claude Code", "ok", "true"], ["Codex", "bad", "false"], ["pi", "ok", "false"], ["OpenCode", "ok", "false"], ["Custom", "bad", "false"]], "every agent, with the status detect() gave (Custom unconfigured, #813)");
   // an agent that is not ready says why and stays unchosen
   await agentTab(p, "Codex").click();
   assert.match(await p.locator(".mdd__note").innerText(), /Codex isn't ready: codex is not installed/);
@@ -806,7 +806,7 @@ await test("settings: Translate: the switch, the target language, and the model 
   assert.deepEqual(await model.locator("option").allInnerTexts(), ["Fastest available (recommended)", "Claude Opus", "Claude Sonnet", "Claude Haiku", "Claude Opus 4.1", "Claude Sonnet 4", "Claude Haiku 3.5"]);
   assert.equal(await model.inputValue(), "", "Fastest available is the default");
   await model.selectOption("haiku");
-  assert.deepEqual((await settings(p)).translateModel, { "claude-code": "haiku", codex: "", pi: "" }, "saved per agent");
+  assert.deepEqual((await settings(p)).translateModel, { "claude-code": "haiku", codex: "", pi: "", opencode: "" }, "saved per agent");
   assert.equal((await settings(p)).model["claude-code"], "", "the chat's model is another setting");
 
   // Another agent: its own models, and its own (default) choice.
@@ -981,7 +981,7 @@ await test("history: each chat shows its folder; Copy terminal command copies th
 await test("welcome: first run shows it instead of the chat; the checks settle one by one; a failing check is fixed in place; Start chatting hands over", async (p) => {
   assert.equal(await p.locator(".cin").isVisible(), false, "the chat is not showing yet");
   assert.match(await p.locator(".wel h2").innerText(), /Chat with your library/);
-  assert.equal(await p.locator(".wcard").count(), 4); // the three built-ins and the user-configured agent (#813)
+  assert.equal(await p.locator(".wcard").count(), 5); // the four built-ins and the user-configured agent (#813)
   assert.equal(await p.locator(".wcard[aria-checked=true]").innerText().then((t) => t.split("\n")[0]), "Claude Code");
   await p.waitForSelector(".wrow--pending");
   await p.waitForSelector(".wrow--bad", { timeout: 4000 });
@@ -1295,6 +1295,32 @@ await test("a diagram streams as a quiet placeholder, never half drawn", async (
   await done(p);
   assert.equal(await p.locator(".dg--pending").count(), 0);
   assert.equal(await p.locator(".dg__fig svg").count(), 3);
+});
+
+await test("mermaid blocks render as figures (flowchart, sequence), stream as a placeholder, show their source; another type stays code", async (p) => {
+  await sim(p, () => { window.__zmc.sim.speed = 6; });
+  await send(p, "mermaid please");
+  await p.waitForSelector(".dg--pending", { timeout: 8000 });
+  await done(p);
+  assert.equal(await p.locator(".dg--pending").count(), 0);
+  assert.equal(await p.locator(".dg .dg__fig svg").count(), 2);
+  const texts = await p.locator(".dg__fig svg").evaluateAll((a) => a.map((s) => s.textContent));
+  assert.match(texts[0], /Research question[^]*Enough papers/);
+  assert.match(texts[1], /You[^]*Panel[^]*Agent/);
+  // colours are the theme's: nothing black, the styled node in the accent
+  const strokes = await p.evaluate(() => [...window.__zmc.shadow.querySelectorAll(".dg__fig svg rect")].map((r) => getComputedStyle(r).stroke));
+  assert.ok(strokes.length && strokes.every((c) => c !== "rgb(0, 0, 0)"), strokes.join(","));
+  // the pie chart is not drawn: it shows as a mermaid code block
+  assert.equal(await p.locator(".msg--assistant .code").count(), 1);
+  assert.match(await p.locator(".msg--assistant .code").innerText(), /pie title Sources/);
+  const src = p.locator(".dg").first().locator('button[aria-label="Show the Mermaid source"]');
+  await p.locator(".dg").first().hover();
+  await src.click();
+  assert.match(await p.locator(".dg").first().locator(".dg__src .code").innerText(), /flowchart TD[^]*Research question/);
+  await p.locator(".dg").first().locator('button[aria-label="Save as SVG"]').click();
+  await p.waitForFunction(() => window.__zmc.sim.saved.length === 1);
+  assert.match((await sim(p, () => window.__zmc.sim.saved))[0].head, /^<\?xml[^]*<svg /);
+  assert.deepEqual(p.errors, []);
 });
 
 await test("a hostile diagram is neutralised: no script runs, nothing external, only the drawing", async (p) => {
