@@ -89,6 +89,17 @@ def _seed_chunked(directory, items=("AAA", "BBB"), chunks=2, extra_bare=()):
     return vectors
 
 
+def _migrate(config, **kwargs):
+    """Run a migration as a fresh `zotero-mcp migrate-index` process would.
+
+    A previous run (or an interrupted one) in this process can leave ChromaDB
+    clients cached with unflushed HNSW files; a real run starts with none.
+    Windows CI saw "Nothing found on disk" without this.
+    """
+    release_chroma_clients()
+    return migrate_index(config, **kwargs)
+
+
 def _read(directory, name):
     # The migration's own client can still hold unflushed HNSW files; in real
     # use migrate-index is a process that has exited by the time anything reads
@@ -106,7 +117,7 @@ def test_passages_move_with_their_vectors_and_nothing_embeds(index):
     directory, config = index
     vectors = _seed_chunked(directory)
 
-    report = migrate_index(config, **QUIET)
+    report = _migrate(config, **QUIET)
 
     assert report.renamed is True
     stored = _read(directory, PASSAGES)
@@ -122,7 +133,7 @@ def test_report_says_how_many_article_vectors_are_left_to_embed(index):
     directory, config = index
     _seed_chunked(directory)
 
-    report = migrate_index(config, **QUIET)
+    report = _migrate(config, **QUIET)
 
     assert report.items_needing_articles == 2
     assert report.passage_records == 4
@@ -132,7 +143,7 @@ def test_a_migrated_index_is_recognised_as_split(index):
     directory, config = index
     _seed_chunked(directory)
 
-    migrate_index(config, **QUIET)
+    _migrate(config, **QUIET)
 
     layout = read_index_layout(directory, NAME)
     assert layout["unmigrated_passages"] == 0
@@ -146,7 +157,7 @@ def test_bare_records_in_a_mixed_index_stay_articles(index):
     directory, config = index
     vectors = _seed_chunked(directory, extra_bare=("OLD",))
 
-    report = migrate_index(config, **QUIET)
+    report = _migrate(config, **QUIET)
 
     assert report.moved_articles == 1
     stored = _read(directory, NAME)
@@ -160,7 +171,7 @@ def test_dry_run_changes_nothing(index):
     directory, config = index
     _seed_chunked(directory, extra_bare=("OLD",))
 
-    report = migrate_index(config, dry_run=True, **QUIET)
+    report = _migrate(config, dry_run=True, **QUIET)
 
     assert report.renamed is False
     assert report.passage_records == 4
@@ -177,7 +188,7 @@ def test_item_level_index_has_nothing_to_migrate(index):
     ids = ["AAA", "BBB"]
     _write(client, ids, [_meta(k) for k in ids], _vectors(ids))
 
-    report = migrate_index(config, **QUIET)
+    report = _migrate(config, **QUIET)
 
     assert report.needed is False
     assert set(_read(directory, NAME)) == {"AAA", "BBB"}
@@ -186,9 +197,9 @@ def test_item_level_index_has_nothing_to_migrate(index):
 def test_running_twice_changes_nothing_more(index):
     directory, config = index
     _seed_chunked(directory, extra_bare=("OLD",))
-    migrate_index(config, **QUIET)
+    _migrate(config, **QUIET)
 
-    report = migrate_index(config, **QUIET)
+    report = _migrate(config, **QUIET)
 
     assert report.needed is False
     assert report.renamed is False
@@ -207,11 +218,11 @@ def test_passages_written_to_the_article_collection_after_a_split_move_over(inde
     """An older version running against a split index writes passages the old way."""
     directory, config = index
     _seed_chunked(directory, items=("AAA",), chunks=1)
-    migrate_index(config, **QUIET)
+    _migrate(config, **QUIET)
     stray = _vectors(["BBB#0"])
     _write(_legacy_client(directory), ["BBB#0"], [_passage_meta("BBB", 0, 1)], stray)
 
-    report = migrate_index(config, **QUIET)
+    report = _migrate(config, **QUIET)
 
     assert report.needed is True
     assert report.moved_passages == 1
@@ -222,7 +233,7 @@ def test_passages_written_to_the_article_collection_after_a_split_move_over(inde
 def test_a_stray_passage_does_not_overwrite_a_newer_one(index):
     directory, config = index
     _seed_chunked(directory, items=("AAA",), chunks=1)
-    migrate_index(config, **QUIET)
+    _migrate(config, **QUIET)
     legacy = _legacy_client(directory)
     legacy.collection.upsert(
         ids=["AAA#0"], documents=["old text"], metadatas=[_passage_meta("AAA", 0, 1)], embeddings=[[0.0, 0.0, 0.0, 1.0]]
@@ -230,7 +241,7 @@ def test_a_stray_passage_does_not_overwrite_a_newer_one(index):
     del legacy
     release_chroma_clients()  # the stray writer is gone before the migration runs again, as in real use
 
-    migrate_index(config, **QUIET)
+    _migrate(config, **QUIET)
 
     assert _read(directory, PASSAGES)["AAA#0"][0] == "text of AAA#0"
     assert _read(directory, NAME) == {}
@@ -251,10 +262,10 @@ def test_interrupted_move_of_bare_records_finishes_on_the_next_run(index, monkey
 
     monkeypatch.setattr(index_migration, "_delete_moved", fail_second)
     with pytest.raises(RuntimeError, match="interrupted"):
-        migrate_index(config, **QUIET)
+        _migrate(config, **QUIET)
     monkeypatch.setattr(index_migration, "_delete_moved", real)
 
-    report = migrate_index(config, **QUIET)
+    report = _migrate(config, **QUIET)
 
     assert report.needed is True
     assert set(_read(directory, NAME)) == {"OLD1", "OLD2", "OLD3"}
