@@ -5542,6 +5542,14 @@ class ZoteroSemanticSearch:
                 # run would fetch the same changes again.
                 self.update_config["last_update"] = datetime.now().isoformat()
                 if (
+                    self._standalone_covered and limit is None
+                    and not stats.get("batch_error") and not self._api_fetch_failures
+                ):
+                    # An explicit batch run submitted (or found nothing to embed
+                    # for) the standalone files too; the realtime path's flag at
+                    # the end of the run is never reached from here.
+                    self.update_config["standalone_files_indexed"] = True
+                if (
                     stats.get("batch_nothing_to_embed")
                     and target_sync_version is not None
                     and not force_full_rebuild
