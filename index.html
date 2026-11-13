@@ -33,7 +33,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><svg class="logo-svg" viewBox="0 0 128 128" aria-hidden="true"><g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round"><path class="lb" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke-width="5.5"/><path class="lz" d="M47 39H81L47 77H81" stroke-width="8"/></g></svg>Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.17.0</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.17.1</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./" aria-current="page">Overview</a>
       <a href="agent/">Zotero Agent<span class="new" aria-label="new"></span></a>
@@ -140,6 +140,16 @@
 
       <div class="releases">
         <article class="release lead">
+          <div class="release-tag">0.17.1<small>Nov 2026</small></div>
+          <div>
+            <h3>OpenCode in the panel, and <span class="hl c-yellow">Mermaid diagrams</span></h3>
+            <p>The Zotero Agent panel runs OpenCode as a built-in agent next to Claude Code, Codex and pi, on OpenCode&rsquo;s free models or your own providers, with no bridge or Node.js to install. Mermaid flowcharts and sequence diagrams in an answer are drawn as figures in the panel&rsquo;s own style, in light and dark, and can be saved to a note. On Windows, Claude Code installed through npm starts again instead of failing with <code>spawn EINVAL</code>.</p>
+            <p>Batch embeddings (OpenAI and Gemini) now index passages too, ending in the same index a realtime update builds. If you already had chunking and batch both on, your next <code>update-db</code> embeds passages for the whole library, and the provider bills for it. <code>zotero-mcp setup</code> asks for your WebDAV settings in web mode and keeps them on a re-run, and copied items&rsquo; files go to WebDAV as well.</p>
+            <p class="fine">With fixes from @mronkko (#819), @ShoRoy (#820), @FFXFF1 (#827), @goranai (#818) and @kskszq (#821, #822), and requests from @HelloNVIC (#823, #824).</p>
+          </div>
+        </article>
+
+        <article class="release">
           <div class="release-tag">0.17.0<small>Nov 2026</small></div>
           <div>
             <h3>Articles and passages apart, and the <span class="hl c-yellow">panel in your language</span></h3>
@@ -463,7 +473,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.17.0 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.17.1 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>
