@@ -90,6 +90,10 @@ def _seed_chunked(directory, items=("AAA", "BBB"), chunks=2, extra_bare=()):
 
 
 def _read(directory, name):
+    # The migration's own client can still hold unflushed HNSW files; in real
+    # use migrate-index is a process that has exited by the time anything reads
+    # the index. Without this, Windows CI saw "Nothing found on disk".
+    release_chroma_clients()
     client = ChromaClient(collection_name=NAME, persist_directory=directory)
     got = client.client.get_collection(name).get(include=["embeddings", "documents", "metadatas"])
     return {
