@@ -3,9 +3,9 @@
     "chat@zotero-mcp": {
       "updates": [
         {
-          "version": "0.17.0",
-          "update_link": "https://github.com/54yyyu/zotero-mcp/releases/download/v0.17.0/zotero-agent.xpi",
-          "update_hash": "sha256:b1c3c9460015374b4d9d7030423a8b664ea8e46a54b5f26b5e6c55026a38b7b3",
+          "version": "0.17.1",
+          "update_link": "https://github.com/54yyyu/zotero-mcp/releases/download/v0.17.1/zotero-agent.xpi",
+          "update_hash": "sha256:7e6d1525cd7b64353d10bd20ff0d180d2b8016c049c9cfe5908230c010f24501",
           "applications": {
             "zotero": {
               "strict_min_version": "7.0"
