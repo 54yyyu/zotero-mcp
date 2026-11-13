@@ -565,9 +565,12 @@ def _api_file_stamp(row: Any) -> str:
 
 
 def _stamp_kind(stamp: Any) -> str:
-    """``"api"`` for a stamp ``_api_file_stamp`` built, else ``"local"`` (``<mtime_ns>:<size>``)."""
+    """``"api"`` for a stamp ``_api_file_stamp`` built, ``"ftcache"`` for Zotero's text cache, else ``"local"`` (``<mtime_ns>:<size>``)."""
     # "api:..." and "api-version:..." from _api_file_stamp, and _API_UNKNOWN_STAMP.
-    return "api" if str(stamp or "").startswith("api") else "local"
+    text = str(stamp or "")
+    if text.startswith("ftcache:"):
+        return "ftcache"
+    return "api" if text.startswith("api") else "local"
 
 
 def _is_attachment_unit(unit: dict[str, Any]) -> bool:
@@ -2753,12 +2756,18 @@ class ZoteroSemanticSearch:
             # come earlier in this run) is copied, not parsed or embedded
             # (#495). The digests of a slice are written to the cache at once.
             files = list(pending.values())
+            self._flag_truncated_caches(reader, files)
             for start in range(0, len(files), _SCAN_SLICE):
                 part = files[start:start + _SCAN_SLICE]
                 # Hashing reads every byte of every new or changed file: say so.
                 _report(f"\r  Hashing files: {start}/{len(files)}{' ' * 40}")
                 with file_hash.batched(self.config_path):
                     for unit, target in part:
+                        if target.ft_cache:
+                            # The cache's bytes are not the file's: a hash of
+                            # them must never be a reuse source or match one.
+                            unit["file_hash"] = None
+                            continue
                         unit["file_hash"] = file_hash.get_file_hash(
                             target.key, target.path, target.file_stamp, config_path=self.config_path
                         )
@@ -2824,6 +2833,26 @@ class ZoteroSemanticSearch:
         if limit is None and not collection_keys:
             self._scan_desired_keys = desired
         return units
+
+    @staticmethod
+    def _flag_truncated_caches(reader: Any, files: list[tuple[dict[str, Any], Any]]) -> None:
+        """Mark the units made from a text cache Zotero itself cut short.
+
+        Such a record has less text than its file; status counts them so the
+        user can rebuild them with the file present.
+        """
+        caches = [(unit, target) for unit, target in files if target.ft_cache]
+        lookup = getattr(reader, "get_truncated_fulltext_keys", None)
+        if not caches or lookup is None:
+            return
+        try:
+            truncated = lookup([unit["key"] for unit, _target in caches])
+        except Exception as e:
+            logger.debug(f"Could not read Zotero's truncation state: {e}")
+            return
+        for unit, _target in caches:
+            if unit["key"] in truncated:
+                unit["text_truncated"] = True
 
     @staticmethod
     def _scan_display(item: Any) -> str:
@@ -3334,7 +3363,12 @@ class ZoteroSemanticSearch:
         if not stored or "chunk_index" not in stored:
             return None
         seen = stamps.get(key)
-        if seen is not None and seen != file_stamp and _stamp_kind(file_stamp) == "local":
+        # A change only when both stamps are of the file itself: the file and
+        # its text cache are one attachment seen two ways.
+        if (
+            seen is not None and seen != file_stamp
+            and _stamp_kind(file_stamp) == "local" and _stamp_kind(seen) == "local"
+        ):
             return None
         if gap == {SEARCH_ARTICLES}:
             return "fill"
@@ -4347,6 +4381,9 @@ class ZoteroSemanticSearch:
             # Always present, None when unknown: ChromaDB's upsert merges
             # metadata, so an omitted key would keep the previous file's hash.
             metadata["file_hash"] = item.get("file_hash") or None
+            # Only a record made from a text cache Zotero cut short; None
+            # otherwise, as upsert merges (a rebuilt record loses the flag).
+            metadata["text_truncated"] = True if item.get("text_truncated") else None
             records.append({
                 "id": key,
                 "document": self.chroma_client.truncate_text(text),

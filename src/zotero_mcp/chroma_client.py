@@ -1210,6 +1210,17 @@ def _record_kind_counts(con: sqlite3.Connection, collection_name: str) -> tuple[
     return attachments, legacy, legacy_text
 
 
+_TRUNCATED_RECORDS = """
+SELECT count(*)
+FROM embedding_metadata m
+JOIN embeddings e ON e.id = m.id
+JOIN segments s ON e.segment_id = s.id
+JOIN collections c ON s.collection = c.id
+WHERE m.key = 'text_truncated' AND m.bool_value = 1
+  AND s.scope = 'METADATA' AND c.name = ? AND instr(e.embedding_id, '#') = 0
+"""
+
+
 def read_legacy_passage_ids(persist_directory: str, collection_name: str) -> dict[str, list[tuple[str, str]]]:
     """``{item key: [(passage id, collection name)]}`` of the legacy passages, read-only from SQLite.
 
@@ -1339,6 +1350,7 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
         "legacy_passage_items": 0,
         "attachment_records": 0,
         "legacy_records": 0,
+        "truncated_text_records": 0,
         "bibliographic_records": 0,
         "article_text_items": 0,
         "article_level_items": 0,
@@ -1362,6 +1374,7 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
         passage_id, in_passages, passage_items = _passage_counts(con, passage_collection_name(collection_name))
         legacy_passages, legacy_items = _legacy_passage_counts(con, collection_name)
         attachments, legacy_records, legacy_text = _record_kind_counts(con, collection_name)
+        truncated = con.execute(_TRUNCATED_RECORDS, (collection_name,)).fetchone()[0]
     finally:
         con.close()
     layout.update(
@@ -1377,6 +1390,7 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
         article_text_items=attachments + legacy_text,
         legacy_passages=legacy_passages,
         legacy_passage_items=legacy_items,
+        truncated_text_records=truncated,
         article_records=bare,
         passage_records=in_articles + in_passages,
         passage_items=passage_items,
@@ -1573,6 +1587,7 @@ def level_item_counts(
         "legacy_records": layout["legacy_records"],
         "legacy_passages": layout["legacy_passages"],
         "legacy_passage_items": layout["legacy_passage_items"],
+        "truncated_text_records": layout["truncated_text_records"],
     }
     if layout["unmigrated_passages"]:
         migration = read_migration_estimate(
@@ -1605,6 +1620,12 @@ def level_status_rows(info: dict[str, Any]) -> list[tuple[str, str]]:
     ):
         if key in info and (info[key] is None or info[key] or key in ("article_items", "passage_items")):
             rows.append((label, "unknown" if info[key] is None else str(info[key])))
+    if truncated := info.get("truncated_text_records"):
+        # Made from Zotero's text cache, which Zotero indexed only in part.
+        rows.append((
+            "Records from a cut-short text cache",
+            f"{truncated} (`update-db --force-rebuild` with the files present indexes their full text)",
+        ))
     return rows
 
 

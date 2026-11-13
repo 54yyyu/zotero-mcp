@@ -1478,8 +1478,9 @@ class LocalZoteroReader:
         Zotero writes a plain-text full-text cache next to each indexed PDF /
         EPUB at ``storage/<attachment_key>/.zotero-ft-cache``. It is a
         fallback rather than the primary path: the text is flat pdftotext
-        output with no heading structure, and most files carry no page
-        separators, so chunks derived from it have no page provenance.
+        output with no heading structure. (Zotero's pdf-worker does write a
+        form feed between pages, so a PDF's cache carries page breaks; other
+        formats' caches have none.)
 
         What it still buys us is reach. It is keyed by attachment key rather
         than filename, so it survives Zotero file-naming drift / non-ASCII
@@ -1581,8 +1582,9 @@ class LocalZoteroReader:
 
         The file is missing (unmounted drive, kept on demand) or in no
         format we parse (an EPUB), but Zotero extracted its text. Never
-        another attachment's cache. The stamp is the cache file's, so the
-        record follows the text it was made from. ``unreadable_ok`` lets an
+        another attachment's cache. The stamp is the cache file's, in its own
+        kind (``ftcache:``): the cache and the file are one attachment seen two
+        ways, so moving between them is not a change of the file. ``unreadable_ok`` lets an
         attachment of an unreadable kind in (a regular item's child can be
         chosen for its cache; a standalone file is indexed only if readable).
         """
@@ -1601,7 +1603,7 @@ class LocalZoteroReader:
             path=cache,
             content_type=ctype,
             category=category,
-            file_stamp=f"{st.st_mtime_ns}:{st.st_size}",
+            file_stamp=f"ftcache:{st.st_mtime_ns}:{st.st_size}",
             size=st.st_size,
             ft_cache=True,
         )
@@ -2351,6 +2353,30 @@ class LocalZoteroReader:
                 chosen=(target.path, target.key),
                 item_key=target.key,
             )
+
+    def get_truncated_fulltext_keys(self, keys: list[str]) -> set[str]:
+        """Which of these attachments Zotero indexed only in part (its ``fulltextItems`` row).
+
+        The ``.zotero-ft-cache`` of such a file stops where Zotero's indexing
+        limits did, so a record made from it has less text than the file.
+        """
+        found: set[str] = set()
+        conn = self._get_connection()
+        for start in range(0, len(keys), 500):
+            part = keys[start:start + 500]
+            marks = ",".join("?" * len(part))
+            try:
+                rows = conn.execute(
+                    "SELECT i.key FROM fulltextItems f JOIN items i ON i.itemID = f.itemID "
+                    f"WHERE i.key IN ({marks}) AND ("
+                    "(f.totalPages IS NOT NULL AND f.indexedPages < f.totalPages) "
+                    "OR (f.totalChars IS NOT NULL AND f.indexedChars < f.totalChars))",
+                    part,
+                )
+                found.update(row[0] for row in rows)
+            except sqlite3.Error:
+                return found  # no such table in this Zotero: nothing known
+        return found
 
     def get_non_indexed_item_keys(self) -> set[str]:
         """Keys of every note and annotation, which are never indexed (#604).

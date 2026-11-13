@@ -61,7 +61,7 @@ def test_a_file_missing_on_disk_is_selected_by_its_own_text_cache(tmp_path):
 
         assert (target.key, target.category, target.ft_cache) == ("PDFAAAAA", "pdf", True)
         assert target.path == cache
-        assert target.file_stamp == f"{st.st_mtime_ns}:{st.st_size}"
+        assert target.file_stamp == f"ftcache:{st.st_mtime_ns}:{st.st_size}"
         assert dict(reader.extract_targets([target])) == {"PDFAAAAA": ("text Zotero extracted", "zotero-cache")}
     finally:
         reader.close()

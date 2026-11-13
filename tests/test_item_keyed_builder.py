@@ -118,6 +118,7 @@ def test_attachment_record_is_file_text_under_its_own_key(make_search):
         "date_modified": "2024-01-03 00:00:00",
         "file_stamp": "123:456",
         "file_hash": "ab" * 32,
+        "text_truncated": None,  # None clears it: a file-derived record is not cache text
     }
 
 
@@ -181,6 +182,7 @@ def test_web_api_text_becomes_a_unit_of_its_attachment(make_search):
         "date_modified": "2024-02-01T00:00:00Z",
         "file_stamp": "api:md5x:99",
         "file_hash": None,
+        "text_truncated": None,
     }
     assert "Body of the PDF." not in records[0]["document"]
 
