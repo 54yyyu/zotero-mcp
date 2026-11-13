@@ -235,3 +235,24 @@ def test_explicit_update_after_the_migration_writes_only_the_attachment_record(w
     assert ATT in world.stored(NAME), "the missing attachment record is written"
     assert reader.extracted == [ATT], "its text is read once, for that record"
     assert len(world.embedded) == 2, "the attachment record and the item's bibliographic record"
+
+
+def _edited_reader():
+    """The item was edited in Zotero after it was indexed (a tag, say): its date_modified moved."""
+    reader = Reader([Item(ITEM, 1, date_modified="2025-05-05 00:00:00")], targets={1: [target(ATT)]})
+    return reader
+
+
+@pytest.mark.parametrize("automatic", [True, False])
+def test_a_metadata_edit_of_a_migrated_item_leaves_its_rekeyed_passages_alone(world, automatic):
+    reader = _edited_reader()
+    world.seed_pre_0_17(bare=True)
+    world.migrate(reader)
+    before = _passage_vectors(world)
+
+    world.update(reader, automatic=automatic)
+
+    assert _passage_vectors(world) == before, "no passage is cut or embedded again"
+    assert ITEM in world.stored(NAME) and "title" not in world.stored(NAME)[ITEM][0], "the item is rewritten"
+    assert (ATT in world.stored(NAME)) is (not automatic), "an explicit run adds the attachment record"
+    assert len(world.embedded) == (1 if automatic else 2)
