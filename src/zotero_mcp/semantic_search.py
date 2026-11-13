@@ -2688,10 +2688,6 @@ class ZoteroSemanticSearch:
 
                 existing = stored_of(it.key) if check else None
                 legacy = self._legacy_metadata(it.key, existing) if existing else None
-                if it.key in pending_legacy:
-                    # Its legacy passages stay until every file it selects is
-                    # written, in this run or a later one.
-                    self._expect_replacement(it.key, group_id, selected_keys(it))
                 rewrite = False
                 if legacy is not None:
                     gap = self._scan_gaps.get(it.key)
@@ -2712,6 +2708,12 @@ class ZoteroSemanticSearch:
                     else:
                         up_to_date += 1
                         continue
+                if it.key in pending_legacy and (legacy is None or rewrite):
+                    # Its record is (or is about to be) in the new shape; its
+                    # legacy passages stay until every file it selects is
+                    # written, in this run or a later one. An untouched legacy
+                    # item keeps them as its records.
+                    self._expect_replacement(it.key, group_id, selected_keys(it))
                 if rewrite or not self._unit_is_current(bib, existing):
                     planned.append((bib, None))
                 else:
@@ -6369,44 +6371,61 @@ class ZoteroSemanticSearch:
             self._legacy_settle = {}
         self._legacy_settle[item_key] = {"group_id": group_id, "wanted": sorted(wanted)}
 
-    def _replacement_written(self, item_key: str, wanted: list[str]) -> bool:
-        """Whether the item-keyed records that replace ``item_key``'s legacy passages are all stored.
+    def _settled_items(self, settle: dict[str, dict[str, Any]]) -> list[str]:
+        """The items of ``settle`` whose replacements for their legacy passages are all stored.
 
-        Its bibliographic record in the new shape, and for each wanted
-        attachment its record and (with chunking) its first passage. Read from
-        the index, so an embed that failed, a copy that was lost or a file
-        that was out of reach all count as not written.
+        An item is settled when its bibliographic record is in the new shape
+        and each wanted attachment has its record and, with chunking, every
+        one of its passages (``n_chunks`` of its first, as the record says).
+        Read from the index, so an embed that failed, a copy that was lost, a
+        file out of reach or a batch file still to land all count as not
+        written. A few batched reads for all items, not a round trip each.
         """
-        stored = self.chroma_client.get_metadatas([item_key, *wanted])
-        bib = stored.get(item_key)
-        if not bib or _is_legacy_record(bib) or "chunk_index" in bib:
-            return False
-        if any("file_stamp" not in (stored.get(key) or {}) for key in wanted):
-            return False
-        if wanted and self._chunking_enabled:
-            return self.chroma_client.get_existing_ids([f"{key}#0" for key in wanted]) >= {
-                f"{key}#0" for key in wanted
-            }
-        return True
+        keys = {key for key, entry in settle.items() for key in (key, *(entry.get("wanted") or []))}
+        stored = self.chroma_client.get_metadatas(sorted(keys))
+        candidates = [
+            key for key, entry in settle.items()
+            if (bib := stored.get(key)) and not _is_legacy_record(bib) and "chunk_index" not in bib
+            and all("file_stamp" in (stored.get(att) or {}) for att in entry.get("wanted") or [])
+        ]
+        if not self._chunking_enabled:
+            return candidates
+        firsts = sorted({att for key in candidates for att in settle[key].get("wanted") or []})
+        first_meta = self.chroma_client.get_metadatas([f"{att}#0" for att in firsts])
+        counts = {}
+        for att in firsts:
+            meta = first_meta.get(f"{att}#0")
+            if meta is not None:
+                n_chunks = meta.get("n_chunks")
+                counts[att] = n_chunks if isinstance(n_chunks, int) and n_chunks > 0 else 1
+        needed = {att: [f"{att}#{n}" for n in range(count)] for att, count in counts.items()}
+        present = self.chroma_client.get_existing_ids([doc_id for ids in needed.values() for doc_id in ids])
+        whole = {att for att, ids in needed.items() if set(ids) <= present}
+        return [key for key in candidates if set(settle[key].get("wanted") or []) <= whole]
 
     def _settle_legacy_passages(self, settle: dict[str, dict[str, Any]] | None = None) -> None:
         """Delete the legacy passages of items whose replacements are all written.
 
         A rewritten legacy item's old parent-keyed passages are the only copy
-        of its text until every attachment it selects has its own records, so
-        they go only then, and only for the items whose attachments all landed.
-        One that failed, was held, or whose file is out of reach leaves them
-        searchable for the next run to try again (#610). Runs after the
-        writes, so a failed embed loses nothing. ``settle`` defaults to this
-        run's; the batch import passes the manifest's.
+        of its text until every attachment it selects has its own records and
+        all their passages, so they go only then, and only for the items whose
+        attachments all landed. One that failed, was held, or whose file is
+        out of reach leaves them searchable for the next run to try again
+        (#610). Runs after the writes, so a failed embed loses nothing.
+        ``settle`` defaults to this run's; the batch import passes the
+        manifest's, after every import, so a partial one deletes nothing.
         """
         settle = self._legacy_settle if settle is None else settle
         if not settle or not hasattr(self.chroma_client, "delete_item_chunks"):
             return
-        for item_key, entry in settle.items():
+        try:
+            settled = self._settled_items(settle)
+        except Exception as e:
+            logger.debug(f"Could not check the replacements of legacy passages: {e}")
+            return
+        for item_key in settled:
             try:
-                if self._replacement_written(item_key, entry.get("wanted") or []):
-                    self.chroma_client.delete_item_chunks(item_key, group_id=entry.get("group_id"))
+                self.chroma_client.delete_item_chunks(item_key, group_id=settle[item_key].get("group_id"))
             except Exception as e:
                 logger.debug(f"Could not settle the legacy passages of {item_key}: {e}")
 

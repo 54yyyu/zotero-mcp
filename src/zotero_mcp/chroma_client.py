@@ -677,11 +677,17 @@ class ChromaClient:
             Metadata dictionary if the item is indexed, None otherwise
         """
         try:
+            found: dict[str, dict[str, Any]] = {}
             for collection, part in self._group_existing([doc_id, f"{doc_id}#0"]):
                 result = collection.get(ids=part, include=["metadatas"])
-                if result['ids'] and result['metadatas']:
-                    return result['metadatas'][0]
-            return None
+                for found_id, meta in zip(result["ids"] or [], result["metadatas"] or []):
+                    found[found_id] = meta
+            # The record itself, never the passage that happens to come back
+            # first: it is stored in insertion order, and the two differ in
+            # shape when a rewrite left old passages beside a new record (#826).
+            if doc_id in found:
+                return found[doc_id]
+            return next(iter(found.values()), None)
         except Exception:
             return None
 

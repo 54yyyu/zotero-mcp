@@ -468,27 +468,100 @@ def test_a_failed_attachment_record_keeps_a_legacy_items_passages_through_the_im
     assert {f"AAA#{n}" for n in range(3)} <= stored, "the only copy of the text stays"
 
 
-def test_legacy_passages_go_when_the_last_file_of_the_run_lands(env, monkeypatch, tmp_path):
-    """The attachment's passages arrive in later files than its item's record: nothing goes before they have."""
+def _import_only(env, search, finish_jobs, **finish):
+    """Finish and import only the first ``finish_jobs`` jobs; the rest stay in progress."""
+    jobs = list(env.fake.jobs.values())
+    later = jobs[finish_jobs:]
+    for job in later:
+        job.status = "validating"  # still running: finish_all leaves it
+    env.fake.finish_all(**finish)
+    for job in later:
+        job.status = "in_progress"
+    search._import_batch("openai")
+
+
+def _all_stored(search):
+    return _ids(search) | _passages(search)
+
+
+def test_legacy_passages_stay_until_every_passage_of_the_file_has_landed(env, monkeypatch, tmp_path):
+    """The attachment's passages span several files; two of five landed is not replaced (fix round 2b)."""
     _isolate_home(monkeypatch, tmp_path)
     search = env.build(FakeZotero({"AAA": LONG}), chunking=True, batch_extra={"batch_max_requests": 2})
     _legacy_item(search)
     search.update_database()
+    assert len(env.fake.jobs) >= 3
 
-    first, *later = env.fake.jobs.values()
-    for job in later:
-        job.status = "validating"  # still running: finish_all leaves it
-    env.fake.finish_all()
-    for job in later:
-        job.status = "in_progress"
-    search._import_batch("openai")
-    assert "PAAA" in _ids(search), "the file's own record is in"
-    assert {f"AAA#{n}" for n in range(3)} <= _passages(search), "but its passages are not all there yet"
+    # Jobs hold [AAA, PAAA], [PAAA#0, PAAA#1], then the rest of the passages.
+    _import_only(env, search, 2)
+
+    assert {"PAAA", "PAAA#0", "PAAA#1"} <= _all_stored(search)
+    assert "PAAA#2" not in _all_stored(search)
+    assert {f"AAA#{n}" for n in range(3)} <= _all_stored(search), "the new set is incomplete"
 
     _land(env, search)
 
     assert _ids(search) == {"AAA", "PAAA"}
     assert _passages(search) == {f"PAAA#{n}" for n in range(5)}
+
+
+def test_a_failed_passage_row_keeps_the_legacy_passages(env, monkeypatch, tmp_path):
+    _isolate_home(monkeypatch, tmp_path)
+    search = env.build(FakeZotero({"AAA": LONG}), chunking=True)
+    _legacy_item(search)
+    search.update_database()
+
+    env.fake.finish_all(skip={"PAAA#3"})
+    search._import_batch("openai")
+
+    assert "PAAA#3" not in _all_stored(search)
+    assert {f"AAA#{n}" for n in range(3)} <= _all_stored(search), "one new passage is missing"
+
+
+def test_a_passage_set_missing_one_is_refilled_by_the_next_run(env):
+    """Only that file's passages are submitted again (fix round 2b)."""
+    zotero = FakeZotero({"AAA": LONG})
+    search = env.build(zotero, chunking=True)
+    search.update_database()
+    env.fake.finish_all(skip={"PAAA#3"})
+    search._import_batch("openai")
+    assert "PAAA#3" not in _passages(search)
+    env.fake.jobs.clear()
+    env.fake.uploads.clear()
+
+    search.update_database()
+
+    assert _submitted(env) and all(i.startswith("PAAA#") for i in _submitted(env)), _submitted(env)
+    _land(env, search)
+    assert _passages(search) == {f"PAAA#{n}" for n in range(5)}
+
+
+def test_api_planning_judges_an_item_by_its_bare_record_whatever_the_storage_order(env, monkeypatch, tmp_path):
+    """Legacy passages stored before the item's new bare record must not make it a legacy item (fix round 2b)."""
+    _isolate_home(monkeypatch, tmp_path)
+    zotero = FakeZotero({"AAA": LONG})
+    search = env.build(zotero, chunking=True, route=False)
+    legacy = {
+        "item_key": "AAA", "title": "Title AAA", "group_id": search._pinned_group_id(),
+        "date_modified": "2023-01-01T00:00:00Z", "has_fulltext": True,
+    }
+    passages = [{**legacy, "parent_item_key": "AAA", "chunk_index": n, "n_chunks": 3} for n in range(3)]
+    search.chroma_client.upsert_embeddings(
+        documents=["old"] * 3, metadatas=passages, ids=[f"AAA#{n}" for n in range(3)], embeddings=[[0.0, 1.0]] * 3
+    )
+    # Inserted last: the item's own record, in the new shape and current.
+    search.chroma_client.upsert_embeddings(
+        documents=["Title AAA"],
+        metadatas=[{
+            "item_key": "AAA", "group_id": search._pinned_group_id(), "date_modified": "2024-01-01T00:00:00Z",
+        }],
+        ids=["AAA"], embeddings=[[1.0, 0.0]],
+    )
+
+    units = search._plan_units([zotero.item("AAA")], force_rebuild=False)
+
+    assert not [u for u in units if u.get("legacy_rewrite")], "the bare record is new-shape and current"
+    assert [u["key"] for u in units if u["key"] == "AAA"] == []
 
 
 def test_an_explicit_batch_run_counts_as_covering_standalone_files(env):

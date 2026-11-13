@@ -141,3 +141,22 @@ def test_a_failed_attachment_embed_keeps_the_legacy_passages_until_a_later_run_w
     assert ATT in world.stored(NAME)
     assert _legacy_passages(world) == [], "dropped once the new passages have landed"
     assert f"{ATT}#0" in _all_ids(world)
+
+
+def test_an_untouched_legacy_item_is_not_registered_for_settling(world, monkeypatch):
+    """Settling reads the index per registered item; items that keep their legacy records need none."""
+    registered = []
+    original = semantic_search.ZoteroSemanticSearch._expect_replacement
+    monkeypatch.setattr(
+        semantic_search.ZoteroSemanticSearch,
+        "_expect_replacement",
+        lambda self, key, group, wanted: registered.append(key) or original(self, key, group, wanted),
+    )
+    world.seed_pre_0_17(bare=True)
+    unchanged = Reader([Item(ITEM, 1)], targets={1: [target(ATT)]}, rows=ROWS)
+
+    world.update(unchanged, automatic=True)
+    assert registered == []
+
+    world.update(_reachable(), automatic=True)  # edited: rewritten, so registered
+    assert registered == [ITEM]
