@@ -32,6 +32,23 @@ Zotero main window ── #tabs-deck lives in an hbox below the tab bar; we appe
 - ACP bridge for Claude: npm `@agentclientprotocol/claude-agent-acp` (0.85.1 tested; `@zed-industries/claude-code-acp`
   is deprecated). Codex: `@agentclientprotocol/codex-acp`. pi: `pi-acp`. Verify with `npm view` before pinning. OpenCode
   needs no bridge: `opencode acp` is the agent (1.19.5 measured; backends.ts has the shape), so it needs no Node either.
+- `session_info_update` titles, read from the pinned bridge sources on 2026-11-13 (live timing not re-measured; the
+  panel consumes them wherever they arrive, and names a chat by its own fallback chain until one does):
+  claude-agent-acp 0.85.1 has a whole `session-titles` module: Claude Code's own auto-titling never runs under the
+  Agent SDK, so at the first turn's end (idle) the bridge asks `generate_session_title` (a ~2 s background small-model
+  call, once per session, ≥10 chars of trailing user+assistant text), adopts a user `/rename` or earlier title
+  (`customTitle`) and latches, caps at 256 chars, and never re-sends an unchanged title. codex-acp 2.1.1 echoes
+  Codex's own thread renames (`thread/name/updated`, `title: null` when unset — the panel ignores null), and on
+  `session/load` pushes the stored thread name, else a *fallback* title built from the first user message: on the wire
+  that fallback is indistinguishable from a generated title, so an agent-named chat can be re-titled with the question
+  text when Codex cannot generate. pi-acp 0.0.34 sends `session_info_update` with only `_meta.piAcp` queue state
+  around every turn (no `title`: dropped by the non-empty rule) and a titled one only for its explicit `/name`
+  command. OpenCode's `acp` server (dev, ≥1.19.5) never sends a titled update: its titles exist only in
+  `session/list`, so OpenCode chats keep the panel's own fallback name. Re-probed live on v2.2.7 (2026-11-13,
+  `opencode acp` over stdio): still zero `session_info_update` in a whole first turn, but `session/list` already
+  serves an LLM-generated title right after it ("Greeting" for a one-word probe), beside `"New session - <ISO
+  timestamp>"` placeholders for sessions that never got a turn — so the panel pulls the list for OpenCode
+  (`titlesViaList` in backends.ts) instead of waiting for a push that never comes.
 - `initialize` (protocolVersion 1) then `session/new {cwd, mcpServers: []}` works, and the bridge reports the signed-in
   account (`_auth/status_update`: "Claude Max") so subscription mode needs no key. `session/new` returns `modes`
   (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`) and `configOptions`.
