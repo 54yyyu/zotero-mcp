@@ -517,3 +517,32 @@ def test_an_item_without_any_attachment_still_loses_its_passages(index):
     report = migrate_index(config, sources=sources, **QUIET)
 
     assert (report.dropped_items, report.skipped_items) == (1, 0)
+
+
+def _sized(key, size):
+    t = target(key)
+    return ExtractionTarget(
+        key=key, path=t.path, content_type=t.content_type, category=t.category, file_stamp=t.file_stamp, size=size
+    )
+
+
+def test_a_legacy_item_with_two_files_is_rekeyed_to_the_larger_when_nothing_changed(index):
+    """Before #826 the source was deterministic: the first category's largest file."""
+    directory, config = index
+    _seed_split(directory, att_keys="ATTACH01,ATTACH02")
+    reader = MigReader([_item()], targets={1: [_sized(ATT, 100), _sized("ATTACH02", 900)]})
+
+    report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+
+    assert (report.rekeyed_items, report.dropped_items) == (1, 0)
+    assert set(_read(directory, PASSAGES)) == {f"ATTACH02#{n}" for n in range(3)}
+
+
+def test_a_legacy_item_with_two_files_and_a_changed_fingerprint_is_dropped(index):
+    directory, config = index
+    _seed_split(directory, att_keys="ATTACH01")
+    reader = MigReader([_item()], targets={1: [_sized(ATT, 100), _sized("ATTACH02", 900)]})
+
+    report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+
+    assert (report.rekeyed_items, report.dropped_items) == (0, 1)

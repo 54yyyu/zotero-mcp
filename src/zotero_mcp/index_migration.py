@@ -204,8 +204,9 @@ class LocalSources:
         ``web-api:attachment:<key>``). A local index recorded a fingerprint
         of the item's attachments (records of the oldest versions did not) and
         the priority they were chosen under, so the choice is made again and
-        trusted only when a recorded fingerprint and priority are unchanged
-        and exactly one file is chosen.
+        trusted only when a recorded fingerprint and priority are unchanged;
+        with several files the largest of the first category is the source,
+        as it was chosen before #826.
 
         None is a positive finding (the item is gone from Zotero, the choice
         is ambiguous or has changed): its passages cannot be kept.
@@ -244,11 +245,17 @@ class LocalSources:
             return UNKNOWN
         if sorted(t.key for t in targets) != selected:
             return UNKNOWN
-        if len(targets) != 1:
+        if len(targets) == 1:
+            chosen = targets[0]
+        elif targets and stored is not None:
+            # Several files, the attachments unchanged since the passages were
+            # written: the choice then was the first category's largest file.
+            chosen = max(targets, key=lambda t: t.size)
+        else:
             return None
-        self._targets[targets[0].key] = targets[0]
+        self._targets[chosen.key] = chosen
         self._prefixes[item.key] = _live_prefix(local)
-        return targets[0].key
+        return chosen.key
 
     def live_prefix(self, key: str) -> str | None:
         """The metadata text Zotero's current record of ``key`` gives, or None if it was not looked up."""
