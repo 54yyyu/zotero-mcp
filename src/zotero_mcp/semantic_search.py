@@ -2574,6 +2574,15 @@ class ZoteroSemanticSearch:
             """The record of ``key``, else its first passage, as ``get_document_metadata`` finds it."""
             return prefetched.get(key) or prefetched.get(f"{key}#0")
 
+        failures_seen: dict[str, str] | None = None
+
+        def failures() -> dict[str, str]:
+            """The failure markers, read once per scan; ``fulltext_cache.record_failure`` keeps them current on disk."""
+            nonlocal failures_seen
+            if failures_seen is None:
+                failures_seen = fulltext_cache.known_failures(self.config_path)
+            return failures_seen
+
         stamps_seen: dict[str, str] | None = None
 
         def hashed_stamps() -> dict[str, str]:
@@ -2620,7 +2629,7 @@ class ZoteroSemanticSearch:
                 unit["_index_levels"] = {SEARCH_ARTICLES}
                 current_keys.add(target.key)
             # A forced rebuild tries every file again.
-            if check and fulltext_cache.failed(target.key, target.file_stamp, config_path=self.config_path):
+            if check and failures().get(target.key) == target.file_stamp:
                 skipped_failed.append(label or target.key)
                 if not current and target.key not in current_keys:
                     # A record of an older version of the file is stale.

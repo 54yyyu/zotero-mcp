@@ -31,7 +31,7 @@ if importlib.util.find_spec("chromadb") is None:
 from _scan_fakes import ScanReader, target  # noqa: E402
 from chromadb import EmbeddingFunction  # noqa: E402
 
-from zotero_mcp import file_hash, semantic_search  # noqa: E402
+from zotero_mcp import file_hash, fulltext_cache, semantic_search  # noqa: E402
 from zotero_mcp.chroma_client import ChromaClient  # noqa: E402
 from zotero_mcp.local_db import LocalZoteroReader  # noqa: E402
 
@@ -408,6 +408,23 @@ def test_a_gap_fill_that_fails_keeps_the_current_record_and_retries(env):
     search, _ = env(reader)
     assert reader.extracted == ["PDFAAAAA"], "no failure marker holds the gap back"
     assert len(_ids(search, f"{NAME}_passages")) == 5
+
+
+def test_a_scan_reads_the_failure_markers_once_not_per_file(env, monkeypatch):
+    items = [Item(f"ITEM{n:04d}", n) for n in range(12)]
+    reader = LibReader(items, targets={n: [target(f"PDF{n:05d}")] for n in range(12)}, texts={"PDF00003": None})
+    env(reader)
+    loads = []
+    original = fulltext_cache.known_failures
+    monkeypatch.setattr(fulltext_cache, "known_failures", lambda *a, **k: loads.append(1) or original(*a, **k))
+    monkeypatch.setattr(
+        fulltext_cache, "failed", lambda *a, **k: (_ for _ in ()).throw(AssertionError("re-parsed per file"))
+    )
+
+    env(reader)
+
+    assert reader.extracted == [], "the failed file is still not tried again"
+    assert len(loads) == 1
 
 
 def test_a_forced_rebuild_tries_a_failed_file_again(env):

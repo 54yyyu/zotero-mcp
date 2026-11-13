@@ -206,6 +206,14 @@ def record_failure(
         _save_index_unlocked(root, index)
 
 
+def known_failures(config_path: str | None = None) -> dict[str, str]:
+    """``{attachment key: file stamp}`` of every failure on record, read once for a whole scan."""
+    root = get_fulltext_cache_root(config_path)
+    with _INDEX_LOCK:
+        failures = _load_index_unlocked(root).get("failures")
+    return dict(failures) if isinstance(failures, dict) else {}
+
+
 def failed(attachment_key: str, file_stamp: str, config_path: str | None = None) -> bool:
     """True if this exact file state already failed extraction."""
     root = get_fulltext_cache_root(config_path)
