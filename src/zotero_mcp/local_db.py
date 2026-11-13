@@ -2352,6 +2352,19 @@ class LocalZoteroReader:
                 item_key=target.key,
             )
 
+    def get_non_indexed_item_keys(self) -> set[str]:
+        """Keys of every note and annotation, which are never indexed (#604).
+
+        One query, so the deletion pass can tell a stale record of one of them
+        from a record of an item that is merely gone.
+        """
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT i.key FROM items i JOIN itemTypes it ON i.itemTypeID = it.itemTypeID "
+            "WHERE it.typeName IN ('note', 'annotation')"
+        )
+        return {row[0] for row in rows}
+
     def get_date_modified_by_key(self) -> dict[str, str]:
         """``dateModified`` of every item, by key: an attachment record's own version stamp."""
         conn = self._get_connection()

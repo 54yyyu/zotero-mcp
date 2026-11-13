@@ -1577,6 +1577,9 @@ class ZoteroSemanticSearch:
     # Record keys a full local scan wants indexed, for the deletion pass;
     # None when the scan did not produce a complete set.
     _scan_desired_keys: set[str] | None = None
+    # Keys the scan knows, from live Zotero data, to be notes or annotations:
+    # their stored records are invalid, not merely gone (#604). None: not known.
+    _non_indexed_keys: set[str] | None = None
     # Attachment keys an API run saw but did not select (outranked, trashed or
     # moved out of selection): their records go once the run's changes are in.
     _api_outranked: frozenset[str] | set[str] = frozenset()
@@ -2353,6 +2356,10 @@ class ZoteroSemanticSearch:
                 # actually see — a fresh read taken later could already
                 # include rows from a WAL checkpoint that landed mid-scan.
                 self._last_scan_snapshot_keys = reader.get_all_item_keys()
+                try:
+                    self._non_indexed_keys = set(reader.get_non_indexed_item_keys())
+                except Exception as e:
+                    logger.debug(f"Could not read the note and annotation keys: {e}")
                 # Library attribution (#163): map every item key to its
                 # group_id (0 = personal, else Zotero groupID) via direct SQL
                 # on the same connection this scan uses. Feed/publications
@@ -4043,6 +4050,13 @@ class ZoteroSemanticSearch:
             attachment_rows.extend(
                 item for item in items if item.get("data", {}).get("itemType") == "attachment"
             )
+            # Typed by this listing: a stored record of one is invalid (#604).
+            seen = {
+                item.get("key") for item in items
+                if item.get("key") and item.get("data", {}).get("itemType") in ("note", "annotation")
+            }
+            if seen:
+                self._non_indexed_keys = (self._non_indexed_keys or set()) | seen
             filtered_items = [
                 item for item in items if item.get("data", {}).get("itemType") not in _NON_INDEXED_ITEM_TYPES
             ]
@@ -4832,15 +4846,20 @@ class ZoteroSemanticSearch:
                 )
                 stats["deletion_skipped_reason"] = "empty_item_versions"
             else:
-                to_delete_keys = sorted(
-                    k for k in (stored_item_keys - current_library_keys) if k
-                )
+                candidates = sorted(k for k in (stored_item_keys - current_library_keys) if k)
+                # Records of notes and annotations (#604) are known to be
+                # invalid, never a sign of a truncated listing, so the guard
+                # does not apply to them; every other candidate stays under it.
+                known = self._non_indexed_keys or set()
+                purged = [k for k in candidates if k in known]
+                to_delete_keys = [k for k in candidates if k not in known]
+                real_total = len(stored_item_keys) - len(purged)
                 if (
                     to_delete_keys
                     and not allow_mass_deletion
                     and len(to_delete_keys) >= _MASS_DELETION_MIN_DOCS
                     and len(to_delete_keys)
-                    >= _MASS_DELETION_MIN_FRACTION * len(stored_item_keys)
+                    >= _MASS_DELETION_MIN_FRACTION * real_total
                 ):
                     sample = ", ".join(to_delete_keys[:5])
                     logger.warning(
@@ -4853,7 +4872,11 @@ class ZoteroSemanticSearch:
                         "--allow-mass-deletion."
                     )
                     stats["deletion_skipped_reason"] = "mass_deletion_guard"
-                elif to_delete_keys:
+                    to_delete_keys = []
+                if purged or to_delete_keys:
+                    if purged:
+                        stats["purged_non_indexed"] = len(purged)
+                    to_delete_keys = purged + to_delete_keys
                     for k in to_delete_keys:
                         if k in keys_with_passages:
                             # Scoped: a chunk set can carry mixed
@@ -4870,6 +4893,11 @@ class ZoteroSemanticSearch:
                     stats["deleted_items"] = len(to_delete_keys)
                     try:
                         sys.stderr.write(f"\nDeleted {len(to_delete_keys)} items no longer present in Zotero.\n")
+                        if purged:
+                            sys.stderr.write(
+                                f"  {len(purged)} of them were records of notes and annotations, "
+                                "which are never indexed.\n"
+                            )
                     except Exception:
                         pass
         except Exception as e:
@@ -5361,7 +5389,7 @@ class ZoteroSemanticSearch:
                         try:
                             current_library_keys = set(
                                 (self.zotero_client.item_versions() or {}).keys()
-                            )
+                            ) - (self._non_indexed_keys or set())
                         except Exception as e:
                             logger.warning(
                                 f"Failed to fetch current item_versions for deletion check: {e}; "
@@ -5751,6 +5779,8 @@ class ZoteroSemanticSearch:
                 )
                 if stats["recovered_items"]:
                     summary += f", {stats['recovered_items']} recovered"
+                if purged := stats.get("purged_non_indexed"):
+                    summary += f", {purged} stale note/annotation records removed"
                 if stats["refreshed_unchanged"]:
                     summary += f", {stats['refreshed_unchanged']} unchanged (stamp refreshed)"
                 if reused := stats["reused_from_hash"]["attachments"]:
@@ -5810,6 +5840,7 @@ class ZoteroSemanticSearch:
             self._level_fill_keys = frozenset()
             self._legacy_settle = None
             self._scan_desired_keys = None
+            self._non_indexed_keys = None
             self._run_hash_first = None
             self._api_outranked = frozenset()
             # The server keeps one instance: the next run starts without these.

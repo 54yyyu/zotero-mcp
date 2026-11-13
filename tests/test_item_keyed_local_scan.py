@@ -700,3 +700,69 @@ def test_a_scan_reads_stored_state_per_slice_not_per_item(env, monkeypatch):
     assert search.chroma_client.embedded == []
     assert single == []
     assert len(batched) == 3, "25 items in slices of 10"
+
+
+# --- stale note and annotation records (#604, fix round 2) ------------------------
+
+
+def _seed_annotations(search, count, group_id=0):
+    keys = [f"ANN{n:05d}" for n in range(count)]
+    search.chroma_client.upsert_embeddings(
+        documents=[f"annotation {key}" for key in keys],
+        metadatas=[{"item_key": key, "group_id": group_id, "date_modified": DATE} for key in keys],
+        ids=keys,
+        embeddings=[[0.0, 1.0]] * count,
+    )
+    return keys
+
+
+def test_annotation_records_are_purged_even_when_they_are_the_majority(env):
+    reader = _library()
+    search, _ = env(reader)
+    annotations = _seed_annotations(search, 40)
+    search.chroma_client.upsert_embeddings(
+        documents=["another library", "unattributed"],
+        metadatas=[
+            {"item_key": "OTHER001", "group_id": 7, "date_modified": DATE},
+            {"item_key": "NOGROUP1", "date_modified": DATE},
+        ],
+        ids=["OTHER001", "NOGROUP1"],
+        embeddings=[[0.0, 1.0]] * 2,
+    )
+    kept = _all_ids(search) - set(annotations)
+    reader.non_indexed = frozenset(annotations)
+
+    search, stats = env(reader)
+
+    assert "deletion_skipped_reason" not in stats, "the mass-deletion guard is not tripped"
+    assert stats["purged_non_indexed"] == 40
+    assert _all_ids(search) == kept, "every annotation record gone, nothing else touched"
+    assert {"OTHER001", "NOGROUP1"} <= kept
+
+
+def test_the_guard_still_applies_to_ordinary_missing_items_beside_a_purge(env):
+    items = [Item(f"ITEM{n:04d}", n) for n in range(30)]
+    reader = LibReader(items, targets={n: [target(f"PDF{n:05d}")] for n in range(30)})
+    search, _ = env(reader)
+    annotations = _seed_annotations(search, 30)
+    reader.non_indexed = frozenset(annotations)
+    reader.unselected = {f"PDF{n:05d}" for n in range(30)}
+    reader.targets = {}
+
+    search, stats = env(reader)
+
+    assert stats["deletion_skipped_reason"] == "mass_deletion_guard"
+    assert stats["purged_non_indexed"] == 30
+    assert not set(annotations) & _ids(search)
+    assert {f"PDF{n:05d}" for n in range(30)} <= _ids(search), "the ordinary candidates stay under the guard"
+
+
+def test_a_key_the_database_does_not_type_stays_under_the_guard(env):
+    reader = _library()
+    search, _ = env(reader)
+    unknown = _seed_annotations(search, 40)
+
+    search, stats = env(reader)
+
+    assert stats["deletion_skipped_reason"] == "mass_deletion_guard"
+    assert set(unknown) <= _ids(search)
