@@ -54,8 +54,10 @@ from .embeddings.base import EmbeddingAPIUnreachable
 from .embeddings.registry import batch_capable_providers
 from .extract import (
     PAGE_SEPARATOR,
+    UNREADABLE_CATEGORY,
     categorize_attachment,
     normalize_attachment_priority,
+    row_category,
     select_attachment_rows,
     select_by_priority,
 )
@@ -2654,6 +2656,9 @@ class ZoteroSemanticSearch:
                 targets = resolved[it.key]
                 desired.add(it.key)
                 desired.update(target.key for target in targets)
+                # Also every file Zotero's database selects: one out of reach
+                # now (unmounted drive, kept on demand) keeps its records.
+                desired.update(selected_keys(it))
 
                 existing = stored_of(it.key) if check else None
                 legacy = (
@@ -2701,6 +2706,8 @@ class ZoteroSemanticSearch:
                     target = reader._resolve_standalone_target(key, path, ctype)
                     if target is not None:
                         standalone.append((key, target, date_modified))
+                    elif row_category(path, ctype) != UNREADABLE_CATEGORY:
+                        desired.add(key)  # a readable kind that is out of reach now
                 for start in range(0, len(standalone), _SCAN_SLICE):
                     part = standalone[start:start + _SCAN_SLICE]
                     if check:

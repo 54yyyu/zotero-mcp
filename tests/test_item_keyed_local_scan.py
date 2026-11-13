@@ -539,6 +539,35 @@ def test_an_outranked_file_loses_its_records(env):
     assert stats["deleted_items"] == 1
 
 
+def test_a_file_that_is_out_of_reach_keeps_its_records(env, monkeypatch):
+    """An unmounted drive or a file kept on demand is no evidence the attachment is gone."""
+    monkeypatch.setattr(semantic_search, "_MASS_DELETION_MIN_FRACTION", 2.0)  # the guard must not be what saves it
+    reader = _library()
+    search, _ = env(reader)
+    assert "PDFAAAAA" in _ids(search)
+
+    reader.targets[1] = []
+    reader.rows[1] = [["PDFAAAAA", "storage:a.pdf", "application/pdf"]]
+    search, stats = env(reader)
+
+    assert "PDFAAAAA" in _ids(search)
+    assert len(_ids(search, f"{NAME}_passages")) == 5
+    assert stats.get("deleted_items", 0) == 0
+
+
+def test_a_standalone_file_that_is_out_of_reach_keeps_its_records(env, monkeypatch):
+    monkeypatch.setattr(semantic_search, "_MASS_DELETION_MIN_FRACTION", 2.0)
+    reader = _with_standalone()
+    reader.items, reader.targets = [Item("ITEM0001", 1)], {1: [target("PDFAAAAA")]}  # something else stays
+    search, _ = env(reader)
+
+    reader.standalone_targets = {}  # still in the database, no longer readable
+    search, stats = env(reader)
+
+    assert "LONEPDF1" in _ids(search)
+    assert stats.get("deleted_items", 0) == 0
+
+
 def test_a_trashed_file_loses_its_records_and_its_item_keeps_its_own(env):
     reader = _library()
     env(reader)
