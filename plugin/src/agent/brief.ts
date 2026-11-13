@@ -56,10 +56,10 @@ export const TOOL_SHEET = [
 
 /**
  * How to draw, sent once with the brief (system prompt, or the first prompt), never per turn. Separate from the brief
- * so the brief's cap stays about the core; capped at 110 words itself (test/ui/diagram.test.ts checks it names exactly
+ * so the brief's cap stays about the core; capped at 120 words itself (test/ui/diagram.test.ts checks it names exactly
  * the palette ui/diagram-svg.ts themes).
  */
-export const DRAWING_GUIDE = "Diagrams: when a picture explains better than words (a pipeline, a 2x2, a causal graph), draw raw SVG in a ```svg block. One idea, few elements, aligned to a grid, generous padding, every node labelled; the explanation goes in prose, not in the drawing. viewBox about 360 wide, no width/height, no background rect, no style, script or images. Colour only with these names as fill/stroke values: ink (text, main lines), muted, line (borders), surface (box fill), accent, teal, violet, orange, red, green, and NAME-soft for area fills (accent-soft). Stroke 1.5, round caps, rx 8 boxes, labels 12px (11 small, 13 bold titles), text-anchor middle, arrowheads as a <marker>.";
+export const DRAWING_GUIDE = "Diagrams: when a picture explains better than words (a pipeline, a 2x2, a causal graph), draw raw SVG in a ```svg block. One idea, few elements, aligned to a grid, generous padding, every node labelled; the explanation goes in prose, not in the drawing. viewBox about 360 wide, no width/height, no background rect, no style, script or images. Colour only with these names as fill/stroke values: ink (text, main lines), muted, line (borders), surface (box fill), accent, teal, violet, orange, red, green, and NAME-soft for area fills (accent-soft). Stroke 1.5, round caps, rx 8 boxes, labels 12px (11 small, 13 bold titles), text-anchor middle, arrowheads as a <marker>. A plain flowchart or sequence diagram may be a ```mermaid block instead.";
 
 /**
  * Cards for formal statements, sent beside the drawing guide. ui/markdown.ts reads both spellings (Obsidian-style alerts

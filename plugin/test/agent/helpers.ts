@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentSession, ChatEvent, Spawner } from "../../src/types.ts";
-import { BACKENDS } from "../../src/agent/backends.ts";
+import { BACKENDS, type BridgedBackendId } from "../../src/agent/backends.ts";
 import { createNodeSpawner } from "../node-spawner.ts";
 
 const MOCK_AGENT = join(dirname(fileURLToPath(import.meta.url)), "..", "mock-agent.mjs");
@@ -25,7 +25,7 @@ export function tempDir(prefix = "zmc-test-"): string {
  * A bridgeDir in which the pinned package for `ids` is "installed" and its bin runs the mock agent,
  * so the runtime never needs npm.
  */
-export function fakeBridgeDir(ids: (keyof typeof BACKENDS)[] = ["claude-code", "codex", "pi"]): string {
+export function fakeBridgeDir(ids: BridgedBackendId[] = ["claude-code", "codex", "pi"]): string {
   const dir = tempDir("zmc-bridges-");
   for (const id of ids) {
     const spec = BACKENDS[id];

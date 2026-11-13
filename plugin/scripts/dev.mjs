@@ -69,8 +69,10 @@ for (const p of [profile, data]) {
   if (r === realData || r.startsWith(realData + "/")) die(`refusing: ${r} is inside the real Zotero data dir`);
   if (!r.startsWith(resolve(root) + "/")) die(`refusing: ${r} is outside the plugin directory`);
 }
+// A Zotero from the previous run can still be writing into these folders while it exits (ENOTEMPTY): retry.
+const RM_TREE = { recursive: true, force: true, maxRetries: 10, retryDelay: 200 };
 // Every run starts from an empty library (the path checks above make this safe); --keep-data reuses the last one.
-if (!flag("keep-data")) rmSync(data, { recursive: true, force: true });
+if (!flag("keep-data")) rmSync(data, RM_TREE);
 mkdirSync(join(profile, "extensions"), { recursive: true });
 mkdirSync(data, { recursive: true });
 
@@ -82,16 +84,16 @@ const addon = JSON.parse(readFileSync(join(root, "addon.json"), "utf8"));
 // --- chat state per run: history and workspace start empty; bridges are cached unless we are faking them ---------
 const chatDir = join(profile, "zotero-chat");
 const bridges = join(chatDir, "bridges");
-for (const d of ["sessions", "workspace"]) rmSync(join(chatDir, d), { recursive: true, force: true });
+for (const d of ["sessions", "workspace"]) rmSync(join(chatDir, d), RM_TREE);
 // The default chat folder is ~/Documents/Zotero-Agent; a test must never create that, so it is redirected into .dev.
 const chatDefault = join(dev, "chat-default");
-rmSync(chatDefault, { recursive: true, force: true });
-if (existsSync(join(bridges, ".zmc-mock")) || flag("mock-agent")) rmSync(bridges, { recursive: true, force: true });
+rmSync(chatDefault, RM_TREE);
+if (existsSync(join(bridges, ".zmc-mock")) || flag("mock-agent")) rmSync(bridges, RM_TREE);
 if (flag("mock-agent")) {
   // A bridge package that is really test/mock-agent.mjs, at the version the runtime pins, so ensureBridge finds it installed.
   const { BACKENDS } = await import(pathToFileURL(join(root, "src", "agent", "backends.ts")).href);
   const mock = pathToFileURL(join(root, "test", "mock-agent.mjs")).href;
-  for (const spec of Object.values(BACKENDS)) {
+  for (const spec of Object.values(BACKENDS).filter((s) => s.pkg)) { // OpenCode has no bridge
     const pkg = join(bridges, "node_modules", ...spec.pkg.split("/"));
     mkdirSync(join(pkg, "dist"), { recursive: true });
     writeFileSync(join(pkg, "package.json"), JSON.stringify({ name: spec.pkg, version: spec.version, type: "module", bin: { bridge: "dist/index.js" } }));

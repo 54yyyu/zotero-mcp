@@ -11,9 +11,11 @@ import argparse
 import getpass
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _obfuscate_sensitive(value: str | None, keep_chars: int = 4) -> str:
@@ -241,10 +243,10 @@ def _prompt_text(label: str, current: str | None, blank_means: str) -> str | Non
     return raw or None
 
 
-def _prompt_secret(label: str, current: str | None) -> str:
+def _prompt_secret(label: str, current: str | None, what: str = "key") -> str:
     """Ask for a secret without echoing; Enter keeps ``current`` if there is one."""
     if current:
-        raw = getpass.getpass(f"{label} (hidden, Enter keeps the stored key): ").strip()
+        raw = getpass.getpass(f"{label} (hidden, Enter keeps the stored {what}): ").strip()
         return raw or current
     return getpass.getpass(f"{label} (hidden): ").strip()
 
@@ -261,12 +263,12 @@ def _prompt_choice(label: str, valid: list[str], default: str | None) -> str:
         print("Please enter " + ", ".join(valid[:-1]) + f", or {valid[-1]}")
 
 
-def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool) -> dict:
+def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool = False) -> dict:
     """Ask whether to index documents as overlapping passages.
 
     Starts from the existing ``chunking`` block (hand-edited keys survive) and
-    only asks for the sizes when chunking is switched on. Enabling or disabling
-    it changes the record layout, so the user is told a rebuild is needed.
+    only asks for the sizes when chunking is switched on, and says what the
+    next update embeds.
     """
     existing = dict((existing_semantic_config or {}).get("chunking") or {})
     was_enabled = bool(existing.get("enabled", False))
@@ -286,11 +288,8 @@ def _prompt_chunking(existing_semantic_config: dict | None, batch_enabled: bool)
     print("each, so long PDFs stay searchable and results can quote the matching passage.")
     print("Warning: on a large library chunking multiplies the index: many more embeddings")
     print("to pay for and wait on, and the index sits in memory (about 6 GB per million")
-    print("passages). Changing it needs 'zotero-mcp update-db --force-rebuild'.")
-    print(
-        "The Batch API is enabled here and ignores chunking; use 'update-db --no-batch'."
-        if batch_enabled else "The Batch API ignores chunking."
-    )
+    print("passages). After turning it on, the next 'zotero-mcp update-db' embeds the")
+    print("passages for the whole library, on the realtime or the Batch API path.")
     hint = "Y/n" if was_enabled else "y/N"
     raw = input(f"Index full text as passages? [{hint}]: ").strip().lower()
     enabled = was_enabled if raw == "" else raw in ("y", "yes")
@@ -624,10 +623,9 @@ def setup_semantic_search(
     #   reranker: local cross-encoder re-rank of candidates for higher
     #             precision (needs sentence-transformers; adds a model load).
     #   chunking: index each item as overlapping passages so search returns
-    #             grounded quotes and long PDFs stay searchable. Enabling it
-    #             requires a one-time `update-db --force-rebuild`. It has no
-    #             effect while `openai_batch.enabled` is true: that path
-    #             indexes item-level and update-db warns about it (#416).
+    #             grounded quotes and long PDFs stay searchable. After enabling
+    #             it, the next `update-db` adds the passages, on either the
+    #             realtime or the Batch API path.
     if existing_semantic_config and existing_semantic_config.get("reranker"):
         config["reranker"] = existing_semantic_config["reranker"]
     else:
@@ -712,7 +710,156 @@ def load_semantic_search_config(semantic_config_path: Path) -> dict:
         return {}
 
 
-def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None, library_id=None, library_type="user", semantic_config=None):
+WEBDAV_KEYS = ("ZOTERO_WEBDAV_URL", "ZOTERO_WEBDAV_USERNAME", "ZOTERO_WEBDAV_PASSWORD")
+
+
+def _webdav_values(env) -> dict | None:
+    """The three WebDAV settings in *env*, or None unless all are set (as webdav.py reads them)."""
+    from zotero_mcp.webdav import _PLACEHOLDER_PREFIX
+
+    values = {key: str(env.get(key) or "").strip() for key in WEBDAV_KEYS}
+    if all(v and not v.startswith(_PLACEHOLDER_PREFIX) for v in values.values()):
+        return values
+    return None
+
+
+def _existing_webdav(config_paths) -> dict | None:
+    """The WebDAV settings in the first of *config_paths* that has all three."""
+    for path in config_paths:
+        try:
+            with open(path, encoding="utf-8") as f:
+                cfg = json.load(f)
+            env = cfg.get("client_env") or cfg.get("mcpServers", {}).get("zotero", {}).get("env") or {}
+            found = _webdav_values(env)
+        except Exception:
+            continue
+        if found:
+            return found
+    return None
+
+
+def _webdav_env(existing_env, webdav: dict | None) -> dict:
+    """The WebDAV settings to write into a config's env section.
+
+    *webdav* is setup's answer and replaces what the config had; ``{}`` means
+    no WebDAV. With None, setup did not ask, and the settings already in
+    *existing_env* are kept as they are.
+    """
+    if webdav is not None:
+        return webdav
+    if not isinstance(existing_env, dict):
+        return {}
+    return {key: existing_env[key] for key in WEBDAV_KEYS if key in existing_env}
+
+
+def _zotero_folder_url(address: str) -> str:
+    """The folder Zotero keeps its files in, from the address in Zotero's sync settings.
+
+    Zotero's settings drop a trailing /zotero from what is typed and add zotero/ to the
+    address; the upload writes <KEY>.zip straight into the folder it is given, so it
+    needs that folder.
+    """
+    url = address.strip()
+    if "://" not in url:  # Zotero's settings pick the scheme in a separate menu
+        url = "https://" + url
+    # Trailing slashes, then one /zotero path segment (not a host named zotero).
+    url = re.sub(r"(?<!/)/zotero$", "", url.rstrip("/"))
+    return url + "/zotero/"
+
+
+def _webdav_address_problem(url: str) -> str | None:
+    """Why *url* cannot be the WebDAV folder, or None when it can."""
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        return "it is not an http or https address"
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return "it is not an http or https address"
+    if parsed.username or parsed.password:
+        return "the username and the password are asked for next, so leave them out of it"
+    return None
+
+
+def setup_webdav(existing: dict | None) -> dict | None:
+    """Ask whether attachment files sync over WebDAV.
+
+    Returns the three ZOTERO_WEBDAV_* settings to write, ``{}`` for no WebDAV,
+    or None to leave each config as it is: at the end of input, when nothing
+    is stored and the question is passed with Enter, or when an answer is
+    left blank. Complete settings in the environment are used without asking,
+    as ZOTERO_API_KEY is. *existing* holds the stored settings; they are the
+    defaults, so Enter keeps them.
+    """
+    from_env = _webdav_values(os.environ)
+    if from_env:
+        print("\nUsing the WebDAV settings in the environment (ZOTERO_WEBDAV_*).")
+        return from_env
+
+    print("\n=== WebDAV File Sync ===")
+    print("If Zotero syncs your attachment files over WebDAV (Zotero settings > Sync >")
+    print("File Syncing), files added through the web API can go straight to that server.")
+    print("Otherwise they go to Zotero Storage and count against its quota.")
+    if existing and _webdav_address_problem(existing["ZOTERO_WEBDAV_URL"]):
+        existing = None  # not shown: it may hold a login. Enter still leaves it in the config
+    stored = existing or {}
+    stored_url = stored.get("ZOTERO_WEBDAV_URL")
+    stored_username = stored.get("ZOTERO_WEBDAV_USERNAME")
+    hint = "Y/n" if existing else "y/N"
+    try:
+        while True:
+            raw = input(f"Do you sync attachment files over WebDAV? [{hint}]: ").strip().lower()
+            if raw in ("", "y", "yes", "n", "no"):
+                break
+            print("Please enter y or n")
+        if raw in ("n", "no"):
+            return {}
+        if raw == "" and not existing:
+            return None
+        if existing and not stored_url.rstrip("/").endswith("/zotero"):
+            # Zotero reads <address>/zotero/, so files put anywhere else never reach it.
+            print("Note: the stored folder does not end in /zotero/, where Zotero keeps its files.")
+            print("Type the address from Zotero's settings to use its zotero folder.")
+        while True:
+            if existing:
+                address = input(f"WebDAV address, as in Zotero's settings [{stored_url}]: ").strip()
+            else:
+                address = input(
+                    "WebDAV address as in Zotero's settings, with https:// or http:// "
+                    "(e.g. https://dav.example.com): "
+                ).strip()
+            if not address:
+                url = stored_url  # Enter keeps the stored folder as it is
+                break
+            url = _zotero_folder_url(address)
+            problem = _webdav_address_problem(url)
+            if problem is None:
+                break
+            # The address is not repeated: it may hold a password.
+            print(f"That address cannot be used: {problem}.")
+        if not url:
+            print("WebDAV settings not changed: no address was given.")
+            return None
+        if existing:
+            username = input(f"WebDAV username [{stored_username}]: ").strip() or stored_username
+        else:
+            username = input("WebDAV username: ").strip()
+        password = _prompt_secret("WebDAV password", stored.get("ZOTERO_WEBDAV_PASSWORD"), "password")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+
+    if not (username and password):
+        print("WebDAV settings not changed: the username and the password are both needed.")
+        return None
+    print(f"Files will go to: {url}")
+    return {
+        "ZOTERO_WEBDAV_URL": url,
+        "ZOTERO_WEBDAV_USERNAME": username,
+        "ZOTERO_WEBDAV_PASSWORD": password,
+    }
+
+
+def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None, library_id=None, library_type="user", semantic_config=None, webdav=None):
     """Update Claude Desktop config to add zotero-mcp."""
     # Create directory if it doesn't exist
     config_dir = config_path.parent
@@ -756,6 +903,8 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
             env_settings["ZOTERO_LIBRARY_ID"] = library_id
         if library_type:
             env_settings["ZOTERO_LIBRARY_TYPE"] = library_type
+    # Without these a rebuilt env section sends uploads back to Zotero Storage.
+    env_settings.update(_webdav_env(existing_env, webdav))
 
     # Add semantic search settings if provided
     if semantic_config:
@@ -803,7 +952,7 @@ def update_claude_config(config_path, zotero_mcp_path, local=True, api_key=None,
     return config_path
 
 
-def _write_standalone_config(local: bool, api_key: str, library_id: str, library_type: str, semantic_config: dict, no_claude: bool = False) -> Path:
+def _write_standalone_config(local: bool, api_key: str, library_id: str, library_type: str, semantic_config: dict, no_claude: bool = False, webdav: dict | None = None) -> Path:
     """Write a central config file used by semantic search and provide client env."""
     cfg_dir = Path.home() / ".config" / "zotero-mcp"
     from zotero_mcp.utils import ensure_private_dir
@@ -840,6 +989,7 @@ def _write_standalone_config(local: bool, api_key: str, library_id: str, library
             client_env["ZOTERO_LIBRARY_ID"] = library_id
         if library_type:
             client_env["ZOTERO_LIBRARY_TYPE"] = library_type
+    client_env.update(_webdav_env(existing_env, webdav))
 
     full["client_env"] = client_env
 
@@ -960,12 +1110,24 @@ def main(cli_args=None):
                 existing_semantic_config = new_semantic_config  # Update the config to use
                 save_semantic_search_config(existing_semantic_config, semantic_config_path, zotero_db_path)
 
+    # WebDAV file sync, asked in web mode for a personal library (a group's
+    # files always go to Zotero Storage). Otherwise each config keeps the
+    # WebDAV settings it has. It is the last question: a script that pipes
+    # answers to the ones above reaches end of input here, which changes
+    # nothing.
+    webdav = None
+    if not use_local and library_type == "user":
+        rewritten = [semantic_config_path] if args.no_claude else config_paths
+        webdav = setup_webdav(_existing_webdav(rewritten))
+
     print("\nSetup with the following settings:")
     print(f"  Local API: {use_local}")
     if not use_local:
         print(f"  API Key: {_obfuscate_sensitive(api_key)}")
         print(f"  Library ID: {library_id or 'Not provided'}")
         print(f"  Library Type: {library_type}")
+        if webdav is not None:
+            print(f"  WebDAV file sync: {'yes' if webdav else 'no'}")
 
     # Use the potentially updated semantic config
     semantic_config = existing_semantic_config
@@ -979,7 +1141,8 @@ def main(cli_args=None):
                 library_id=library_id,
                 library_type=library_type,
                 semantic_config=semantic_config,
-                no_claude=args.no_claude
+                no_claude=args.no_claude,
+                webdav=webdav,
             )
             print("\nSetup complete (standalone/web mode)!")
             print(f"Config saved to: {cfg_path}")
@@ -1018,7 +1181,8 @@ def main(cli_args=None):
                     api_key=api_key,
                     library_id=library_id,
                     library_type=library_type,
-                    semantic_config=semantic_config
+                    semantic_config=semantic_config,
+                    webdav=webdav,
                 )
                 if result:
                     updated_paths.append(result)

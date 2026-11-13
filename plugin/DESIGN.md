@@ -1,7 +1,7 @@
 # Zotero Agent plugin: design
 
 A side panel inside Zotero (library view and reader tabs) that chats with an agent. The agent is a normal
-ACP agent (Claude Code, Codex, pi) run on the user's own subscription, or on an API key. It uses `zotero-cli`
+ACP agent (Claude Code, Codex, pi, OpenCode) run on the user's own subscription, or on an API key. It uses `zotero-cli`
 and its skill for everything Zotero. The panel adds three things: the agent's **context** (what is open, which
 page, what is selected), a **good chat UI**, and **one-click setup**. Nothing in the agent is restricted: web,
 paper search outside the library, shell, files: it does what it would do in a terminal.
@@ -30,7 +30,8 @@ Zotero main window ── #tabs-deck lives in an hbox below the tab bar; we appe
 - A Dock-launched app has a short PATH. Resolve `node`, `npx`, `claude`, `codex`, `pi`, `uv`, `zotero-cli` through the
   login shell (`$SHELL -lc`), then pass that PATH to every child.
 - ACP bridge for Claude: npm `@agentclientprotocol/claude-agent-acp` (0.85.1 tested; `@zed-industries/claude-code-acp`
-  is deprecated). Codex: `@agentclientprotocol/codex-acp`. pi: `pi-acp`. Verify with `npm view` before pinning.
+  is deprecated). Codex: `@agentclientprotocol/codex-acp`. pi: `pi-acp`. Verify with `npm view` before pinning. OpenCode
+  needs no bridge: `opencode acp` is the agent (1.19.5 measured; backends.ts has the shape), so it needs no Node either.
 - `initialize` (protocolVersion 1) then `session/new {cwd, mcpServers: []}` works, and the bridge reports the signed-in
   account (`_auth/status_update`: "Claude Max") so subscription mode needs no key. `session/new` returns `modes`
   (`default`, `acceptEdits`, `plan`, `auto`, `bypassPermissions`) and `configOptions`.
@@ -295,6 +296,14 @@ sent once with the brief, never per turn; the brief's own cap stays about the co
   ends, or SVG with nothing drawable left, shows as a code block.
 - **Lazy**: `mdview.ts` imports `diagram.ts` dynamically on the first svg block; esbuild bundles it as a lazily initialised
   module, so a chat without diagrams never runs it, and its stylesheet is added to the shadow root on first use.
+- **Mermaid** (`ui/mermaid.ts`, #823): agents answer with ```` ```mermaid ```` anyway, so the common part is drawn: flowcharts
+  (layered layout: longest-path ranks with cycles reversed, a dummy per crossed rank and one per edge label, barycentre
+  ordering with subgraphs kept together, S-curves between ranks) and sequence diagrams (columns sized by their messages, blocks
+  as frames). The result is SVG text in palette names that goes through the same parse, sanitize, fit, card and export as an
+  agent's own; anything else is null and stays code. Not the mermaid library: 5.5 MB minified (1.6 MB gzipped, 2026-11-12,
+  12.3.0) against a 0.98 MB panel, measuring text with getBBox and handing back markup to parse; this is 22 kB, renders a
+  60-node chart in a few ms, and lives in the same lazy module. The guide says only that a plain flowchart or sequence may be
+  Mermaid.
 - Light and dark; follows Zotero's theme (`host.theme()`); keyboard accessible; works from 300 px to 700 px wide.
 - Appearance (`ui/appearance.ts` validates and applies it, `ui/styles-look.ts` draws it): glass (default on), accent (default
   Mono), background (default Plain), text size, density. `Look` writes data attributes and CSS variables on `.zmc`, so a change
@@ -481,7 +490,9 @@ languages for the translator, not the interface.
   unavailable") is a notice, never text in front of the translation. Codex: `CODEX_CONFIG` read-only
   sandbox, approval never, web search off (its rollout file is still kept; codex-acp has no ephemeral thread). pi: pi-acp's
   `PI_ACP_PI_COMMAND` is a script running the user's pi with `--no-tools --no-extensions --no-skills --no-prompt-templates
-  --no-context-files --no-session`. Every permission request is refused anyway. The selected text is untrusted PDF content;
+  --no-context-files --no-session`. OpenCode: `OPENCODE_CONFIG_CONTENT` denies every tool but read/glob/grep and anything
+  outside its folder, `OPENCODE_DISABLE_CLAUDE_CODE=1` (denying all tools makes Zen's free models refuse the request; live
+  test passed on Big Pickle 2026-11-12). Every permission request is refused anyway. The selected text is untrusted PDF content;
   the prompt says to translate instructions, never follow them.
 - **Prompt** (`TRANSLATOR_PROMPT`, the whole system prompt; Codex and pi get it on the first prompt): measured live on Claude
   Haiku, Codex 6 Luna (low) and pi qwen38-27b (off), `test/live/translate.live.ts`: a sentence, a word, a hyphen-broken

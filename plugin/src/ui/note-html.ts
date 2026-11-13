@@ -12,7 +12,7 @@ import { t } from "../i18n.ts";
 export interface NoteHtmlOpts {
   /** The note's first line (Zotero titles a note by it). */
   title?: string;
-  /** The embedded image for the i-th closed ```svg block, or null to keep it as code. */
+  /** The embedded image for the i-th closed ```svg or ```mermaid block, or null to keep it as code. */
   image?(i: number): { key: string; width: number; height: number } | null;
 }
 
@@ -25,13 +25,13 @@ const textOf = (n: MdNode): string => (typeof n === "string" ? n : (n.kids ?? []
 const px = (n: number): number => Math.max(1, Math.min(4000, Math.round(Number(n) || 1)));
 const isBlank = (n: MdNode) => typeof n === "string" && !n.trim();
 
-/** The ```svg blocks that count as drawings (closed fences), in order: the UI renders a PNG for each of these. */
-export function noteDiagrams(markdown: string): string[] {
-  const out: string[] = [];
+/** The ```svg and ```mermaid blocks that count as drawings (closed fences), in order: the UI renders a PNG for each of these. */
+export function noteDiagrams(markdown: string): { src: string; lang: "svg" | "mermaid" }[] {
+  const out: { src: string; lang: "svg" | "mermaid" }[] = [];
   const visit = (nodes: MdNode[]) => {
     for (const n of nodes) {
       if (typeof n === "string") continue;
-      if (n.tag === "diagram") { if (n.attrs?.open !== "1") out.push(textOf(n)); }
+      if (n.tag === "diagram") { if (n.attrs?.open !== "1") out.push({ src: textOf(n), lang: n.attrs?.lang === "mermaid" ? "mermaid" : "svg" }); }
       else if (n.kids) visit(n.kids);
     }
   };

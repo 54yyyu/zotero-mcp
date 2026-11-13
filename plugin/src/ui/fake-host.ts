@@ -3,7 +3,7 @@
 import { CATALOGS, bigPiCatalog, defaultSettings } from "./fake-catalog.ts";
 import { repeatLine } from "./economy.ts";
 import { t } from "../i18n.ts";
-import { DIAGRAM_ANSWER } from "./fake-diagrams.ts";
+import { DIAGRAM_ANSWER, MERMAID_ANSWER } from "./fake-diagrams.ts";
 import { FakeSkills } from "./fake-skills.ts";
 import type {
   AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, ChatEvent, ContextChip, DoctorCheck, ItemHit, NoteRequest, PanelHost,
@@ -261,7 +261,7 @@ class FakeSession implements AgentSession {
       }
     }
 
-    const body = long ? `${SAMPLE_ANSWER}\n\n${LONG_PARAS}` : /\b(draw|diagram)/.test(q) ? DIAGRAM_ANSWER : q.includes("math") ? "The estimator is\n\n$$\\hat{\\tau} = \\frac{1}{n}\\sum_{i=1}^{n}\\left(\\frac{T_i Y_i}{e(X_i)} - \\frac{(1-T_i)Y_i}{1-e(X_i)}\\right)$$\n\nwith propensity $e(X_i) = P(T_i = 1 \\mid X_i)$. An unclosed $$ stays text while it streams, and \\$5 is just five dollars." : SAMPLE_ANSWER;
+    const body = long ? `${SAMPLE_ANSWER}\n\n${LONG_PARAS}` : /\bmermaid\b/.test(q) ? MERMAID_ANSWER : /\b(draw|diagram)/.test(q) ? DIAGRAM_ANSWER : q.includes("math") ? "The estimator is\n\n$$\\hat{\\tau} = \\frac{1}{n}\\sum_{i=1}^{n}\\left(\\frac{T_i Y_i}{e(X_i)} - \\frac{(1-T_i)Y_i}{1-e(X_i)}\\right)$$\n\nwith propensity $e(X_i) = P(T_i = 1 \\mid X_i)$. An unclosed $$ stays text while it streams, and \\$5 is just five dollars." : SAMPLE_ANSWER;
     await this.stream(turn, "text", (this.cancelled ? "" : body));
     if (this.cancelled) return this.end(turn, "cancelled");
     this.emit({ t: "turn_end", turn, stop: "end_turn", usage: { inputTokens: 12840, outputTokens: 912, costUsd: 0.031, ...(this.sim.contextUsage ? { contextUsed: this.sim.contextUsage.used, contextSize: this.sim.contextUsage.size } : {}) } });
@@ -297,6 +297,7 @@ export class FakeHost implements PanelHost {
         { id: "claude-code", label: "Claude Code", available: true, account: "Claude Max" },
         { id: "codex", label: "Codex", available: false, reason: "codex is not installed" },
         { id: "pi", label: "pi", available: true },
+        { id: "opencode", label: "OpenCode", available: true },
       ],
       setContext: (k) => { this.ctx = k === "none" ? [] : k === "selection" ? [ITEM_CHIP, SELECTION_CHIP] : k === "area" ? [{ ...ITEM_CHIP, id: "reader:LUND2021", label: "Lundberg 2021 - The G…", ref: { libraryID: 1, itemKey: "LUND2021" } }, AREA_CHIP] : [ITEM_CHIP]; for (const cb of [...this.ctxCbs]) cb(); },
       setTheme: (t) => { this._theme = t; for (const cb of [...this.themeCbs]) cb(); },
@@ -448,7 +449,7 @@ export class FakeHost implements PanelHost {
   /** What each backend's own CLI takes to continue a session; the folder is quoted for the shell. */
   resumeCommand(s: SavedSession) {
     if (s.backend === "custom") return null;
-    const cmd = { "claude-code": `claude --resume ${s.agentSessionId}`, codex: `codex resume ${s.agentSessionId}`, pi: `pi --session ${s.agentSessionId}` }[s.backend];
+    const cmd = { "claude-code": `claude --resume ${s.agentSessionId}`, codex: `codex resume ${s.agentSessionId}`, pi: `pi --session ${s.agentSessionId}`, opencode: `opencode --session ${s.agentSessionId}` }[s.backend];
     return s.agentSessionId ? `cd '${s.cwd.replace(/'/g, "'\\''")}' && ${cmd}` : null;
   }
   async prepareSession(cwd?: string) { this.sim.preparedCwd.push(cwd); return { cwd: cwd ?? this.folder(), brief: "You are in a Zotero side panel.", env: {} }; }

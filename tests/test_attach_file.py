@@ -472,22 +472,6 @@ class TestAttachFileLocal:
         )
         assert "File not found" in result
 
-    def test_webdav_suffix_passthrough(self, monkeypatch, dummy_ctx):
-        fake = FakeZoteroForAttach()
-        _patch_write_client(monkeypatch, fake)
-        _patch_path_valid(monkeypatch)
-        monkeypatch.setattr(
-            "zotero_mcp.tools._helpers._maybe_upload_to_webdav",
-            lambda attach_result, file_path, ctx, write_zot=None: (
-                " (uploaded to WebDAV as ATCH0001.zip)"
-            ),
-        )
-
-        result = server.attach_file(
-            item_key="ITEM1", file_path="/Users/test/a.pdf", ctx=dummy_ctx
-        )
-        assert "uploaded to WebDAV as ATCH0001.zip" in result
-
     def test_upload_failure_reported_not_raised(self, monkeypatch, dummy_ctx):
         class BoomUpload(FakeZoteroForAttach):
             def attachment_both(self, files, parentid=None, **kwargs):

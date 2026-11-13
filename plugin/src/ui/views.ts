@@ -9,8 +9,8 @@ import type { Key } from "../i18n.ts";
 import type { Pinned } from "./skills-model.ts";
 
 // Product names stay as they are; "Custom" is a word, so it is looked up each time it is drawn.
-export const BACKEND_LABEL: Record<BackendId, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi", get custom() { return t("agent.custom.tab"); } };
-export const BACKENDS: BackendId[] = ["claude-code", "codex", "pi", "custom"];
+export const BACKEND_LABEL: Record<BackendId, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi", opencode: "OpenCode", get custom() { return t("agent.custom.tab"); } };
+export const BACKENDS: BackendId[] = ["claude-code", "codex", "pi", "opencode", "custom"];
 
 /**
  * The logo (assets/logo.svg): a hollow square chat box with a small tail, and a red Z in it (--brand: the accent setting never recolours it). It follows the theme. The parts

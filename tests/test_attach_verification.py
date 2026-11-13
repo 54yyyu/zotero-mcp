@@ -120,8 +120,7 @@ class TestAssertUploadCapable:
 
 
 class TestAttachAndVerify:
-    def test_success_passes_through_key(self, dummy_ctx, monkeypatch):
-        monkeypatch.setattr(_helpers, "_maybe_upload_to_webdav", lambda *a, **k: "")
+    def test_success_passes_through_key(self, dummy_ctx):
         zot = _AttachFake()
         ok, suffix, key = _helpers._attach_and_verify(
             zot, "paper.pdf", "/abs/paper.pdf", "ITEM1", dummy_ctx
@@ -130,8 +129,7 @@ class TestAttachAndVerify:
         assert key == "ATCH0001"
         assert zot.created == []  # no fallback needed
 
-    def test_failed_upload_falls_back_to_two_step(self, dummy_ctx, monkeypatch):
-        monkeypatch.setattr(_helpers, "_maybe_upload_to_webdav", lambda *a, **k: "")
+    def test_failed_upload_falls_back_to_two_step(self, dummy_ctx):
         zot = _AttachFake(attach_result=_failed_result())
         ok, suffix, key = _helpers._attach_and_verify(
             zot, "paper.pdf", "/abs/paper.pdf", "ITEM1", dummy_ctx
@@ -143,9 +141,7 @@ class TestAttachAndVerify:
         assert zot.created[0][0]["filename"] == "paper.pdf"
         assert zot.uploaded[0][0]["filename"] == "/abs/paper.pdf"
 
-    def test_reports_failure_when_two_step_also_fails(self, dummy_ctx, monkeypatch):
-        monkeypatch.setattr(_helpers, "_maybe_upload_to_webdav", lambda *a, **k: "")
-
+    def test_reports_failure_when_two_step_also_fails(self, dummy_ctx):
         class NoBytes(_AttachFake):
             def upload_attachments(self, attachments, **kwargs):
                 # Reports success but never stores md5 — bytes didn't land.
@@ -159,9 +155,7 @@ class TestAttachAndVerify:
         assert key is None
         assert "md5" in reason
 
-    def test_orphan_shell_deleted_when_upload_fails(self, dummy_ctx, monkeypatch):
-        monkeypatch.setattr(_helpers, "_maybe_upload_to_webdav", lambda *a, **k: "")
-
+    def test_orphan_shell_deleted_when_upload_fails(self, dummy_ctx):
         class BoomUpload(_AttachFake):
             def upload_attachments(self, attachments, **kwargs):
                 raise RuntimeError("network down")

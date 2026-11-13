@@ -64,6 +64,10 @@ def obfuscate_config_for_display(config):
         if key == "ZOTERO_MCP_AUTH_TOKEN":
             # Also hide invalid non-string values that HTTP startup rejects.
             obfuscated[key] = "********"
+        elif key.upper().endswith("_PASSWORD") and obfuscated[key]:
+            # A password is short and chosen by a person: its first
+            # characters and its length give too much away.
+            obfuscated[key] = "********"
         elif _is_sensitive_key(key):
             obfuscated[key] = obfuscate_sensitive_value(obfuscated[key])
     return obfuscated
@@ -505,12 +509,12 @@ def _print_update_stats(stats: dict) -> None:
     print(f"- Total items: {stats.get('total_items', 0)}")
     print(f"- Processed: {stats.get('processed_items', 0)}")
     if stats.get("batch_submitted"):
-        sub_count = stats.get("submitted_items", 0)
-        tot_items = stats.get("total_items", 0)
-        if sub_count != tot_items:
-            print(f"- Submitted: {sub_count} chunks/records (from {tot_items} items)")
+        sub_items = stats.get("submitted_items", 0)
+        sub_records = stats.get("submitted_records", sub_items)
+        if sub_records != sub_items:
+            print(f"- Submitted: {sub_records} records (articles and passages) for {sub_items} items")
         else:
-            print(f"- Submitted: {sub_count} records")
+            print(f"- Submitted: {sub_items} records")
         print(f"- Estimated new items: {stats.get('estimated_added_items', 0)}")
         print(f"- Estimated existing items: {stats.get('estimated_updated_items', 0)}")
     else:
@@ -591,9 +595,9 @@ def _print_batch_import(stats: dict, provider: str = "openai") -> None:
     print(f"- Batches skipped: {stats.get('batches_skipped', 0)}")
     if stats.get("batches_submitted"):
         print(f"- Pending chunks submitted: {stats['batches_submitted']}")
-    print(f"- Imported items: {stats.get('imported_items', 0)}")
-    print(f"- Added: {stats.get('added_items', 0)}")
-    print(f"- Updated: {stats.get('updated_items', 0)}")
+    print(f"- Imported records: {stats.get('imported_items', 0)}")
+    print(f"- Added items: {stats.get('added_items', 0)}")
+    print(f"- Updated items: {stats.get('updated_items', 0)}")
     print(f"- Failed rows: {stats.get('failed_items', 0)}")
     print(f"- Missing rows: {stats.get('missing_items', 0)}")
     if stats.get("deferred"):

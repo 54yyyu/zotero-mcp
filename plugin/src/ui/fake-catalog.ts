@@ -42,6 +42,13 @@ export const CATALOGS: Record<BackendId, Catalog> = {
     efforts: [level("off", "Off"), level("minimal", "Minimal"), level("low", "Low"), level("medium", "Medium"), level("high", "High"), level("xhigh", "Extra high")],
     model: "provider-default", effort: "off",
   },
+  // OpenCode with no provider set up: Zen's free models; effort only for a model with variants (measured 1.19.5).
+  opencode: {
+    models: [level("opencode/big-pickle", "OpenCode/Big Pickle"), level("opencode/deepseek-v4.1-flash-free", "OpenCode/DeepSeek V4.1 Flash Free"), level("opencode/glm-5.3-flash-free", "OpenCode/GLM-5.3-Flash Free")],
+    modes: [level("build", "build", "The default agent. Executes tools based on configured permissions."), level("plan", "plan", "Plan mode. Disallows all edit tools.")],
+    efforts: [],
+    model: "opencode/big-pickle", mode: "build",
+  },
 };
 
 /**
@@ -75,10 +82,10 @@ export function bigPiCatalog(): Catalog {
 export function defaultSettings(): PanelSettings {
   return {
     backend: "claude-code",
-    model: { "claude-code": "", codex: "", pi: "" },
-    mode: { "claude-code": "", codex: "", pi: "" },
-    effort: { "claude-code": "", codex: "", pi: "" },
-    auth: { "claude-code": "subscription", codex: "subscription", pi: "subscription" },
+    model: { "claude-code": "", codex: "", pi: "", opencode: "" },
+    mode: { "claude-code": "", codex: "", pi: "", opencode: "" },
+    effort: { "claude-code": "", codex: "", pi: "", opencode: "" },
+    auth: { "claude-code": "subscription", codex: "subscription", pi: "subscription", opencode: "subscription" },
     prompts: [
       { id: "p1", title: "Detailed summary", text: "Write a detailed summary of this paper.", slot: 1 },
       { id: "p2", title: "Short summary", text: "Summarize this paper in five sentences.", slot: 2 },
@@ -87,7 +94,7 @@ export function defaultSettings(): PanelSettings {
     ],
     followFocus: true, attachSelection: true, attachAreas: true,
     enterToSend: true, showThinking: true, expandTools: false, showUsage: false, openAtStart: false, welcomed: true, chatFolder: "",
-    translate: true, translateTo: "en", translateModel: { "claude-code": "", codex: "", pi: "" }, uiLanguage: "",
+    translate: true, translateTo: "en", translateModel: { "claude-code": "", codex: "", pi: "", opencode: "" }, uiLanguage: "",
     appearance: { ...DEFAULT_APPEARANCE },
   };
 }

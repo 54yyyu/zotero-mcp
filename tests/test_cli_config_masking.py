@@ -20,6 +20,16 @@ def test_http_auth_token_is_fully_masked(token):
     assert config["ZOTERO_MCP_AUTH_TOKEN"] == token
 
 
+@pytest.mark.parametrize("key", ["ZOTERO_WEBDAV_PASSWORD", "WEBDAV_PASSWORD", "SOME_VENDOR_PASSWORD"])
+def test_a_password_is_fully_masked(key):
+    assert obfuscate_config_for_display({key: "hunter2"}) == {key: "********"}
+    assert obfuscate_config_for_display({key: "a-much-longer-passphrase"}) == {key: "********"}
+
+
+def test_an_empty_password_is_shown_as_empty():
+    assert obfuscate_config_for_display({"ZOTERO_WEBDAV_PASSWORD": ""}) == {"ZOTERO_WEBDAV_PASSWORD": ""}
+
+
 def test_provider_api_keys_are_masked():
     config = {
         "ZOTERO_API_KEY": "zzzz1234secret",

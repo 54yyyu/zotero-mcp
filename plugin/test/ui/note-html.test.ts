@@ -70,7 +70,7 @@ test("tables keep their cells", () => {
 test("a title is the note's first line; diagrams are embedded images, or code without one", () => {
   const svg = '<svg viewBox="0 0 10 10"><rect width="5" height="5"/></svg>';
   const md = `Intro\n\n\`\`\`svg\n${svg}\n\`\`\`\n\nMiddle\n\n\`\`\`svg\n${svg.replace("5", "6")}\n\`\`\``;
-  assert.deepEqual(noteDiagrams(md), [svg, svg.replace("5", "6")]);
+  assert.deepEqual(noteDiagrams(md), [{ src: svg, lang: "svg" }, { src: svg.replace("5", "6"), lang: "svg" }]);
   const html = noteHtml(md, { title: "  What is   the gap?\n", image: (i) => (i === 0 ? { key: "IMGKEY01", width: 450.4, height: 300 } : null) });
   assert.equal(leak(html), null);
   assert.match(html, /^<div data-schema-version="8"><h1>What is the gap\?<\/h1><p>Intro<\/p>/);

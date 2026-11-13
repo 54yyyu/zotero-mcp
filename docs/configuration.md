@@ -19,6 +19,8 @@ zotero-mcp setup --no-local --api-key YOUR_API_KEY --library-id YOUR_LIBRARY_ID
 
 Generate an API key at [zotero.org/settings/security](https://www.zotero.org/settings/security#applications). `ZOTERO_LIBRARY_ID` is your numeric **userID**, shown on that same page (for a group library, use the group's ID and also set `ZOTERO_LIBRARY_TYPE=group`).
 
+If you sync your personal library's attachment files over WebDAV, setup also asks for its address and login, so that files you attach go to your WebDAV server instead of counting against your Zotero Storage quota. A re-run offers the stored settings as defaults.
+
 <a id="local-write-support"></a>
 
 ## Local write support (Zotero 10+)
@@ -87,7 +89,12 @@ rather than opening a dialog that can't help.
   discovered automatically)
 - `ZOTERO_LOCAL_WRITE`: `auto` (default) or `false` to force writes onto the web API even
   when a local key exists
-- `ZOTERO_WEBDAV_URL`: Optional WebDAV folder URL for direct attachment downloads in remote mode
+- `ZOTERO_WEBDAV_URL`: Optional WebDAV folder that holds your Zotero files, as a full URL
+  including `https://`: the address in Zotero's File Syncing settings followed by `/zotero/`.
+  When set, attachments added to your personal library through the web API are written to it
+  directly rather than to Zotero Storage (group libraries always use Zotero Storage), and
+  attachments are downloaded from it in remote mode. `zotero-mcp setup --no-local` asks for
+  this and the two settings below
 - `ZOTERO_WEBDAV_USERNAME`: Optional WebDAV username
 - `ZOTERO_WEBDAV_PASSWORD`: Optional WebDAV password
 
@@ -287,9 +294,9 @@ Passage chunking also indexes each item as several overlapping passages, in a se
 | `overlap` | `200` | Characters shared between neighbouring passages. |
 | `max_chunks_per_item` | `20` | Passages kept per item. Text past the last passage is not indexed. |
 
-After turning it on, run `zotero-mcp update-db --fulltext` once in local mode (`ZOTERO_LOCAL=true`). With the web API, where `--fulltext` is not available, run `zotero-mcp update-db`, which uses the text Zotero has already extracted. It adds the passages and keeps the article vectors you already have, with no `--force-rebuild` and no re-embedding of articles. It is not applied on the Batch API path.
+After turning it on, run `zotero-mcp update-db --fulltext` once in local mode (`ZOTERO_LOCAL=true`). With the web API, where `--fulltext` is not available, run `zotero-mcp update-db`, which uses the text Zotero has already extracted. It adds the passages and keeps the article vectors you already have, with no `--force-rebuild` and no re-embedding of articles. It works the same on the realtime and Batch API paths.
 
-An update writes every article record before any passage, so article search covers a long run's items early. A changed item has no passages from the moment its new article record is written until its new passages are, and passage search misses it meanwhile; a run stopped in between leaves the rest to the next update.
+An update writes every article record before any passage, so article search covers a long run's items early. A changed item has no passages from the moment its new article record is written until its new passages are, and passage search misses it meanwhile; on the Batch API path, where passage files can land days after the article files, that can last until the whole run is imported. A run stopped in between leaves the rest to the next update.
 
 `zotero_semantic_search` takes `level="articles"` or `level="passages"` to choose per search, and `zotero-cli search --mode semantic` takes `--level`.
 

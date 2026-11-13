@@ -1,6 +1,6 @@
 # Zotero Agent
 
-Zotero Agent is an AI chat panel inside Zotero, on the right of the library and of every reader tab. It talks to your own AI agent (Claude Code, Codex or pi), tells it what you have open (the selected item, the page you are on, the text or area you selected), and lets it work your library through [`zotero-cli`](cli.md) and its skill. Answers cite papers with real `zotero://` links, so a click opens the PDF at that page.
+Zotero Agent is an AI chat panel inside Zotero, on the right of the library and of every reader tab. It talks to your own AI agent (Claude Code, Codex, pi or OpenCode), tells it what you have open (the selected item, the page you are on, the text or area you selected), and lets it work your library through [`zotero-cli`](cli.md) and its skill. Answers cite papers with real `zotero://` links, so a click opens the PDF at that page.
 
 The agent is not restricted by the panel: it can search the web, run shell commands and read files, as it would in a terminal. Permission requests show up as cards in the chat, and a mode setting chooses between asking every time and allowing everything.
 
@@ -18,7 +18,7 @@ In Zotero: **Tools > Plugins**, click the gear, **Install Plugin From File**, an
 
 ### Let your agent do it
 
-Paste this to Claude Code, Codex, pi or any other agent that has a shell:
+Paste this to Claude Code, Codex, pi, OpenCode or any other agent that has a shell:
 
 ```text
 Install the Zotero Agent plugin for me. Make sure zotero-cli is installed (`uv tool install zotero-mcp-server`,
@@ -35,7 +35,7 @@ From a source checkout there is no packaged copy; build it with `npm ci && npm r
 
 ## First run
 
-Open the panel from the toolbar button. The first time, a short welcome has you choose your agent (Claude Code, Codex or pi, each marked ready or not), then runs a check that lists what is missing and, where it can, offers a one-click fix. "Skip setup" leaves it for later; the dot at the top of the panel always shows what is missing. The check covers:
+Open the panel from the toolbar button. The first time, a short welcome has you choose your agent (Claude Code, Codex, pi or OpenCode, each marked ready or not), then runs a check that lists what is missing and, where it can, offers a one-click fix. "Skip setup" leaves it for later; the dot at the top of the panel always shows what is missing. The check covers:
 
 - Zotero's local API is reachable. In Zotero's settings, turn on "Allow other applications on this computer to communicate with Zotero".
 - Writes are authorized (Zotero 10 or newer). Run `zotero-mcp authorize-local` once and choose "Always Allow".
@@ -43,7 +43,7 @@ Open the panel from the toolbar button. The first time, a short welcome has you 
 - Node.js is installed.
 - An agent is installed and signed in.
 
-The panel installs the agent's ACP bridge once into its own data folder with `npm install`, so the first run needs network access. After that, chats start without it.
+The panel installs the agent's ACP bridge once into its own data folder with `npm install`, so the first run needs network access. After that, chats start without it. OpenCode needs no bridge: it speaks ACP itself.
 
 ## Agents and sign-in
 
@@ -52,13 +52,18 @@ The panel installs the agent's ACP bridge once into its own data folder with `np
 | Claude Code | `@agentclientprotocol/claude-agent-acp` |
 | Codex | `@agentclientprotocol/codex-acp` |
 | pi | `pi-acp` |
+| OpenCode | none: the panel runs `opencode acp` |
 
-Claude Code and Codex each run in one of two ways, chosen per agent in the settings (pi has no subscription: it runs on the provider keys you have configured for it):
+Claude Code and Codex each run in one of two ways, chosen per agent in the settings (pi and OpenCode have no subscription: they run on the providers you have configured in them):
 
 - **Subscription.** The agent uses the login it already has on this machine (sign in once in a terminal with `claude`, `codex` or `pi`). The panel shows the account the bridge reports, for example "Claude Max". No key is involved.
 - **API key.** You paste a key; the plugin stores it in Zotero's login manager, never in preferences, and hands it to the bridge as an environment variable (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, ...).
 
 The plugin never runs a model itself.
+
+### OpenCode
+
+Install OpenCode (`npm i -g opencode-ai`, or any of the ways its site lists) and choose **OpenCode**. With no provider set up it chats on OpenCode Zen's free models; `opencode auth login` adds your own, and the model list shows whatever OpenCode offers (effort levels appear for a model that has them). Its two modes are OpenCode's own agents: **build** edits files and runs commands as OpenCode's permission settings allow, which by default means without asking, so no permission cards appear; **plan** reads and plans and changes nothing. The panel has no login to check for OpenCode, so "ready" means the `opencode` command was found. Summarise now is not offered: OpenCode does not advertise a `/compact` command over ACP.
 
 ### Custom ACP agents
 
@@ -68,14 +73,20 @@ variables as a JSON object of strings. Press **Save custom agent**. For example,
 [Qoder's documented ACP command](https://docs.qoder.com/zh/cli/acp) is:
 
 - Name: `Qoder CLI`
-- Command: `qoder` (or the full path to the executable; on Windows this may be `qoder.cmd`)
+- Command: `qoder` (or the full path to the executable)
 - Arguments: `["--acp"]`
 - Environment: `{}`
 
+**Windows:** Prefer the agent's `.exe` when available (use its full path if
+needed). A `.cmd` or `.bat` launcher that is not handled as an npm shim runs
+through `cmd.exe`, so arguments containing spaces, quotes or `&` may not arrive
+unchanged.
+
 Install the agent and sign in through its own CLI first. The plugin starts the
 command directly over stdio, without installing an npm bridge. A command must be
-on the login PATH or be an absolute path; arguments are literal entries, not a
-shell command. The agent inherits your login environment plus the extra variables.
+on the login PATH or be an absolute path; enter arguments as separate array
+entries, not as a shell command. The agent inherits your login environment plus
+the extra variables.
 Extras are saved in Zotero preferences, **not** the keychain; prefer the agent's
 own credential storage for secrets.
 
@@ -141,6 +152,8 @@ One small indicator says what the agent is doing: Thinking (in the thinking row,
 
 Ask the agent to draw something (a pipeline, a 2x2, a causal graph) and it answers with a figure in the chat. The agent writes plain SVG; the panel draws it in your theme's colours, so it follows light and dark mode and your accent colour. Hover a figure for its toolbar: show the SVG source, copy it as an image, or save it as PNG (on white, 1400 px wide) or SVG. Anything in a drawing that is not a shape or text, such as scripts, links or external images, is removed before it is shown. **Add to a note** saves the figure as a Zotero note on the item you are looking at, the drawing embedded as an image.
 
+Agents often answer with a ```` ```mermaid ```` block instead. The panel draws the common kinds itself, flowcharts (`graph` / `flowchart`, any direction, with subgraphs and `style`/`classDef` colours mapped to your theme) and sequence diagrams (participants, messages, notes, `loop`/`alt`/`opt`/`par` blocks, `autonumber`), with the same card, toolbar, theme and note export; Source shows the Mermaid text. Other Mermaid types (class, state, Gantt, pie, ...) and anything it cannot read stay a code block you can copy. A Mermaid diagram appears once its block is complete; while it streams, the card says it is drawing.
+
 ## Notes, math and formatting
 
 Under each answer, **Save as note** turns it into a Zotero note on the paper you are reading (or the selected item; with nothing selected, a standalone note in the current collection). The note keeps headings, lists, tables, code, links (citation links still open the page), math (Zotero's note editor typesets it) and drawings as images; **Open** selects it. On the last answer, the bulb asks the agent to explain again, intuition first.
@@ -153,9 +166,9 @@ Text you select in the reader goes into the composer as a **Text Selection** chi
 
 ## Translate
 
-Select a word, a sentence or a paragraph in a PDF and press **Translate** in Zotero's selection popup: the translation appears in the same popup, under the buttons, as it is written. **Copy** copies it; the language under it translates this selection into another language without changing your setting; Esc, a click elsewhere or a new selection closes it, as always. In the settings (the **Translate** card, also in Zotero's Settings pane) you can hide the button, choose the language (by default Zotero's own), and the model: **Fastest available** picks the model your agent itself describes as fast (Claude's Haiku, Codex's Luna; for pi, your chat model), or choose any of the agent's models.
+Select a word, a sentence or a paragraph in a PDF and press **Translate** in Zotero's selection popup: the translation appears in the same popup, under the buttons, as it is written. **Copy** copies it; the language under it translates this selection into another language without changing your setting; Esc, a click elsewhere or a new selection closes it, as always. In the settings (the **Translate** card, also in Zotero's Settings pane) you can hide the button, choose the language (by default Zotero's own), and the model: **Fastest available** picks the model your agent itself describes as fast (Claude's Haiku, Codex's Luna; for pi and OpenCode, your chat model), or choose any of the agent's models.
 
-It uses the agent you chat with, in a session of its own: it is told only to translate (and never to follow instructions found in the text), it gets no tools, none of your chats, and none of your agent's settings or skills; Codex runs read-only, and any request to use a tool is refused. The session starts when the selection popup appears (it costs no tokens until you press Translate) and stays ready for about five minutes, so with Claude a translation usually starts appearing within a second.
+It uses the agent you chat with, in a session of its own: it is told only to translate (and never to follow instructions found in the text), it gets no tools, none of your chats, and none of your agent's settings or skills; Codex runs read-only, OpenCode keeps only its read and search tools, inside an empty folder of its own, and any request to use a tool is refused. The session starts when the selection popup appears (it costs no tokens until you press Translate) and stays ready for about five minutes, so with Claude a translation usually starts appearing within a second.
 
 ## How full the chat is
 
@@ -171,13 +184,13 @@ Because the agent keeps the session itself, you can continue a chat from a termi
 cd '/Users/you/Documents/Zotero-Agent' && claude --resume <session id>
 ```
 
-Codex uses `codex resume <session id>` and pi uses `pi --session <session id>`. Two things to know: do not run the same chat in the panel and in a terminal at the same time, and what you add in the terminal does not show up in the panel's history list (the panel keeps its own copy of the conversation; the agent's context has it).
+Codex uses `codex resume <session id>`, pi uses `pi --session <session id>` and OpenCode uses `opencode --session <session id>`. Two things to know: do not run the same chat in the panel and in a terminal at the same time, and what you add in the terminal does not show up in the panel's history list (the panel keeps its own copy of the conversation; the agent's context has it).
 
 **The `papers` folder.** When you start writing about a PDF (the one open in the reader, or the one item selected in the library), the panel has Zotero extract its text into `papers/` in the default chat folder, one file per PDF, for example `papers/3QW3D95Y-callaway-2021.txt`, with a line like `[p.7]` where each page starts. The agent searches that file instead of fetching the paper page by page, and the context block names it once per chat. The text is made locally, from the PDF already on your disk, and nothing is sent anywhere by the panel; the agent reads from the file like any other file in its folder. A file is made again when its PDF changes, and files unused for 60 days, then the oldest beyond 200 MB, are deleted. If you chose a chat folder of your own, nothing is written into it: the files go into your Zotero profile, under `zotero-chat/papers/`.
 
 ## Privacy
 
-The plugin has no server and sends nothing itself. What leaves your machine is whatever the agent you chose sends to its own provider: your messages, the context block the panel adds to them (the open item, page and selection, and the paper's metadata: authors, venue, DOI, abstract, tags, collections), and anything the agent reads or fetches while working, such as PDF text. The panel's chat history is stored locally in your Zotero profile, under `zotero-chat/sessions/`. The agent keeps its own record of each session as well (for Claude Code under `~/.claude/projects`, for Codex under `~/.codex/sessions`, for pi under `~/.pi/agent/sessions`); that is what makes terminal resume work, and it follows that agent's own settings and retention. Translate sends the selected text (up to 6,000 characters) to the same provider; Claude and pi keep no record of those sessions, Codex keeps its usual one.
+The plugin has no server and sends nothing itself. What leaves your machine is whatever the agent you chose sends to its own provider: your messages, the context block the panel adds to them (the open item, page and selection, and the paper's metadata: authors, venue, DOI, abstract, tags, collections), and anything the agent reads or fetches while working, such as PDF text. The panel's chat history is stored locally in your Zotero profile, under `zotero-chat/sessions/`. The agent keeps its own record of each session as well (for Claude Code under `~/.claude/projects`, for Codex under `~/.codex/sessions`, for pi under `~/.pi/agent/sessions`, for OpenCode in its database under `~/.local/share/opencode`); that is what makes terminal resume work, and it follows that agent's own settings and retention. Translate sends the selected text (up to 6,000 characters) to the same provider; Claude and pi keep no record of those sessions, Codex and OpenCode keep their usual one.
 
 ## Troubleshooting
 
@@ -185,6 +198,7 @@ The plugin has no server and sends nothing itself. What leaves your machine is w
 - **The panel reports that writes are not authorized.** Run `zotero-mcp authorize-local` and choose "Always Allow". Zotero 9 and older cannot take local writes; see [Local library limitations](troubleshooting.md#local-library-limitations).
 - **`zotero-cli` or `node` is reported missing although your terminal has it.** Zotero started from the Dock or Start menu has a short PATH. The plugin looks them up through your login shell; if yours does not put them on PATH (check `$SHELL -lc 'command -v node'`), fix that in your shell profile and restart Zotero.
 - **A chat answers with nothing, or the panel says the agent finished without answering.** The model or its reasoning effort was probably refused (some servers reject a high reasoning level). Pick a lower effort or another model for that agent in the settings.
+- **An OpenCode answer never finishes.** When its provider refuses a request (for example "Free usage limit reached" on a free model), OpenCode logs the error but never ends the turn. Press Stop, then pick another model or add a provider with `opencode auth login`.
 - **The agent is not signed in.** Run `claude`, `codex` or `pi` once in a terminal and log in, or switch that agent to API-key mode.
 - **`zotero-cli plugin` says the xpi is not built.** You are running from a source checkout: build it as above, or download it from the release page.
 

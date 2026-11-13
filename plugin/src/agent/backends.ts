@@ -16,8 +16,23 @@
 //   pi-acp 0.0.34            configOptions: model (hundreds of "provider/model") / thought_level;
 //                            `modes` are pi's thinking levels, NOT permissions (ignored here);
 //                            session/set_config_option works. No permission frames at all.
+//   opencode 1.19.5          no bridge: the CLI speaks ACP itself (`opencode acp`; it also opens an HTTP server for its own
+//                            use on a free 127.0.0.1 port). configOptions only, no `models`/`modes` blocks: model (category
+//                            model, "provider/model" ids; with no provider set up, OpenCode Zen's free models, default
+//                            "opencode/big-pickle") / mode (build, plan: OpenCode's agents) / effort (category
+//                            thought_level, only for a model with variants, e.g. low/medium/high/max plus "default").
+//                            session/set_config_option, session/set_model and session/set_mode all work; session/load
+//                            replays the history (loadSession: true). No permission frames: build edits and runs commands
+//                            as OpenCode's own permission config says (by default without asking), plan cannot edit.
+//                            Its /compact works but is not advertised (available_commands: init, review, ...), so it is
+//                            not offered here. Reads AGENTS.md and both .agents/skills and .claude/skills. A provider
+//                            error (e.g. Zen's "Free usage limit reached") is only logged: session/prompt never answers,
+//                            and Stop (session/cancel) is the way out. Measured 2026-11-12 with no account (Zen's free
+//                            models): handshake, chat, session/load, the zotero-cli skill and a locked Translate session,
+//                            through this runtime. Not measured: paid providers' model lists and effort names, Windows.
 import type { BackendId, BuiltinBackendId, Spawner } from "../types.ts";
-import { findBinary } from "./env.ts";
+import { dirnameOf, findBinary } from "./env.ts";
+import { shimTarget } from "./windows.ts";
 import { t } from "../i18n.ts";
 import type { Key } from "../i18n.ts";
 
@@ -50,6 +65,16 @@ export interface BridgeSpec extends BackendSpec {
   resume: (sessionId: string) => string;
 }
 
+/** A CLI that is itself an ACP agent (`opencode acp`): no bridge to install, no Node needed. */
+export interface NativeSpec extends BackendSpec {
+  cli: { name: string; hint: Key };
+  /** The arguments that make the CLI serve ACP over stdio. */
+  acpArgs: string[];
+  resume: (sessionId: string) => string;
+}
+
+export const isNative = (spec: BackendSpec): spec is NativeSpec => "acpArgs" in spec;
+
 // An unmeasured endpoint: prefer the wire IDs in ACP's models block, falling back to config options.
 // Only advertised choices are shown; no vendor login probe, compaction claim or terminal resume command.
 const CUSTOM: BackendSpec = {
@@ -57,7 +82,10 @@ const CUSTOM: BackendSpec = {
   apiKeyVars: [], permissionModes: true, briefVia: "first-prompt", claudeMeta: false, compacts: false,
 };
 
-export const BACKENDS: Record<BuiltinBackendId, BridgeSpec> = {
+/** The backends run through an npm bridge; OpenCode is its own ACP agent. */
+export type BridgedBackendId = Exclude<BuiltinBackendId, "opencode">;
+
+export const BACKENDS: Record<BridgedBackendId, BridgeSpec> & Record<"opencode", NativeSpec> = {
   "claude-code": {
     id: "claude-code",
     label: "Claude Code",
@@ -103,9 +131,24 @@ export const BACKENDS: Record<BuiltinBackendId, BridgeSpec> = {
     compacts: false,
     resume: (id) => `pi --session ${id}`,
   },
+  opencode: {
+    id: "opencode",
+    label: "OpenCode",
+    acpArgs: ["acp"],
+    cli: { name: "opencode", hint: "agent.install.opencode" },
+    modelVia: "config_option",
+    effortVia: "config_option",
+    // OpenCode runs on whatever providers the user set up in it (or Zen's free models): no key of ours to strip.
+    apiKeyVars: [],
+    permissionModes: true,
+    briefVia: "first-prompt",
+    claudeMeta: false,
+    compacts: false,
+    resume: (id) => `opencode --session ${id}`,
+  },
 };
 
-export const BACKEND_IDS: BuiltinBackendId[] = ["claude-code", "codex", "pi"];
+export const BACKEND_IDS: BuiltinBackendId[] = ["claude-code", "codex", "pi", "opencode"];
 
 export function backendOf(id: BackendId): BackendSpec {
   if (id === "custom") return CUSTOM;
@@ -125,7 +168,11 @@ interface LoginProbe {
   configError?: boolean;
 }
 
-/** `claude auth status` prints JSON; `codex login status` prints a sentence. pi has no login of its own. */
+/**
+ * `claude auth status` prints JSON; `codex login status` prints a sentence. pi has no login of its own, and neither does
+ * OpenCode in a sense that matters here: `opencode auth list` counts stored credentials, but with none it still chats on
+ * OpenCode Zen's free models (and keys in the environment count too), so no answer of it means "signed out".
+ */
 export async function probeLogin(spawner: Spawner, env: Record<string, string>, id: BackendId, cliPath: string, cliArgs: string[] = []): Promise<LoginProbe> {
   try {
     if (id === "claude-code") {
@@ -162,6 +209,25 @@ export async function findCli(spawner: Spawner, env: Record<string, string>, spe
   if (!spec.cli) return null;
   const home = env["HOME"];
   return findBinary(spawner, env, spec.cli.name, spec.id === "claude-code" && home ? [`${home}/.local/bin`] : []);
+}
+
+/** The ACP bridge spawns the override directly, so it cannot use a Windows batch file. */
+export async function findClaudeExecutable(spawner: Spawner, env: Record<string, string>, node: string): Promise<string | null> {
+  const cli = await findCli(spawner, env, BACKENDS["claude-code"]);
+  if (!cli || !spawner.windows || !/\.(cmd|bat)$/i.test(cli)) return cli;
+
+  try {
+    const opts = { env, timeoutMs: 10_000 };
+    const shim = await spawner.run(node, ["-e", 'process.stdout.write(require("fs").readFileSync(process.argv[1], "utf8"))', cli], opts);
+    const target = shim.code === 0 ? shimTarget(shim.stdout) : null;
+    if (!target || !/\.exe$/i.test(target)) return null;
+    const file = `${dirnameOf(cli)}\\${target}`;
+    const check = await spawner.run(node, ["-e", 'process.exit(require("fs").statSync(process.argv[1], {throwIfNoEntry:false})?.isFile() ? 0 : 1)', file], opts);
+    return check.code === 0 ? file : null;
+  } catch {
+    // The bridge can use its bundled CLI if this shim cannot be resolved.
+    return null;
+  }
 }
 
 /** `cd "<folder>" && <resume command>`: what to paste in a terminal to continue a chat started in the panel. */

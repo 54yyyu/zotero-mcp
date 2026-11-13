@@ -22,7 +22,7 @@ async function main(ctx) {
   await ctx.snapshot("welcome-2-checked");
 
   // the agent cards: the three built-ins and the user-configured one (#813), one chosen, choosing another is saved
-  check($$(".wcard").length === 4 && $$(".wcard[aria-checked=true]").length === 1, "four cards, one chosen");
+  check($$(".wcard").length === 5 && $$(".wcard[aria-checked=true]").length === 1, "five cards, one chosen");
   const before = host.getSettings().backend;
   const other = $$(".wcard").find((c) => c.getAttribute("aria-checked") === "false");
   other.click();
