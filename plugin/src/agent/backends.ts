@@ -56,6 +56,13 @@ export interface BackendSpec {
   claudeMeta: boolean;
   /** Its advertised `/compact` was verified live (summarises on demand, the chat goes on): Claude, and Codex (2026-10-05, test/live/skills.live.ts). pi-acp lists one too, but reported no summary. */
   compacts: boolean;
+  /**
+   * Measured: this backend never pushes a titled `session_info_update`, but serves LLM-generated titles on
+   * `session/list` (opencode v2.2.7, probed 2026-11-13). The pull after a turn's end adopts the live session's
+   * title unless it matches `placeholder` — the backend's own name for a session that never got one
+   * (opencode: "New session - <ISO timestamp>").
+   */
+  titlesViaList?: { placeholder?: RegExp };
 }
 
 export interface BridgeSpec extends BackendSpec {
@@ -144,6 +151,7 @@ export const BACKENDS: Record<BridgedBackendId, BridgeSpec> & Record<"opencode",
     briefVia: "first-prompt",
     claudeMeta: false,
     compacts: false,
+    titlesViaList: { placeholder: /^New session - / },
     resume: (id) => `opencode --session ${id}`,
   },
 };

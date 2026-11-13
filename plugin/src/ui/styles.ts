@@ -120,7 +120,11 @@ const BASE = `
 /* Same height and icon size as the reader's toolbar beside it (Zotero's reader.css: 41px bar, 28px buttons, 20px icons). */
 .zmc .hd { flex: none; display: flex; align-items: center; gap: var(--s1); box-sizing: border-box; height: 41px; padding: 0 var(--s2); border-bottom: 1px solid var(--rule); }
 .zmc .hd .iconbtn svg { width: 20px; height: 20px; stroke-width: 1; } /* 1.25px lines at 20px, like Zotero's 20px icons (our grid is 16) */
-.zmc .hd__fill { flex: 1; min-width: var(--s1); }
+.zmc .hd__fill { flex: 1; min-width: var(--s1); display: flex; align-items: center; }
+/* The chat's name, clickable to rename it (chat.ts: a user rename locks out every automatic source). */
+.zmc .hd__title { flex: 1; min-width: 0; padding: 2px var(--s2); border: 0; border-radius: var(--r1); background: none; color: var(--ink); font-size: var(--fs-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.zmc .hd__title:hover, .zmc .hd__title:focus-visible { background: var(--tint-hover); }
+.zmc .hd__title-input { flex: 1; min-width: 0; height: 28px; }
 .zmc .stat { display: inline-flex; align-items: center; gap: var(--s2); min-width: 0; max-width: 62%; height: var(--h-sm); padding: 0 var(--s3) 0 10px; border: 1px solid var(--rule); border-radius: var(--pill); background: var(--paper-raised); color: var(--ink-muted); font-size: var(--fs-2); transition: color var(--ease), border-color var(--ease); }
 .zmc .stat:hover, .zmc .stat[aria-pressed="true"] { color: var(--ink); border-color: var(--rule-strong); }
 .zmc .stat__t { min-width: 0; }
@@ -316,8 +320,10 @@ const BASE = `
 .zmc .hist__note { display: flex; gap: var(--s2); margin: var(--s1) 0 0; font-size: var(--fs-2); color: var(--ink-muted); line-height: 1.5; } .zmc .hist__note svg { width: 14px; height: 14px; margin-top: 2px; }
 .zmc .hrow__t { color: var(--ink); }
 .zmc .hrow__m { font-size: var(--fs-1); color: var(--ink-muted); }
-.zmc .hrow__del { opacity: 0; } .zmc :is(.hrow:hover, .hrow:focus-within) .hrow__del, .zmc .hrow__del:focus-visible { opacity: 1; }
-@media (hover: none) { .zmc .hrow__del { opacity: 0.7; } }
+.zmc :is(.hrow__del, .hrow__ren) { opacity: 0; } .zmc :is(.hrow:hover, .hrow:focus-within) :is(.hrow__del, .hrow__ren), .zmc :is(.hrow__del, .hrow__ren):focus-visible { opacity: 1; }
+@media (hover: none) { .zmc :is(.hrow__del, .hrow__ren) { opacity: 0.7; } }
+.zmc .hrow--editing { gap: var(--s1); padding: var(--s1) var(--s2); }
+.zmc .hrow__edit { flex: 1; min-width: 0; height: var(--h-sm); }
 .zmc .hrow--confirm { padding: var(--s2); gap: var(--s2); background: color-mix(in srgb, var(--danger) 8%, transparent); }
 .zmc .hrow__q { flex: 1; }
 .zmc .vempty { display: flex; flex-direction: column; align-items: center; gap: var(--s1); padding: 48px var(--s4); text-align: center; color: var(--ink-muted); }
@@ -355,6 +361,8 @@ const BASE = `
 .zmc .select::after { content: ""; position: absolute; right: var(--s3); top: 50%; width: 6px; height: 6px; margin-top: -5px; border-right: 1.5px solid var(--ink-muted); border-bottom: 1.5px solid var(--ink-muted); transform: rotate(45deg); pointer-events: none; }
 .zmc .swrow { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); min-height: var(--h-row); padding: var(--s2) 0; cursor: pointer; }
 .zmc .swrow + .swrow { border-top: 1px solid var(--rule); }
+/* A field group that follows the switches (the title-source dropdown) gets the same divider above it. */
+.zmc .swrow + .fields { margin-top: 0; padding-top: var(--s3); border-top: 1px solid var(--rule); }
 .zmc .swrow__tx { display: flex; flex-direction: column; min-width: 0; }
 .zmc .swrow__d { font-size: var(--fs-2); color: var(--ink-muted); line-height: 1.4; }
 .zmc .switch { position: relative; flex: none; width: 32px; height: 20px; }

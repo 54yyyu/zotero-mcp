@@ -225,6 +225,14 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
         flag("expandTools", t("settings.chat.tools"), t("settings.chat.toolsHint")),
         flag("showUsage", t("settings.chat.usage"), t("settings.chat.usageHint")),
         flag("openAtStart", t("settings.chat.openAtStart"), ""),
+        h("div.fields", null,
+          selectField(t("settings.chat.titleSource"), [
+            { id: "agent", label: t("settings.chat.titleAgent") },
+            { id: "paper", label: t("settings.chat.titlePaper") },
+            { id: "question", label: t("settings.chat.titleQuestion") },
+          ], s.titleSource, (id) => void save({ titleSource: id as PanelSettings["titleSource"] })),
+          hint(t("settings.chat.titleSourceHint")),
+        ),
       ),
       translate(s), skills(), folder(s), data(), about(s),
       h("div.set__saved", { role: "status", "aria-live": "polite" }, h("span", null, saved)));

@@ -152,6 +152,21 @@ async function handle(msg) {
       return;
     }
 
+    case "session/list": {
+      // OpenCode-style: titles are served only here, never pushed — a timestamped placeholder until the
+      // session's first turn has run, an LLM-style summary after it. The panel pulls this only for backends
+      // whose spec says titlesViaList (opencode), so the other variants are never asked.
+      reply({
+        sessions: [...sessions].map(([sid, s]) => ({
+          sessionId: sid,
+          cwd: s.cwd ?? "/",
+          title: s.titled ? "Mock agent's summary of the chat" : "New session - 2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-01T00:00:00.000Z",
+        })),
+      });
+      return;
+    }
+
     case "session/load": {
       const sid = params?.sessionId;
       if (!sid || String(sid).startsWith("missing")) return fail(-32002, "Resource not found: session " + sid);
@@ -231,7 +246,7 @@ async function prompt(id, params) {
   const chunk = (t) => update(sid, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: t } });
   // Context fill, as all three real bridges report it before the prompt resolves: a usage_update with used/size.
   const end = (stopReason = "end_turn") => {
-    if (s) { s.used = (s.used ?? 0) + 1000 + Math.ceil(text.length / 4); update(sid, { sessionUpdate: "usage_update", used: s.used, size: 200000 }); }
+    if (s) { s.used = (s.used ?? 0) + 1000 + Math.ceil(text.length / 4); s.titled = true; update(sid, { sessionUpdate: "usage_update", used: s.used, size: 200000 }); }
     send({ id, result: { stopReason, usage: { inputTokens: 10, outputTokens: 5, totalTokens: 15 } } });
   };
   cancelled.delete(sid);
@@ -243,6 +258,10 @@ async function prompt(id, params) {
 
   if (text.includes("SCENARIO:error")) return send({ id, error: { code: -32603, message: "mock internal error" } });
   if (text.includes("SCENARIO:autherror")) return send({ id, error: { code: -32000, message: "Authentication required" } });
+  // The agent names the session as claude-agent-acp does after the first exchange: a session_info_update mid-turn.
+  if (text.includes("SCENARIO:title")) update(sid, { sessionUpdate: "session_info_update", title: "Mock agent's summary title" });
+  // The protocol's "clear" (null): the panel must keep the fallback title, not blank it.
+  if (text.includes("SCENARIO:cleartitle")) update(sid, { sessionUpdate: "session_info_update", title: null });
   if (text.includes("SCENARIO:crash")) {
     chunk("about to ");
     await sleep(20);

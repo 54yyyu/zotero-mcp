@@ -70,6 +70,14 @@ describe("session basics", () => {
     assert.ok(events.every((e) => !("turn" in e) || e.turn === turn), "every event of a turn carries its id");
   });
 
+  it("session_info_update becomes one session_title event; the protocol's null (clear) is dropped", async () => {
+    const { session } = await start();
+    const { events } = collect(session);
+    await session.prompt({ text: "SCENARIO:title SCENARIO:cleartitle" });
+    assert.deepEqual(ofType(events, "session_title").map((e) => e.title), ["Mock agent's summary title"], "an empty title must not blank the chat's fallback name");
+    assert.ok(ofType(events, "turn_end").length === 1, "the turn itself is unaffected");
+  });
+
   it("compact() sends the bridge's /compact as a silent turn: one notice with the new fill, no turn, no warning", async () => {
     const { session } = await start();
     assert.equal(session.canCompact, true, "claude-agent-acp advertises compact and its /compact was verified live");
