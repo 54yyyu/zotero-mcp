@@ -690,7 +690,7 @@ def test_a_copy_that_fails_without_text_is_counted_for_the_next_run(env, home, m
     monkeypatch.setattr(
         Client,
         "read_copy_sources",
-        lambda self, keys, passages, vectors=True: original(self, keys, passages, vectors) if not vectors else {},
+        lambda self, keys, passages, vectors=True, **kw: original(self, keys, passages, vectors, **kw) if not vectors else {},
     )
 
     reader.items.append(Item("ITEM0002", 2))

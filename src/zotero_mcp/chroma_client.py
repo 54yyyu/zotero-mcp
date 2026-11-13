@@ -771,16 +771,17 @@ class ChromaClient:
         return {value: sorted(keys) for value, keys in found.items()}
 
     def read_copy_sources(
-        self, keys: list[str], passages: bool, vectors: bool = True
+        self, keys: list[str], passages: bool, vectors: bool = True, documents: bool = True
     ) -> dict[str, dict[str, Any]]:
         """What copying attachment records needs, per key that has an article record.
 
         ``{key: {"article": {"document", "embedding", "metadata"},
         "passages": [{"id", "document", "embedding", "metadata"}, ...]}}``
         (``passages`` only when asked for). ``vectors=False`` leaves the
-        embeddings out, for a check that only needs to know what is there.
+        embeddings out, and ``documents=False`` the text (``None``), for a check
+        that only needs to know what is there.
         """
-        include = ["documents", "metadatas"] + (["embeddings"] if vectors else [])
+        include = (["documents"] if documents else []) + ["metadatas"] + (["embeddings"] if vectors else [])
 
         def rows(result: dict[str, Any]):
             embeddings = result.get("embeddings")
@@ -790,7 +791,7 @@ class ChromaClient:
                     embedding = [float(x) for x in embeddings[i]]
                 yield {
                     "id": doc_id,
-                    "document": (result.get("documents") or [None] * (i + 1))[i],
+                    "document": (result.get("documents") or [None] * (i + 1))[i] if documents else None,
                     "embedding": embedding,
                     "metadata": (result.get("metadatas") or [{}] * (i + 1))[i] or {},
                 }

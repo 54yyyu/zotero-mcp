@@ -427,6 +427,17 @@ def test_a_scan_reads_the_failure_markers_once_not_per_file(env, monkeypatch):
     assert len(loads) == 1
 
 
+def test_the_hashing_pass_reports_its_progress(env, monkeypatch, capsys):
+    monkeypatch.setattr(semantic_search, "_SCAN_SLICE", 2)
+    items = [Item(f"ITEM{n:04d}", n) for n in range(5)]
+    reader = LibReader(items, targets={n: [target(f"PDF{n:05d}")] for n in range(5)})
+
+    env(reader)
+
+    err = capsys.readouterr().err
+    assert "Hashing files: 0/5" in err and "Hashing files: 5/5" in err
+
+
 def test_a_forced_rebuild_tries_a_failed_file_again(env):
     reader = _library(texts={"PDFAAAAA": None})
     env(reader)

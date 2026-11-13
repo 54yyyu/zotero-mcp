@@ -142,11 +142,11 @@ def test_an_automatic_update_leaves_legacy_passages_where_they_are(env, zotero):
 
 
 def test_an_item_whose_passages_were_dropped_is_written_again_by_the_next_update(env, zotero):  # noqa: F811
-    # Two PDFs now: which one the old text came from cannot be told.
+    # A second PDF was attached since the passages were written: which one the old text came from cannot be told.
     reader = LibReader([Item("ITEM0001", 1)], targets={1: [target("PDFAAAAA"), target("PDFBBBBB")]})
     zotero(reader)
     search, _ = env(reader, update=False)
-    _seed_legacy(search, att_keys="PDFAAAAA,PDFBBBBB")
+    _seed_legacy(search, att_keys="PDFAAAAA")
 
     search, stats = env(reader)
 

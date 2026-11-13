@@ -24,6 +24,12 @@ LIVE_FIELDS = frozenset(
 #: depends on which records were hit, so it is known only at hit time.
 OWNER_FIELDS = LIVE_FIELDS - {"has_fulltext"}
 
+#: Copied into legacy records only; a filter on one would silently match nothing but them.
+LEGACY_ONLY_FIELDS = frozenset(
+    {"date", "date_added", "creators", "url", "parent_item_key", "fulltext_source", "attachment_keys",
+     "attachment_priority"}
+)
+
 _MISSING = object()
 
 
@@ -75,6 +81,13 @@ def split_filters(where: dict[str, Any] | None) -> tuple[dict[str, Any] | None, 
     """
     if not where:
         return None, None
+    unsupported = referenced_fields(where) & LEGACY_ONLY_FIELDS
+    if unsupported:
+        supported = ", ".join(sorted(CHROMA_FIELDS | LIVE_FIELDS))
+        raise ValueError(
+            f"Cannot filter on {', '.join(sorted(unsupported))}: records written by current versions do not "
+            f"store it, so the filter would match only records from earlier versions. Supported fields: {supported}."
+        )
     chroma: list[dict[str, Any]] = []
     live: list[dict[str, Any]] = []
     for clause in _conjuncts(where):

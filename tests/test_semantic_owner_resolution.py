@@ -339,6 +339,12 @@ def test_split_filters_routes_stored_fields_to_chroma_and_bibliographic_ones_liv
     assert live == {"item_type": "book"}
 
 
+@pytest.mark.parametrize("field", ["date", "creators", "url"])
+def test_split_filters_rejects_fields_only_legacy_records_carry(field):
+    with pytest.raises(ValueError, match=f"{field}.*Supported fields:.*item_type"):
+        split_filters({"$and": [{"item_type": "book"}, {field: "x"}]})
+
+
 def test_split_filters_single_side():
     assert split_filters({"tags": "x"}) == (None, {"tags": "x"})
     assert split_filters({"page": {"$gte": 3}}) == ({"page": {"$gte": 3}}, None)
@@ -346,7 +352,7 @@ def test_split_filters_single_side():
 
 
 def test_split_filters_keeps_unknown_fields_on_the_chroma_side():
-    assert split_filters({"date": "2020"}) == ({"date": "2020"}, None)
+    assert split_filters({"file_stamp": "1:1"}) == ({"file_stamp": "1:1"}, None)
 
 
 def test_split_filters_mixed_or_is_evaluated_live_whole():
@@ -589,6 +595,32 @@ def test_web_post_filter_requeries_up_to_three_rounds(monkeypatch, tmp_path):
     assert sizes[1] == sizes[0] * 4 and sizes[2] == sizes[1] * 4
     assert _keys(out) == ["PARKEEP1"]
     assert "1" in out["filter_note"]
+
+
+def test_unfiltered_search_asks_again_when_one_owner_crowds_out_the_rest(monkeypatch, tmp_path):
+    """Twelve passages of one paper fill the first fetch; the second paper comes in the next."""
+    hits = [_hit(f"ATTA0001#{n}", item_key="ATTA0001") for n in range(12)]
+    hits += [_hit("ATTB0001#0", item_key="ATTB0001")]
+    zot = [_regular("PARA0001"), _attachment("ATTA0001", "PARA0001"), _regular("PARB0001"), _attachment("ATTB0001", "PARB0001")]
+    s, _ = _search(monkeypatch, tmp_path, hits, zot)
+
+    out = s.search("q", limit=2)
+
+    assert _keys(out) == ["PARA0001", "PARB0001"]
+    sizes = [c["n_results"] for c in s.chroma_client.calls]
+    assert sizes == [8, 32]
+    assert out["filter_note"] is None, "nothing was filtered"
+
+
+def test_unfiltered_search_stops_when_the_index_is_exhausted(monkeypatch, tmp_path):
+    hits = [_hit("ATTA0001#0", item_key="ATTA0001")]
+    zot = [_regular("PARA0001"), _attachment("ATTA0001", "PARA0001")]
+    s, _ = _search(monkeypatch, tmp_path, hits, zot)
+
+    out = s.search("q", limit=2)
+
+    assert _keys(out) == ["PARA0001"]
+    assert len(s.chroma_client.calls) == 1
 
 
 class _RecordingReranker:

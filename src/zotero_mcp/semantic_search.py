@@ -2561,6 +2561,8 @@ class ZoteroSemanticSearch:
             """Load the stored state of ``keys`` (and first passages of those that have any)."""
             ids = list(keys)
             ids += [f"{k}#0" for k in keys if passage_keys is None or k in passage_keys]
+            # Only this slice's state is kept: the whole library's would grow with it.
+            prefetched.clear()
             batched = getattr(chroma_client, "get_metadatas", None)
             if batched is not None:
                 prefetched.update(batched(ids))
@@ -2741,12 +2743,16 @@ class ZoteroSemanticSearch:
             files = list(pending.values())
             for start in range(0, len(files), _SCAN_SLICE):
                 part = files[start:start + _SCAN_SLICE]
+                # Hashing reads every byte of every new or changed file: say so.
+                _report(f"\r  Hashing files: {start}/{len(files)}{' ' * 40}")
                 with file_hash.batched(self.config_path):
                     for unit, target in part:
                         unit["file_hash"] = file_hash.get_file_hash(
                             target.key, target.path, target.file_stamp, config_path=self.config_path
                         )
                 self._mark_reusable([unit for unit, _target in part], look_in_index=check)
+            if files:
+                _report(f"\r  Hashing files: {len(files)}/{len(files)}{' ' * 40}")
             to_extract = [
                 target for unit, target in files if not unit.get("reuse_from") and not unit.get("refresh_only")
             ]
@@ -3879,6 +3885,10 @@ class ZoteroSemanticSearch:
             return 0
         present = sorted(self._existing_item_keys(sorted(keys)))
         group_id = int(self._run_group_id) if getattr(self, "_run_group_id", None) is not None else None
+        if group_id is not None and present:
+            # Only this library's records: a key another library also holds is not ours to delete.
+            stored = self.chroma_client.get_metadatas(present)
+            present = [key for key in present if stored.get(key, {}).get("group_id", group_id) == group_id]
         for key in present:
             self.chroma_client.delete_item_chunks(key, group_id=group_id)
         if present:
@@ -4410,7 +4420,7 @@ class ZoteroSemanticSearch:
             keys = sorted({key for sources in found.values() for key in sources})
             usable = set(keys)
             if want_passages and keys:
-                read = self.chroma_client.read_copy_sources(keys, passages=True, vectors=False)
+                read = self.chroma_client.read_copy_sources(keys, passages=True, vectors=False, documents=False)
                 usable = {key for key in keys if key in read and _complete_passages(read[key].get("passages"))}
         except Exception as e:
             logger.warning(f"Could not look up identical files in the index ({e}); embedding them normally.")
@@ -6959,7 +6969,11 @@ class ZoteroSemanticSearch:
             # A post-filter can discard most candidates, so it may ask again
             # for more; a pre-filtered query already holds only matches.
             post_filter = bool(live_where) and prefilter_keys is None
-            rounds = FILTER_QUERY_ROUNDS if post_filter else 1
+            # A query that returned all it was asked for yet collapsed to fewer
+            # than `limit` owners (one paper's passages crowding the rest out)
+            # asks again too, in the same bounded way.
+            rounds = FILTER_QUERY_ROUNDS
+            use_post_rounds = post_filter
             # Post-filtering re-ranks only the hits that passed the filter, at
             # most this many: the candidate set grows ×4 a round, and hosted
             # re-rankers cap and bill per document.
@@ -6971,14 +6985,18 @@ class ZoteroSemanticSearch:
             candidates = 0
             if prefilter_keys is None or prefilter_keys:
                 for _ in range(rounds):
-                    if not post_filter:
+                    if not use_post_rounds:
                         results, rerank_info, load_note, candidates = self._query_candidates(
                             query, fetch_limit, where, search_level, reranker
                         )
                         # Enrich results with full Zotero item data, collapsing
                         # hits to their owners and capping at `limit` owners.
                         enriched_results = self._enrich_search_results(results, query, limit)
-                        break
+                        if len(enriched_results) >= limit or candidates < fetch_limit:
+                            break
+                        fetch_limit *= 4
+                        use_post_rounds = True
+                        continue
                     results, _, load_note, candidates = self._query_candidates(
                         query, fetch_limit, where, search_level, None
                     )
@@ -6999,7 +7017,7 @@ class ZoteroSemanticSearch:
                     fetch_limit *= 4
 
             filter_note = None
-            if rounds > 1 and len(enriched_results) < limit:
+            if post_filter and len(enriched_results) < limit:
                 found = len(enriched_results)
                 filter_note = (
                     f"Only {found} item{'' if found == 1 else 's'} matched the filters among the "
