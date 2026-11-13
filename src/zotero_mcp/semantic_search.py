@@ -95,7 +95,6 @@ _ITEMKEY_BATCH = 50
 _LOCAL_KEY_BATCH = 500
 # Items whose stored state a local scan reads ahead in one batched lookup.
 _SCAN_SLICE = 500
-_UNSET: Any = object()
 
 
 def _count_items(count: int) -> str:
@@ -1568,9 +1567,10 @@ class ZoteroSemanticSearch:
     _held_text: _HeldText | None = None
     # Items whose old passages could not be deleted in the article pass, set per run.
     _undropped_passages: set[str] = frozenset()
-    # Legacy items this run rewrites in the item-keyed shape (#826): their
-    # parent-keyed passages go once the new bibliographic record is in.
-    _legacy_rewrites: set[str] = frozenset()
+    # Items whose legacy (parent-keyed) passages wait for their replacements,
+    # {item key: {"group_id", "wanted": [attachment keys]}} (#826). Set per run;
+    # see _settle_legacy_passages.
+    _legacy_settle: dict[str, dict[str, Any]] | None = None
     # hash -> key of the first file with those bytes this run writes; later
     # files with the same bytes copy from it (#495). Reset per run.
     _run_hash_first: dict[str, str] | None = None
@@ -2541,9 +2541,6 @@ class ZoteroSemanticSearch:
         planned: list[tuple[dict[str, Any], Any]] = []
         up_to_date = 0
         skipped_failed: list[str] = []
-        # Legacy items being rewritten, with the files their passages must be
-        # replaced by before the old ones may go.
-        legacy_rewrites: list[tuple[dict[str, Any], list[str]]] = []
         # Targets whose record is current and only lacks a level: a failed
         # extraction of one must not drop what is already paid for.
         current_keys: set[str] = set()
@@ -2551,11 +2548,19 @@ class ZoteroSemanticSearch:
         # (#368), instead of two or three single gets per item.
         prefetched: dict[str, dict[str, Any]] = {}
         passage_keys: set[str] | None = None
+        # Items with legacy passages left beside (or without) a bare record:
+        # they wait for the item's files to be written (#826).
+        pending_legacy: set[str] = set()
         if check:
             try:
                 passage_keys = chroma_client.item_keys_by_level()[1]
             except Exception:
                 passage_keys = None  # unknown: probe every key's first passage
+            try:
+                pending_legacy = set(chroma_client.legacy_passage_keys())
+            except Exception:
+                pass
+        self._legacy_settle = None
 
         def prefetch(keys: list[str]) -> None:
             """Load the stored state of ``keys`` (and first passages of those that have any)."""
@@ -2672,10 +2677,11 @@ class ZoteroSemanticSearch:
                 desired.update(selected_keys(it))
 
                 existing = stored_of(it.key) if check else None
-                legacy = (
-                    self._legacy_metadata(it.key, existing, passage=prefetched.get(f"{it.key}#0"))
-                    if existing else None
-                )
+                legacy = self._legacy_metadata(it.key, existing) if existing else None
+                if it.key in pending_legacy:
+                    # Its legacy passages stay until every file it selects is
+                    # written, in this run or a later one.
+                    self._expect_replacement(it.key, group_id, selected_keys(it))
                 rewrite = False
                 if legacy is not None:
                     gap = self._scan_gaps.get(it.key)
@@ -2687,7 +2693,6 @@ class ZoteroSemanticSearch:
                     lacks_passages = gap == {SEARCH_PASSAGES} and legacy.get("has_fulltext") is True
                     if self._legacy_changed(legacy, it, att_keys, priority_tag) or lacks_passages:
                         bib["legacy_rewrite"] = rewrite = True
-                        legacy_rewrites.append((bib, selected_keys(it)))
                     elif gap == {SEARCH_ARTICLES}:
                         # Only its article record is missing: write that, and
                         # leave its passages, which cost money, as they are.
@@ -2784,13 +2789,6 @@ class ZoteroSemanticSearch:
             unit for unit, target in planned
             if target is None or unit["text"] or unit.get("reuse_from") or unit.get("refresh_only")
         ]
-        # A legacy item's passages go only once every file its text now comes
-        # from is written. A file out of reach, or one that yielded no text,
-        # leaves them as the only copy of what was paid for.
-        written = {unit["key"] for unit in units}
-        for bib, wanted in legacy_rewrites:
-            if not set(wanted) <= written:
-                bib["keep_legacy_passages"] = True
         try:
             sys.stderr.write(f"\r{' ' * _term_width(120)}\r")
             parts = [f"  Extraction complete: {len(units)} records to write"]
@@ -3256,32 +3254,21 @@ class ZoteroSemanticSearch:
         lookup = getattr(self.chroma_client, "get_document_metadata", None)
         return lookup(key) if lookup else None
 
-    def _legacy_metadata(
-        self,
-        key: str,
-        existing: dict[str, Any] | None = None,
-        *,
-        passage: dict[str, Any] | None | Any = _UNSET,
-    ) -> dict[str, Any] | None:
+    def _legacy_metadata(self, key: str, existing: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """The metadata of a record of ``key`` written before #826, or None.
 
-        A regular item is legacy while any of its records carries ``title``:
-        its bare record, or, beside a new bibliographic record written by an
-        article-level fill, its parent-keyed passages. ``existing`` is the
-        item's ``get_document_metadata`` result when the caller has it, and
-        ``passage`` the stored metadata of ``KEY#0`` (None when absent), so
-        a caller that read ahead spares the extra lookup.
+        A regular item's format is its bare record's: legacy while that record
+        carries ``title``. With no bare record, its first passage stands in (a
+        pre-0.17 chunked index has nothing else). Legacy passages beside a
+        new-shape bare record do not make the item legacy: they are what a
+        rewrite kept because a file was out of reach, and wait for their
+        replacement (``_settle_legacy_passages``). Judging the item by them
+        would rewrite, and so embed, its record on every run. ``existing`` is
+        the item's ``get_document_metadata`` result when the caller has it.
         """
         if existing is None:
             existing = self._stored_metadata(key)
-        if _is_legacy_record(existing):
-            return existing
-        if existing and "chunk_index" not in existing:
-            if passage is _UNSET:
-                passage = self._stored_metadata(f"{key}#0")
-            if _is_legacy_record(passage):
-                return passage
-        return None
+        return existing if _is_legacy_record(existing) else None
 
     @staticmethod
     def _unit_is_current(unit: dict[str, Any], existing: dict[str, Any] | None) -> bool:
@@ -3394,9 +3381,9 @@ class ZoteroSemanticSearch:
                 bib["legacy_rewrite"] = True
                 # Its passages go once the files its text comes from are
                 # written; with one unread, they are the only copy.
-                written = {unit["key"] for unit in (*fetched, *attachments)}
-                if not set(item.get("_api_selected") or ()) <= written:
-                    bib["keep_legacy_passages"] = True
+                self._expect_replacement(
+                    bib["key"], (bib.get("data") or {}).get("group_id"), list(item.get("_api_selected") or ())
+                )
                 units.append(bib)
                 units.extend(fetched)
                 units.extend(attachments)
@@ -3846,6 +3833,14 @@ class ZoteroSemanticSearch:
         standalone_units: list[dict[str, Any]] = []
         from . import file_hash
 
+        # Items whose legacy passages wait for their files' records.
+        pending_legacy: set[str] = set()
+        if not force_rebuild:
+            try:
+                pending_legacy = set(self.chroma_client.legacy_passage_keys())
+            except Exception:
+                pass
+
         stamps_seen: dict[str, str] | None = None
 
         def hashed_stamps() -> dict[str, str]:
@@ -3862,11 +3857,11 @@ class ZoteroSemanticSearch:
                 key = item["key"]
                 existing = None if force_rebuild else stored_of(key)
                 if existing:
-                    legacy = self._legacy_metadata(
-                        key, existing, passage=prefetched.get(f"{key}#0") if batched is not None else _UNSET
-                    )
+                    legacy = self._legacy_metadata(key, existing)
                     if legacy is not None and self._legacy_action(item, legacy) != "rewrite":
                         continue
+                if key in pending_legacy:
+                    self._expect_replacement(key, group_id, [self._row_key(row) for row in chosen])
                 label = (item.get("data") or {}).get("title", "")
                 units = [unit for row in chosen if (unit := build(row, key, label, locate))]
                 if units:
@@ -4619,9 +4614,6 @@ class ZoteroSemanticSearch:
                     # The import must not treat this as a rewrite of the item.
                     for record in item_records:
                         record["level_fill"] = True
-                if item.get("legacy_rewrite") and not item.get("keep_legacy_passages"):
-                    # The import drops the item's legacy passages once this lands.
-                    item_records[0]["legacy_rewrite"] = True
                 records.extend(item_records)
                 stats["processed"] += 1
 
@@ -4738,6 +4730,11 @@ class ZoteroSemanticSearch:
             manifest["reuse"] = reuse_entries
             module.save_manifest(manifest)
             stats["batch_reuse_entries"] = len(reuse_entries)
+        if self._legacy_settle:
+            # The import settles them once the records have landed, which may
+            # be several imports and processes later.
+            manifest["legacy_settle"] = self._legacy_settle
+            module.save_manifest(manifest)
         stats["batch_provider"] = provider
         stats["batch_submitted"] = True
         stats["batch_run_id"] = manifest["run_id"]
@@ -5402,10 +5399,6 @@ class ZoteroSemanticSearch:
             # From here on the run works on units: a bibliographic record per
             # regular item, an attachment record (and passages) per file (#826).
             all_items = self._plan_units(all_items, force_rebuild=force_full_rebuild)
-            self._legacy_rewrites = {
-                unit["key"] for unit in all_items
-                if unit.get("legacy_rewrite") and not unit.get("keep_legacy_passages")
-            }
 
             # Files with the bytes of one already indexed, or written earlier
             # in this run, are copied instead of embedded again (#495). The
@@ -5744,6 +5737,10 @@ class ZoteroSemanticSearch:
                 except Exception:
                     pass
 
+            # Every write of the run is in: old passages whose replacements are all
+            # stored can go now (#610).
+            self._settle_legacy_passages()
+
             # Clear the progress line and show summary
             try:
                 sys.stderr.write(f"\r{' ' * _term_width(120)}\r")  # Clear line
@@ -5811,7 +5808,7 @@ class ZoteroSemanticSearch:
             self._drop_passages_on_write = False
             self._scan_gaps = {}
             self._level_fill_keys = frozenset()
-            self._legacy_rewrites = frozenset()
+            self._legacy_settle = None
             self._scan_desired_keys = None
             self._run_hash_first = None
             self._api_outranked = frozenset()
@@ -6284,16 +6281,58 @@ class ZoteroSemanticSearch:
         }
         for item_key, n_chunks in counts.items():
             self.chroma_client.prune_item_chunks(item_key, n_chunks)
-        # A legacy item's passages were keyed by the item itself; its new
-        # bibliographic record has none, and its text now lives under its
-        # attachments. Dropped once that record is written, as above (#610).
-        legacy = {
-            m["item_key"]: m.get("group_id")
-            for m in metadatas
-            if "chunk_index" not in m and m.get("item_key") in self._legacy_rewrites
-        }
-        for item_key, group_id in legacy.items():
-            self.chroma_client.delete_item_chunks(item_key, group_id=group_id)
+
+    def _expect_replacement(self, item_key: str, group_id: int | None, wanted: list[str]) -> None:
+        """Note that ``item_key``'s legacy passages go once ``wanted``'s records are written (#826).
+
+        ``wanted`` is every attachment Zotero's database selects for the item,
+        whether or not its file is reachable. Settled at the end of the run
+        (``_settle_legacy_passages``).
+        """
+        if self._legacy_settle is None:
+            self._legacy_settle = {}
+        self._legacy_settle[item_key] = {"group_id": group_id, "wanted": sorted(wanted)}
+
+    def _replacement_written(self, item_key: str, wanted: list[str]) -> bool:
+        """Whether the item-keyed records that replace ``item_key``'s legacy passages are all stored.
+
+        Its bibliographic record in the new shape, and for each wanted
+        attachment its record and (with chunking) its first passage. Read from
+        the index, so an embed that failed, a copy that was lost or a file
+        that was out of reach all count as not written.
+        """
+        stored = self.chroma_client.get_metadatas([item_key, *wanted])
+        bib = stored.get(item_key)
+        if not bib or _is_legacy_record(bib) or "chunk_index" in bib:
+            return False
+        if any("file_stamp" not in (stored.get(key) or {}) for key in wanted):
+            return False
+        if wanted and self._chunking_enabled:
+            return self.chroma_client.get_existing_ids([f"{key}#0" for key in wanted]) >= {
+                f"{key}#0" for key in wanted
+            }
+        return True
+
+    def _settle_legacy_passages(self, settle: dict[str, dict[str, Any]] | None = None) -> None:
+        """Delete the legacy passages of items whose replacements are all written.
+
+        A rewritten legacy item's old parent-keyed passages are the only copy
+        of its text until every attachment it selects has its own records, so
+        they go only then, and only for the items whose attachments all landed.
+        One that failed, was held, or whose file is out of reach leaves them
+        searchable for the next run to try again (#610). Runs after the
+        writes, so a failed embed loses nothing. ``settle`` defaults to this
+        run's; the batch import passes the manifest's.
+        """
+        settle = self._legacy_settle if settle is None else settle
+        if not settle or not hasattr(self.chroma_client, "delete_item_chunks"):
+            return
+        for item_key, entry in settle.items():
+            try:
+                if self._replacement_written(item_key, entry.get("wanted") or []):
+                    self.chroma_client.delete_item_chunks(item_key, group_id=entry.get("group_id"))
+            except Exception as e:
+                logger.debug(f"Could not settle the legacy passages of {item_key}: {e}")
 
     def _process_item_batch(
         self,
@@ -6696,9 +6735,6 @@ class ZoteroSemanticSearch:
                     self._level_fill_keys = {
                         record_key(doc_id) for doc_id in ids if records[doc_id].get("level_fill")
                     }
-                    self._legacy_rewrites = {
-                        record_key(doc_id) for doc_id in ids if records[doc_id].get("legacy_rewrite")
-                    }
                     self._prune_stale_chunks(metadatas)
                     followed = [
                         doc_id for doc_id in ids if records[doc_id].get("passages_follow")
@@ -6737,6 +6773,7 @@ class ZoteroSemanticSearch:
 
             if not superseded_by:
                 self._import_reused(module, manifest, all_batches, stats)
+                self._settle_legacy_passages(manifest.get("legacy_settle") or {})
 
             if not selected_ids:
                 # Importing the completed batches freed enqueued-token headroom,
@@ -6773,7 +6810,6 @@ class ZoteroSemanticSearch:
         finally:
             self._drop_passages_on_write = False
             self._level_fill_keys = frozenset()
-            self._legacy_rewrites = frozenset()
             lock_cm.__exit__(None, None, None)
 
     def _import_reused(

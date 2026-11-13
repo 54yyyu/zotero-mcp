@@ -430,15 +430,65 @@ def test_a_changed_legacy_item_lands_in_the_item_keyed_shape(env, monkeypatch, t
         documents=["old"] * 4, metadatas=metas, ids=ids, embeddings=[[0.0, 1.0]] * 4
     )
 
-    search.update_database()
-    records = [r for path in tmp_path.glob("**/*-records.jsonl") for r in openai_batch.read_jsonl(path)]
-    assert [r["id"] for r in records if r.get("legacy_rewrite")] == ["AAA"]
+    stats = search.update_database()
+    # The legacy passages wait for the files' records; the import settles them.
+    manifest = json.loads(Path(stats["batch_manifest"]).read_text())
+    assert list(manifest["legacy_settle"]) == ["AAA"]
     _land(env, search)
 
     assert _ids(search) == {"AAA", "PAAA"}
     assert _passages(search) == {f"PAAA#{n}" for n in range(5)}
     stored = search.chroma_client.collection.get(ids=["AAA"], include=["metadatas"])["metadatas"][0]
     assert set(stored) == {"item_key", "group_id", "date_modified"}
+
+
+def _legacy_item(search):
+    legacy = {
+        "item_key": "AAA", "title": "Title AAA", "group_id": search._pinned_group_id(),
+        "date_modified": "2023-01-01T00:00:00Z", "has_fulltext": True,
+    }
+    ids = ["AAA", *(f"AAA#{n}" for n in range(3))]
+    metas = [legacy, *({**legacy, "parent_item_key": "AAA", "chunk_index": n, "n_chunks": 3} for n in range(3))]
+    search.chroma_client.upsert_embeddings(
+        documents=["old"] * 4, metadatas=metas, ids=ids, embeddings=[[0.0, 1.0]] * 4
+    )
+
+
+def test_a_failed_attachment_record_keeps_a_legacy_items_passages_through_the_import(env, monkeypatch, tmp_path):
+    """The passages are dropped only once every file of the item has landed (fix round 2)."""
+    _isolate_home(monkeypatch, tmp_path)
+    search = env.build(FakeZotero({"AAA": LONG}), chunking=True)
+    _legacy_item(search)
+
+    search.update_database()
+    _land(env, search, skip={"PAAA"})
+
+    stored = _ids(search) | _passages(search)
+    assert "PAAA" not in stored
+    assert {f"AAA#{n}" for n in range(3)} <= stored, "the only copy of the text stays"
+
+
+def test_legacy_passages_go_when_the_last_file_of_the_run_lands(env, monkeypatch, tmp_path):
+    """The attachment's passages arrive in later files than its item's record: nothing goes before they have."""
+    _isolate_home(monkeypatch, tmp_path)
+    search = env.build(FakeZotero({"AAA": LONG}), chunking=True, batch_extra={"batch_max_requests": 2})
+    _legacy_item(search)
+    search.update_database()
+
+    first, *later = env.fake.jobs.values()
+    for job in later:
+        job.status = "validating"  # still running: finish_all leaves it
+    env.fake.finish_all()
+    for job in later:
+        job.status = "in_progress"
+    search._import_batch("openai")
+    assert "PAAA" in _ids(search), "the file's own record is in"
+    assert {f"AAA#{n}" for n in range(3)} <= _passages(search), "but its passages are not all there yet"
+
+    _land(env, search)
+
+    assert _ids(search) == {"AAA", "PAAA"}
+    assert _passages(search) == {f"PAAA#{n}" for n in range(5)}
 
 
 def test_db_status_no_longer_distinguishes_requested_from_effective(env):

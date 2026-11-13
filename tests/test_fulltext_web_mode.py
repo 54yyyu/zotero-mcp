@@ -616,27 +616,28 @@ def _planned_bib(monkeypatch, selected, written):
             semantic_search._attachment_unit(key, "text", file_stamp="api-version:1") for key in written
         ]
     units = search._plan_units([item], force_rebuild=False)
-    return next(u for u in units if u["key"] == "A")
+    bib = next(u for u in units if u["key"] == "A")
+    return bib, search._legacy_settle
 
 
 def test_a_changed_legacy_item_whose_file_gave_no_text_keeps_its_passages(monkeypatch):
-    bib = _planned_bib(monkeypatch, selected=["PA"], written=[])
+    bib, settle = _planned_bib(monkeypatch, selected=["PA"], written=[])
 
     assert bib["legacy_rewrite"] is True
-    assert bib["keep_legacy_passages"] is True
+    assert settle["A"]["wanted"] == ["PA"], "its passages go only once PA's own records are stored"
 
 
 def test_a_changed_legacy_item_whose_files_are_all_written_loses_its_passages(monkeypatch):
-    bib = _planned_bib(monkeypatch, selected=["PA"], written=["PA"])
+    bib, settle = _planned_bib(monkeypatch, selected=["PA"], written=["PA"])
 
     assert bib["legacy_rewrite"] is True
-    assert "keep_legacy_passages" not in bib
+    assert settle["A"]["wanted"] == ["PA"]
 
 
 def test_a_changed_legacy_item_without_selected_files_loses_its_passages(monkeypatch):
-    bib = _planned_bib(monkeypatch, selected=[], written=[])
+    _bib, settle = _planned_bib(monkeypatch, selected=[], written=[])
 
-    assert "keep_legacy_passages" not in bib
+    assert settle["A"]["wanted"] == []
 
 
 @pytest.mark.parametrize("flag,automatic,indexed", [(False, True, False), (False, False, True), (True, True, True)])
