@@ -497,11 +497,12 @@ def cmd_annotations(args):
     if args.subcommand == "list":
         # The tool already speaks JSON here, so --json just selects it and
         # wraps the result in the envelope every other command uses.
-        fmt = "json" if (json_mode and args.format == "markdown") else args.format
-        result = annotations.get_annotations(
+        positions = getattr(args, "positions", False)
+        fmt = "json" if ((json_mode or positions) and args.format == "markdown") else args.format
+        result = annotations.list_annotations(
             item_key=getattr(args, "item_key", None),
             use_pdf_extraction=args.pdf_extraction,
-            limit=args.limit, format=fmt, ctx=ctx,
+            limit=args.limit, format=fmt, positions=positions, ctx=ctx,
         )
         if json_mode:
             try:
@@ -1632,6 +1633,10 @@ def build_parser() -> argparse.ArgumentParser:
     al.add_argument("--pdf-extraction", action="store_true")
     al.add_argument("--limit", type=int, default=100)
     al.add_argument("--format", choices=["markdown", "json"], default="markdown")
+    al.add_argument("--positions", action="store_true",
+                    help="Add each annotation's stored position (JSON output): page_index, rects "
+                         "in PDF points, and rect, a box in the x,y,w,h form create and "
+                         "update --rect take")
     au = a_sub.add_parser("update", help="Update an existing annotation")
     au.add_argument("annotation_key")
     au.add_argument("--text")

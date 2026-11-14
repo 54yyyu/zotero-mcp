@@ -89,6 +89,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--pdf-extraction`
  - `--limit` -- default `100`
  - `--format` -- one of `markdown`, `json` -- default `markdown`
+ - `--positions` -- Add each annotation's stored position (JSON output): page_index, rects in PDF points, and rect, a box in the x,y,w,h form create and update --rect take
 
 ### `annotations update`
 

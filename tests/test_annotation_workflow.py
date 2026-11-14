@@ -83,6 +83,9 @@ class FakeStore:
                       and (item_type is None or i["data"].get("itemType") == item_type)]
                 for key in keys}
 
+    def get_items(self, keys):
+        return {k: self.get_item(k) for k in keys}
+
     def get_item(self, key):
         return deepcopy(self.items.get(key)) if key in self.items else {
             "key": key, "data": {"itemType": "attachment", "contentType": "application/pdf"}}
@@ -96,6 +99,11 @@ def store(pdf_path, monkeypatch):
     monkeypatch.setattr(annotations, "_get_note_write_client", lambda _op: (fake, None))
     monkeypatch.setattr(annotations._library, "get_library_backend", lambda: fake)
     return fake
+
+
+@pytest.fixture(autouse=True)
+def _no_better_bibtex(monkeypatch):
+    monkeypatch.setenv("ZOTERO_LOCAL", "")
 
 
 def create_boxes(store, specs):
@@ -211,3 +219,56 @@ def test_shown_rect_round_trips_through_the_stored_form(pdf_path, page_number):
     with fitz.open(pdf_path) as doc:
         (back,) = zotero_rects_to_shown(doc[page_number - 1], position["rects"])
     assert back == pytest.approx(box, abs=1e-3)
+
+
+# ---------------------------------------------------------------------------
+# 2. annotations list --positions
+# ---------------------------------------------------------------------------
+
+def listed(store, **kwargs):
+    out = annotations.list_annotations(item_key=ATTACHMENT, format="json", ctx=MagicMock(), **kwargs)
+    return {r["annotation_key"]: r for r in json.loads(out)}
+
+
+class TestListPositions:
+    BOXES = [
+        {"page": 1, "rect": [0.10, 0.10, 0.20, 0.15], "comment": "plain page"},
+        {"page": 2, "rect": [0.55, 0.20, 0.30, 0.10], "comment": "rotated page"},
+        {"page": 3, "rect": [0.30, 0.60, 0.25, 0.20], "comment": "offset MediaBox"},
+    ]
+
+    def test_listed_rect_is_the_convention_create_takes(self, store):
+        keys = create_boxes(store, self.BOXES)
+        records = listed(store, positions=True)
+        for key, spec in zip(keys, self.BOXES):
+            position = records[key]["position"]
+            assert position["page_index"] == spec["page"] - 1
+            assert position["rect"] == pytest.approx(spec["rect"], abs=1e-3)
+            assert len(position["rects"]) == 1 and len(position["rects"][0]) == 4
+
+    def test_rects_are_the_stored_pdf_points(self, store):
+        (key,) = create_boxes(store, [self.BOXES[0]])
+        stored = json.loads(store.items[key]["data"]["annotationPosition"])
+        assert listed(store, positions=True)[key]["position"]["rects"] == stored["rects"]
+
+    def test_a_listed_rect_fed_back_to_update_changes_nothing(self, store):
+        keys = create_boxes(store, self.BOXES)
+        before = {k: store.items[k]["data"]["annotationPosition"] for k in keys}
+        for key, record in listed(store, positions=True).items():
+            update(store, key, rect=record["position"]["rect"])
+        for key in keys:
+            old = json.loads(before[key])["rects"][0]
+            new = json.loads(store.items[key]["data"]["annotationPosition"])["rects"][0]
+            assert new == pytest.approx(old, abs=0.1)
+
+    def test_positions_are_absent_unless_asked_for(self, store):
+        (key,) = create_boxes(store, [self.BOXES[0]])
+        assert "position" not in listed(store)[key]
+
+    def test_without_the_pdf_the_stored_rects_still_come_back(self, store, monkeypatch):
+        (key,) = create_boxes(store, [self.BOXES[0]])
+        monkeypatch.setattr(annotations, "_fetch_attachment_file",
+                            lambda *a, **k: (None, "", "", "Error: no file\nmore"))
+        record = listed(store, positions=True)[key]
+        assert record["position"]["rect"] is None and record["position"]["rects"]
+        assert record["position_note"] == "Error: no file"

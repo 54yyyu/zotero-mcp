@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`zotero-cli annotations update` moves and resizes area boxes** with `--rect x,y,w,h` and `--page N`. Until now a box that landed in the wrong place had to be deleted and created again. The key, comment and color stay, and the position, sort index and page label are written the way `create` writes them, rotated pages included. Highlights still cannot move, since they follow their text. Every annotation update now sends `annotationType` before the other annotation fields, which Zotero requires.
+- **`zotero-cli annotations list --positions`** adds each annotation's stored position to the JSON: `page_index`, `rects` (the stored boxes, PDF points from the bottom-left) and `rect`, one box in the top-left `x,y,w,h` form that `create`, `batch` and `update --rect` accept, so a listed box can be passed straight back. `rect` accounts for rotated pages and offset page boxes. Before this, `list` returned no coordinates and each box had to be read from the local API one request at a time.
 
 ## [0.17.1] - 2026-11-12
 

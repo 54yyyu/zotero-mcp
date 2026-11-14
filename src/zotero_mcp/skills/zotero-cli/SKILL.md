@@ -191,6 +191,11 @@ To fix a box that landed in the wrong place, move it where it is:
 normalized convention as `create`; `--page N` moves it to another page and
 keeps its place when `--rect` is left out). The key, comment and color stay.
 Only area boxes move; a highlight follows its text, so delete and recreate it.
+`zotero-cli --json annotations list --item-key ATTACHMENT_KEY --positions`
+adds each annotation's stored `position`: `page_index`, `rects` (PDF points,
+bottom-left origin) and `rect`, a box in the same `x,y,w,h` convention that
+`create` and `update --rect` take. Use it to check where boxes really are
+instead of trusting the coordinates you planned.
 
 Colors take Zotero's names: yellow, red, green, blue, purple, magenta,
 orange, gray. Three or four colors with fixed meanings read better than

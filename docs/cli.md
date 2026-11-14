@@ -156,6 +156,7 @@ zotero-cli --json layout ATTACH01 --pages 3-9            # figure, table and equ
 zotero-cli annotations create --attachment-key ATTACH01 --page 4 --text "exact words" --color yellow
 zotero-cli annotations create --attachment-key ATTACH01 --page 5 --text "exact words" --underline
 zotero-cli annotations create --attachment-key ATTACH01 --page 3 --rect 0.32,0.09,0.36,0.41 --comment "Figure 1"
+zotero-cli --json annotations list --item-key ATTACH01 --positions   # stored page, rects and a rect to pass back to update
 zotero-cli annotations update ANN01 --rect 0.30,0.10,0.36,0.40   # move or resize a box in place (--page N to change page)
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl --dry-run   # where each highlight lands
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl             # write them all

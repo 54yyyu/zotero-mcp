@@ -109,6 +109,48 @@ def _annotation_to_record(
     }
 
 
+def _add_positions(records: list[dict], annotations: list[dict], ctx: Context) -> None:
+    """Add ``position`` to each record from the annotation's stored position.
+
+    ``position`` holds ``page_index``, ``rects`` (the stored boxes, PDF points
+    from the bottom-left) and ``rect``: one ``[x, y, w, h]`` covering them,
+    normalized from the top-left of the page as displayed. That is the
+    convention ``create``, ``batch`` and ``update --rect`` take, so a listed
+    box can be passed straight back. ``rect`` needs the PDF page geometry, so
+    each attachment's file is read once; when it cannot be, ``rect`` is null
+    and ``position_note`` says why.
+    """
+    from zotero_mcp.pdf_utils import open_pdf, union_box, zotero_rects_to_shown
+
+    by_attachment: dict[str, list[tuple[dict, dict]]] = {}
+    for record, annotation in zip(records, annotations):
+        raw = annotation.get("data", {}).get("annotationPosition")
+        try:
+            stored = json.loads(raw) if isinstance(raw, str) else raw
+        except ValueError:
+            stored = None
+        if not isinstance(stored, dict) or not isinstance(stored.get("pageIndex"), int):
+            record["position"] = None
+            continue
+        rects = stored.get("rects") or []
+        record["position"] = {"page_index": stored["pageIndex"], "rects": rects, "rect": None}
+        if rects and record.get("attachment_key"):
+            by_attachment.setdefault(record["attachment_key"], []).append((record, stored))
+
+    for attachment_key, pairs in by_attachment.items():
+        with tempfile.TemporaryDirectory() as tmpdir:
+            file_path, _name, _type, error = _fetch_attachment_file(attachment_key, tmpdir, ctx=ctx)
+            if error:
+                for record, _stored in pairs:
+                    record["position_note"] = error.strip().splitlines()[0]
+                continue
+            with open_pdf(file_path) as doc:
+                for record, stored in pairs:
+                    if stored["pageIndex"] < len(doc):
+                        record["position"]["rect"] = union_box(
+                            zotero_rects_to_shown(doc[stored["pageIndex"]], stored["rects"]))
+
+
 def _download_attachment_for_processing(
     attachment_key: str,
     filename: str,
@@ -220,12 +262,24 @@ def _get_note_write_client(op_description: str):
         "'json' (normalized records)."
     )
 )
-@with_zotero_api_lock
 def get_annotations(
     item_key: str | None = None,
     use_pdf_extraction: bool = False,
     limit: int | str | None = None,
     format: Literal["markdown", "json"] = "markdown",
+    *,
+    ctx: Context
+) -> str:
+    return list_annotations(item_key, use_pdf_extraction, limit, format, ctx=ctx)
+
+
+@with_zotero_api_lock
+def list_annotations(
+    item_key: str | None = None,
+    use_pdf_extraction: bool = False,
+    limit: int | str | None = None,
+    format: Literal["markdown", "json"] = "markdown",
+    positions: bool = False,
     *,
     ctx: Context
 ) -> str:
@@ -238,6 +292,9 @@ def get_annotations(
         limit: Maximum number of annotations to return
         format: ``markdown`` for human-readable output or ``json`` for
             normalized structured records.
+        positions: With ``format="json"``, add each annotation's stored
+            ``position`` (see ``_add_positions``). The MCP tool leaves this
+            out; the CLI's ``annotations list --positions`` sets it.
         ctx: MCP context
 
     Returns:
@@ -563,6 +620,8 @@ def get_annotations(
                     parent_contexts.get(parent_key) or _fallback_context(parent_key)
                 )
                 records.append(_annotation_to_record(anno, context))
+            if positions:
+                _add_positions(records, annotations, ctx)
             return json.dumps(records, ensure_ascii=False, indent=2)
 
         # Generate markdown output
