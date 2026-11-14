@@ -270,7 +270,7 @@ Extracted text is reliable for prose and unreliable for math and tables. `zotero
 
 ## Passage chunking
 
-By default each item is indexed as one vector: title, authors, abstract and any full text joined and cut at the embedding model's input limit. The default model, all-MiniLM-L6-v2, reads 256 tokens (about 1,000 characters), so with `update-db --fulltext` the body of a PDF is extracted but never embedded and only the start of each item is searchable. `zotero-mcp update-db --fulltext` and `zotero-mcp db-status` say so when this applies.
+By default each file is indexed as one vector: its text cut at the embedding model's input limit, with the item's own title, authors and abstract in a vector of their own. The default model, all-MiniLM-L6-v2, reads 256 tokens (about 1,000 characters), so with `update-db --fulltext` the body of a PDF is extracted but never embedded and only the start of each file is searchable. `zotero-mcp update-db --fulltext` and `zotero-mcp db-status` say so when this applies.
 
 Passage chunking also indexes each item as several overlapping passages, in a separate ChromaDB collection (not a Zotero collection), so search can match anywhere in a paper and return the matching passage with its page. The one-vector article record stays: articles suit finding works on a topic, and passages suit finding where something is done or stated. It is off by default. These keys live under `semantic_search.chunking`:
 
@@ -289,10 +289,27 @@ Passage chunking also indexes each item as several overlapping passages, in a se
 
 | Key | Default | What it does |
 |---|---|---|
-| `enabled` | `false` | Index passages as well as one vector per item. Semantic search uses passages by default when this is on and articles when it is off. |
+| `enabled` | `false` | Index passages as well as one vector per file. Semantic search uses passages by default when this is on and articles when it is off. |
 | `chunk_size` | `1500` | Target passage length in characters. |
 | `overlap` | `200` | Characters shared between neighbouring passages. |
-| `max_chunks_per_item` | `20` | Passages kept per item. Text past the last passage is not indexed. |
+| `max_chunks_per_item` | `20` | Passages kept per file. Text past the last passage is not indexed. |
+
+### What the index holds
+
+Every record is keyed by the Zotero key of the thing it describes:
+
+- A regular item has one record under its own key, built from its title, creators, abstract and other fields. It holds no file text.
+- Each indexed attachment has one record under the attachment's own key, built from the file's text (cut at the model's input limit), and with chunking on, its passages under `KEY#0`, `KEY#1` and so on.
+
+Records store only their own state: their key, library, the file's modification stamp and a hash of its bytes, and for a passage where it sits in the file. Titles, creators, tags, item types and the parent item are not stored. Search looks them up in Zotero when it shows results, so moving an attachment to another parent, using Create Parent Item, or editing an item's fields needs no re-indexing. A hit on an attachment is shown as its parent item, with the matched file named in the Location line; hits on several files of one item, or on the item itself, collapse into one result.
+
+`attachment_priority` (see [Text extraction settings](#text-extraction-settings)) picks the first kind of file that exists for an item, and every readable file of that kind is indexed: two PDFs under one item both are, a snapshot beside them is not. Attachments without a parent item are indexed too. Notes and annotations never are. A file with no extractable text gets no record and is tried again locally when it changes, and over the web API on the next full scan.
+
+When two files are byte-identical, for example the same PDF attached to two items or in two libraries, the second one's vectors are copied from the first instead of being embedded again. A file whose modification time changes but whose bytes do not (a backup restore, say) is not embedded again either.
+
+An index built by an earlier version stores a title and other copied fields on every record, and keeps its passages under the item's key. Those records keep working. An item that has changed is rewritten in the new shape by the next `update-db`; items that have not changed keep their records until `zotero-mcp update-db --force-rebuild`. `zotero-mcp migrate-index` re-keys the old passages under their attachment's key without embedding anything; see the steps below. An explicit `update-db` does the same re-key before it starts. Automatic updates (the server's startup update and the pre-search sync) never re-key, and they hold, rather than embed again, an attachment whose passages are already in the index but that lacks its own attachment record; an explicit `update-db` writes that record (one embedding per file, passages untouched). An explicit `update-db` on an index built before the collection split splits it first, then re-keys, embedding no passage. Where Zotero cannot be reached, or the database lists a file that is neither readable nor covered by its own `.zotero-ft-cache`, the re-key and the clean-up skip it rather than guessing or deleting. A file that is out of reach (an unmounted drive, files kept on demand) but has a `.zotero-ft-cache` is indexed from that cache; its stamp is its own kind, so the file and its cache are one attachment: switching between them re-embeds nothing, and only a change of the attachment's modified date (or `--force-rebuild`) replaces cache text with the parsed file. Records made from a cache keep no file hash, and `status` counts those whose cache Zotero indexed only in part. An item with several files of the chosen kind whose attachments have not changed is re-keyed to the largest, as earlier versions chose.
+
+Standalone attachments were not indexed before, so automatic updates leave them until one explicit `update-db --fulltext` (local) or `update-db` (web API) has covered them; after that they are kept up to date automatically. A file Zotero lists but that is not on disk is indexed from its own `.zotero-ft-cache` when it has one.
 
 After turning it on, run `zotero-mcp update-db --fulltext` once in local mode (`ZOTERO_LOCAL=true`). With the web API, where `--fulltext` is not available, run `zotero-mcp update-db`, which uses the text Zotero has already extracted. It adds the passages and keeps the article vectors you already have, with no `--force-rebuild` and no re-embedding of articles. It works the same on the realtime and Batch API paths.
 
@@ -304,7 +321,7 @@ While passages are being built, a default search covers only the items that have
 
 Passages and articles live in two ChromaDB collections in the same index directory, `zotero_library_passages` and `zotero_library`, so an article search never loads passage vectors into memory. With chunking off, an item that changes loses its passages, and they are added back when chunking is next on.
 
-An index built with chunking on by an earlier version holds its passages in `zotero_library`, the article-level ChromaDB collection: passages only, or passages beside article records left from before chunking was turned on (a mixed index). Search keeps working that way until you migrate, and the status commands (`zotero-mcp db-status`, `zotero-cli db status`, the `zotero_get_search_database_status` tool) say so, with the steps and an estimate of what the last one costs. To migrate:
+An index built with chunking on by an earlier version holds its passages in `zotero_library`, the article-level ChromaDB collection: passages only, or passages beside article records left from before chunking was turned on (a mixed index). Search keeps working that way until you migrate, and the status commands (`zotero-mcp db-status`, `zotero-cli db status`, the `zotero_get_search_database_status` tool) say so, with the steps and an estimate of what the last one costs. To migrate (this also re-keys passages written under an item's key to their attachment's key, which needs no embedding):
 
 1. Stop any running server, and upgrade any other copy of zotero-mcp using the same index; an older version would go back to writing passages in `zotero_library`.
 2. `zotero-mcp migrate-index --dry-run` reports what would change.

@@ -84,16 +84,18 @@ class TestCombineStructuredAndFulltext:
         with patch.object(semantic_search, "get_zotero_client", return_value=object()):
             return semantic_search.ZoteroSemanticSearch(chroma_client=FakeChromaClient())
 
-    def test_fulltext_prepended_with_structured_fields(self):
+    def test_file_text_is_a_record_of_its_own(self):
+        """The item's fields and its file's text are embedded apart (#826)."""
         search = self._make_search()
         item = _make_item("K1", title="My Title", abstract="My Abstract", fulltext="Full paper text here.")
+        item["data"]["fulltextSource"] = "web-api:attachment:PDFK1"
         stats = search._process_item_batch([item], force_rebuild=True)
 
-        assert stats["processed"] == 1
-        doc = search.chroma_client.upserted_docs[0]
-        # Structured fields should appear before fulltext
-        assert doc.index("My Title") < doc.index("Full paper text here.")
-        assert doc.index("My Abstract") < doc.index("Full paper text here.")
+        assert stats["processed"] == 2
+        docs = dict(zip(search.chroma_client.upserted_ids, search.chroma_client.upserted_docs))
+        assert "My Title" in docs["K1"] and "My Abstract" in docs["K1"]
+        assert "Full paper text here." not in docs["K1"]
+        assert docs["PDFK1"] == "Full paper text here."
 
     def test_no_fulltext_uses_structured_only(self):
         search = self._make_search()
@@ -108,11 +110,12 @@ class TestCombineStructuredAndFulltext:
     def test_empty_structured_with_fulltext(self):
         search = self._make_search()
         item = _make_item("K3", title="", abstract="", fulltext="Only fulltext content.")
+        item["data"]["fulltextSource"] = "web-api:attachment:PDFK3"
         stats = search._process_item_batch([item], force_rebuild=True)
 
-        assert stats["processed"] == 1
-        doc = search.chroma_client.upserted_docs[0]
-        assert "Only fulltext content." in doc
+        assert stats["processed"] == 2
+        docs = dict(zip(search.chroma_client.upserted_ids, search.chroma_client.upserted_docs))
+        assert docs["PDFK3"] == "Only fulltext content."
 
 
 # ---------------------------------------------------------------------------
@@ -585,11 +588,28 @@ class TestTiktokenSpecialTokenHandling:
 # Fix 5: Cross-encoder re-ranking
 # ---------------------------------------------------------------------------
 
+def _zotero_serving_every_key():
+    """A pyzotero mock whose batched itemKey lookup finds every key."""
+    zot = MagicMock()
+    zot.items.side_effect = lambda itemKey="", **kw: [
+        {"key": k, "data": {"title": "mock"}} for k in itemKey.split(",")
+    ]
+    return zot
+
+
 class TestReranking:
+    @pytest.fixture(autouse=True)
+    def _isolated(self, monkeypatch, tmp_path):
+        """Searches resolve hits through zotero.sqlite in local mode (#826)."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.delenv("ZOTERO_LOCAL", raising=False)
+        self._config_path = str(tmp_path / "config.json")
+
     def _make_search_with_reranker(self, enabled=True):
         fake_client = FakeChromaClient()
         with patch.object(semantic_search, "get_zotero_client", return_value=MagicMock()):
-            s = semantic_search.ZoteroSemanticSearch(chroma_client=fake_client)
+            s = semantic_search.ZoteroSemanticSearch(chroma_client=fake_client, config_path=self._config_path)
         s._reranker_config = {
             "enabled": enabled,
             "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
@@ -611,8 +631,7 @@ class TestReranking:
         s._reranker = mock_reranker
 
         # Mock the Zotero client to avoid API calls
-        s.zotero_client = MagicMock()
-        s.zotero_client.item.return_value = {"data": {"title": "mock"}}
+        s.zotero_client = _zotero_serving_every_key()
 
         result = s.search("birds", limit=3)
 
@@ -626,20 +645,31 @@ class TestReranking:
         s._reranker = MagicMock()
         s._reranker.rerank.return_value = [0, 1]
 
-        s.zotero_client = MagicMock()
-        s.zotero_client.item.return_value = {"data": {"title": "mock"}}
+        s.zotero_client = _zotero_serving_every_key()
 
         s.search("test", limit=2)
 
-        # candidate_multiplier=3, so n_results should be 2*3=6
-        assert s.chroma_client._last_query_kwargs["n_results"] == 6
+        # candidate_multiplier=3 is below the ×4 every search over-fetches
+        # to collapse hits to owners (#826), so n_results is 2*4=8.
+        assert s.chroma_client._last_query_kwargs["n_results"] == 8
 
-    def test_search_without_reranker_uses_original_limit(self):
+    def test_search_overfetches_by_a_larger_reranker_multiplier(self):
+        s = self._make_search_with_reranker(enabled=True)
+        s._reranker_config["candidate_multiplier"] = 6
+        s._reranker = MagicMock()
+        s._reranker.rerank.return_value = [0, 1]
+        s.zotero_client = _zotero_serving_every_key()
+
+        s.search("test", limit=2)
+
+        assert s.chroma_client._last_query_kwargs["n_results"] == 12
+
+    def test_search_without_reranker_overfetches_for_owner_collapse(self):
         s = self._make_search_with_reranker(enabled=False)
 
-        s.zotero_client = MagicMock()
-        s.zotero_client.item.return_value = {"data": {"title": "mock"}}
+        s.zotero_client = _zotero_serving_every_key()
 
         s.search("test", limit=5)
 
-        assert s.chroma_client._last_query_kwargs["n_results"] == 5
+        # Hits collapse to their owners and trashed ones drop out (#826).
+        assert s.chroma_client._last_query_kwargs["n_results"] == 20
