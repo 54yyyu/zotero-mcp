@@ -84,16 +84,18 @@ class TestCombineStructuredAndFulltext:
         with patch.object(semantic_search, "get_zotero_client", return_value=object()):
             return semantic_search.ZoteroSemanticSearch(chroma_client=FakeChromaClient())
 
-    def test_fulltext_prepended_with_structured_fields(self):
+    def test_file_text_is_a_record_of_its_own(self):
+        """The item's fields and its file's text are embedded apart (#826)."""
         search = self._make_search()
         item = _make_item("K1", title="My Title", abstract="My Abstract", fulltext="Full paper text here.")
+        item["data"]["fulltextSource"] = "web-api:attachment:PDFK1"
         stats = search._process_item_batch([item], force_rebuild=True)
 
-        assert stats["processed"] == 1
-        doc = search.chroma_client.upserted_docs[0]
-        # Structured fields should appear before fulltext
-        assert doc.index("My Title") < doc.index("Full paper text here.")
-        assert doc.index("My Abstract") < doc.index("Full paper text here.")
+        assert stats["processed"] == 2
+        docs = dict(zip(search.chroma_client.upserted_ids, search.chroma_client.upserted_docs))
+        assert "My Title" in docs["K1"] and "My Abstract" in docs["K1"]
+        assert "Full paper text here." not in docs["K1"]
+        assert docs["PDFK1"] == "Full paper text here."
 
     def test_no_fulltext_uses_structured_only(self):
         search = self._make_search()
@@ -108,11 +110,12 @@ class TestCombineStructuredAndFulltext:
     def test_empty_structured_with_fulltext(self):
         search = self._make_search()
         item = _make_item("K3", title="", abstract="", fulltext="Only fulltext content.")
+        item["data"]["fulltextSource"] = "web-api:attachment:PDFK3"
         stats = search._process_item_batch([item], force_rebuild=True)
 
-        assert stats["processed"] == 1
-        doc = search.chroma_client.upserted_docs[0]
-        assert "Only fulltext content." in doc
+        assert stats["processed"] == 2
+        docs = dict(zip(search.chroma_client.upserted_ids, search.chroma_client.upserted_docs))
+        assert docs["PDFK3"] == "Only fulltext content."
 
 
 # ---------------------------------------------------------------------------

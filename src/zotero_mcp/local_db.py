@@ -28,11 +28,14 @@ from . import fulltext_cache
 from . import search_semantics as _semantics
 from .config import load_config
 from .extract import (
+    UNREADABLE_CATEGORY,
     ExtractedDoc,
     categorize_attachment,
     extract_file,
     normalize_attachment_priority,
     pick_by_priority,
+    row_category,
+    select_by_priority,
 )
 from .utils import _generate_search_variants, _normalize_for_search, is_local_mode
 
@@ -59,6 +62,22 @@ DEFAULT_PDF_MAX_PAGES = 50
 # else the Zotero server-assigned groupID. This matches Zotero's own
 # sentinel for the account-less personal library.
 PERSONAL_LIBRARY_GROUP_ID = 0
+
+
+@dataclass(frozen=True)
+class ExtractionTarget:
+    """One attachment file resolved for extraction (see
+    ``_resolve_extraction_targets``). ``file_stamp`` is ``"<mtime_ns>:<size>"``."""
+
+    key: str
+    path: Path
+    content_type: str | None
+    category: str
+    file_stamp: str
+    size: int
+    #: ``path`` is the attachment's own ``.zotero-ft-cache``, because its file is
+    #: not on disk (or in a format only that cache covers). Its text is that cache.
+    ft_cache: bool = False
 
 
 class KeyGroupMap(NamedTuple):
@@ -1519,6 +1538,99 @@ class LocalZoteroReader:
         # rather than a stub or thumbnail.
         return max(candidates, key=lambda p: p.stat().st_size)
 
+    def _resolve_attachment_file(
+        self, key: str, path: str | None, ctype: str | None
+    ) -> tuple[Path, str] | None:
+        """``(resolved_path, category)`` for one attachment row, or None when
+        the file is missing or not in a readable category."""
+        resolved = self._resolve_attachment_path(key, path or "")
+        if not resolved or not resolved.exists():
+            # Filename drift fallback: scan the storage folder.
+            resolved = self._scan_storage_for_attachment(key, ctype)
+            if not resolved or not resolved.exists():
+                return None
+        category = categorize_attachment(resolved, ctype)
+        if category is None:
+            return None
+        return resolved, category
+
+    def _build_target(
+        self, key: str, path: str | None, ctype: str | None, *, unreadable_ok: bool = False
+    ) -> ExtractionTarget | None:
+        found = self._resolve_attachment_file(key, path, ctype)
+        if found is None:
+            return self._build_cache_target(key, path, ctype, unreadable_ok=unreadable_ok)
+        resolved, category = found
+        try:
+            st = resolved.stat()
+        except OSError:
+            return None
+        return ExtractionTarget(
+            key=key,
+            path=resolved,
+            content_type=ctype,
+            category=category,
+            file_stamp=f"{st.st_mtime_ns}:{st.st_size}",
+            size=st.st_size,
+        )
+
+    def _build_cache_target(
+        self, key: str, path: str | None, ctype: str | None, *, unreadable_ok: bool
+    ) -> ExtractionTarget | None:
+        """Target for an attachment whose file we cannot read, from its own ``.zotero-ft-cache``.
+
+        The file is missing (unmounted drive, kept on demand) or in no
+        format we parse (an EPUB), but Zotero extracted its text. Never
+        another attachment's cache. The stamp is the cache file's, so the
+        record follows the text it was made from. ``unreadable_ok`` lets an
+        attachment of an unreadable kind in (a regular item's child can be
+        chosen for its cache; a standalone file is indexed only if readable).
+        """
+        category = row_category(path, ctype)
+        if category == UNREADABLE_CATEGORY and not unreadable_ok:
+            return None
+        try:
+            cache = self._get_storage_dir() / key / ".zotero-ft-cache"
+            st = cache.stat()
+        except Exception:
+            return None
+        if not cache.is_file() or st.st_size == 0:
+            return None
+        return ExtractionTarget(
+            key=key,
+            path=cache,
+            content_type=ctype,
+            category=category,
+            file_stamp=f"{st.st_mtime_ns}:{st.st_size}",
+            size=st.st_size,
+            ft_cache=True,
+        )
+
+    def _resolve_extraction_targets(self, item_id: int) -> list[ExtractionTarget]:
+        """The attachments of an item that can be indexed, by configured priority.
+
+        All readable, non-trashed files in the first priority category that
+        has any, in the database's order (PDFs first, then by item id; the scan
+        indexes the largest, the first of equals). An attachment whose file cannot be
+        read but has its own ``.zotero-ft-cache`` counts too, with that cache
+        as its text, but only when no file of the item can be read. Same cheap, parent-process-only resolution as
+        :meth:`_resolve_extraction_target`.
+        """
+        candidates = []
+        for key, path, ctype in self._iter_parent_attachments(item_id):
+            target = self._build_target(key, path, ctype, unreadable_ok=True)
+            if target is not None:
+                candidates.append((target.category, target.size, target))
+        # A text cache stands in only when no file can be read, as before #826.
+        if any(not c[2].ft_cache for c in candidates):
+            candidates = [c for c in candidates if not c[2].ft_cache]
+        # In the order Zotero's database lists them, as before #826: of two
+        # files of one size the first is the one ``max`` picks.
+        order = {c[2].key: n for n, c in enumerate(candidates)}
+        return select_by_priority(
+            candidates, self.attachment_priority, sort_key=lambda t: order[t.key]
+        )
+
     def _resolve_extraction_target(self, item_id: int) -> tuple[Path, str] | None:
         """Pick the attachment to extract for an item, by configured priority.
 
@@ -1532,15 +1644,10 @@ class LocalZoteroReader:
         candidates = []
         keys: dict[Path, str] = {}
         for key, path, ctype in self._iter_parent_attachments(item_id):
-            resolved = self._resolve_attachment_path(key, path or "")
-            if not resolved or not resolved.exists():
-                # Filename drift fallback: scan the storage folder.
-                resolved = self._scan_storage_for_attachment(key, ctype)
-                if not resolved or not resolved.exists():
-                    continue
-            category = categorize_attachment(resolved, ctype)
-            if category is None:
+            found = self._resolve_attachment_file(key, path, ctype)
+            if found is None:
                 continue
+            resolved, category = found
             try:
                 size = resolved.stat().st_size
             except OSError:
@@ -1624,13 +1731,19 @@ class LocalZoteroReader:
         in a library to parse. Keying on the chosen attachment keeps the
         entry invalidating normally when the file changes.
         """
+        if chosen:
+            # Only the chosen attachment's own cache: another attachment's
+            # text stored under this key would index the wrong document.
+            cached = self._read_zotero_ft_cache(chosen[1])
+            if not cached:
+                return None
+            self._cache_store(chosen[0], chosen[1], item_key, cached, "zotero-cache")
+            return cached, "zotero-cache"
+        # Nothing resolvable on disk: any attachment's cache will do.
         for key, _path, _ctype in self._iter_parent_attachments(item_id):
             cached = self._read_zotero_ft_cache(key)
             if cached:
-                result = (cached, "zotero-cache")
-                if chosen:
-                    self._cache_store(chosen[0], chosen[1], item_key, cached, "zotero-cache")
-                return result
+                return cached, "zotero-cache"
         return None
 
     def extract_fulltext_detailed(
@@ -2116,6 +2229,114 @@ class LocalZoteroReader:
         # reads, so there is nothing to gain from parallelising them.
         for item_id, item_key, chosen in deferred:
             yield item_id, self._zotero_ft_cache_fallback(item_id, chosen, item_key)
+
+    def _extract_target(self, target: ExtractionTarget) -> tuple[str, str] | None:
+        """``(text, source)`` of one attachment file, or None.
+
+        The transient cache, then the parser, then that attachment's own
+        ``.zotero-ft-cache``, never a sibling's. Cache entries are stored under
+        the attachment's key, which is also its record key (#826).
+        """
+        hit = self._cache_lookup(target.path, target.key)
+        if hit:
+            return hit
+        doc = None if target.ft_cache else self._extract_doc_from_file(target.path)
+        if doc:
+            source = _source_for_path(target.path)
+            self._cache_store(target.path, target.key, target.key, doc.text, source)
+            return doc.text, source
+        return self._zotero_ft_cache_fallback(
+            item_id=0,  # unused: ``chosen`` names the file
+            chosen=(target.path, target.key),
+            item_key=target.key,
+        )
+
+    def extract_targets(
+        self, targets: list[ExtractionTarget]
+    ) -> Iterator[tuple[str, tuple[str, str] | None]]:
+        """Extract many attachment files, fanning out over ``extraction_workers``.
+
+        Yields ``(attachment_key, (text, source) | None)`` as results arrive;
+        the order is not the input order once workers > 1. Same division of
+        labour as :meth:`extract_fulltext_for_items`: sqlite, the filesystem
+        index and the caches stay in this process, workers get a path.
+        """
+        if self.extraction_workers <= 1:
+            for target in targets:
+                yield target.key, self._extract_target(target)
+            return
+
+        max_pages = self._resolve_pdf_max_pages()
+        pending: dict[Any, ExtractionTarget] = {}
+        deferred: list[ExtractionTarget] = []
+        stranded: list[ExtractionTarget] = []
+        with ProcessPoolExecutor(
+            max_workers=self.extraction_workers, initializer=_init_extraction_worker
+        ) as pool:
+            for target in targets:
+                hit = self._cache_lookup(target.path, target.key)
+                if hit:
+                    yield target.key, hit
+                    continue
+                if target.ft_cache:
+                    deferred.append(target)  # nothing to parse: its text is the cache
+                    continue
+                pending[pool.submit(_extract_worker, str(target.path), max_pages)] = target
+
+            settled: set[Any] = set()
+            for future in as_completed(pending):
+                target = pending[future]
+                try:
+                    text = future.result()
+                except BrokenProcessPool as e:
+                    # As in extract_fulltext_for_items: redo what is left here.
+                    logger.warning(
+                        f"Extraction worker pool died ({e}); re-extracting the "
+                        f"remaining {len(pending) - len(settled)} file(s) in-process"
+                    )
+                    stranded = [t for f, t in pending.items() if f not in settled]
+                    break
+                except Exception as e:
+                    logger.debug(f"Extraction worker failed for {target.key}: {e}")
+                    text = ""
+                settled.add(future)
+                if text:
+                    source = _source_for_path(target.path)
+                    self._cache_store(target.path, target.key, target.key, text, source)
+                    yield target.key, (text, source)
+                else:
+                    deferred.append(target)
+
+        for target in stranded:
+            yield target.key, self._extract_target(target)
+        for target in deferred:
+            yield target.key, self._zotero_ft_cache_fallback(
+                item_id=0,  # unused: ``chosen`` names the file
+                chosen=(target.path, target.key),
+                item_key=target.key,
+            )
+
+    def get_date_modified_by_key(self) -> dict[str, str]:
+        """``dateModified`` of every item, by key: an attachment record's own version stamp."""
+        conn = self._get_connection()
+        return {row[0]: row[1] for row in conn.execute("SELECT key, dateModified FROM items")}
+
+    def get_collection_item_keys(self, collection_keys: list[str]) -> set[str]:
+        """Keys of the items in these collections or any of their subcollections."""
+        conn = self._get_connection()
+        seen: set[int] = set()
+        ids: list[int] = []
+        for ckey in collection_keys:
+            ids.extend(self._resolve_collection_ids(conn, ckey, seen=seen))
+        if not ids:
+            return set()
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT DISTINCT i.key FROM collectionItems ci JOIN items i ON i.itemID = ci.itemID "
+            f"WHERE ci.collectionID IN ({placeholders})",
+            ids,
+        )
+        return {row[0] for row in rows}
 
     def get_attachment_paths(self, parent_key: str) -> list[dict]:
         """Return resolved filesystem paths for a parent item's attachments.

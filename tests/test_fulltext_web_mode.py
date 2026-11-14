@@ -592,3 +592,41 @@ def test_attach_web_fulltext_does_not_walk_every_attachment_for_a_few_items(monk
     assert names.count("items") == 0
     assert names.count("children") == 60
     assert papers[3]["data"]["fulltext"] == "text 3"
+
+
+# --------- A legacy item's passages are replaced before they go (#826, final review C1) ----------
+
+
+class LegacyChroma(FakeChromaClient):
+    def get_document_metadata(self, doc_id):
+        if doc_id == "A":
+            return {"item_key": "A", "title": "Old title", "group_id": 0, "date_modified": "2023-01-01T00:00:00Z"}
+        return None
+
+
+def _planned_bib(monkeypatch, written):
+    search = _build_search(monkeypatch, FakeZoteroClient(), LegacyChroma())
+    item = _paper("A")
+    if written:
+        item["data"]["fulltext"] = "text"
+        item["data"]["fulltextSource"] = f"web-api:attachment:{written}"
+        item["data"]["fulltextAttachment"] = {"file_stamp": "api-version:1"}
+    units = search._plan_units([item], force_rebuild=False)
+    bib = next(u for u in units if u["key"] == "A")
+    return bib, units, search._legacy_settle
+
+
+def test_a_changed_legacy_item_whose_file_gave_text_loses_its_passages_once_it_is_written(monkeypatch):
+    bib, units, settle = _planned_bib(monkeypatch, written="PA")
+
+    assert bib["legacy_rewrite"] is True
+    assert [u["key"] for u in units] == ["A", "PA"]
+    assert settle["A"]["wanted"] == ["PA"], "its passages go only once PA's own records are stored"
+
+
+def test_a_changed_legacy_item_without_text_loses_its_passages(monkeypatch):
+    bib, units, settle = _planned_bib(monkeypatch, written=None)
+
+    assert bib["legacy_rewrite"] is True
+    assert [u["key"] for u in units] == ["A"]
+    assert settle["A"]["wanted"] == []
