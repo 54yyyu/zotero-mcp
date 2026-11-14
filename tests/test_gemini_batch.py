@@ -167,8 +167,9 @@ def test_import_gemini_batch_evicts_fulltext_cache_only_for_succeeded_ids(tmp_pa
     openai_batch.write_jsonl(
         records_path,
         [
-            {"id": "A", "document": "doc A", "metadata": {"title": "A"}},
-            {"id": "B", "document": "doc B", "metadata": {"title": "B"}},
+            # Files' records: their text is what the cache holds (#826).
+            {"id": "A", "document": "doc A", "metadata": {"item_key": "A", "file_stamp": "1:1"}},
+            {"id": "B", "document": "doc B", "metadata": {"item_key": "B", "file_stamp": "1:1"}},
         ],
     )
     output_path = tmp_path / "batch-001-records-output.jsonl"

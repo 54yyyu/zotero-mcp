@@ -56,6 +56,25 @@ def passage_collection_name(collection_name: str) -> str:
     return f"{collection_name}_passages"
 
 
+def record_key(doc_id: str) -> str:
+    """The item key a record belongs to: ``KEY`` for ``KEY`` and ``KEY#n``.
+
+    Every record is keyed by its own item (#826): an attachment's passages
+    carry the attachment's key, not the parent's. Legacy passages ``KEY#n``
+    were keyed by their parent, which is then the record key too.
+    """
+    return doc_id.split("#", 1)[0]
+
+
+def _passages_of(item_key: str) -> dict[str, Any]:
+    """Where-filter for every passage whose own ``item_key`` is ``item_key``.
+
+    ``chunk_index`` exists only on passages, so a bare record with the same
+    ``item_key`` (the article or bibliographic record) never matches.
+    """
+    return {"$and": [{"item_key": item_key}, {"chunk_index": {"$gte": 0}}]}
+
+
 class ChromaClient:
     """ChromaDB client for Zotero semantic search.
 
@@ -276,6 +295,10 @@ class ChromaClient:
     def item_keys_by_level(self) -> tuple[set[str], set[str]]:
         """Item keys with an article record, and item keys with passages, from SQLite."""
         return read_item_keys_by_level(self.persist_directory, self.collection_name)
+
+    def passage_bearing_keys(self) -> set[str]:
+        """Article-level records whose text is chunked: attachment and legacy records."""
+        return read_passage_bearing_keys(self.persist_directory, self.collection_name)
 
     def _collection_for_level(self, level: str):
         return self._passages() if level == PASSAGES and self.separate_passages() else self.collection
@@ -499,29 +522,27 @@ class ChromaClient:
         """
         found: list[tuple[str, str]] = []
         for collection in self.collections():
-            got = collection.get(where={"parent_item_key": item_key}, include=["documents"])
+            got = collection.get(where=_passages_of(item_key), include=["documents"])
             found.extend(zip(got["ids"], got["documents"] or []))
         return found
 
     def delete_item_chunks(self, item_key: str, group_id: int | None = None) -> None:
-        """Delete all passage chunks belonging to one item (chunked collections).
+        """Delete every passage ``<item_key>#<n>`` of one record key.
 
-        Passage chunks carry ``parent_item_key`` in their metadata; deleting by
-        that key clears every ``<item_key>#<n>`` entry for the item before its
-        chunks are re-upserted, so a document that shrank to fewer passages
-        never leaves orphaned chunks behind. No-op-safe on item-level
-        collections (nothing matches the filter).
+        Selects on the passage's own ``item_key``: an attachment's passages
+        for an attachment key, and legacy passages (keyed by their parent)
+        for a regular item's key. Bare records are never touched.
 
         Args:
-            item_key: Parent item whose chunks to delete.
+            item_key: Record key whose passages to delete.
             group_id: When given, restrict the delete to chunks attributed to
                 that library — the deletion pass passes its run scope so a
                 mixed-attribution chunk set (partial rewrite, key collision)
                 never loses another library's chunks.
         """
-        where: dict[str, Any] = {"parent_item_key": item_key}
+        where: dict[str, Any] = _passages_of(item_key)
         if group_id is not None:
-            where = {"$and": [{"parent_item_key": item_key}, {"group_id": int(group_id)}]}
+            where = {"$and": [*where["$and"], {"group_id": int(group_id)}]}
         try:
             for collection in self.collections():
                 collection.delete(where=where)
@@ -534,16 +555,13 @@ class ChromaClient:
         Called after an item's new passages ``<item_key>#0..keep-1`` have been
         upserted, so a document that shrank leaves no orphaned tail, while a
         failed re-embed leaves the old passages searchable instead of none.
-        On an index with passages in the article collection, also drops a bare
-        ``<item_key>`` document left by a pre-chunking index. Where passages
-        have their own collection, that record is the item's article vector.
+        The bare ``<item_key>`` record is never touched: in every layout it is
+        the record's current article-level vector (#826).
         """
-        where = {"$and": [{"parent_item_key": item_key}, {"chunk_index": {"$gte": int(keep)}}]}
+        where = {"$and": [{"item_key": item_key}, {"chunk_index": {"$gte": int(keep)}}]}
         try:
             for collection in self.collections():
                 collection.delete(where=where)
-            if not self.separate_passages():
-                self.collection.delete(ids=[item_key])
         except Exception as e:
             logger.warning(f"prune_item_chunks({item_key}) failed: {e}")
 
@@ -659,11 +677,17 @@ class ChromaClient:
             Metadata dictionary if the item is indexed, None otherwise
         """
         try:
+            found: dict[str, dict[str, Any]] = {}
             for collection, part in self._group_existing([doc_id, f"{doc_id}#0"]):
                 result = collection.get(ids=part, include=["metadatas"])
-                if result['ids'] and result['metadatas']:
-                    return result['metadatas'][0]
-            return None
+                for found_id, meta in zip(result["ids"] or [], result["metadatas"] or []):
+                    found[found_id] = meta
+            # The record itself, never the passage that happens to come back
+            # first: it is stored in insertion order, and the two differ in
+            # shape when a rewrite left old passages beside a new record (#826).
+            if doc_id in found:
+                return found[doc_id]
+            return next(iter(found.values()), None)
         except Exception:
             return None
 
@@ -683,6 +707,31 @@ class ChromaClient:
         except Exception:
             return set()
 
+    def get_metadatas(self, ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Stored metadata of every id in ``ids`` that exists, in as few reads as possible.
+
+        One bounded ``get`` per collection and 5000 ids (#368), for a scan
+        that needs many records' state. Raises on a ChromaDB error: reading
+        "nothing stored" from a failure would re-embed everything.
+        """
+        found: dict[str, dict[str, Any]] = {}
+        for collection, part in self._group_existing(ids):
+            for start in range(0, len(part), 5000):
+                result = collection.get(ids=part[start:start + 5000], include=["metadatas"])
+                for doc_id, meta in zip(result.get("ids", []), result.get("metadatas") or []):
+                    found[doc_id] = meta or {}
+        return found
+
+    def delete_records(self, ids: list[str]) -> None:
+        """Delete ``ids`` from every collection, wherever they are. Raises on a ChromaDB error."""
+        for collection in self.collections():
+            for start in range(0, len(ids), 500):
+                collection.delete(ids=ids[start:start + 500])
+
+    def legacy_passage_keys(self) -> set[str]:
+        """Item keys that still have legacy passages; see :func:`read_index_layout`."""
+        return set(read_legacy_passage_ids(self.persist_directory, self.collection_name))
+
     def item_group_ids(self, item_keys: list[str]) -> dict[str, int]:
         """The library (``group_id``) of each indexed item in ``item_keys`` that has one.
 
@@ -699,7 +748,7 @@ class ChromaClient:
                     for doc_id, meta in zip(result.get("ids", []), result.get("metadatas") or []):
                         group_id = (meta or {}).get("group_id")
                         if group_id is not None:
-                            groups.setdefault(doc_id.split("#", 1)[0], int(group_id))
+                            groups.setdefault(record_key(doc_id), int(group_id))
             return groups
         except Exception as e:
             logger.debug(f"Error reading item libraries: {e}")
@@ -1014,6 +1063,132 @@ def _passage_item_count(con: sqlite3.Connection, segment: str) -> int | None:
     return None
 
 
+# Passages written before #826 are the only passages that carry ``title``. The
+# partial index on (key, string_value) makes this a walk over titled records
+# alone, not over every passage. Both collections: an unmigrated index keeps
+# its passages in the article collection.
+_LEGACY_PASSAGES_FROM = """
+FROM embedding_metadata m
+JOIN embeddings e ON e.id = m.id
+JOIN segments s ON e.segment_id = s.id
+JOIN collections c ON s.collection = c.id
+WHERE m.key = 'title' AND m.string_value IS NOT NULL
+  AND s.scope = 'METADATA' AND c.name IN (?, ?) AND instr(e.embedding_id, '#') > 0
+"""
+
+
+def _legacy_passage_counts(con: sqlite3.Connection, collection_name: str) -> tuple[int, int]:
+    """``(legacy passages, items they belong to)``, in either collection."""
+    names = (collection_name, passage_collection_name(collection_name))
+    return con.execute(
+        "SELECT count(*), count(DISTINCT substr(e.embedding_id, 1, instr(e.embedding_id, '#') - 1)) "
+        + _LEGACY_PASSAGES_FROM,
+        names,
+    ).fetchone()
+
+
+# Bare records only: a legacy passage carries ``title`` too, hence the id test.
+_BARE_KEY_FROM = """
+FROM embedding_metadata m
+JOIN embeddings e ON e.id = m.id
+JOIN segments s ON e.segment_id = s.id
+JOIN collections c ON s.collection = c.id
+WHERE m.key = ? AND m.string_value IS NOT NULL
+  AND s.scope = 'METADATA' AND c.name = ? AND instr(e.embedding_id, '#') = 0
+"""
+
+_BARE_KEY_COUNT = "SELECT count(*)" + _BARE_KEY_FROM
+
+# Kinds are exclusive: a record with ``file_stamp`` is an attachment record
+# even if it still carries a ``title``; the rest with a ``title`` are legacy.
+_NO_FILE_STAMP = """
+  AND NOT EXISTS (SELECT 1 FROM embedding_metadata f WHERE f.id = e.id AND f.key = 'file_stamp')
+"""
+
+_LEGACY_RECORDS = _BARE_KEY_COUNT + _NO_FILE_STAMP
+
+_LEGACY_TEXT_RECORDS = _LEGACY_RECORDS + """
+  AND EXISTS (SELECT 1 FROM embedding_metadata h
+              WHERE h.id = e.id AND h.key = 'has_fulltext' AND h.bool_value = 1)
+"""
+
+
+def _record_kind_counts(con: sqlite3.Connection, collection_name: str) -> tuple[int, int, int]:
+    """``(attachment records, legacy records, legacy records with text)`` among the article collection's bare ids.
+
+    An attachment record carries ``file_stamp``; a legacy record carries
+    ``title`` (#826). Both keys have a partial index on their string value,
+    so each count walks only the records that carry the key. A legacy record
+    has text when it was built with full text.
+    """
+    attachments = con.execute(_BARE_KEY_COUNT, ("file_stamp", collection_name)).fetchone()[0]
+    legacy = con.execute(_LEGACY_RECORDS, ("title", collection_name)).fetchone()[0]
+    legacy_text = con.execute(_LEGACY_TEXT_RECORDS, ("title", collection_name)).fetchone()[0]
+    return attachments, legacy, legacy_text
+
+
+# An attachment record or passage has a ``parent_hint`` once it is written (""
+# for a standalone file): the hint is a key of its own, so one that is absent
+# was written before hints existed, or not yet backfilled (#826).
+_NO_PARENT_HINT = """
+  AND NOT EXISTS (SELECT 1 FROM embedding_metadata p WHERE p.id = e.id AND p.key = 'parent_hint')
+"""
+
+_ATTACHMENTS_WITHOUT_HINT = _BARE_KEY_COUNT + _NO_PARENT_HINT
+
+_ATTACHMENTS_WITHOUT_LIBRARY = _BARE_KEY_COUNT + """
+  AND NOT EXISTS (SELECT 1 FROM embedding_metadata g WHERE g.id = e.id AND g.key = 'group_id')
+"""
+
+# Passages of the item-keyed index: a legacy passage carries ``title`` and is
+# keyed by its parent, so it needs no hint.
+_PASSAGE_ROWS_WITHOUT_HINT = """
+FROM embeddings e
+JOIN segments s ON e.segment_id = s.id
+JOIN collections c ON s.collection = c.id
+WHERE s.scope = 'METADATA' AND c.name IN (?, ?) AND instr(e.embedding_id, '#') > 0
+  AND NOT EXISTS (SELECT 1 FROM embedding_metadata t WHERE t.id = e.id AND t.key = 'title')
+""" + _NO_PARENT_HINT
+
+_LIBRARY_IDS = """
+SELECT DISTINCT m.int_value
+FROM embedding_metadata m
+JOIN embeddings e ON e.id = m.id
+JOIN segments s ON e.segment_id = s.id
+JOIN collections c ON s.collection = c.id
+WHERE m.key = 'group_id' AND m.int_value IS NOT NULL
+  AND s.scope = 'METADATA' AND c.name = ? AND instr(e.embedding_id, '#') = 0
+"""
+
+
+def read_legacy_passage_ids(persist_directory: str, collection_name: str) -> dict[str, list[tuple[str, str]]]:
+    """``{item key: [(passage id, collection name)]}`` of the legacy passages, read-only from SQLite.
+
+    Passages are in chunk order. See :func:`read_index_layout` for what makes
+    a passage legacy.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return {}
+    names = (collection_name, passage_collection_name(collection_name))
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        rows = con.execute("SELECT e.embedding_id, c.name " + _LEGACY_PASSAGES_FROM, names).fetchall()
+    finally:
+        con.close()
+    found: dict[str, list[tuple[str, str]]] = {}
+    for doc_id, name in rows:
+        found.setdefault(record_key(doc_id), []).append((doc_id, name))
+
+    def chunk_number(passage: tuple[str, str]) -> int:
+        tail = passage[0].rsplit("#", 1)[1]
+        return int(tail) if tail.isdigit() else -1
+
+    for passages in found.values():
+        passages.sort(key=chunk_number)
+    return found
+
+
 def read_index_layout(persist_directory: str, collection_name: str) -> dict[str, Any]:
     """Count an index's records per level from SQLite, read-only.
 
@@ -1026,6 +1201,11 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
     empty; once it holds records the index has been split, so any left behind
     are reported but no longer decide where passages go. ``passage_items`` is
     None when ChromaDB's tables could not be read for it.
+
+    ``legacy_passages`` counts the passages written before the item-keyed
+    index (#826), keyed by their parent item: they carry ``title``, which no
+    record written since does. ``legacy_passage_items`` is how many items
+    they belong to.
     """
     layout: dict[str, Any] = {
         "article_records": 0,
@@ -1033,6 +1213,16 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
         "passage_items": 0,
         "unmigrated_passages": 0,
         "passages_in_article_collection": 0,
+        "legacy_passages": 0,
+        "legacy_passage_items": 0,
+        "attachment_records": 0,
+        "legacy_records": 0,
+        "attachments_without_parent_hint": 0,
+        "passages_without_parent_hint": 0,
+        "attachments_without_library": 0,
+        "library_ids": [],
+        "article_text_items": 0,
+        "article_level_items": 0,
         "passage_collection_exists": False,
         "article_collection_id": None,
         "passage_collection_id": None,
@@ -1051,9 +1241,32 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
     try:
         article_id, bare, in_articles = _level_counts(con, collection_name)
         passage_id, in_passages, passage_items = _passage_counts(con, passage_collection_name(collection_name))
+        legacy_passages, legacy_items = _legacy_passage_counts(con, collection_name)
+        attachments, legacy_records, legacy_text = _record_kind_counts(con, collection_name)
+        unhinted = con.execute(_ATTACHMENTS_WITHOUT_HINT, ("file_stamp", collection_name)).fetchone()[0]
+        unhinted_passages = con.execute(
+            "SELECT count(*) " + _PASSAGE_ROWS_WITHOUT_HINT, (collection_name, passage_collection_name(collection_name))
+        ).fetchone()[0]
+        unplaced = con.execute(_ATTACHMENTS_WITHOUT_LIBRARY, ("file_stamp", collection_name)).fetchone()[0]
+        library_ids = sorted(row[0] for row in con.execute(_LIBRARY_IDS, (collection_name,)))
     finally:
         con.close()
     layout.update(
+        attachments_without_parent_hint=unhinted,
+        passages_without_parent_hint=unhinted_passages,
+        attachments_without_library=unplaced,
+        library_ids=library_ids,
+        attachment_records=attachments,
+        legacy_records=legacy_records,
+        # Every attachment record and every legacy record, whether or not it
+        # has text; the level note falls back to it on a legacy index.
+        article_level_items=attachments + legacy_records,
+        # Records that stand for a file's text at article level, to compare
+        # with the keys that have passages: an attachment record, or a legacy
+        # record built with full text (#826).
+        article_text_items=attachments + legacy_text,
+        legacy_passages=legacy_passages,
+        legacy_passage_items=legacy_items,
         article_records=bare,
         passage_records=in_articles + in_passages,
         passage_items=passage_items,
@@ -1235,12 +1448,14 @@ def level_item_counts(
 ) -> dict[str, Any]:
     """Items per level for status, and on an unmigrated index what migrating costs.
 
-    An article record is one item, so ``article_items`` is the article record
-    count. ``migration`` is there only while passages are still in the article
-    collection, and is what the status note about ``migrate-index`` reads.
+    ``article_items`` is the items that have an article record of their own:
+    every bare record except an attachment's (#826), so a file's record is not
+    counted as a second item. ``migration`` is there only while passages are
+    still in the article collection, and is what the status note about
+    ``migrate-index`` reads.
     """
     counts: dict[str, Any] = {
-        "article_items": layout["article_records"],
+        "article_items": layout["article_records"] - layout["attachment_records"],
         "passage_items": layout.get("passage_items"),
     }
     if layout["unmigrated_passages"]:
@@ -1291,13 +1506,45 @@ def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tup
             """,
             (passage_collection_name(collection_name),),
         ):
-            key = doc_id.split("#", 1)[0]
+            key = record_key(doc_id)
             found[key] = found.get(key, 0) + 1
             if n_chunks is not None:
                 expected[key] = n_chunks
     finally:
         con.close()
     return articles, {key for key, count in found.items() if count >= expected.get(key, 1)}
+
+
+def read_passage_bearing_keys(persist_directory: str, collection_name: str) -> set[str]:
+    """Article-level records that can have passages, read-only from SQLite.
+
+    Passages are cut from a file's text (#826): an attachment record (it has
+    ``file_stamp``) has them, and so does a legacy record built with full
+    text (``has_fulltext`` true). A bibliographic record never has any, so it
+    is never missing them.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return set()
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        return {
+            row[0]
+            for row in con.execute(
+                """
+                SELECT DISTINCT e.embedding_id
+                FROM embeddings e
+                JOIN segments s ON e.segment_id = s.id
+                JOIN collections c ON s.collection = c.id
+                JOIN embedding_metadata m ON m.id = e.id
+                WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id NOT LIKE '%#%'
+                  AND (m.key = 'file_stamp' OR (m.key = 'has_fulltext' AND m.bool_value = 1))
+                """,
+                (collection_name,),
+            )
+        }
+    finally:
+        con.close()
 
 
 def read_collection_status(

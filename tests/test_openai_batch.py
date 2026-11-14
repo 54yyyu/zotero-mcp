@@ -266,7 +266,7 @@ def test_batch_and_realtime_indexing_share_prepared_payload(monkeypatch):
             "creators": [{"firstName": "Ada", "lastName": "Lovelace", "creatorType": "author"}],
             "tags": [{"tag": "embeddings"}, {"tag": "batch"}],
             "fulltext": "Full text must be included in both indexing paths.",
-            "fulltextSource": "zotero_web_api",
+            "fulltextSource": "web-api:attachment:PDF00001",
             "date": "2026",
             "DOI": "10.1234/example",
         },
@@ -304,13 +304,16 @@ def test_batch_and_realtime_indexing_share_prepared_payload(monkeypatch):
     )
 
     realtime_payload = realtime_client.upserts[0]
-    assert captured["records"] == [{
-        "id": realtime_payload["ids"][0],
-        "document": realtime_payload["documents"][0],
-        "metadata": realtime_payload["metadatas"][0],
-    }]
-    assert "Full text must be included" in captured["records"][0]["document"]
-    assert captured["records"][0]["metadata"]["has_fulltext"] is True
+    assert captured["records"] == [
+        {"id": doc_id, "document": document, "metadata": metadata}
+        for doc_id, document, metadata in zip(
+            realtime_payload["ids"], realtime_payload["documents"], realtime_payload["metadatas"]
+        )
+    ]
+    # The item's metadata and its file are separate records (#826).
+    assert [r["id"] for r in captured["records"]] == ["ITEM1", "PDF00001"]
+    assert "Full text must be included" not in captured["records"][0]["document"]
+    assert captured["records"][1]["document"] == "Full text must be included in both indexing paths."
 
 
 def test_chroma_client_upsert_embeddings_passes_precomputed_vectors():
@@ -477,9 +480,10 @@ def test_import_openai_batch_evicts_cached_fulltext(tmp_path, monkeypatch):
     openai_batch.write_jsonl(
         records_path,
         [
-            {"id": "A", "document": "doc A", "metadata": {"title": "A"}},
-            {"id": "B#0", "document": "doc B0", "metadata": {"title": "B"}},
-            {"id": "B#1", "document": "doc B1", "metadata": {"title": "B"}},
+            # Files' records: their text is what the cache holds (#826).
+            {"id": "A", "document": "doc A", "metadata": {"item_key": "A", "file_stamp": "1:1"}},
+            {"id": "B#0", "document": "doc B0", "metadata": {"item_key": "B", "chunk_index": 0, "n_chunks": 2}},
+            {"id": "B#1", "document": "doc B1", "metadata": {"item_key": "B", "chunk_index": 1, "n_chunks": 2}},
         ],
     )
     output_path = tmp_path / "batch-001-records-output.jsonl"

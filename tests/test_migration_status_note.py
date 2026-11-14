@@ -443,3 +443,22 @@ def test_cost_wording_never_guesses_whether_it_is_billed(index, model, extra):
     assert "With a paid embedding API" in out
     assert "local model" not in out
     assert "costs money" not in out
+
+
+@pytest.mark.parametrize("which", ["db-status", "zotero-cli"])
+def test_status_counts_items_not_attachment_records_on_an_item_keyed_index(index, monkeypatch, capsys, which):
+    """An item-keyed index (#826) holds a record per item and one per file: status counts the items."""
+    directory, config = index
+    _write(_client(directory, legacy=False), [
+        ("BIB1", {"date_modified": "d"}),
+        ("BIB2", {"date_modified": "d"}),
+        ("ATT1", {"date_modified": "d", "file_stamp": "1:1"}),
+        ("ATT1#0", {"chunk_index": 0, "n_chunks": 1}),
+    ])
+
+    out = _cli_status(monkeypatch, capsys, config, directory, which)
+
+    assert "Document count: 4" in out
+    assert "Items with article records: 2" in out
+    assert "Items with passages: 1" in out
+    assert "**Items with Article Records:** 2" in _status_tool()

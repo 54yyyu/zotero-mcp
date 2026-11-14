@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+
+### Changed
+
+- **Web-mode filtered searches ask the Zotero API once per library instead of filtering after the search** (#826). Attachment records and passages store their parent's key as `parent_hint`, used only to narrow a filter on `item_type`, `tags` or `item_key` to the matching items (one `format=keys` request per library); hits are still resolved and checked against Zotero, so a stale hint can at worst miss a file until it is rewritten. Other filters behave as before. Thanks @mronkko.
+- **The index keys every record by its own Zotero key and stores nothing it can look up** (#826). An item has one record built from its fields; each attachment has its own record and passages (`KEY#n`) built from its file. Parent, title, creators, tags and item type are no longer stored: search resolves each hit to its parent item in Zotero and collapses the results by parent. Moving an attachment to another item, Create Parent Item and metadata edits therefore need no re-index. A result shows the parent item and, for a hit in a file, names it in the Location line (`Attachment: ...`). An item still has one indexed file, the one earlier versions chose. Thanks @mronkko.
+- **Filters are evaluated against current Zotero data, with the same syntax as before** (#826). Records no longer store a title, tags or the like, so a filter on `item_type`, `item_key`, `title`, `date`, `creators`, `publication`, `url`, `doi`, `tags`, `citation_key`, `date_added`, `date_modified` or `has_fulltext` is checked against the item as Zotero has it now, with the values in the formats the index used to store and ChromaDB's operator rules, so an edit applies to the next search without re-indexing. `tags` is still the space-joined tag string. `has_fulltext` is true when the item has indexed text, and the old `"failed"` value is not produced for new records. Thanks @mronkko.
+- **Untouched items keep their old records until `update-db --force-rebuild`.** Changed items are rewritten in the new shape, and their old passages go only once all the new records are in. An item with neither a readable file nor a `.zotero-ft-cache` for a file the database selects keeps its old records rather than losing them. A file that is merely out of reach (unmounted drive, files kept on demand) is read from its own `.zotero-ft-cache` when it has one. Thanks @mronkko.
+- **`repair-db` accepts an attachment's record beside its passages** (#826). Thanks @mronkko.
+- **Semantic search needs `chromadb>=1.0.2`** (#826). The item-keyed index clears stale metadata with `None`, which 1.0.0 and 1.0.1 reject. Thanks @mronkko.
+
+### Fixed
+
+- **The local `--fulltext` scan notices metadata edits** (#826). Changing a title or creator re-embeds that item's record, not its files. Thanks @mronkko.
+- **The `.zotero-ft-cache` fallback no longer reads a sibling's cache** (#826). With several attachments, text was taken from the first one that had a cache instead of the one being indexed. Thanks @mronkko.
+
 ## [0.17.1] - 2026-11-12
 
 ### Added
