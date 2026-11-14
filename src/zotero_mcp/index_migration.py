@@ -276,13 +276,13 @@ class LocalSources:
         """The metadata text Zotero's current record of ``key`` gives, or None if it was not looked up."""
         return self._prefixes.get(key)
 
-    def remember_stamp(self, attachment_key: str) -> None:
-        """Keep the live file's stamp, where a later update finds it to tell a file changed since the re-key."""
-        from . import fulltext_cache
+    def remember_hash(self, attachment_key: str) -> None:
+        """Hash the live file and keep the digest in the hash cache, where a later update finds it."""
+        from . import file_hash
 
         target = self._targets.get(attachment_key)
         if target is not None:
-            fulltext_cache.remember_rekeyed_stamp(target.key, target.file_stamp, config_path=self.config_path)
+            file_hash.get_file_hash(target.key, target.path, target.file_stamp, config_path=self.config_path)
 
 
 def _live_prefix(item: Any) -> str:
@@ -406,27 +406,30 @@ def rekey_legacy_passages(
     old ids deleted, so an interrupted run finds either both or only the new
     ones, and a rerun carries on. Nothing is embedded.
     """
+    from . import file_hash
+
     items = legacy_items(persist_dir, collection_name)
     report.legacy_items = len(items)
     report.legacy_passages = sum(len(item.passages) for item in items)
-    for number, item in enumerate(items, 1):
-        attachment = sources.attachment_for(item)
-        ids = [doc_id for doc_id, _name in item.passages]
-        if attachment is UNKNOWN:
-            report.skipped_items += 1
-            report.skipped_passages += len(ids)
-        elif attachment is None:
-            report.dropped_items += 1
-            report.dropped_passages += len(ids)
-            if client is not None:
-                client.delete_records(ids)
-        else:
-            report.rekeyed_items += 1
-            report.rekeyed_passages += len(ids)
-            if client is not None:
-                _rekey_item(client, sources, item, attachment, ids)
-        if client is not None and number % 200 == 0:
-            progress(f"  re-keyed {number}/{len(items)} items")
+    with file_hash.batched(config_path):
+        for number, item in enumerate(items, 1):
+            attachment = sources.attachment_for(item)
+            ids = [doc_id for doc_id, _name in item.passages]
+            if attachment is UNKNOWN:
+                report.skipped_items += 1
+                report.skipped_passages += len(ids)
+            elif attachment is None:
+                report.dropped_items += 1
+                report.dropped_passages += len(ids)
+                if client is not None:
+                    client.delete_records(ids)
+            else:
+                report.rekeyed_items += 1
+                report.rekeyed_passages += len(ids)
+                if client is not None:
+                    _rekey_item(client, sources, item, attachment, ids)
+            if client is not None and number % 200 == 0:
+                progress(f"  re-keyed {number}/{len(items)} items")
 
 
 def _rekey_item(client: Any, sources: LocalSources, item: LegacyItem, attachment: str, ids: list[str]) -> None:
@@ -446,7 +449,7 @@ def _rekey_item(client: Any, sources: LocalSources, item: LegacyItem, attachment
             embeddings=[r["embedding"] for r in written],
         )
         _after_rekey_upsert()
-        sources.remember_stamp(attachment)
+        sources.remember_hash(attachment)
     # The article record says its passages moved, so they are not "missing".
     # The whole metadata goes back: not every ChromaDB version merges.
     stored = client.get_metadatas([item.key]).get(item.key)

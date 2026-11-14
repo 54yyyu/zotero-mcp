@@ -547,9 +547,12 @@ def test_an_explicit_update_writes_only_the_missing_records_not_the_passages(fre
     assert len(StrictEmbedding.seen) == 7 + len(EXTRA_FILES) + len(extra_passages)  # never an old passage
     attachments = {k: after[ARTICLES][k][0] for k in [*fake_zotero.LARGEST.values(), *EXTRA_FILES]}
     assert all(
-        set(m) == {"item_key", "group_id", "date_modified", "file_stamp", "parent_hint"} for m in attachments.values()
+        set(m) == {"item_key", "group_id", "date_modified", "file_stamp", "parent_hint", "file_hash"}
+        for m in attachments.values()
     )
     assert {m["parent_hint"] for m in attachments.values()} == set(fake_zotero.LARGEST)
+    # Each file's content hash (#495): distinct files, so none was copied from another.
+    assert len({m["file_hash"] for m in attachments.values()}) == len(attachments)
     # Up to date from now on, for every kind of run.
     StrictEmbedding.seen.clear()
     library.reads.clear()

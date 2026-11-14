@@ -5,6 +5,7 @@ a new embedding fails the test. HOME, Path.home and the config path point into
 tmp_path, and the Zotero side is a fake reader.
 """
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -26,7 +27,7 @@ import numpy as np  # noqa: E402
 from _scan_fakes import ScanReader, target  # noqa: E402
 from chromadb.api.models.CollectionCommon import CollectionCommon  # noqa: E402
 
-from zotero_mcp import fulltext_cache, index_migration  # noqa: E402
+from zotero_mcp import file_hash, index_migration  # noqa: E402
 from zotero_mcp.chroma_client import ChromaClient, read_index_layout  # noqa: E402
 from zotero_mcp.index_migration import LocalSources, file_text_offset, migrate_index  # noqa: E402
 from zotero_mcp.local_db import ExtractionTarget  # noqa: E402
@@ -211,7 +212,7 @@ def test_a_split_index_is_rekeyed_to_the_attachment_without_touching_a_vector(in
     assert read_index_layout(directory, NAME)["legacy_passages"] == 0
 
 
-def test_rekeying_remembers_the_files_stamp(index, tmp_path):
+def test_rekeying_keeps_the_files_hash_in_the_hash_cache(index, tmp_path):
     directory, config = index
     _seed_split(directory)
     path = tmp_path / "file.pdf"
@@ -222,7 +223,8 @@ def test_rekeying_remembers_the_files_stamp(index, tmp_path):
 
     migrate_index(config, sources=_sources(config, targets=[live]), **QUIET)
 
-    assert fulltext_cache.rekeyed_stamps(config_path=config) == {ATT: "1:8"}
+    path.unlink()
+    assert file_hash.get_file_hash(ATT, path, "1:8", config_path=config) == hashlib.sha256(b"the file").hexdigest()
 
 
 def test_pre_0_17_chunked_index_is_split_and_rekeyed_in_one_run(index):
@@ -343,7 +345,7 @@ def test_dry_run_creates_no_cache_file(index, tmp_path):
 
     migrate_index(config, dry_run=True, sources=_sources(config, targets=[live]), **QUIET)
 
-    assert _all_files(tmp_path) == before, "no stamp or fulltext cache file, nor anything else, was written"
+    assert _all_files(tmp_path) == before, "no hash or fulltext cache file, nor anything else, was written"
 
 
 def test_a_local_record_without_a_stored_fingerprint_is_rekeyed_when_one_file_is_selected(index):

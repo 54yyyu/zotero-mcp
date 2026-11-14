@@ -204,7 +204,7 @@ def test_a_file_changed_since_the_migration_is_a_real_change(world, tmp_path):
     reader = _reader()
     reader.targets[1] = [_live(path, "1:8")]
     world.seed_pre_0_17()
-    world.migrate(reader)  # records the file's stamp "1:8"
+    world.migrate(reader)  # hashes the file at its stamp "1:8"
     before = _passage_vectors(world)
     path.write_bytes(b"the file, edited")
     reader.targets[1] = [_live(path, "2:16")]

@@ -499,6 +499,7 @@ def test_a_file_on_this_machine_gets_the_local_stamp(env, monkeypatch, tmp_path)
 
     stored = meta(search, "PDFAAAAA")
     assert stored["file_stamp"] == f"{stat.st_mtime_ns}:{stat.st_size}"
+    assert stored["file_hash"]
 
 
 def test_a_replaced_local_file_is_embedded_again(env, monkeypatch, tmp_path):

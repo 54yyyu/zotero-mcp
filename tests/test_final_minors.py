@@ -60,3 +60,28 @@ def test_deleting_records_is_scoped_to_the_runs_library(search):
     stored = set(search.chroma_client.collection.get(include=[])["ids"])
     assert stored == {"THEIRS01"}, "another library's record with a colliding key is left alone"
     assert removed == 1
+
+
+def test_the_completeness_check_of_a_copy_source_reads_no_documents_or_vectors(search, monkeypatch):
+    search.chroma_client.upsert_embeddings(
+        documents=["a", "p0", "p1"],
+        metadatas=[
+            {"item_key": "ATT00001", "group_id": 0, "date_modified": "", "file_stamp": "1:1", "file_hash": "ab" * 32},
+            {"item_key": "ATT00001", "group_id": 0, "chunk_index": 0, "n_chunks": 2},
+            {"item_key": "ATT00001", "group_id": 0, "chunk_index": 1, "n_chunks": 2},
+        ],
+        ids=["ATT00001", "ATT00001#0", "ATT00001#1"],
+        embeddings=[[1.0, 0.0]] * 3,
+    )
+    includes = []
+    from chromadb.api.models.Collection import Collection
+
+    original = Collection.get
+    monkeypatch.setattr(
+        Collection, "get", lambda self, *a, **kw: includes.append(kw.get("include")) or original(self, *a, **kw)
+    )
+
+    usable = search._hash_sources({"ab" * 32}, want_passages=True)
+
+    assert usable == {"ab" * 32: ["ATT00001"]}
+    assert includes and all("documents" not in (inc or []) and "embeddings" not in (inc or []) for inc in includes)

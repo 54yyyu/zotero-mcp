@@ -530,6 +530,7 @@ def _attachment_unit(
     text: str,
     *,
     file_stamp: str,
+    file_hash: str | None = None,
     date_modified: str | None = "",
     group_id: int | None = None,
     owner_key: str | None = None,
@@ -547,6 +548,7 @@ def _attachment_unit(
         "unit": UNIT_ATTACHMENT,
         "text": text or "",
         "file_stamp": file_stamp,
+        "file_hash": file_hash,
         "date_modified": date_modified or "",
         "group_id": group_id,
         "owner_key": owner_key,
@@ -642,6 +644,16 @@ def _parent_hint(owner_key: str | None) -> str:
     written before hints existed, so a known absence needs a value (#826).
     """
     return owner_key or ""
+
+
+def _complete_passages(passages: list[dict[str, Any]] | None) -> bool:
+    """Whether ``passages`` are every passage of their record: ``chunk_index`` 0..n_chunks-1."""
+    if not passages:
+        return False
+    counts = {(p.get("metadata") or {}).get("n_chunks") for p in passages}
+    if len(counts) != 1 or not isinstance(n := next(iter(counts)), int) or n < 1:
+        return False
+    return {(p.get("metadata") or {}).get("chunk_index") for p in passages} == set(range(n)) and len(passages) == n
 
 
 class _HeldText:
@@ -1645,6 +1657,9 @@ class ZoteroSemanticSearch:
     # {item key: {"group_id", "wanted": [attachment keys]}} (#826). Set per run;
     # see _settle_legacy_passages.
     _legacy_settle: dict[str, dict[str, Any]] | None = None
+    # hash -> key of the first file with those bytes this run writes; later
+    # files with the same bytes copy from it (#495). Reset per run.
+    _run_hash_first: dict[str, str] | None = None
     # Record keys a full local scan wants indexed, for the deletion pass;
     # None when the scan did not produce a complete set.
     _scan_desired_keys: set[str] | None = None
@@ -2613,6 +2628,8 @@ class ZoteroSemanticSearch:
         Also sets ``_scan_desired_keys``, every record key this library should
         have, for the deletion pass, when the scan covered the whole library.
         """
+        from . import file_hash
+
         check = chroma_client is not None and not force_rebuild
         self._records_held = 0
         priority_tag = ",".join(reader.attachment_priority)
@@ -2677,11 +2694,11 @@ class ZoteroSemanticSearch:
 
         stamps_seen: dict[str, str] | None = None
 
-        def rekeyed_stamps() -> dict[str, str]:
-            """The file stamps the re-key recorded, read when first needed."""
+        def hashed_stamps() -> dict[str, str]:
+            """The file stamps the hash cache last saw, read when first needed."""
             nonlocal stamps_seen
             if stamps_seen is None:
-                stamps_seen = fulltext_cache.rekeyed_stamps(self.config_path)
+                stamps_seen = file_hash.known_stamps(self.config_path)
             return stamps_seen
 
         def selected_keys(item: Any) -> list[str]:
@@ -2709,7 +2726,7 @@ class ZoteroSemanticSearch:
                 current_keys.add(target.key)
             elif check and (
                 action := self._passages_only_action(
-                    target.key, on_record, target.file_stamp, rekeyed_stamps(), gap
+                    target.key, on_record, target.file_stamp, hashed_stamps(), gap
                 )
             ):
                 # Its passages are there and its file has not changed; only the
@@ -2835,7 +2852,30 @@ class ZoteroSemanticSearch:
             # Parse the files. With extraction_workers == 1 a sequential
             # walk; above 1 a process pool, results arriving out of order.
             pending = {unit["key"]: (unit, target) for unit, target in planned if target is not None}
-            to_extract = [target for _unit, target in pending.values()]
+            # Hash the files first: a file whose bytes are already indexed (or
+            # come earlier in this run) is copied, not parsed or embedded
+            # (#495). The digests of a slice are written to the cache at once.
+            files = list(pending.values())
+            for start in range(0, len(files), _SCAN_SLICE):
+                part = files[start:start + _SCAN_SLICE]
+                # Hashing reads every byte of every new or changed file: say so.
+                _report(f"\r  Hashing files: {start}/{len(files)}{' ' * 40}")
+                with file_hash.batched(self.config_path):
+                    for unit, target in part:
+                        if target.ft_cache:
+                            # The cache's bytes are not the file's: a hash of
+                            # them must never be a reuse source or match one.
+                            unit["file_hash"] = None
+                            continue
+                        unit["file_hash"] = file_hash.get_file_hash(
+                            target.key, target.path, target.file_stamp, config_path=self.config_path
+                        )
+                self._mark_reusable([unit for unit, _target in part], look_in_index=check)
+            if files:
+                _report(f"\r  Hashing files: {len(files)}/{len(files)}{' ' * 40}")
+            to_extract = [
+                target for unit, target in files if not unit.get("reuse_from") and not unit.get("refresh_only")
+            ]
             failed_now = 0
             done = 0
             for att_key, result in reader.extract_targets(to_extract):
@@ -2862,7 +2902,7 @@ class ZoteroSemanticSearch:
 
         units = [
             unit for unit, target in planned
-            if target is None or unit["text"]
+            if target is None or unit["text"] or unit.get("reuse_from") or unit.get("refresh_only")
         ]
         try:
             sys.stderr.write(f"\r{' ' * _term_width(120)}\r")
@@ -3483,8 +3523,9 @@ class ZoteroSemanticSearch:
         automatic one ``"hold"``s the file. None is the normal path: not a
         passage-only key, passages missing, or a real change. ``stored`` is
         the metadata of the key's record, else its first passage; ``gap`` the
-        levels the index lacks for it. The file has changed when the
-        migration recorded it (``stamps``) under another local stamp.
+        levels the index lacks for it. The file has changed when the hash
+        cache saw it (the migration hashes what it re-keys) under another
+        local stamp.
         """
         if not stored or "chunk_index" not in stored:
             return None
@@ -3958,7 +3999,7 @@ class ZoteroSemanticSearch:
                     if not gap:
                         return None
                     unit["_index_levels"] = gap
-                elif action := self._passages_only_action(akey, stored, stamp, rekeyed_stamps(), gap):
+                elif action := self._passages_only_action(akey, stored, stamp, hashed_stamps(), gap):
                     # Its passages are there and its file has not changed; only
                     # the attachment record is missing. An automatic run leaves
                     # it, an explicit one writes the record, never the passages.
@@ -3986,9 +4027,12 @@ class ZoteroSemanticSearch:
                     selected.discard(akey)
                 return None
             unit["text"] = text
+            if located:
+                unit["file_hash"] = file_hash.get_file_hash(akey, located[1], stamp, config_path=self.config_path)
             return unit
 
         standalone_units: list[dict[str, Any]] = []
+        from . import file_hash
 
         # Items whose legacy passages wait for their files' records.
         pending_legacy: set[str] = set()
@@ -4000,13 +4044,14 @@ class ZoteroSemanticSearch:
 
         stamps_seen: dict[str, str] | None = None
 
-        def rekeyed_stamps() -> dict[str, str]:
+        def hashed_stamps() -> dict[str, str]:
             nonlocal stamps_seen
             if stamps_seen is None:
-                stamps_seen = fulltext_cache.rekeyed_stamps(self.config_path)
+                stamps_seen = file_hash.known_stamps(self.config_path)
             return stamps_seen
 
-        with self._local_file_stamps() as locate:
+        # The digests of this run's files are written to the cache once.
+        with self._local_file_stamps() as locate, file_hash.batched(self.config_path):
             for item, chosen in chosen_by_item:
                 if not chosen:
                     continue
@@ -4442,6 +4487,9 @@ class ZoteroSemanticSearch:
         if article:
             metadata = _own_metadata(key, group_id, item.get("date_modified"))
             metadata["file_stamp"] = item["file_stamp"]
+            # Always present, None when unknown: ChromaDB's upsert merges
+            # metadata, so an omitted key would keep the previous file's hash.
+            metadata["file_hash"] = item.get("file_hash") or None
             # Always present, "" when standalone: upsert merges, so a file that
             # lost its parent must say so.
             metadata["parent_hint"] = _parent_hint(item.get("owner_key"))
@@ -4511,6 +4559,211 @@ class ZoteroSemanticSearch:
                 ))
         return units
 
+    # --- reuse of vectors by file hash (#495) ---------------------------------
+
+    def _hash_sources(self, hashes: set[str], want_passages: bool) -> dict[str, list[str]]:
+        """``{file_hash: [keys of indexed attachments with those bytes]}``, copyable ones only.
+
+        With passages wanted a source counts only if its passages are all
+        there; a half-written source would give a copy with holes. A read
+        error means no reuse, never a failed run.
+        """
+        finder = getattr(self.chroma_client, "find_by_file_hash", None)
+        if finder is None or not hashes:
+            return {}
+        try:
+            found = finder(sorted(hashes))
+            keys = sorted({key for sources in found.values() for key in sources})
+            usable = set(keys)
+            if want_passages and keys:
+                read = self.chroma_client.read_copy_sources(keys, passages=True, vectors=False, documents=False)
+                usable = {key for key in keys if key in read and _complete_passages(read[key].get("passages"))}
+        except Exception as e:
+            logger.warning(f"Could not look up identical files in the index ({e}); embedding them normally.")
+            return {}
+        return {value: [key for key in sources if key in usable] for value, sources in found.items()}
+
+    def _mark_reusable(self, units: list[dict[str, Any]], *, look_in_index: bool) -> None:
+        """Mark the units whose file has the same bytes as one already indexed, or one written earlier this run.
+
+        Sets ``reuse_from`` (the source's key) on those, and ``reuse_deferred``
+        when the source is still to be written this run. A unit whose own
+        record already has its hash gets ``refresh_only`` instead. The first unit of a
+        run with a given hash is the one the others copy from. A unit that
+        only fills a missing level is left alone: its record is current.
+        """
+        candidates = [
+            unit for unit in units
+            if _is_attachment_unit(unit) and unit.get("file_hash")
+            and not unit.get("_index_levels") and not unit.get("_reuse_checked")
+        ]
+        if not candidates:
+            return
+        want_passages = self._chunking_enabled
+        if self._run_hash_first is None:
+            self._run_hash_first = {}
+        for start in range(0, len(candidates), _SCAN_SLICE):
+            part = candidates[start:start + _SCAN_SLICE]
+            indexed = self._hash_sources({u["file_hash"] for u in part}, want_passages) if look_in_index else {}
+            for unit in part:
+                unit["_reuse_checked"] = True
+                key, value = unit["key"], unit["file_hash"]
+                if key in indexed.get(value, ()):
+                    # Its own record has these bytes (and, with passages
+                    # wanted, all its passages): only the stamp moved, as when
+                    # a backup is restored. Nothing to parse or embed.
+                    unit["refresh_only"] = True
+                elif source := next((k for k in indexed.get(value, ()) if k != key), None):
+                    unit["reuse_from"] = source
+                elif (first := self._run_hash_first.get(value)) and first != key:
+                    unit["reuse_from"] = first
+                    unit["reuse_deferred"] = True
+                else:
+                    self._run_hash_first[value] = key
+
+    def _copied_records(
+        self, entry: dict[str, Any], source: dict[str, Any] | None, want_passages: bool
+    ) -> list[dict[str, Any]] | None:
+        """``entry``'s records as copies of ``source``'s, or None if the source cannot supply them.
+
+        The copy carries the source's text and vectors and the entry's own
+        state (key, library, dates, stamp). A source whose file has changed
+        since it was found no longer has the entry's hash, and is not copied.
+        """
+        article = (source or {}).get("article")
+        if not article or article["embedding"] is None or (article["metadata"] or {}).get("file_hash") != entry["file_hash"]:
+            return None
+        passages = (source or {}).get("passages") or []
+        if want_passages and not _complete_passages(passages):
+            return None
+        key, group_id = entry["key"], entry.get("group_id")
+        metadata = _own_metadata(key, group_id, entry.get("date_modified"))
+        metadata["file_stamp"] = entry["file_stamp"]
+        metadata["file_hash"] = entry["file_hash"]
+        # A manifest written before hints existed has no owner: no hint then.
+        hinted = "owner_key" in entry
+        if hinted:
+            metadata["parent_hint"] = _parent_hint(entry["owner_key"])
+        records = [{
+            "id": key, "document": article["document"], "embedding": article["embedding"], "metadata": metadata,
+        }]
+        if not want_passages:
+            return records
+        for passage in sorted(passages, key=lambda p: p["metadata"]["chunk_index"]):
+            pm = passage["metadata"]
+            cmeta: dict[str, Any] = {"item_key": key}
+            if group_id is not None:
+                cmeta["group_id"] = int(group_id)
+            cmeta.update(
+                chunk_index=pm["chunk_index"], n_chunks=pm["n_chunks"],
+                char_start=pm.get("char_start"), char_end=pm.get("char_end"),
+                # None clears a value a record of the same key had before (upsert merges).
+                page=pm.get("page"), section=pm.get("section"),
+            )
+            if hinted:
+                cmeta["parent_hint"] = _parent_hint(entry["owner_key"])
+            records.append({
+                "id": f"{key}#{pm['chunk_index']}", "document": passage["document"],
+                "embedding": passage["embedding"], "metadata": cmeta,
+            })
+        return records
+
+    def _copy_reused(
+        self, entries: list[dict[str, Any]], *, want_passages: bool
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, set[str]]:
+        """Write copies of their ``reuse_from`` sources for ``entries``.
+
+        Returns ``(copied entries, unresolved entries, records written, keys
+        that already had a record)``. An entry whose source is missing or
+        incomplete is unresolved and untouched; so is every entry of a slice
+        that failed to read or write. No provider is called.
+        """
+        copied: list[dict[str, Any]] = []
+        unresolved: list[dict[str, Any]] = []
+        written = 0
+        existing: set[str] = set()
+        for start in range(0, len(entries), 200):
+            part = entries[start:start + 200]
+            try:
+                sources = self.chroma_client.read_copy_sources(
+                    sorted({e["reuse_from"] for e in part}), passages=want_passages
+                )
+                built = [(e, self._copied_records(e, sources.get(e["reuse_from"]), want_passages)) for e in part]
+                records = [r for _e, rs in built if rs for r in rs]
+                good = [e for e, rs in built if rs]
+                unresolved.extend(e for e, rs in built if not rs)
+                if not records:
+                    continue
+                keys = [e["key"] for e in good]
+                had = self._existing_item_keys(keys)
+                with self._chroma_call_lock:
+                    self.chroma_client.upsert_embeddings(
+                        [r["document"] for r in records], [r["metadata"] for r in records],
+                        [r["id"] for r in records], [r["embedding"] for r in records],
+                    )
+                    self._prune_stale_chunks([r["metadata"] for r in records])
+            except Exception as e:
+                logger.warning(f"Could not copy {len(part)} identical file(s) from the index: {e}")
+                unresolved.extend(x for x in part if x not in copied and x not in unresolved)
+                continue
+            copied.extend(good)
+            written += len(records)
+            existing |= had
+        return copied, unresolved, written, existing
+
+    def _refresh_units(self, units: list[dict[str, Any]], stats: dict[str, Any]) -> list[dict[str, Any]]:
+        """Move the stamp (and date) of records whose file is unchanged; returns the units not refreshed.
+
+        Metadata only: no vector changes and the passages stay.
+        """
+        if not units:
+            return []
+        try:
+            with self._chroma_call_lock:
+                # The whole stored metadata goes back with the two fields: a
+                # ChromaDB that replaces rather than merges would otherwise
+                # wipe item_key, group_id and the hash.
+                stored = self.chroma_client.get_metadatas([u["key"] for u in units])
+                # A record that vanished meanwhile is written normally.
+                gone = [u for u in units if u["key"] not in stored]
+                present = [u for u in units if u["key"] in stored]
+                if present:
+                    self.chroma_client.update_metadatas(
+                        [u["key"] for u in present],
+                        [
+                            {
+                                **stored[u["key"]],
+                                "file_stamp": u["file_stamp"],
+                                "date_modified": u.get("date_modified") or "",
+                            }
+                            for u in present
+                        ],
+                    )
+        except Exception as e:
+            logger.warning(f"Could not refresh the stamps of {len(units)} unchanged file(s): {e}")
+            return units
+        stats["refreshed_unchanged"] += len(present)
+        stats["processed_items"] += len(present)
+        stats["updated_items"] += len(present)
+        return gone
+
+    def _copy_reused_units(self, units: list[dict[str, Any]], stats: dict[str, Any]) -> list[dict[str, Any]]:
+        """Copy the units' records from their sources and count them; returns the units not copied."""
+        if not units:
+            return []
+        copied, unresolved, written, existing = self._copy_reused(units, want_passages=self._chunking_enabled)
+        for unit in copied:
+            stats["updated_items" if unit["key"] in existing else "added_items"] += 1
+        stats["processed_items"] += len(copied)
+        stats["reused_from_hash"]["attachments"] += len(copied)
+        stats["reused_from_hash"]["records"] += written
+        return unresolved
+
+    @staticmethod
+    def _reuse_entry(unit: dict[str, Any]) -> dict[str, Any]:
+        """The part of a unit a copy needs, in the form the batch manifest keeps."""
+        return {k: unit.get(k) for k in ("key", "reuse_from", "group_id", "date_modified", "file_stamp", "file_hash", "owner_key")}
+
     def _prepare_index_records(self, items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """Prepare ChromaDB records without embedding or writing them."""
         stats = {"processed": 0, "skipped": 0, "errors": 0}
@@ -4553,12 +4806,39 @@ class ZoteroSemanticSearch:
         stats: dict[str, Any],
         max_enqueued_tokens: int | None = None,
         max_requests: int | None = None,
+        reuse_units: list[dict[str, Any]] = (),
     ) -> dict[str, Any]:
-        """Prepare records and submit asynchronous embedding batches."""
+        """Prepare records and submit asynchronous embedding batches.
+
+        ``reuse_units`` are files with the bytes of one already indexed, or of
+        one in ``items`` (#495). They are not submitted: the manifest keeps
+        them as ``reuse`` entries and the import copies them once their source
+        has landed. With nothing to submit, those whose source is indexed are
+        copied now.
+        """
         module = _batch_module(provider)
         adapter = _batch_adapter(provider)
         label = adapter.label
         records, prepare_stats = self._prepare_index_records(items)
+        reuse_entries = [self._reuse_entry(unit) for unit in reuse_units]
+        if reuse_units and not records:
+            # No manifest to keep them in, and all of them have an indexed
+            # source (a source from this run would have a record).
+            copied, unresolved, written, existing = self._copy_reused(
+                [self._reuse_entry(unit) for unit in reuse_units], want_passages=self._chunking_enabled
+            )
+            for entry in copied:
+                stats["updated_items" if entry["key"] in existing else "added_items"] += 1
+            stats["processed_items"] += len(copied)
+            stats["reused_from_hash"]["attachments"] += len(copied)
+            stats["reused_from_hash"]["records"] += written
+            # One that could not be copied is embedded after all, if its text is known.
+            by_key = {unit["key"]: unit for unit in reuse_units}
+            retry = [by_key[entry["key"]] for entry in unresolved if by_key[entry["key"]].get("text")]
+            records, retry_stats = self._prepare_index_records(retry)
+            for name in prepare_stats:
+                prepare_stats[name] += retry_stats[name]
+            reuse_entries = []
         stats["processed_items"] += prepare_stats["processed"]
         stats["skipped_items"] += prepare_stats["skipped"]
         stats["errors"] += prepare_stats["errors"]
@@ -4617,6 +4897,10 @@ class ZoteroSemanticSearch:
             run_info={"chunking": self._chunking_enabled, "item_keys": item_keys},
             **submit_kwargs,
         )
+        if reuse_entries:
+            manifest["reuse"] = reuse_entries
+            module.save_manifest(manifest)
+            stats["batch_reuse_entries"] = len(reuse_entries)
         if self._legacy_settle:
             # The import settles them once the records have landed, which may
             # be several imports and processes later.
@@ -4840,6 +5124,10 @@ class ZoteroSemanticSearch:
             "recovered_items": 0,
             "skipped_items": 0,
             "deleted_items": 0,
+            # Files whose records were copied from an identical file's (#495).
+            "reused_from_hash": {"attachments": 0, "records": 0},
+            # Files touched but byte-identical: only their stamp was updated.
+            "refreshed_unchanged": 0,
             "errors": 0,
             "start_time": start_time.isoformat(),
             "duration": None,
@@ -4891,6 +5179,7 @@ class ZoteroSemanticSearch:
             self._standalone_covered = False
             # Set by this run's scan, if it covers the whole library.
             self._scan_desired_keys = None
+            self._run_hash_first = {}
             self._api_outranked = set()
             self._api_fetch_failures = 0
 
@@ -5292,6 +5581,36 @@ class ZoteroSemanticSearch:
             # regular item, an attachment record (and passages) per file (#826).
             all_items = self._plan_units(all_items, force_rebuild=force_full_rebuild)
 
+            # Files with the bytes of one already indexed, or written earlier
+            # in this run, are copied instead of embedded again (#495). The
+            # local scan has marked its own; API units are marked here.
+            self._mark_reusable(all_items, look_in_index=not force_full_rebuild)
+            refresh = [unit for unit in all_items if unit.get("refresh_only")]
+            all_items = [unit for unit in all_items if not unit.get("refresh_only")]
+            left_textless = 0
+            if refresh:
+                failed = self._refresh_units(refresh, stats)
+                all_items += [unit for unit in failed if unit.get("text")]
+                left_textless += sum(1 for unit in failed if not unit.get("text"))
+            reuse_units = [unit for unit in all_items if unit.get("reuse_from")]
+            all_items = [unit for unit in all_items if not unit.get("reuse_from")]
+            if reuse_units and not batch_enabled:
+                # Copies of what is already indexed cost nothing and go first;
+                # a failed copy of a unit with text is embedded as usual. The
+                # ones that wait for this run's own files are copied below.
+                ready = [unit for unit in reuse_units if not unit.get("reuse_deferred")]
+                reuse_units = [unit for unit in reuse_units if unit.get("reuse_deferred")]
+                failed = self._copy_reused_units(ready, stats)
+                all_items += [unit for unit in failed if unit.get("text")]
+                if lost := [unit for unit in failed if not unit.get("text")]:
+                    left_textless += len(lost)
+                    logger.warning(
+                        f"{len(lost)} file(s) could not be copied (their source left the index); "
+                        "the next update-db indexes them."
+                    )
+            if left_textless:
+                stats["reuse_left_for_next_run"] = left_textless
+
             if limit is not None:
                 # A limited run may index only a subset; promoting would strand
                 # the rest (cf. #292). After a forced rebuild the old watermark is
@@ -5299,7 +5618,10 @@ class ZoteroSemanticSearch:
                 # zero sends the next run back through a full scan.
                 target_sync_version = 0 if force_full_rebuild else None
 
-            stats["total_items"] = len(all_items)
+            stats["total_items"] = (
+                len(all_items) + len(reuse_units)
+                + stats["reused_from_hash"]["attachments"] + stats["refreshed_unchanged"]
+            )
             logger.info(f"Found {stats['total_items']} items to process")
             if waiting := self.update_config.get("gaps_waiting_for_text"):
                 _report(
@@ -5326,6 +5648,7 @@ class ZoteroSemanticSearch:
                     stats=stats,
                     max_enqueued_tokens=throttle["batch_max_enqueued_tokens"],
                     max_requests=throttle["batch_max_requests"],
+                    reuse_units=reuse_units,
                 )
                 # This run did its work, so an auto-update is not due again
                 # until its next turn. Without this, should_update stayed true
@@ -5393,6 +5716,11 @@ class ZoteroSemanticSearch:
 
             # User-friendly progress reporting
             total = len(all_items)
+            # The copies and refreshes were counted in the total above.
+            stats["total_items"] = (
+                total + len(reuse_units)
+                + stats["reused_from_hash"]["attachments"] + stats["refreshed_unchanged"]
+            )
             try:
                 sys.stderr.write(f"\nIndexing {total} items...\n\n")
                 sys.stderr.flush()
@@ -5517,6 +5845,31 @@ class ZoteroSemanticSearch:
                         f"Processed {seen_items}/{total} items (added: {stats['added_items']}, skipped: {stats['skipped_items']})"
                     )
 
+            # Files that copy a file written in this run. A copy that fails
+            # waits for the next run when its text was not read (the scan skips
+            # reading a file it expects to copy), else it is embedded now.
+            if reuse_units:
+                left = self._copy_reused_units(reuse_units, stats)
+                with_text = [unit for unit in left if unit.get("text")]
+                for i in range(0, len(with_text), batch_size):
+                    batch_stats = self._process_item_batch(
+                        with_text[i : i + batch_size], force_full_rebuild, _failed_docs
+                    )
+                    for name, key in (
+                        ("processed", "processed_items"),
+                        ("added", "added_items"),
+                        ("updated", "updated_items"),
+                        ("skipped", "skipped_items"),
+                        ("errors", "errors"),
+                    ):
+                        stats[key] += batch_stats[name]
+                if waiting := len(left) - len(with_text):
+                    stats["reuse_left_for_next_run"] = stats.get("reuse_left_for_next_run", 0) + waiting
+                    logger.warning(
+                        f"{waiting} file(s) that copy a file from this run could not be copied; "
+                        "the next update-db indexes them."
+                    )
+
             # Retry any documents that failed during the main run
             retry_fail = 0
             if _failed_docs:
@@ -5587,6 +5940,13 @@ class ZoteroSemanticSearch:
                 )
                 if stats["recovered_items"]:
                     summary += f", {stats['recovered_items']} recovered"
+                if stats["refreshed_unchanged"]:
+                    summary += f", {stats['refreshed_unchanged']} unchanged (stamp refreshed)"
+                if reused := stats["reused_from_hash"]["attachments"]:
+                    summary += (
+                        f", {reused} reused from identical files "
+                        f"({stats['reused_from_hash']['records']} records)"
+                    )
                 sys.stderr.write(summary + "\n")
             except Exception:
                 pass
@@ -5639,6 +5999,7 @@ class ZoteroSemanticSearch:
             self._level_fill_keys = frozenset()
             self._legacy_settle = None
             self._scan_desired_keys = None
+            self._run_hash_first = None
             self._api_outranked = frozenset()
             # The server keeps one instance: the next run starts without these.
             self._undropped_passages = frozenset()
@@ -6437,6 +6798,7 @@ class ZoteroSemanticSearch:
             "updated_items": 0,
             "failed_items": 0,
             "missing_items": 0,
+            "reused_from_hash": {"attachments": 0, "records": 0},
             "errors": [],
         }
         if superseded_by:
@@ -6642,6 +7004,7 @@ class ZoteroSemanticSearch:
             module.save_manifest(manifest)
 
             if not superseded_by:
+                self._import_reused(module, manifest, all_batches, stats)
                 self._settle_legacy_passages(manifest.get("legacy_settle") or {})
 
             if not selected_ids:
@@ -6680,6 +7043,42 @@ class ZoteroSemanticSearch:
             self._drop_passages_on_write = False
             self._level_fill_keys = frozenset()
             lock_cm.__exit__(None, None, None)
+
+    def _import_reused(
+        self, module: Any, manifest: dict[str, Any], all_batches: list[dict[str, Any]], stats: dict[str, Any]
+    ) -> None:
+        """Copy the manifest's ``reuse`` entries whose source records have landed (#495).
+
+        An entry is copied once its source is in the index. When every batch
+        of the run is in and a source is still missing, the entry is dropped
+        and logged: the next update-db finds the file without a record and
+        embeds it itself.
+        """
+        pending = [entry for entry in manifest.get("reuse") or [] if not entry.get("state")]
+        if not pending:
+            return
+        copied, unresolved, written, existing = self._copy_reused(pending, want_passages=self._chunking_enabled)
+        for entry in copied:
+            entry["state"] = "copied"
+        if all(batch.get("imported_at") for batch in all_batches):
+            for entry in unresolved:
+                entry["state"] = "source_missing"
+                logger.warning(
+                    f"Not copied: {entry['key']} was to copy {entry['reuse_from']}, which is not in the index; "
+                    "the next update-db indexes it."
+                )
+                stats["errors"].append({
+                    "custom_id": entry["key"],
+                    "error": f"source {entry['reuse_from']} is not in the index; left for the next update-db",
+                })
+        if any(entry.get("state") for entry in pending):
+            module.save_manifest(manifest)
+        stats["imported_items"] += len(copied)
+        stats["updated_items"] += len(existing)
+        stats["added_items"] += len(copied) - len(existing)
+        reused = stats.setdefault("reused_from_hash", {"attachments": 0, "records": 0})
+        reused["attachments"] += len(copied)
+        reused["records"] += written
 
     def import_openai_batch(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
         """Import completed OpenAI Batch API embeddings into ChromaDB."""

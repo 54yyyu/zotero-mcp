@@ -1762,6 +1762,13 @@ def update_search_database(
             output.append(f"**Added:** {stats.get('added_items', 0)}")
             output.append(f"**Updated:** {stats.get('updated_items', 0)}")
             output.append(f"**Skipped:** {stats.get('skipped_items', 0)}")
+            if stats.get("refreshed_unchanged"):
+                output.append(f"**Unchanged files (not re-embedded):** {stats['refreshed_unchanged']}")
+            if (stats.get("reused_from_hash") or {}).get("attachments"):
+                reused = stats["reused_from_hash"]
+                output.append(
+                    f"**Reused from identical files:** {reused['attachments']} ({reused.get('records', 0)} records)"
+                )
             if stats.get("deleted_items"):
                 output.append(f"**Deleted:** {stats['deleted_items']} (no longer in Zotero)")
             if stats.get("deletion_skipped_reason"):

@@ -21,7 +21,7 @@ from zotero_mcp.chroma_client import ChromaClient, level_status_rows, read_colle
 
 NAME = "zotero_library"
 BIB = {"date_modified": "d"}
-ATT = {"date_modified": "d", "file_stamp": "1:1"}
+ATT = {"date_modified": "d", "file_stamp": "1:1", "file_hash": "h"}
 LEGACY = {"title": "Old", "has_fulltext": True}
 
 

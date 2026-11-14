@@ -1,15 +1,16 @@
 """Extraction primitives for the item-keyed index (#826).
 
 Many attachments per item, standalone attachments, per-file failure markers
-and the stamps a re-key leaves. None of this changes what the indexer writes yet.
+and a stamp-keyed file hash. None of this changes what the indexer writes yet.
 """
 
+import hashlib
 import sqlite3
 from pathlib import Path
 
 import pytest
 
-from zotero_mcp import fulltext_cache
+from zotero_mcp import file_hash, fulltext_cache
 from zotero_mcp.extract import DEFAULT_ATTACHMENT_PRIORITY, select_by_priority
 from zotero_mcp.local_db import LocalZoteroReader
 
@@ -263,25 +264,38 @@ def test_failure_marker_coexists_with_cached_text(config_path):
 
 
 # ---------------------------------------------------------------------------
-# stamps left by a re-key
+# file hash
 # ---------------------------------------------------------------------------
 
 
-def test_rekeyed_stamps_are_remembered_per_attachment(config_path):
-    assert fulltext_cache.rekeyed_stamps(config_path=config_path) == {}
+def test_file_hash_is_sha256_and_cached_by_stamp(tmp_path, config_path, monkeypatch):
+    f = tmp_path / "a.pdf"
+    data = b"hello world" * 1000
+    f.write_bytes(data)
+    expect = hashlib.sha256(data).hexdigest()
 
-    fulltext_cache.remember_rekeyed_stamp("ATT1", "1:11000", config_path=config_path)
-    fulltext_cache.remember_rekeyed_stamp("ATT2", "2:5", config_path=config_path)
-    fulltext_cache.remember_rekeyed_stamp("ATT1", "3:11000", config_path=config_path)
+    assert file_hash.get_file_hash("ATT1", f, "1:11000", config_path=config_path) == expect
 
-    assert fulltext_cache.rekeyed_stamps(config_path=config_path) == {"ATT1": "3:11000", "ATT2": "2:5"}
+    import builtins
+
+    real_open = builtins.open
+
+    def _guarded_open(file, *a, **k):
+        if Path(file) == f:
+            raise AssertionError("file re-read")
+        return real_open(file, *a, **k)
+
+    monkeypatch.setattr(builtins, "open", _guarded_open)
+    assert file_hash.get_file_hash("ATT1", f, "1:11000", config_path=config_path) == expect
 
 
-def test_rekeyed_stamps_coexist_with_cached_text_and_failures(config_path):
-    fulltext_cache.put_cached_text("ATT1", 1, 2, "pdf", None, "t", config_path=config_path)
-    fulltext_cache.record_failure("ATT2", "1:2", config_path=config_path)
-    fulltext_cache.remember_rekeyed_stamp("ATT3", "1:3", config_path=config_path)
+def test_file_hash_rehashes_when_stamp_changes(tmp_path, config_path):
+    f = tmp_path / "a.pdf"
+    f.write_bytes(b"one")
+    assert file_hash.get_file_hash("ATT1", f, "1:3", config_path=config_path) == (hashlib.sha256(b"one").hexdigest())
+    f.write_bytes(b"two!")
+    assert file_hash.get_file_hash("ATT1", f, "2:4", config_path=config_path) == (hashlib.sha256(b"two!").hexdigest())
 
-    assert fulltext_cache.get_cached_text("ATT1", 1, 2, config_path=config_path)
-    assert fulltext_cache.failed("ATT2", "1:2", config_path=config_path)
-    assert fulltext_cache.rekeyed_stamps(config_path=config_path) == {"ATT3": "1:3"}
+
+def test_file_hash_unreadable_returns_none(tmp_path, config_path):
+    assert file_hash.get_file_hash("ATT1", tmp_path / "nope", "1:1", config_path=config_path) is None

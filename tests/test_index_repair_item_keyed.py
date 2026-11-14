@@ -32,6 +32,7 @@ ATT = {
     "group_id": 1,
     "date_modified": "2026-01-01",
     "file_stamp": "1:2",
+    "file_hash": "ab",
 }
 
 

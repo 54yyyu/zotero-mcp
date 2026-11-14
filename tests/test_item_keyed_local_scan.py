@@ -31,7 +31,7 @@ if importlib.util.find_spec("chromadb") is None:
 from _scan_fakes import ScanReader, target  # noqa: E402
 from chromadb import EmbeddingFunction  # noqa: E402
 
-from zotero_mcp import fulltext_cache, semantic_search  # noqa: E402
+from zotero_mcp import file_hash, fulltext_cache, semantic_search  # noqa: E402
 from zotero_mcp.chroma_client import ChromaClient  # noqa: E402
 from zotero_mcp.local_db import LocalZoteroReader  # noqa: E402
 
@@ -210,8 +210,9 @@ def test_every_pdf_is_indexed_under_its_own_key_and_the_snapshot_is_skipped(env,
     assert len(passages) == 10
     assert sorted(reader.extracted) == ["PDFAAAAA", "PDFBBBBB"]
     meta = _meta(search, "PDFAAAAA")
-    assert set(meta) == {"item_key", "group_id", "date_modified", "file_stamp", "parent_hint"}
+    assert set(meta) == {"item_key", "group_id", "date_modified", "file_stamp", "file_hash", "parent_hint"}
     assert meta["parent_hint"] == "ITEM0001"
+    assert meta["file_hash"]  # the real file, so a real hash
     assert set(_meta(search, "ITEM0001")) == {"item_key", "group_id", "date_modified"}
 
 
@@ -346,19 +347,23 @@ def _passage_metas(search, key):
     return got["metadatas"]
 
 
-def test_a_rewrite_leaves_no_stale_page_or_section(env, monkeypatch):
+def test_a_rewrite_leaves_no_stale_page_section_or_hash(env, monkeypatch):
     """ChromaDB's upsert merges metadata: what a new version lacks must be cleared."""
     reader = _library(texts={"PDFAAAAA": (PAGED, "pdf")})
+    monkeypatch.setattr(file_hash, "get_file_hash", lambda *a, **k: "ab" * 32)
     search, _ = env(reader)
     assert any("page" in m for m in _passage_metas(search, "PDFAAAAA"))
     assert any("section" in m for m in _passage_metas(search, "PDFAAAAA"))
+    assert _meta(search, "PDFAAAAA")["file_hash"] == "ab" * 32
 
-    # A new version of the file: no page markers, no headings.
+    # A new version of the file: no page markers, no headings, hash unknown.
     reader.targets[1] = [target("PDFAAAAA", stamp="2:200")]
     reader.texts = {}
+    monkeypatch.setattr(file_hash, "get_file_hash", lambda *a, **k: None)
     search, _ = env(reader)
 
     assert not any("page" in m or "section" in m for m in _passage_metas(search, "PDFAAAAA"))
+    assert "file_hash" not in _meta(search, "PDFAAAAA")
 
 
 def test_a_replaced_file_is_re_embedded_by_its_stamp(env):
@@ -422,6 +427,17 @@ def test_a_scan_reads_the_failure_markers_once_not_per_file(env, monkeypatch):
 
     assert reader.extracted == [], "the failed file is still not tried again"
     assert len(loads) == 1
+
+
+def test_the_hashing_pass_reports_its_progress(env, monkeypatch, capsys):
+    monkeypatch.setattr(semantic_search, "_SCAN_SLICE", 2)
+    items = [Item(f"ITEM{n:04d}", n) for n in range(5)]
+    reader = LibReader(items, targets={n: [target(f"PDF{n:05d}")] for n in range(5)})
+
+    env(reader)
+
+    err = capsys.readouterr().err
+    assert "Hashing files: 0/5" in err and "Hashing files: 5/5" in err
 
 
 def test_a_forced_rebuild_tries_a_failed_file_again(env):

@@ -792,6 +792,69 @@ class ChromaClient:
         """Attachment keys the migration moved legacy passages to; see :func:`read_rekeyed_targets`."""
         return read_rekeyed_targets(self.persist_directory, self.collection_name)
 
+    def find_by_file_hash(self, hashes: list[str]) -> dict[str, list[str]]:
+        """``{file_hash: [attachment keys]}`` of the attachment records that carry these hashes.
+
+        Only attachment records have a ``file_hash`` (legacy records never do),
+        and they live in the article collection. Keys are sorted, so the
+        source a caller picks is the same on every run.
+        """
+        found: dict[str, list[str]] = {}
+        for start in range(0, len(hashes), 5000):
+            part = hashes[start:start + 5000]
+            result = self.collection.get(where={"file_hash": {"$in": part}}, include=["metadatas"])
+            for doc_id, meta in zip(result.get("ids", []), result.get("metadatas") or []):
+                value = (meta or {}).get("file_hash")
+                if value:
+                    found.setdefault(value, []).append(doc_id)
+        return {value: sorted(keys) for value, keys in found.items()}
+
+    def read_copy_sources(
+        self, keys: list[str], passages: bool, vectors: bool = True, documents: bool = True
+    ) -> dict[str, dict[str, Any]]:
+        """What copying attachment records needs, per key that has an article record.
+
+        ``{key: {"article": {"document", "embedding", "metadata"},
+        "passages": [{"id", "document", "embedding", "metadata"}, ...]}}``
+        (``passages`` only when asked for). ``vectors=False`` leaves the
+        embeddings out, and ``documents=False`` the text (``None``), for a check
+        that only needs to know what is there.
+        """
+        include = (["documents"] if documents else []) + ["metadatas"] + (["embeddings"] if vectors else [])
+
+        def rows(result: dict[str, Any]):
+            embeddings = result.get("embeddings")
+            for i, doc_id in enumerate(result.get("ids", [])):
+                embedding = None
+                if vectors and embeddings is not None and len(embeddings) > i:
+                    embedding = [float(x) for x in embeddings[i]]
+                yield {
+                    "id": doc_id,
+                    "document": (result.get("documents") or [None] * (i + 1))[i] if documents else None,
+                    "embedding": embedding,
+                    "metadata": (result.get("metadatas") or [{}] * (i + 1))[i] or {},
+                }
+
+        found: dict[str, dict[str, Any]] = {}
+        for collection, part in self._group_existing(list(keys)):
+            for start in range(0, len(part), 500):
+                result = collection.get(ids=part[start:start + 500], include=include)
+                for row in rows(result):
+                    found[row["id"]] = {"article": row}
+        if passages:
+            wanted = sorted(found)
+            for collection in self.collections():
+                for start in range(0, len(wanted), 100):
+                    where = {"$and": [
+                        {"item_key": {"$in": wanted[start:start + 100]}},
+                        {"chunk_index": {"$gte": 0}},
+                    ]}
+                    for row in rows(collection.get(where=where, include=include)):
+                        owner = found.get(row["metadata"].get("item_key"))
+                        if owner is not None:
+                            owner.setdefault("passages", []).append(row)
+        return found
+
     def item_group_ids(self, item_keys: list[str]) -> dict[str, int]:
         """The library (``group_id``) of each indexed item in ``item_keys`` that has one.
 
