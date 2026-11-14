@@ -2373,7 +2373,7 @@ def _fetch_attachment_file(
     # the API path.
     if prefer_disk:
         try:
-            on_disk = _library.attachment_path_for(attachment_key)
+            on_disk = _library.attachment_path_for(attachment_key, own_only=True)
         except Exception:
             on_disk = None
         file_type = {"pdf": "pdf", "epub": "epub"}.get(on_disk.suffix.lower().lstrip(".")) if on_disk else None

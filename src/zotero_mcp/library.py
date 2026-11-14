@@ -634,12 +634,14 @@ def get_library_backend(zot=None) -> LibraryBackend:
     return ApiBackend(zot if zot is not None else _client.get_zotero_client())
 
 
-def attachment_path_for(key: str) -> Path | None:
+def attachment_path_for(key: str, *, own_only: bool = False) -> Path | None:
     """Best local path for an attachment key, or None.
 
     Reads ``zotero.sqlite`` directly regardless of the configured backend:
     the file lives on this machine either way, and resolving it locally is
     both faster than downloading and the only option with Zotero closed.
+    A parent item's key gives its first attachment on disk, unless
+    ``own_only``, for a caller that has not checked ``key`` is an attachment.
     """
     reader = _sqlite_reader()
     if reader is None:
@@ -649,8 +651,8 @@ def attachment_path_for(key: str) -> Path | None:
     # for them and every outline read copied or downloaded a file that was
     # already on disk.
     path = reader.resolve_attachment_file(key)
-    if path is not None:
-        return Path(path)
+    if path is not None or own_only:
+        return Path(path) if path is not None else None
     for entry in reader.get_attachment_paths(key):
         resolved = entry.get("resolved_path")
         if resolved and entry.get("exists"):

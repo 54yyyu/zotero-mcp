@@ -776,7 +776,7 @@ class TestOfflineDryRun:
     def test_pure_matching_reads_the_file_zotero_holds_and_needs_no_client(self, pdf_path, monkeypatch):
         from pathlib import Path
 
-        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key: Path(pdf_path))
+        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key, **_kw: Path(pdf_path))
         monkeypatch.setattr(annotations, "_download_clients",
                             lambda: pytest.fail("a dry run must not need a Zotero client"))
         monkeypatch.setattr(annotations, "_get_note_write_client",
@@ -788,10 +788,23 @@ class TestOfflineDryRun:
         assert all(r["ok"] for r in results), results
         assert results[0]["matched_text"] == "synthetic paper"
 
+    def test_a_parent_key_is_not_read_as_one_of_its_attachments(self, pdf_path, monkeypatch):
+        """The real write refuses a parent key, so the dry run must not pass it on a guessed PDF."""
+        from pathlib import Path
+
+        from zotero_mcp import library
+
+        reader = MagicMock()
+        reader.resolve_attachment_file.return_value = None
+        reader.get_attachment_paths.return_value = [{"resolved_path": Path(pdf_path), "exists": True}]
+        monkeypatch.setattr(library, "_sqlite_reader", lambda: reader)
+        assert library.attachment_path_for("PARENT01") == Path(pdf_path)
+        assert library.attachment_path_for("PARENT01", own_only=True) is None
+
     def test_a_real_write_still_asks_for_a_client(self, pdf_path, monkeypatch):
         from pathlib import Path
 
-        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key: Path(pdf_path))
+        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key, **_kw: Path(pdf_path))
         monkeypatch.setattr(annotations, "_get_note_write_client", lambda _op: (None, "Error: no write access"))
         (result,) = annotations.create_annotations(ATTACHMENT, [{"page": 1, "text": "synthetic"}], ctx=MagicMock())
         assert result["error"] == "Error: no write access"
@@ -801,7 +814,7 @@ class TestOfflineDryRun:
 
         from zotero_mcp import cli_standalone
 
-        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key: None)
+        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key, **_kw: None)
         monkeypatch.setattr(annotations, "_download_clients", lambda: (None, None))
         monkeypatch.setattr(annotations._utils, "is_local_mode", lambda: False)
         plan = tmp_path / "plan.jsonl"
