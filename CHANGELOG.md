@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.17.2] - 2026-11-14
 
 ### Added
 
@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`zotero-cli add doi DOI --attach-file PATH`** adds the item, files and tags it, and attaches your local PDF in one call. It does not also fetch an open-access copy unless you pass `--attach-mode`. An item already in the library gets the file unless that file is already attached, so a re-run converges. If the item is added but the file cannot be attached, the command says so and exits 1.
 - **`zotero-cli add folder DIR`** adds every PDF in a folder by the DOI found in it, with `-c`, `--tags` and `--if-exists` as in `add doi`, attaches each file, and prints a table of what it did and what it could not resolve (`--dry-run` shows just the DOIs). The DOI comes from the PDF's metadata, or from the whole first page, not the first 3000 characters that `add file` reads. A PDF cut from a journal spread holds two articles' DOIs; it is reported as ambiguous instead of guessed, so it cannot be filed under the neighbouring article.
 - **`zotero-cli read --format image --grid`** draws a grid on the page image: a line every 0.05, labelled every 0.1, in the whole-page coordinates that `--rect` and annotation boxes use, also on a zoomed `--rect`. `--rect` zoom already existed. The page-image, overlay and grid drawing now share one renderer, so the annotate-paper skill no longer needs to tell an agent to write its own grid, zoom and overlay scripts each session.
+- **`python -m zotero_mcp` runs the CLI** (#837). Windows Smart App Control can block the unsigned `zotero-mcp.exe` launcher pip generates; this starts only the Python that is already installed, so `python -m zotero_mcp authorize-local` and `python -m zotero_mcp serve` work the same way. Thanks @fgndh89-commits for the report.
+- **`ZOTERO_ONNX_THREADS` sets the thread count of the default embedding model** (#828, #90). In a container's cpuset, a Slurm job or under taskset, ONNX Runtime pins its threads to cores the process may not use and logs a `pthread_setaffinity_np failed` error for each one, on every add and search; a positive thread count turns the pinning off. It is read only by zotero-mcp's own default embedding function and does nothing unless set. A value that is not a positive whole number is ignored with a warning, and a huge one is capped at 256. Thanks @lots-o.
+- **Zotero Agent chats get names** (#836). A new chat is named by the agent's own summary when it sends one (Claude Code and Codex do; OpenCode's is read from its session list after the first answer, so it costs no tokens), then by the paper open at your first question, then by the question itself. Settings > Chat picks the first choice. Click the title at the top of the chat, or a History row, to rename it; a name you set yourself is never changed again. Enter picks a candidate in an IME without saving. Thanks @HelloNVIC.
+- **Scrolling to the newest message on send is a setting** (#847, #834). Turn it off in Settings > Chat and the Zotero Agent feed keeps your reading position when you send; a reader at the bottom still follows the answer, and the jump button brings you back down. Thanks @HelloNVIC.
 
 ### Fixed
 
