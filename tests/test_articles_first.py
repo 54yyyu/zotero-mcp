@@ -130,11 +130,6 @@ class FakeZotero:
         return self.version
 
 
-def _fetch_fulltext(self, key):
-    """``_fetch_fulltext_checked`` serving FULLTEXT as the text of the item's PDF."""
-    return FULLTEXT, f"web-api:attachment:P{key}", False
-
-
 def _is_passage(text):
     """A passage, not a whole file or an item's metadata record."""
     return len(text) < 600 and not text.startswith("Title ")
@@ -218,15 +213,14 @@ def test_full_text_is_fetched_once_and_not_held_in_memory_between_passes(
     build, monkeypatch, parallel
 ):
     fetched: list[str] = []
+    zotero = FakeZotero(KEYS, abstract="A short abstract.")
 
-    def fetch(self, key):
-        fetched.append(key)
-        return _fetch_fulltext(self, key)
+    def fulltext_item(key):
+        fetched.append(key[1:])  # the item the PDF belongs to
+        return {"content": FULLTEXT}
 
-    monkeypatch.setattr(semantic_search.ZoteroSemanticSearch, "_fetch_fulltext_checked", fetch)
-    # Ask per item, so each fetch names its item.
-    monkeypatch.setattr(semantic_search.ZoteroSemanticSearch, "_BULK_ATTACHMENT_WALK_MIN_ITEMS", 10_000)
-    search = build(FakeZotero(KEYS, abstract="A short abstract."), parallel=parallel, include_fulltext=True)
+    monkeypatch.setattr(zotero, "fulltext_item", fulltext_item)
+    search = build(zotero, parallel=parallel, include_fulltext=True)
 
     units_seen: list[list[dict]] = []
     original_plan = search._plan_units
@@ -464,8 +458,6 @@ def test_the_spilled_text_is_removed_after_a_stop(build, monkeypatch, tmp_path):
     spill = tmp_path / "spill"
     spill.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(spill))
-    monkeypatch.setattr(semantic_search.ZoteroSemanticSearch, "_fetch_fulltext_checked", _fetch_fulltext)
-    monkeypatch.setattr(semantic_search.ZoteroSemanticSearch, "_BULK_ATTACHMENT_WALK_MIN_ITEMS", 10_000)
     search = build(FakeZotero(KEYS), include_fulltext=True)
     held: list[str] = []
     original_hold = semantic_search._HeldText.hold

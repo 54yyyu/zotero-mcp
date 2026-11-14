@@ -1,8 +1,8 @@
 """The local ``--fulltext`` scan writes the item-keyed shape (#826).
 
-A regular item is one bibliographic record; the one file the attachment
-priority chooses for it (the largest of the first category) is an attachment
-record with passages. Change detection is per record: ``date_modified`` for the item,
+A regular item is one bibliographic record; every file the attachment
+priority selects (and every standalone file) is an attachment record with
+passages. Change detection is per record: ``date_modified`` for the item,
 ``file_stamp`` for a file. Legacy records (they carry ``title``) are left
 alone until their item changes.
 
@@ -79,7 +79,7 @@ class Item:
 
 
 class LibReader(ScanReader):
-    """A library: regular items and their selected files."""
+    """A library: regular items, their selected files, standalone files."""
 
     def __init__(self, items, **kwargs):
         super().__init__(**kwargs)
@@ -88,6 +88,7 @@ class LibReader(ScanReader):
     def all_keys(self):
         keys = {it.key for it in self.items}
         keys |= {t.key for targets in self.targets.values() for t in targets}
+        keys |= {row[0] for row in self.standalone}
         return keys
 
     def get_all_item_keys(self):
@@ -186,14 +187,14 @@ def _make_db(db: Path) -> None:
     conn.close()
 
 
-def test_only_the_largest_pdf_is_indexed_under_its_own_key_and_the_snapshot_is_skipped(env, tmp_path):
+def test_every_pdf_is_indexed_under_its_own_key_and_the_snapshot_is_skipped(env, tmp_path):
     db = tmp_path / "zotero.sqlite"
     _make_db(db)
     storage = tmp_path / "storage"
     for key, name in (("PDFAAAAA", "a.pdf"), ("PDFBBBBB", "b.pdf"), ("SNAPSHOT", "s.html")):
         (storage / key).mkdir(parents=True)
-        # The second PDF is the larger: the one chosen before #826.
-        (storage / key / name).write_bytes(f"file bytes of {key}".encode() * (3 if key == "PDFBBBBB" else 1))
+        # Different bytes: identical files are copied, not parsed (#495).
+        (storage / key / name).write_bytes(f"file bytes of {key}".encode())
     real = LocalZoteroReader(db_path=str(db))
     real._get_storage_dir = lambda: storage
     reader = LibReader([Item("ITEM0001", 1)], texts={"PDFAAAAA": (TEXT, "pdf"), "PDFBBBBB": (TEXT, "pdf")})
@@ -203,15 +204,91 @@ def test_only_the_largest_pdf_is_indexed_under_its_own_key_and_the_snapshot_is_s
     finally:
         real.close()
 
-    assert _ids(search) == {"ITEM0001", "PDFBBBBB"}
+    assert _ids(search) == {"ITEM0001", "PDFAAAAA", "PDFBBBBB"}
     passages = _ids(search, f"{NAME}_passages")
-    assert {p.split("#")[0] for p in passages} == {"PDFBBBBB"}
-    assert len(passages) == 5
-    assert reader.extracted == ["PDFBBBBB"]
-    meta = _meta(search, "PDFBBBBB")
+    assert {p.split("#")[0] for p in passages} == {"PDFAAAAA", "PDFBBBBB"}
+    assert len(passages) == 10
+    assert sorted(reader.extracted) == ["PDFAAAAA", "PDFBBBBB"]
+    meta = _meta(search, "PDFAAAAA")
     assert set(meta) == {"item_key", "group_id", "date_modified", "file_stamp", "parent_hint"}
     assert meta["parent_hint"] == "ITEM0001"
     assert set(_meta(search, "ITEM0001")) == {"item_key", "group_id", "date_modified"}
+
+
+def test_a_standalone_pdf_is_indexed_and_records_nothing_of_a_parent(env):
+    reader = LibReader(
+        [],
+        standalone=[("LONEPDF1", "storage:x.pdf", "application/pdf", DATE, 1)],
+        standalone_targets={"LONEPDF1": target("LONEPDF1")},
+    )
+
+    search, _ = env(reader)
+
+    assert _ids(search) == {"LONEPDF1"}
+    assert len(_ids(search, f"{NAME}_passages")) == 5
+    passage = search.chroma_client.client.get_collection(f"{NAME}_passages").get(
+        ids=["LONEPDF1#0"], include=["metadatas"]
+    )["metadatas"][0]
+    assert passage["item_key"] == "LONEPDF1"
+    assert "parent_item_key" not in passage
+    assert passage["parent_hint"] == "", "known to be standalone, which is not the same as not known"
+
+
+def _with_standalone(key="LONEPDF1"):
+    return LibReader(
+        [],
+        standalone=[(key, "storage:x.pdf", "application/pdf", DATE, 1)],
+        standalone_targets={key: target(key)},
+    )
+
+
+def _update_config(tmp_path):
+    return json.loads((tmp_path / "config.json").read_text())["semantic_search"].get("update_config", {})
+
+
+def test_standalone_files_wait_for_one_explicit_run_after_an_upgrade(env, tmp_path):
+    """The first automatic run after upgrading must not bulk-embed every newly in-scope file."""
+    reader = _with_standalone()
+
+    search, stats = env(reader, automatic=True)
+
+    assert _ids(search) == set()
+    assert search.chroma_client.embedded == []
+    assert reader.extracted == []
+    assert stats["standalone_files_held"] == 1
+    assert not _update_config(tmp_path).get("standalone_files_indexed")
+
+
+def test_a_held_standalone_files_existing_records_are_not_deleted(env):
+    reader = _with_standalone()
+    search, _ = env(reader)  # explicit: indexed
+    assert "LONEPDF1" in _ids(search)
+
+    search, _ = env(reader, automatic=True)
+
+    assert "LONEPDF1" in _ids(search)
+
+
+def test_after_one_explicit_run_automatic_runs_index_new_standalone_files(env, tmp_path):
+    reader = _with_standalone()
+    env(reader)
+    assert _update_config(tmp_path)["standalone_files_indexed"] is True
+
+    reader.standalone.append(("LONEPDF2", "storage:y.pdf", "application/pdf", DATE, 1))
+    reader.standalone_targets["LONEPDF2"] = target("LONEPDF2", stamp="2:200")
+    search, stats = env(reader, automatic=True)
+
+    assert {"LONEPDF1", "LONEPDF2"} <= _ids(search)
+    assert "standalone_files_held" not in stats
+
+
+def test_a_limited_explicit_run_does_not_count_as_standalone_coverage(env, tmp_path):
+    reader = _with_standalone()
+    reader.items = []
+
+    env(reader, limit=1)
+
+    assert not _update_config(tmp_path).get("standalone_files_indexed")
 
 
 # --- change detection -------------------------------------------------------------
@@ -242,6 +319,18 @@ def test_a_second_run_writes_nothing(env):
     assert search.chroma_client.embedded == []
     assert reader.extracted == []
     assert stats["total_items"] == 0
+
+
+def test_a_new_pdf_on_an_unchanged_item_embeds_only_that_file(env):
+    reader = _library()
+    env(reader)
+
+    reader.targets[1] = [target("PDFAAAAA"), target("PDFBBBBB")]
+    search, _ = env(reader)
+
+    assert reader.extracted == ["PDFBBBBB"]
+    assert len(search.chroma_client.embedded) == 6, "its record and five passages"
+    assert "PDFBBBBB" in _ids(search)
 
 
 PAGED = "\f".join(
@@ -527,6 +616,19 @@ def test_a_file_that_is_out_of_reach_keeps_its_records(env, monkeypatch):
 
     assert "PDFAAAAA" in _ids(search)
     assert len(_ids(search, f"{NAME}_passages")) == 5
+    assert stats.get("deleted_items", 0) == 0
+
+
+def test_a_standalone_file_that_is_out_of_reach_keeps_its_records(env, monkeypatch):
+    monkeypatch.setattr(semantic_search, "_MASS_DELETION_MIN_FRACTION", 2.0)
+    reader = _with_standalone()
+    reader.items, reader.targets = [Item("ITEM0001", 1)], {1: [target("PDFAAAAA")]}  # something else stays
+    search, _ = env(reader)
+
+    reader.standalone_targets = {}  # still in the database, no longer readable
+    search, stats = env(reader)
+
+    assert "LONEPDF1" in _ids(search)
     assert stats.get("deleted_items", 0) == 0
 
 
