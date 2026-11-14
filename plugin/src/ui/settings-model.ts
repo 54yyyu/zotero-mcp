@@ -16,7 +16,7 @@ export const ownProviders = (b: BackendId): boolean => b === "pi" || b === "open
 export const modeHelp = (m: ModeOption): string => (MODE_HELP[m.id] ? t(MODE_HELP[m.id]!) : m.description ?? "");
 
 export type PerBackend = "model" | "mode" | "effort";
-export type FlagKey = "followFocus" | "attachSelection" | "attachAreas" | "enterToSend" | "showThinking" | "expandTools" | "showUsage" | "openAtStart" | "translate";
+export type FlagKey = "followFocus" | "attachSelection" | "attachAreas" | "enterToSend" | "showThinking" | "expandTools" | "showUsage" | "openAtStart" | "scrollOnSend" | "translate";
 
 /** Model, mode, effort and the translator's model are saved per backend: ids from one backend mean nothing to another. */
 export const setPerBackend = (s: PanelSettings, key: PerBackend | "translateModel", backend: BackendId, id: string): Partial<PanelSettings> =>

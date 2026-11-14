@@ -131,6 +131,13 @@ const ITEM_CHIP: ContextChip = { id: "reader:BM2004AB", kind: "reader", label: "
 const SELECTION_CHIP: ContextChip = { id: "selection:1", kind: "selection", label: "Text Selection", auto: true, pinned: false, ref: { libraryID: 1, itemKey: "BM2004AB", pageIndex: 6 }, text: "The table reports, for the entire sample and different subsamples of sent resumes, the callback rates for applicants with a White-sounding name." };
 const AREA_CHIP: ContextChip = { id: "area:1", kind: "area", label: "Selected Area · p.19", auto: true, pinned: false, ref: { libraryID: 1, itemKey: "LUND2021", pageIndex: 18, pageLabel: "19", annotationKey: "ANNAREA1" }, image: { mime: "image/png", data: AREA_PNG } };
 
+/** What `paperTitle` answers for the fake universe's items, as Zotero's `getDisplayTitle` would. */
+const FAKE_PAPERS: Record<string, string> = {
+  BM2004AB: "Are Emily and Greg More Employable than Lakisha and Jamal?",
+  LUND2021: "Minimax Optimal Treatment Rules with Covariate Adjustment",
+  LONGTITL: "Regional Heterogeneity in the Effectiveness of Hiring Audit Correspondence Studies: A Meta-Analytic Synthesis of Forty Years of Field Experiments",
+};
+
 // ───────────────────────────── the scripted agent ─────────────────────────────
 
 class FakeSession implements AgentSession {
@@ -202,6 +209,8 @@ class FakeSession implements AgentSession {
     const turn = `turn-${++this.turnNo}-${this.sessionId}`;
     const q = input.text.toLowerCase();
     this.emit({ t: "turn_start", turn });
+    // "retitle" anywhere in the question: the agent names the session mid-turn (ACP session_info_update).
+    if (q.includes("retitle")) this.emit({ t: "session_title", title: "The audit-study question, summarised by the agent" });
     if (this.sim.startFails === "prompt") { this.sim.startFails = null; throw new Error("the bridge exited (code 1)"); }
     await sleep(this.sim.speed ? 120 : 0);
 
@@ -217,6 +226,8 @@ class FakeSession implements AgentSession {
       const text = this.sim.nextAnswer;
       this.sim.nextAnswer = null;
       await this.stream(turn, "text", text);
+      // "listtitle": the OpenCode-style pull lands its title just after the turn ends (no session_info_update ever came).
+      if (q.includes("listtitle")) setTimeout(() => this.emit({ t: "session_title", title: "Pulled from the session list" }), 0);
       const u = this.sim.contextUsage;
       this.emit({ t: "turn_end", turn, stop: this.cancelled ? "cancelled" : "end_turn", ...(u ? { usage: { contextUsed: u.used, contextSize: u.size } } : {}) });
       return;
@@ -264,6 +275,8 @@ class FakeSession implements AgentSession {
     const body = long ? `${SAMPLE_ANSWER}\n\n${LONG_PARAS}` : /\bmermaid\b/.test(q) ? MERMAID_ANSWER : /\b(draw|diagram)/.test(q) ? DIAGRAM_ANSWER : q.includes("math") ? "The estimator is\n\n$$\\hat{\\tau} = \\frac{1}{n}\\sum_{i=1}^{n}\\left(\\frac{T_i Y_i}{e(X_i)} - \\frac{(1-T_i)Y_i}{1-e(X_i)}\\right)$$\n\nwith propensity $e(X_i) = P(T_i = 1 \\mid X_i)$. An unclosed $$ stays text while it streams, and \\$5 is just five dollars." : SAMPLE_ANSWER;
     await this.stream(turn, "text", (this.cancelled ? "" : body));
     if (this.cancelled) return this.end(turn, "cancelled");
+    // "listtitle": the OpenCode-style pull lands its title just after the turn ends (session_info_update never came).
+    if (q.includes("listtitle")) setTimeout(() => this.emit({ t: "session_title", title: "Pulled from the session list" }), 0);
     this.emit({ t: "turn_end", turn, stop: "end_turn", usage: { inputTokens: 12840, outputTokens: 912, costUsd: 0.031, ...(this.sim.contextUsage ? { contextUsed: this.sim.contextUsage.used, contextSize: this.sim.contextUsage.size } : {}) } });
   }
 
@@ -406,6 +419,14 @@ export class FakeHost implements PanelHost {
     this.store.set(session.id, cur);
   }
   async deleteSession(id: string) { this.store.delete(id); }
+  async renameSession(id: string, title: string) {
+    const cur = this.store.get(id);
+    if (cur) cur.meta = { ...cur.meta, title, titleLocked: true, updatedAt: Date.now() };
+  }
+  paperTitle(chips: ContextChip[]): string | null {
+    const ref = chips.find((c) => c.kind === "reader" && c.ref.itemKey)?.ref ?? chips.find((c) => c.kind === "item" && c.ref.itemKey)?.ref;
+    return ref?.itemKey ? (FAKE_PAPERS[ref.itemKey] ?? `${ref.itemKey}: a paper in the fake library`) : null;
+  }
 
   // --- doctor
   private async *runFix(id: string, lines: string[]): AsyncGenerator<string> {
