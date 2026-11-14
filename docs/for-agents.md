@@ -95,7 +95,7 @@ Plan everything, check placement, then write in one run:
 1. `zotero-cli --json layout ATTACHMENT_KEY --pages 3-9` lists figure, table and equation boxes with captions and a ready `rect_arg`.
 2. Write a JSON Lines plan: `{"page": 4, "text": "exact words", "comment": "...", "color": "yellow"}` for a highlight, `{"page": 3, "rect": "x,y,w,h", "comment": "..."}` for a box. Copy highlight text exactly from `read`; it is searched on that page and two either side.
 3. `zotero-cli annotations batch --attachment-key ATTACHMENT_KEY --file plan.jsonl --dry-run` prints the words each highlight would cover. Fix every miss.
-4. Run it again without `--dry-run`. Failures are listed with `ok: false` and the exit code is 1.
+4. Run it again without `--dry-run`. Failures are listed with `ok: false` and the exit code is 1. Re-running with `--on-existing skip` adds only what is missing, instead of duplicating.
 
 Colors take Zotero's names (yellow, red, green, blue, purple, magenta, orange, gray). Three or four colors with fixed meanings read better than eight; explain them in a note (`zotero-cli notes create --item-key ITEM_KEY --text -`).
 

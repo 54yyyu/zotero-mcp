@@ -46,7 +46,11 @@ render every figure page and look at it yourself:
 ```bash
 zotero-cli read ITEM_KEY --start-page 4 --end-page 4 --format image --out pages/
 zotero-cli read ITEM_KEY --start-page 4 --format image --rect 0.2,0.3,0.35,0.2 --out zoom/   # zoom into one panel
+zotero-cli read ITEM_KEY --start-page 4 --format image --grid --out grid/   # a labelled 0.05 grid to read box coordinates from
 ```
+
+`--grid` is also drawn on a zoomed `--rect`, in whole-page coordinates. You do not need to write grid, zoom or overlay
+scripts; the CLI draws all three.
 
 Zoom into any panel before describing it: read the axis values, thresholds, which curve is which colour, and every
 arrow and repression bar in a network diagram. Do not describe what you have not seen.
@@ -101,17 +105,28 @@ Write the plan as a JSON Lines file, one annotation per line:
    ```bash
    zotero-cli --json annotations batch --attachment-key ATTACH_KEY --file plan.jsonl --dry-run
    ```
-2. Check every box against the page images: each one covers exactly its panel, label included, and does not swallow
-   its neighbour. On a rotated (landscape) page, open it in Zotero after writing and look.
-3. Write for real (the same command without `--dry-run`) and confirm `failed: 0`. Then count what was written:
+2. Draw the plan and look at it: each box covers exactly its panel, label included, and does not swallow its
+   neighbour. The render is made from the position that would be stored, so it catches write-side shifts, rotated
+   pages included:
    ```bash
-   zotero-cli --json annotations list --item-key ITEM_KEY --limit 500
+   zotero-cli annotations batch --attachment-key ATTACH_KEY --file plan.jsonl --dry-run --render renders/
    ```
+   For a panel whose box you would rather not work out by hand, write `"rect": "auto", "near": "x,y,w,h"` (a rough hint)
+   and the box is fitted to the detected panel or figure; `zotero-cli layout ATTACH_KEY --panels` lists the panels it
+   knows. Rows that fell back to your hint say so.
+3. Write for real (the same command without `--dry-run`) and confirm `failed: 0`. Then check what Zotero actually
+   holds, and count it:
+   ```bash
+   zotero-cli annotations preview --attachment-key ATTACH_KEY --out check/
+   zotero-cli --json annotations list --item-key ATTACH_KEY --positions --limit 500
+   ```
+   Fix a box that is off in place, keeping its key: `zotero-cli annotations update ANNOTATION_KEY --rect x,y,w,h`.
 
 ## Gotchas
 
-- Do not re-run a batch that succeeded: it creates duplicates. To redo, delete the old annotations permanently first
-  (trashed annotations still show in Zotero's reader).
+- A plain re-run of a batch creates duplicates. Re-run with `--on-existing skip` to add only what is missing, or
+  `--on-existing replace` to redo entries (it deletes the old ones permanently; trashed annotations still show in
+  Zotero's reader).
 - `annotations list` fields are `type`, `color_category`, `page`, `text` and `comment`.
 - Highlight text is searched on the given page and two either side, and tolerates hyphenation and curly quotes; copy
   it from `read`.

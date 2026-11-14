@@ -626,9 +626,13 @@ def render_pdf_pages(
     end_page: int | None = None,
     *,
     rect: list[float] | str | None = None,
+    grid: bool = False,
     ctx: Context,
 ) -> tuple[str, list[dict]]:
     """Render a page range, or one region of ``start_page``, to PNG.
+
+    ``grid`` draws lines every 0.05 and labels every 0.1 in whole-page
+    normalized coordinates (also on a zoomed region), the ones ``rect`` takes.
 
     Returns:
         (header, pages): a Markdown header naming what was rendered, and one
@@ -654,6 +658,7 @@ def render_pdf_pages(
             )
     try:
         from zotero_mcp._pymupdf import fitz
+        from zotero_mcp.pdf_render import render_page
     except ImportError as exc:
         raise PdfReadError(
             f"Rendering pages requires PyMuPDF. {_utils.install_hint('pdf')}",
@@ -676,9 +681,9 @@ def render_pdf_pages(
                         clip.x0 + (x + w) * clip.width, clip.y0 + (y + h) * clip.height,
                     )
                 zoom = min(_IMAGE_MAX_EDGE / max(clip.width, clip.height), _IMAGE_MAX_ZOOM)
-                pixmap = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, alpha=False)
-                pages.append({"page": number, "png": pixmap.tobytes("png"),
-                              "width": pixmap.width, "height": pixmap.height})
+                image = render_page(page, scale=zoom, clip=box, grid=grid)
+                pages.append({"page": number, "png": image["png"],
+                              "width": image["width"], "height": image["height"]})
         finally:
             pdf.close()
 

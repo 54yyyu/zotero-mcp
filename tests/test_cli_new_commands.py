@@ -160,17 +160,20 @@ class TestDispatch:
 
     def test_annotation_update_splits_tag_flags(self):
         args = _args(subcommand="update", annotation_key="A1", text=None,
-                     comment="hi", color=None, add_tags="x,y", remove_tags="z")
+                     comment="hi", color=None, add_tags="x,y", remove_tags="z",
+                     rect="0.1,0.2,0.3,0.4", page=3)
         annotations = MagicMock()
-        annotations.update_annotation.return_value = "updated"
+        annotations.change_annotation.return_value = "updated"
         with patch("zotero_mcp.cli_standalone.setup_zotero_environment"), \
              patch("zotero_mcp.cli_standalone._import_tools",
                    return_value=(MagicMock(), MagicMock(), annotations, MagicMock(), MagicMock())):
             cli_standalone.cmd_annotations(args)
-        kwargs = annotations.update_annotation.call_args.kwargs
+        kwargs = annotations.change_annotation.call_args.kwargs
         assert kwargs["add_tags"] == ["x", "y"]
         assert kwargs["remove_tags"] == ["z"]
         assert kwargs["comment"] == "hi"
+        assert kwargs["rect"] == [0.1, 0.2, 0.3, 0.4]
+        assert kwargs["page"] == 3
 
 
 class TestOpen:
