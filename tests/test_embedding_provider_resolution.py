@@ -127,19 +127,13 @@ def test_the_literal_string_huggingface_is_treated_as_a_model_name(hf_args):
     assert hf_args["model_name"] == "huggingface"
 
 
-def test_default_uses_chromadbs_builtin_capped_at_256_tokens(monkeypatch):
+def test_default_extends_chromadbs_builtin_capped_at_256_tokens():
     from chromadb.utils import embedding_functions
-
-    class _FakeDefaultEF:
-        pass
-
-    monkeypatch.setattr(
-        embedding_functions, "DefaultEmbeddingFunction", _FakeDefaultEF
-    )
 
     ef = _client("default")._create_embedding_function()
 
-    assert isinstance(ef, _FakeDefaultEF)
+    # A subclass that takes ONNX Runtime's thread count from ZOTERO_ONNX_THREADS (#90); building it loads no model.
+    assert isinstance(ef, embedding_functions.DefaultEmbeddingFunction)
     # all-MiniLM-L6-v2's max_seq_length; the pipeline truncates against it.
     assert ef.max_input_tokens == 256
 

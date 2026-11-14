@@ -15,7 +15,7 @@ type Counts = Record<string, number>;
 const ANN_KIND: Record<string, string> = { highlight: "highlight", underline: "highlight", note: "note", text: "note", image: "area", ink: "drawing" };
 
 /** Zotero wraps localized names in invisible bidi isolates ("⁨Bertrand⁩ and ⁨Mullainathan⁩"); they must not reach chips or prompts. */
-const stripBidi = (s: string) => s.replace(/[\u200e\u200f\u2066-\u2069]/g, "");
+export const stripBidi = (s: string) => s.replace(/[\u200e\u200f\u2066-\u2069]/g, "");
 
 export function itemLabel(item: any): string {
   const who = stripBidi(item.firstCreator || "");

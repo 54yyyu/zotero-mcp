@@ -333,6 +333,7 @@ export class AcpAgentSession implements AgentSession {
         await session.setEffort(opts.effort).catch(() => undefined);
       }
       await session.#settle();
+      if (opts.resumeSessionId) session.#scheduleTitlePull(1200); // a list-only backend already has its title; a pushed one ignores this
       return session;
     } catch (e) {
       await client.close();
@@ -537,6 +538,42 @@ export class AcpAgentSession implements AgentSession {
   #endTurn(turnId: string, stop: Extract<ChatEvent, { t: "turn_end" }>["stop"], usage?: Usage): void {
     this.#turn = undefined;
     this.#emit({ t: "turn_end", turn: turnId, stop, ...(usage ? { usage } : {}) });
+    this.#scheduleTitlePull();
+  }
+
+  // ───────────── titles for backends that never push (OpenCode) ─────────────
+
+  /** Adopted a pulled title already: OpenCode names a session once, so stop asking after that. */
+  #titlePulled = false;
+  /** A pull chain (delay + retry) is outstanding; a second turn ending inside it does not stack another. */
+  #pullBusy = false;
+
+  /**
+   * Measured (opencode v2.2.7, 2026-11-13): a backend flagged `titlesViaList` never sends a titled
+   * `session_info_update`, but `session/list` already serves its LLM-generated title once a turn has run. Ask
+   * shortly after a turn ends (generation may lag the turn by a little: one retry), and again after a resume.
+   * A local request: no tokens, nothing sent to any provider.
+   */
+  #scheduleTitlePull(delayMs = 2000): void {
+    const via = this.#spec.titlesViaList;
+    if (!via || this.#closed || this.#titlePulled || this.#pullBusy) return;
+    this.#pullBusy = true;
+    setTimeout(() => { void this.#pullTitle(via, 2).finally(() => { this.#pullBusy = false; }); }, delayMs);
+  }
+
+  async #pullTitle(via: { placeholder?: RegExp }, triesLeft: number): Promise<void> {
+    if (this.#closed || this.#titlePulled) return;
+    try {
+      const res = asObj(await this.#client.request("session/list", {}));
+      // Newest first, and the live session is the one just touched: the first page carries it.
+      const title = str(objs(res?.["sessions"]).find((s) => str(s["sessionId"]) === this.sessionId)?.["title"]);
+      if (title && !(via.placeholder?.test(title) ?? false)) {
+        this.#titlePulled = true;
+        this.#emit({ t: "session_title", title });
+        return;
+      }
+    } catch { /* no list served, no entry, a dead request: the next turn tries again */ }
+    if (triesLeft > 1) setTimeout(() => void this.#pullTitle(via, triesLeft - 1), 5000);
   }
 
   get canCompact(): boolean {
@@ -654,6 +691,14 @@ export class AcpAgentSession implements AgentSession {
       if (typeof used === "number" && typeof size === "number" && size > 0) this.#ctx = { used, size };
       return;
     }
+    if (kind === "session_info_update") {
+      // The agent's own name for the conversation (often a summary it wrote after the first exchange). A session-level
+      // fact, not a turn event: it counts whenever it arrives, and an empty/null title (the protocol's "clear") is ignored —
+      // the saved chat's fallback title stays rather than being wiped.
+      const title = str(update["title"]);
+      if (title) this.#emit({ t: "session_title", title });
+      return;
+    }
 
     const turn = this.#turn;
     if (!turn) return; // replayed history, startup banners: never live events
@@ -696,9 +741,10 @@ export class AcpAgentSession implements AgentSession {
         this.#emit({ t: "notice", level: "info", message: t("agent.compacted"), compacted: true });
         return;
       default:
-        return; // user_message_chunk, session_info_update, ...
+        return; // user_message_chunk, ...
     }
   }
+  // NOTE: session_info_update is handled above, in the session-level section: it is not a turn event.
 
   #onTool(turn: { id: string; tools: Map<string, ToolState> }, update: Obj, kind: "tool_call" | "tool_call_update"): void {
     const id = str(update["toolCallId"]);

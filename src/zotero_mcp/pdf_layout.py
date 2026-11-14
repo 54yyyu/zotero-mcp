@@ -553,7 +553,7 @@ def _absorb_uncaptioned_panels(
     return [region for idx, region in enumerate(result) if idx not in absorbed]
 
 
-def detect_page_regions(pdf, page_num: int) -> dict:
+def detect_page_regions(pdf, page_num: int, panels: bool = False) -> dict:
     """
     Detect candidate figure/table regions on a PDF page.
 
@@ -569,6 +569,8 @@ def detect_page_regions(pdf, page_num: int) -> dict:
     Args:
         pdf: Path to the PDF file, or an open PyMuPDF document
         page_num: 1-indexed page number
+        panels: also split figures into panels at their panel letters
+            (A, B, C ...); each panel is a region with ``source`` "panel"
 
     Returns:
         On success:
@@ -593,7 +595,7 @@ def detect_page_regions(pdf, page_num: int) -> dict:
             {"error": str}
     """
     if not isinstance(pdf, (str, os.PathLike)):
-        return _page_regions(pdf, page_num)
+        return _page_regions(pdf, page_num, panels)
 
     try:
         from zotero_mcp._pymupdf import fitz
@@ -606,12 +608,12 @@ def detect_page_regions(pdf, page_num: int) -> dict:
     except Exception as e:
         return {"error": f"Could not open PDF: {e}"}
     try:
-        return _page_regions(doc, page_num)
+        return _page_regions(doc, page_num, panels)
     finally:
         doc.close()
 
 
-def _page_regions(doc, page_num: int) -> dict:
+def _page_regions(doc, page_num: int, panels: bool = False) -> dict:
     """detect_page_regions on an open document."""
     if not doc.is_pdf:
         return {"error": "File is not a valid PDF"}
@@ -781,6 +783,8 @@ def _page_regions(doc, page_num: int) -> dict:
             "caption_text": label,
             "confidence": "high" if equation["label"] else "medium",
         })
+    if panels:
+        regions.extend(panel_regions(page, regions))
     regions.sort(key=lambda r: (r["bbox"][1], r["bbox"][0]))
 
     for idx, region in enumerate(regions, start=1):
@@ -793,3 +797,183 @@ def _page_regions(doc, page_num: int) -> dict:
         "regions": regions,
         "warnings": warnings,
     }
+
+
+# ---------------------------------------------------------------------------
+# Panels, from the single letters that label them
+# ---------------------------------------------------------------------------
+
+_PANEL_ROW_TOLERANCE = 0.02       # letters this close in y share a row
+_PANEL_LETTER_SIZE = (6.0, 16.0)  # a panel letter is a ~9pt bold span
+_PANEL_FIGURE_REACH = 0.03        # a figure region this near a letter belongs to its figure
+_BOLD_FLAG = 16                   # PyMuPDF span flag
+
+
+def _shown_box(page, bbox) -> list[float]:
+    """A PyMuPDF page-space box -> ``[x0, y0, x1, y1]`` normalized to the page as displayed."""
+    x0, y0, x1, y1 = bbox
+    if getattr(page, "rotation", 0) % 360:
+        a, b, c, d, e, f = tuple(page.rotation_matrix)
+        xs = (a * x0 + c * y0 + e, a * x1 + c * y1 + e)
+        ys = (b * x0 + d * y0 + f, b * x1 + d * y1 + f)
+        x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    width, height = page.rect.width, page.rect.height
+    return [x0 / width, y0 / height, x1 / width, y1 / height]
+
+
+def panel_letters(page) -> list[dict]:
+    """Single bold letters standing alone on a line, the way Cell and Nature label panels.
+
+    Returns ``{"letter", "box"}`` with ``box`` as ``[x0, y0, x1, y1]`` normalized
+    to the page as displayed.
+    """
+    letters = []
+    low, high = _PANEL_LETTER_SIZE
+    for block in page.get_text("dict")["blocks"]:
+        for line in block.get("lines", []):
+            spans = [span for span in line["spans"] if span["text"].strip()]
+            if len(spans) != 1:
+                continue
+            span = spans[0]
+            text = span["text"].strip()
+            bold = span["flags"] & _BOLD_FLAG or "bold" in span["font"].lower()
+            if len(text) == 1 and text.isascii() and text.isalpha() and bold and low <= span["size"] <= high:
+                letters.append({"letter": text, "box": _shown_box(page, span["bbox"])})
+    return letters
+
+
+def _ink_boxes(page) -> list[list[float]]:
+    """Drawings, images and words on a page as displayed ``[x0, y0, x1, y1]`` boxes."""
+    boxes = [word[:4] for word in page.get_text("words")]
+    boxes += [info["bbox"] for info in page.get_image_info()]
+    try:
+        boxes += [tuple(drawing["rect"]) for drawing in page.get_drawings()]
+    except Exception:
+        pass
+    shown = [_shown_box(page, box) for box in boxes]
+    # A page-sized frame or background is not a panel's ink.
+    return [b for b in shown if (b[2] - b[0]) * (b[3] - b[1]) < LAYOUT_MAX_REGION_AREA]
+
+
+def _centre_in(box, outer) -> bool:
+    x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    return outer[0] <= x <= outer[2] and outer[1] <= y <= outer[3]
+
+
+def panel_regions(page, figure_regions: list[dict]) -> list[dict]:
+    """One region per panel letter on a page, boxed to the ink in its cell.
+
+    The letters cut the figure into cells: a panel runs from its letter to the
+    next letter on its right (in rows) and the next below it, or to the
+    figure's edge. The cell is then trimmed to the drawings, images and words
+    inside it. Needs two or more letters. Confidence is "high" when the
+    letters run A, B, C ... without a gap or repeat and the figure's edges are
+    known from a detected figure region, "medium" when they run in order but
+    the figure's edges are guessed, and "low" otherwise.
+
+    ``figure_regions`` is detect_page_regions' list; on a rotated page it is
+    ignored, since those boxes are in the page's unrotated frame.
+    """
+    letters = panel_letters(page)
+    if len(letters) < 2:
+        return []
+    marks = sorted(letter["letter"].upper() for letter in letters)
+    in_order = len(set(marks)) == len(marks) and marks[0] == "A" and all(
+        ord(b) - ord(a) == 1 for a, b in zip(marks, marks[1:]))
+    confidence = "high" if in_order else "low"
+
+    if getattr(page, "rotation", 0) % 360:
+        figure_regions = []
+    reach = _PANEL_FIGURE_REACH
+    near = []
+    for region in figure_regions:
+        if region["source"] not in ("image", "drawing", "merged"):
+            continue
+        x, y, w, h = region["bbox"]
+        if any(x - reach <= m["box"][0] <= x + w + reach and y - reach <= m["box"][1] <= y + h + reach
+               for m in letters):
+            near.append([x, y, x + w, y + h])
+    if near:
+        bounds = [min(b[0] for b in near), min(b[1] for b in near),
+                  max(b[2] for b in near), max(b[3] for b in near)]
+    else:
+        bounds = [0.02, 0.02, 0.98, 0.98]
+        confidence = "medium" if confidence == "high" else confidence
+    bounds = [min(bounds[0], *(m["box"][0] for m in letters)), min(bounds[1], *(m["box"][1] for m in letters)),
+              max(bounds[2], *(m["box"][2] for m in letters)), max(bounds[3], *(m["box"][3] for m in letters))]
+
+    tolerance = _PANEL_ROW_TOLERANCE
+    ink = _ink_boxes(page)
+    regions = []
+    for letter in letters:
+        lx, ly = letter["box"][0], letter["box"][1]
+        right = min([o["box"][0] for o in letters
+                     if o is not letter and o["box"][0] > lx + tolerance and o["box"][1] < ly + tolerance]
+                    + [bounds[2]])
+        bottom = min([o["box"][1] for o in letters
+                      if o["box"][1] > ly + tolerance and lx - 0.03 <= o["box"][0] < right]
+                     + [bounds[3]])
+        # The letter's own word is not the panel's ink: a stray bold letter on a
+        # text page would otherwise come back as a confident letter-sized panel.
+        inside = [b for b in ink if lx <= (b[0] + b[2]) / 2 <= right and ly <= (b[1] + b[3]) / 2 <= bottom
+                  and not _centre_in(b, letter["box"])]
+        if inside:
+            cell = [min(b[0] for b in inside), min(b[1] for b in inside),
+                    max(b[2] for b in inside), max(b[3] for b in inside)]
+        else:
+            cell = [lx, ly, right, bottom]
+        x0, y0 = max(min(cell[0], lx), 0.0), max(min(cell[1], ly), 0.0)
+        x1, y1 = min(cell[2], right), min(cell[3], bottom)
+        regions.append({
+            "source": "panel",
+            "bbox": [x0, y0, max(x1 - x0, 0.0), max(y1 - y0, 0.0)],
+            "caption_label": f"Panel {letter['letter']}",
+            "caption_text": f"Panel {letter['letter']}",
+            "confidence": confidence if inside else "low",
+        })
+    return regions
+
+
+def auto_box(doc, page_num: int, near: list[float] | None = None) -> dict:
+    """Fit an area box to a figure or panel on a page.
+
+    With ``near`` (``[x, y, w, h]``, normalized, a hint of roughly where the
+    box goes) the detected region that overlaps it most is used, panels
+    first. Without a hint a page with exactly one detected region uses that
+    one. A region is only used when its confidence is not "low"; otherwise the
+    hint is kept and the note says so.
+
+    Returns:
+        ``{"rect", "source", "confidence", "note"}``, or ``{"error"}`` when there
+        is nothing to fit and no hint to fall back on.
+    """
+    layout = _page_regions(doc, page_num, panels=True)
+    if "error" in layout:
+        return layout
+    page = doc[page_num - 1]
+    regions = [r for r in layout["regions"] if r["source"] != "equation"]
+    if getattr(page, "rotation", 0) % 360:
+        regions = [r for r in regions if r["source"] == "panel"]
+
+    def fall_back(why: str) -> dict:
+        if near is None:
+            return {"error": f"{why}. Give a near hint (x,y,w,h) to place it by hand."}
+        return {"rect": list(near), "source": "hint", "confidence": "low",
+                "note": f"{why}; kept the near hint as given"}
+
+    if near is None:
+        usable = [r for r in regions if r["confidence"] != "low"]
+        if len(regions) != 1 or not usable:
+            return fall_back(f"{len(regions)} candidate regions on page {page_num}")
+        chosen = usable[0]
+    else:
+        def score(region):
+            return _bbox_iou(near, region["bbox"]) * (1.15 if region["source"] == "panel" else 1.0)
+        chosen = max(regions, key=score, default=None)
+        if chosen is None or _bbox_iou(near, chosen["bbox"]) < 0.2:
+            return fall_back("no detected figure or panel overlaps the hint")
+        if chosen["confidence"] == "low":
+            return fall_back(f"{chosen['caption_label'] or chosen['source']} is a low-confidence match")
+    label = chosen.get("caption_label") or chosen["source"]
+    return {"rect": list(chosen["bbox"]), "source": f"{chosen['source']} ({label})",
+            "confidence": chosen["confidence"], "note": ""}

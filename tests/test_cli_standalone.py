@@ -237,7 +237,7 @@ def test_cmd_annotations_passes_json_format(capsys):
         json_out=False,
     )
     mock_annotations = MagicMock()
-    mock_annotations.get_annotations.return_value = "[]"
+    mock_annotations.list_annotations.return_value = "[]"
 
     with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
         with patch(
@@ -246,7 +246,7 @@ def test_cmd_annotations_passes_json_format(capsys):
         ):
             cmd_annotations(args)
 
-    assert mock_annotations.get_annotations.call_args.kwargs["format"] == "json"
+    assert mock_annotations.list_annotations.call_args.kwargs["format"] == "json"
     assert capsys.readouterr().out.strip() == "[]"
 
 class TestMain:
@@ -548,7 +548,7 @@ class TestCmdAdd:
     def _args(self, **kwargs):
         defaults = dict(
             verbose=False, collections=None, collection=None, tags=None,
-            if_exists="file", create_collections=False,
+            if_exists="file", create_collections=False, attach_file=None,
         )
         defaults.update(kwargs)
         return MagicMock(**defaults)

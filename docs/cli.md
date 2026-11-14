@@ -101,6 +101,8 @@ zotero-cli ann search "highlight text"
 
 # Add items
 zotero-cli add doi 10.1038/s41586-021-03819-2
+zotero-cli add doi 10.1038/s41586-021-03819-2 --attach-file ~/papers/p.pdf -c Course --tags week-3   # add and attach a local PDF in one call
+zotero-cli add folder ~/papers/week3 -c Course --tags week-3 [--dry-run]   # every PDF in a folder, by the DOI inside it
 zotero-cli add url https://arxiv.org/abs/2301.00001
 zotero-cli add file --filepath /path/to/paper.pdf --title "Override Title"
 zotero-cli add isbn 9780262046305
@@ -147,17 +149,23 @@ zotero-cli read ABC123 --find "robustness check"          # ranked pages with sh
 zotero-cli read ABC123 --start-page 42 --end-page 55      # flags garbled math, figures, tables
 zotero-cli read ABC123 --start-page 44 --format image    # PNG page images (up to 10 pages)
 zotero-cli read ABC123 --start-page 44 --format image --rect 0.35,0.49,0.3,0.05   # zoom in
+zotero-cli read ABC123 --start-page 44 --format image --grid   # with a labelled 0.05 grid to read coordinates from
 zotero-cli path ABC123                        # where the file lives on disk
 zotero-cli open ABC123 --page 44              # show page 44 in the Zotero reader
 zotero-cli open --annotation ANN01            # jump to an annotation and select it
 
 # Annotating a PDF — boxes to aim at, then a checked plan written in one run
-zotero-cli --json layout ATTACH01 --pages 3-9            # figure, table and equation boxes
+zotero-cli --json layout ATTACH01 --pages 3-9 --panels   # figure, table and equation boxes, plus one per panel letter
 zotero-cli annotations create --attachment-key ATTACH01 --page 4 --text "exact words" --color yellow
 zotero-cli annotations create --attachment-key ATTACH01 --page 5 --text "exact words" --underline
 zotero-cli annotations create --attachment-key ATTACH01 --page 3 --rect 0.32,0.09,0.36,0.41 --comment "Figure 1"
+zotero-cli annotations create --attachment-key ATTACH01 --page 3 --rect auto --near 0.5,0.1,0.4,0.3   # fit to the nearest panel
+zotero-cli --json annotations list --item-key ATTACH01 --positions   # stored page, rects and a rect to pass back to update
+zotero-cli annotations update ANN01 --rect 0.30,0.10,0.36,0.40   # move or resize a box in place (--page N to change page)
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl --dry-run   # where each highlight lands
+zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl --dry-run --render out/   # draw the plan on page PNGs
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl             # write them all
+zotero-cli annotations preview --attachment-key ATTACH01 --pages 3-5 --out out/   # draw what is stored
 
 # Attachments, deletion, bibliographies
 zotero-cli attach ABC123 --file /path/to/paper.pdf
