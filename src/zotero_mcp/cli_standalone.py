@@ -743,9 +743,11 @@ def _annotations_batch(args, annotations, ctx) -> None:
                 print(f"WARN  {where}: {r['warning']}")
         verb = "Located" if args.dry_run else "Created"
         done = len(results) - len(failed) - len(skipped)
+        warned = [r for r in results if r.get("warning")]
         print(f"\n{verb} {done}/{len(results)} in {seconds}s"
               + (f"; {len(skipped)} already there" if skipped else "")
-              + (f"; {len(failed)} failed" if failed else ""))
+              + (f"; {len(failed)} failed" if failed else "")
+              + (f"; {len(warned)} old annotation(s) not deleted, see WARN" if warned else ""))
         for path in sorted({r["rendered"] for r in results if r.get("rendered")}):
             print(f"rendered: {path}")
 

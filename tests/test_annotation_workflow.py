@@ -732,6 +732,21 @@ class TestIdempotentBatch:
                          existing="replace")
         assert again["ok"] and "not deleted" in again["warning"] and not store.deleted
 
+    def test_cli_summary_counts_old_annotations_left_behind(self, store, tmp_path, capsys):
+        import argparse
+
+        from zotero_mcp import cli_standalone
+
+        plan = tmp_path / "plan.jsonl"
+        plan.write_text(json.dumps(PLAN[0]))
+        write(store, [PLAN[0]])
+        store.delete_item = MagicMock(side_effect=RuntimeError("412 Precondition Failed"))
+        args = argparse.Namespace(verbose=False, json_out=False, subcommand="batch", attachment_key=ATTACHMENT,
+                                  file=str(plan), dry_run=False, render=None, on_existing="replace")
+        cli_standalone._annotations_batch(args, annotations, MagicMock())
+        out = capsys.readouterr().out
+        assert "WARN" in out and "1 old annotation(s) not deleted" in out
+
     def test_a_dry_run_reports_what_it_would_do_and_writes_nothing(self, store):
         write(store, existing="skip")
         made, gone = len(store.created), len(store.deleted)
