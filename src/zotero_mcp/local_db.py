@@ -3337,6 +3337,29 @@ class LocalZoteroReader:
                 owner["attachment_keys"].append(row["key"])
         return list(owners.values())
 
+    def get_attachment_parents(self, *, group_id: int | None = PERSONAL_LIBRARY_GROUP_ID) -> dict[str, str | None]:
+        """``{attachment key: parent key or None}`` for every attachment not in the trash (#826).
+
+        None is a standalone file. One query over ``group_id``'s library
+        (every library for None), for the ``parent_hint`` backfill.
+        """
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return {}
+        lib_ph = ",".join("?" * len(lib_ids))
+        rows = self._get_connection().execute(
+            f"""
+            SELECT i.key, p.key
+            FROM itemAttachments ia
+            JOIN items i ON i.itemID = ia.itemID
+            LEFT JOIN items p ON p.itemID = ia.parentItemID
+            LEFT JOIN deletedItems del ON del.itemID = i.itemID
+            WHERE i.libraryID IN ({lib_ph}) AND del.itemID IS NULL
+            """,
+            lib_ids,
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
     def get_children_of(
         self,
         parent_keys: list[str],

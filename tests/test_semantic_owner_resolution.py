@@ -1000,3 +1000,16 @@ def test_get_filter_owners_across_libraries(tmp_path):
     finally:
         reader.close()
     assert keys == {"PAPER001", "STANDATT", "GRPPAPR1"}
+
+
+def test_get_attachment_parents_maps_every_live_attachment_to_its_parent(tmp_path):
+    db = tmp_path / "zotero.sqlite"
+    _owner_db(db)
+    reader = LocalZoteroReader(db_path=str(db))
+    try:
+        parents = reader.get_attachment_parents(group_id=None)
+    finally:
+        reader.close()
+
+    # A standalone file has no parent; a trashed attachment is not listed.
+    assert parents == {"ATTCHLD1": "PAPER001", "STANDATT": None}

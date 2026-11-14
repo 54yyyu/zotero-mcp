@@ -630,3 +630,39 @@ def test_a_changed_legacy_item_without_text_loses_its_passages(monkeypatch):
     assert bib["legacy_rewrite"] is True
     assert [u["key"] for u in units] == ["A"]
     assert settle["A"]["wanted"] == []
+
+
+class PassagesOnlyChroma(FakeChromaClient):
+    """PA has both its passages and no attachment record: what the migration leaves."""
+
+    def get_document_metadata(self, doc_id):
+        if doc_id in ("PA", "PA#0"):
+            return {"item_key": "PA", "group_id": 0, "chunk_index": 0, "n_chunks": 2}
+        return None
+
+    def get_metadatas(self, ids):
+        return {"PA#0": {"item_key": "PA", "group_id": 0, "chunk_index": 0, "n_chunks": 2}} if "PA#0" in ids else {}
+
+    def get_existing_ids(self, ids):
+        return {i for i in ids if i in ("PA#0", "PA#1")}
+
+
+@pytest.mark.parametrize("automatic", [True, False])
+def test_the_api_path_holds_or_fills_the_record_of_migrated_passages(monkeypatch, automatic):
+    zot = FakeZoteroClient()
+    zot.load_scenario(
+        [_paper("A")], fulltext={"PA": {"content": "Abody"}}, children={"A": [_pdf("PA", parent="A")]}
+    )
+    search = _build_search(monkeypatch, zot, PassagesOnlyChroma())
+    search._automatic_run = automatic
+    search._scan_gaps = {}
+
+    items = search._get_items_from_api(include_fulltext=True)
+    units = search._plan_units(items, force_rebuild=False)
+
+    if automatic:
+        assert [u["key"] for u in units] == ["A"], "the passages are paid for: nothing is embedded for them"
+        assert search._records_held == 1
+    else:
+        [unit] = [u for u in units if u["key"] == "PA"]
+        assert unit["_index_levels"] == {"articles"}, "only the attachment record is written"

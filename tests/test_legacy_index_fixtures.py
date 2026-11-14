@@ -11,6 +11,7 @@ code in local mode. The embedding is the fixtures' offline one, and anything tha
 embedding fails the test: opening an old index must not cost an embedding.
 """
 
+import importlib
 import importlib.util
 import json
 import sys
@@ -124,6 +125,9 @@ class Library:
         self.zotero = OfflineZotero()
         monkeypatch.setenv("ZOTERO_DB_PATH", str(self.db))
         monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+        # migrate-index opens zotero.sqlite. The module as ``from .utils import`` finds it, not as the
+        # package attribute names it: other test files re-import zotero_mcp and leave the two apart.
+        monkeypatch.setattr(importlib.import_module("zotero_mcp.utils"), "is_local_mode", lambda: True)
         monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: self.zotero)
         StrictEmbedding.allowed = set()
         StrictEmbedding.seen = []
@@ -339,12 +343,13 @@ RUNS = {
     "explicit_fulltext": {"extract_fulltext": True},
 }
 
-@pytest.mark.parametrize("run", sorted(RUNS))
-@pytest.mark.parametrize(
-    "kind",
-    [pytest.param("pre017", marks=[], id="pre017"), pytest.param("v0171", id="v0171")],
-)
-def test_updating_an_untouched_library_embeds_nothing(kind, run, tmp_path, monkeypatch):
+AUTOMATIC = ("automatic", "automatic_fulltext")
+
+
+@pytest.mark.parametrize("run", AUTOMATIC)
+@pytest.mark.parametrize("kind", ["pre017", "v0171"])
+def test_an_automatic_update_leaves_an_old_index_alone(kind, run, tmp_path, monkeypatch):
+    """The startup update neither migrates, re-keys nor embeds: not one record is written, moved or deleted."""
     library = Library(kind, tmp_path, monkeypatch)
     search = library.search_object()
     before = library.snapshot()
@@ -353,77 +358,208 @@ def test_updating_an_untouched_library_embeds_nothing(kind, run, tmp_path, monke
     assert stats["added_items"] == stats["updated_items"] == stats["deleted_items"] == 0
     assert StrictEmbedding.seen == []
     assert library.reads == []
-    assert library.snapshot() == before  # not one record written, moved or deleted
+    assert library.snapshot() == before
 
 
-# --- migrate-index, as 0.17.1 did it ---------------------------------------------------------------
+# --- migrate-index re-keys the passages to their attachments ----------------------------------------
+
+#: legacy passage id -> its id once re-keyed: the file 0.17 chose, by item.
+REKEYED = {
+    f"{key}#{n}": f"{fake_zotero.LARGEST[key]}#{n}"
+    for key, count in PASSAGES_PER_ITEM.items()
+    if key in fake_zotero.LARGEST
+    for n in range(count)
+}
+OWN_PASSAGE_KEYS = {
+    "item_key", "group_id", "chunk_index", "n_chunks", "char_start", "char_end", "page", "section", "parent_hint",
+}
 
 
-def test_migrate_index_splits_the_collections_as_0171_did(library):
+def _stamped(articles):
+    """0.17 article records after the re-key: unchanged, vectors included, but for ``rekeyed_to`` naming the file."""
+    return {
+        key: ({**meta, **({"rekeyed_to": fake_zotero.LARGEST[key]} if key in fake_zotero.LARGEST else {})}, vector)
+        for key, (meta, vector) in articles.items()
+    }
+
+
+def _migrate(library, **kwargs):
     from zotero_mcp.index_migration import migrate_index
 
+    return migrate_index(str(library.config_path), progress=lambda _m: None, **kwargs)
+
+
+def test_a_dry_run_reports_the_rekey_and_changes_nothing(library):
     before = library.snapshot()
-    dry = migrate_index(str(library.config_path), dry_run=True)
-    assert library.snapshot() == before  # a dry run changes nothing
-    report = migrate_index(str(library.config_path), progress=lambda _m: None)
-    after = library.snapshot()
-
+    dry = _migrate(library, dry_run=True)
+    assert library.snapshot() == before
+    assert dry.needed and dry.legacy_passages == 30 and dry.legacy_items == 4
+    assert dry.rekeyed_items == 3 and dry.rekeyed_passages == len(REKEYED)
+    assert dry.dropped_items == 1 and dry.dropped_passages == 1  # the file-less item's one passage
+    assert dry.skipped_items == 0
     assert StrictEmbedding.seen == [] and library.reads == []
-    if library.kind == "pre017":
-        assert dry.needed and dry.passage_records == 30 and dry.items_needing_articles == 4
-        assert report.needed and report.renamed and report.items_needing_articles == 4
-        # What 0.17.1's own migrate-index left: the passages, vectors untouched, in
-        # zotero_library_passages, and an empty zotero_library.
-        assert after[ARTICLES] == {}
-        assert after[PASSAGES] == before[ARTICLES]
+
+
+def test_migrate_index_moves_every_passage_to_its_attachment(library):
+    before = library.snapshot()
+    old_passages = before[ARTICLES if library.kind == "pre017" else PASSAGES]
+    report = _migrate(library)
+    after = library.snapshot()
+
+    assert StrictEmbedding.seen == [] and library.reads == []  # nothing embedded, no file read
+    assert report.rekeyed_items == 3 and report.rekeyed_passages == len(REKEYED) and report.skipped_items == 0
+    assert report.renamed is (library.kind == "pre017")
+
+    passages = after[PASSAGES]
+    assert set(passages) == set(REKEYED.values())
+    for old_id, new_id in REKEYED.items():
+        old_meta, old_vector = old_passages[old_id]
+        meta, vector = passages[new_id]
+        assert vector == old_vector  # the stored vector, untouched
+        assert set(meta) <= OWN_PASSAGE_KEYS  # the copied metadata is gone
+        assert meta["item_key"] == new_id.split("#")[0] and meta["chunk_index"] == int(new_id.split("#")[1])
+        assert meta["parent_hint"] == old_id.split("#")[0]
+        assert meta["n_chunks"] == old_meta["n_chunks"]
+    # The two-file item went to the larger file, which is what 0.17 indexed.
+    assert {k.split("#")[0] for k in passages} == {"ATTONEA1", "ATTTWOB2", "ATTFOUR4"}
+
+    if library.kind == "v0171":
+        # Every article record is where it was, vector and fields untouched, the file-less item's
+        # included; the re-key only notes which file each item's passages went to.
+        assert after[ARTICLES] == _stamped(before[ARTICLES])
+        assert set(after[ARTICLES]) == set(fake_zotero.ITEM_KEYS)
     else:
-        assert not dry.needed and not report.needed and not report.renamed
-        assert after == before
-    assert migrate_index(str(library.config_path), progress=lambda _m: None).needed is False
+        assert after[ARTICLES] == {}  # still nothing: its articles come with the next update
+        assert report.items_needing_articles == 4
+
+
+def test_a_file_less_items_passage_is_dropped_and_its_record_kept(library):
+    """ITEMTHR3's only passage repeated its metadata text: 0.17.1 has the article record for that."""
+    before = library.snapshot()
+    _migrate(library)
+    after = library.snapshot()
+    assert not any(k.startswith("ITEMTHR3") for k in after[PASSAGES])
+    if library.kind == "v0171":
+        assert after[ARTICLES]["ITEMTHR3"] == before[ARTICLES]["ITEMTHR3"]
+
+
+def test_migrate_index_twice_is_a_no_op(library):
+    _migrate(library)
+    after = library.snapshot()
+    again = _migrate(library)
+    assert not again.needed and again.rekeyed_items == 0 and again.rekeyed_passages == 0
     assert library.snapshot() == after
+    assert StrictEmbedding.seen == [] and library.reads == []
 
 
-def test_the_update_after_migrate_index_embeds_only_the_missing_articles(tmp_path, monkeypatch):
-    """0.17.1's own next step: one article vector per item; the passages are not embedded again."""
-    from zotero_mcp.index_migration import migrate_index
-
-    library = Library("pre017", tmp_path, monkeypatch)
-    migrate_index(str(library.config_path), progress=lambda _m: None)
-    passages = library.snapshot()[PASSAGES]
-    StrictEmbedding.allowed = None  # record, do not refuse: these four are expected
-    search = library.search_object()
-    stats = search.update_database(extract_fulltext=True)
-    assert stats.get("error") is None and stats["errors"] == 0, stats
-    # Four embeddings, each the bibliographic text of one item; the files were not read.
-    assert len(StrictEmbedding.seen) == 4
-    assert {text.split(" ")[0] for text in StrictEmbedding.seen} == {"Neural", "Bayesian", "A", "Glacier"}
-    assert library.reads == []
-    after = library.snapshot()
-    assert set(after[ARTICLES]) == set(fake_zotero.ITEM_KEYS)
-    assert after[PASSAGES] == passages
-
-
-def test_a_second_update_after_migrate_index_has_nothing_left_to_embed(tmp_path, monkeypatch):
-    from zotero_mcp.index_migration import migrate_index
-
-    library = Library("pre017", tmp_path, monkeypatch)
-    migrate_index(str(library.config_path), progress=lambda _m: None)
-    StrictEmbedding.allowed = None
-    search = library.search_object()
-    search.update_database(extract_fulltext=True)  # the four articles
-    after = library.snapshot()
-    StrictEmbedding.seen.clear()
-    assert search.update_database(extract_fulltext=True)["errors"] == 0
-    assert StrictEmbedding.seen == [] and library.snapshot() == after
-
-
-def test_search_works_on_the_split_index(library):
-    from zotero_mcp.index_migration import migrate_index
-
-    migrate_index(str(library.config_path), progress=lambda _m: None)
+def test_search_still_finds_the_parents_after_the_rekey(library):
+    _migrate(library)
     search = library.search_object()
     for key, query in QUERIES.items():
+        if key == "ITEMTHR3":
+            continue  # no file, so no passage left: found by its article record, where there is one
         out = _search(library, search, query, limit=4, level="passages")
         assert "error" not in out, out
         assert out["results"][0]["item_key"] == key
-    assert set(StrictEmbedding.seen) == set(QUERIES.values())
+    if library.kind == "v0171":
+        out = _search(library, search, QUERIES["ITEMTHR3"], limit=4, level="articles")
+        assert out["results"][0]["item_key"] == "ITEMTHR3"
+    # A file's passage is found through the item that owns the file.
+    out = _search(library, search, "mass balance stakes Hintereis", limit=3, level="passages")
+    assert out["results"][0]["item_key"] == "ITEMFOU4"
+    assert out["results"][0]["matched_attachment"]["key"] == "ATTFOUR4"
+    assert set(StrictEmbedding.seen) >= {"mass balance stakes Hintereis"}
+    assert library.zotero.calls == []
+
+
+# --- updates after the migration ---------------------------------------------------------------------
+
+
+def _new_records(before, after):
+    return {c: set(after[c]) - set(before.get(c, {})) for c in after}
+
+
+def test_updating_a_migrated_0171_index_embeds_nothing(tmp_path, monkeypatch):
+    """Its items are untouched legacy items: their article records stand, whatever the passages' keys."""
+    library = Library("v0171", tmp_path, monkeypatch)
+    _migrate(library)
+    search = library.search_object()
+    after = library.snapshot()
+    for run in sorted(RUNS):
+        stats = search.update_database(**RUNS[run])
+        assert stats["errors"] == 0, (run, stats)
+    assert StrictEmbedding.seen == [] and library.reads == []
+    assert library.snapshot() == after
+
+
+def test_an_automatic_update_of_a_migrated_0160_index_embeds_only_the_missing_articles(tmp_path, monkeypatch):
+    """Its items have passages but no article record: one cheap record each, as 0.17.1's gap fill wrote.
+
+    No passage and no attachment record is written, and no file is read.
+    """
+    library = Library("pre017", tmp_path, monkeypatch)
+    _migrate(library)
+    StrictEmbedding.allowed = None  # record, do not refuse
+    search = library.search_object()
+    before = library.snapshot()
+    stats = search.update_database(**RUNS["automatic_fulltext"])
+    assert stats["errors"] == 0, stats
+    after = library.snapshot()
+    assert _new_records(before, after) == {ARTICLES: set(fake_zotero.ITEM_KEYS), PASSAGES: set()}
+    assert len(StrictEmbedding.seen) == 4 and library.reads == []
+    assert after[PASSAGES] == before[PASSAGES]
+    StrictEmbedding.seen.clear()
+    search.update_database(**RUNS["automatic_fulltext"])
+    assert StrictEmbedding.seen == [] and library.snapshot() == after
+
+
+@pytest.mark.parametrize("fresh_migration", [True, False], ids=["after-migrate-index", "straight-from-0160"])
+def test_an_explicit_update_writes_only_the_missing_records_not_the_passages(fresh_migration, tmp_path, monkeypatch):
+    """4 article records and the 3 attachment records (one per file): 7 embeddings, no passage again.
+
+    Straight from the 0.16 index, the update splits and re-keys first, which embeds nothing.
+    """
+    library = Library("pre017", tmp_path, monkeypatch)
+    if fresh_migration:
+        _migrate(library)
+    StrictEmbedding.allowed = None
+    search = library.search_object()
+    before = library.snapshot()
+    stats = search.update_database(**RUNS["explicit_fulltext"])
+    assert stats["errors"] == 0, stats
+    after = library.snapshot()
+    new = _new_records(before, after)
+    assert new[ARTICLES] == set(fake_zotero.ITEM_KEYS) | set(fake_zotero.LARGEST.values())
+    if fresh_migration:
+        assert new[PASSAGES] == set() and after[PASSAGES] == before[PASSAGES]
+    else:
+        # moved by the re-key, vectors untouched
+        assert set(after[PASSAGES]) == set(REKEYED.values())
+        assert all(after[PASSAGES][new_id][1] == before[ARTICLES][old_id][1] for old_id, new_id in REKEYED.items())
+    assert len(StrictEmbedding.seen) == 7  # 4 + 3, never a passage
+    attachments = {k: after[ARTICLES][k][0] for k in fake_zotero.LARGEST.values()}
+    assert all(
+        set(m) == {"item_key", "group_id", "date_modified", "file_stamp", "parent_hint"} for m in attachments.values()
+    )
+    assert {m["parent_hint"] for m in attachments.values()} == set(fake_zotero.LARGEST)
+    # Up to date from now on, for every kind of run.
+    StrictEmbedding.seen.clear()
+    library.reads.clear()
+    for run in sorted(RUNS):
+        search.update_database(**RUNS[run])
+    assert StrictEmbedding.seen == [] and library.reads == []
+    assert library.snapshot() == after
+
+
+def test_an_explicit_update_of_a_0171_index_re_keys_it_without_embedding(tmp_path, monkeypatch):
+    library = Library("v0171", tmp_path, monkeypatch)
+    before = library.snapshot()
+    search = library.search_object()
+    for run in ("explicit", "explicit_fulltext"):
+        stats = search.update_database(**RUNS[run])
+        assert stats["errors"] == 0, stats
+    after = library.snapshot()
+    assert StrictEmbedding.seen == [] and library.reads == []
+    assert set(after[PASSAGES]) == set(REKEYED.values())
+    assert after[ARTICLES] == _stamped(before[ARTICLES])
+    assert all(after[PASSAGES][new][1] == before[PASSAGES][old][1] for old, new in REKEYED.items())

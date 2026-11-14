@@ -300,6 +300,39 @@ class ChromaClient:
         """Article-level records whose text is chunked: attachment and legacy records."""
         return read_passage_bearing_keys(self.persist_directory, self.collection_name)
 
+    def unhinted_attachment_keys(self) -> list[str]:
+        """Attachments whose record or passages carry no ``parent_hint`` yet, from SQLite."""
+        return sorted(read_unhinted_attachment_keys(self.persist_directory, self.collection_name))
+
+    def set_parent_hints(self, hints: dict[str, str | None]) -> int:
+        """Set ``parent_hint`` on these attachments' records and passages, without embedding; returns records changed.
+
+        ``hints`` maps an attachment key to its parent's key, or to None or
+        "" for a standalone file (stored as "", so that "no hint yet" stays
+        distinguishable). Only the hint changes; each record's whole stored
+        metadata goes back with it, as ``update_metadatas`` asks.
+        """
+        changed = 0
+        keys = sorted(hints)
+        for start in range(0, len(keys), 500):
+            part = keys[start:start + 500]
+            ids: list[str] = []
+            metadatas: list[dict[str, Any]] = []
+            for collection in self.collections():
+                found = collection.get(where={"item_key": {"$in": part}}, include=["metadatas"])
+                for doc_id, meta in zip(found.get("ids") or [], found.get("metadatas") or []):
+                    meta = meta or {}
+                    if "title" in meta:
+                        continue  # a legacy record is keyed by its parent already
+                    hint = hints.get(record_key(doc_id)) or ""
+                    if meta.get("parent_hint") != hint:
+                        ids.append(doc_id)
+                        metadatas.append({**meta, "parent_hint": hint})
+            if ids:
+                self.update_metadatas(ids, metadatas)
+                changed += len(ids)
+        return changed
+
     def _collection_for_level(self, level: str):
         return self._passages() if level == PASSAGES and self.separate_passages() else self.collection
 
@@ -722,6 +755,29 @@ class ChromaClient:
                     found[doc_id] = meta or {}
         return found
 
+    def read_records(self, ids: list[str]) -> list[dict[str, Any]]:
+        """``{"id", "document", "embedding", "metadata"}`` of each of ``ids`` that exists, in any collection.
+
+        Looks in every collection, not where the id belongs: a passage
+        stranded in the article collection is still found. Raises on a
+        ChromaDB error.
+        """
+        found: dict[str, dict[str, Any]] = {}
+        for collection in self.collections():
+            for start in range(0, len(ids), 500):
+                result = collection.get(
+                    ids=ids[start:start + 500], include=["documents", "metadatas", "embeddings"]
+                )
+                embeddings = result.get("embeddings")
+                for i, doc_id in enumerate(result.get("ids", [])):
+                    found[doc_id] = {
+                        "id": doc_id,
+                        "document": (result.get("documents") or [""] * (i + 1))[i],
+                        "embedding": [float(x) for x in embeddings[i]],
+                        "metadata": (result.get("metadatas") or [{}] * (i + 1))[i] or {},
+                    }
+        return [found[doc_id] for doc_id in ids if doc_id in found]
+
     def delete_records(self, ids: list[str]) -> None:
         """Delete ``ids`` from every collection, wherever they are. Raises on a ChromaDB error."""
         for collection in self.collections():
@@ -731,6 +787,10 @@ class ChromaClient:
     def legacy_passage_keys(self) -> set[str]:
         """Item keys that still have legacy passages; see :func:`read_index_layout`."""
         return set(read_legacy_passage_ids(self.persist_directory, self.collection_name))
+
+    def rekeyed_targets(self) -> set[str]:
+        """Attachment keys the migration moved legacy passages to; see :func:`read_rekeyed_targets`."""
+        return read_rekeyed_targets(self.persist_directory, self.collection_name)
 
     def item_group_ids(self, item_keys: list[str]) -> dict[str, int]:
         """The library (``group_id``) of each indexed item in ``item_keys`` that has one.
@@ -1189,6 +1249,79 @@ def read_legacy_passage_ids(persist_directory: str, collection_name: str) -> dic
     return found
 
 
+def read_stored_fields(
+    persist_directory: str, records: list[tuple[str, str]], keys: tuple[str, ...]
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """The stored ``keys`` of records given as ``(id, collection name)``, read-only from SQLite.
+
+    The document is ``"chroma:document"``. A key a record lacks is absent.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    found: dict[tuple[str, str], dict[str, Any]] = {}
+    if not db.exists() or not records:
+        return found
+    by_collection: dict[str, list[str]] = {}
+    for doc_id, name in records:
+        by_collection.setdefault(name, []).append(doc_id)
+    key_marks = ",".join("?" * len(keys))
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        for name, ids in by_collection.items():
+            for start in range(0, len(ids), 400):
+                part = ids[start:start + 400]
+                marks = ",".join("?" * len(part))
+                rows = con.execute(
+                    f"""
+                    SELECT e.embedding_id, m.key,
+                           coalesce(m.string_value, m.int_value, m.float_value, m.bool_value)
+                    FROM embeddings e
+                    JOIN segments s ON e.segment_id = s.id
+                    JOIN collections c ON s.collection = c.id
+                    JOIN embedding_metadata m ON m.id = e.id
+                    WHERE c.name = ? AND s.scope = 'METADATA'
+                      AND e.embedding_id IN ({marks}) AND m.key IN ({key_marks})
+                    """,
+                    (name, *part, *keys),
+                ).fetchall()
+                for doc_id, key, value in rows:
+                    found.setdefault((doc_id, name), {})[key] = value
+    finally:
+        con.close()
+    return found
+
+
+def read_rekeyed_targets(persist_directory: str, collection_name: str) -> set[str]:
+    """Attachment keys that legacy records say their passages were moved to, read-only from SQLite.
+
+    The migration marks a legacy item's article record ``rekeyed_to`` when it
+    moves the item's passages to its attachment's key. Those attachments have
+    passages and, by design (#826, decision 1), no attachment record of their
+    own: that is not a gap to fill.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return set()
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        return {
+            row[0]
+            for row in con.execute(
+                """
+                SELECT DISTINCT m.string_value
+                FROM embedding_metadata m
+                JOIN embeddings e ON e.id = m.id
+                JOIN segments s ON e.segment_id = s.id
+                JOIN collections c ON s.collection = c.id
+                WHERE m.key = 'rekeyed_to' AND m.string_value IS NOT NULL
+                  AND c.name = ? AND s.scope = 'METADATA'
+                """,
+                (collection_name,),
+            )
+        }
+    finally:
+        con.close()
+
+
 def read_index_layout(persist_directory: str, collection_name: str) -> dict[str, Any]:
     """Count an index's records per level from SQLite, read-only.
 
@@ -1515,13 +1648,46 @@ def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tup
     return articles, {key for key, count in found.items() if count >= expected.get(key, 1)}
 
 
+def read_unhinted_attachment_keys(persist_directory: str, collection_name: str) -> dict[str, int | None]:
+    """Attachment keys whose record or passages lack a ``parent_hint``, with their library; read-only from SQLite.
+
+    ``{attachment key: group_id or None}``. Records written before the hint
+    existed are the ones missing it (#826); a standalone file's record has it
+    as an empty string, so it is not listed.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return {}
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        keys = {
+            row[0]
+            for row in con.execute(
+                "SELECT e.embedding_id" + _BARE_KEY_FROM + _NO_PARENT_HINT,
+                ("file_stamp", collection_name),
+            )
+        }
+        keys |= {
+            record_key(row[0])
+            for row in con.execute(
+                "SELECT e.embedding_id " + _PASSAGE_ROWS_WITHOUT_HINT,
+                (collection_name, passage_collection_name(collection_name)),
+            )
+        }
+    finally:
+        con.close()
+    return dict.fromkeys(sorted(keys))
+
+
 def read_passage_bearing_keys(persist_directory: str, collection_name: str) -> set[str]:
     """Article-level records that can have passages, read-only from SQLite.
 
     Passages are cut from a file's text (#826): an attachment record (it has
     ``file_stamp``) has them, and so does a legacy record built with full
     text (``has_fulltext`` true). A bibliographic record never has any, so it
-    is never missing them.
+    is never missing them. A legacy record whose passages the migration moved
+    to its attachment's key (``rekeyed_to``) has none under its own key and
+    is not missing them either.
     """
     db = Path(persist_directory) / "chroma.sqlite3"
     if not db.exists():
@@ -1539,6 +1705,9 @@ def read_passage_bearing_keys(persist_directory: str, collection_name: str) -> s
                 JOIN embedding_metadata m ON m.id = e.id
                 WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id NOT LIKE '%#%'
                   AND (m.key = 'file_stamp' OR (m.key = 'has_fulltext' AND m.bool_value = 1))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM embedding_metadata r WHERE r.id = e.id AND r.key = 'rekeyed_to'
+                  )
                 """,
                 (collection_name,),
             )

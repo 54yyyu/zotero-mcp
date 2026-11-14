@@ -582,6 +582,8 @@ _LEGACY_METADATA_KEYS = (
     "item_type", "title", "date", "date_added", "creators", "publication", "url", "doi",
     "tags", "citation_key", "has_fulltext", "fulltext_source", "attachment_keys",
     "attachment_priority", "parent_item_key",
+    # Set by the migration on a legacy record whose passages it moved (index_migration).
+    "rekeyed_to",
 )
 
 
@@ -1618,6 +1620,9 @@ class ZoteroSemanticSearch:
     _drop_passages_on_write = False
     # Whether this run is one nobody asked for (startup, pre-search), set per run.
     _automatic_run = False
+    # Attachments with all their passages and no attachment record that an
+    # automatic run left alone, counted per run.
+    _records_held = 0
     # The gaps a local scan should keep items for, set per run by update_database.
     _scan_gaps: dict[str, set[str]] = {}
     # Items a run only adds a missing level to, set per run by update_database.
@@ -2594,6 +2599,7 @@ class ZoteroSemanticSearch:
         have, for the deletion pass, when the scan covered the whole library.
         """
         check = chroma_client is not None and not force_rebuild
+        self._records_held = 0
         priority_tag = ",".join(reader.attachment_priority)
         dates = reader.get_date_modified_by_key()
         desired: set[str] = set()
@@ -2654,6 +2660,15 @@ class ZoteroSemanticSearch:
                 failures_seen = fulltext_cache.known_failures(self.config_path)
             return failures_seen
 
+        stamps_seen: dict[str, str] | None = None
+
+        def rekeyed_stamps() -> dict[str, str]:
+            """The file stamps the re-key recorded, read when first needed."""
+            nonlocal stamps_seen
+            if stamps_seen is None:
+                stamps_seen = fulltext_cache.rekeyed_stamps(self.config_path)
+            return stamps_seen
+
         def selected_keys(item: Any, found: list[Any], chosen: list[Any]) -> list[str]:
             """The attachment keys whose records ``item`` keeps.
 
@@ -2675,14 +2690,29 @@ class ZoteroSemanticSearch:
                 group_id=group_id, owner_key=owner, label=label,
             )
             gap = self._scan_gaps.get(target.key) if check else None
-            # A legacy item's rewrite writes every file again.
-            stored = stored_of(target.key) if check and not rewrite else None
+            on_record = stored_of(target.key) if check else None
+            # A legacy item's rewrite writes every file again, except one whose
+            # passages the migration moved here and whose file has not changed.
+            stored = on_record if not rewrite else None
             current = self._unit_is_current(unit, stored)
             if current:
                 if not gap:
                     up_to_date += 1
                     return
                 unit["_index_levels"] = gap
+                current_keys.add(target.key)
+            elif check and (
+                action := self._passages_only_action(
+                    target.key, on_record, target.file_stamp, rekeyed_stamps(), gap
+                )
+            ):
+                # Its passages are there and its file has not changed; only the
+                # attachment record is missing. An automatic run leaves it, an
+                # explicit one writes the record, never the passages.
+                if action == "hold":
+                    self._records_held += 1
+                    return
+                unit["_index_levels"] = {SEARCH_ARTICLES}
                 current_keys.add(target.key)
             # A forced rebuild tries every file again.
             if check and failures().get(target.key) == target.file_stamp:
@@ -2865,6 +2895,140 @@ class ZoteroSemanticSearch:
         except Exception:
             pass
 
+    def _split_unmigrated_index(self, stats: dict[str, Any]) -> None:
+        """Give a chunked index built before the split its own passage collection (``migrate-index``'s first step).
+
+        An explicit update does this before re-keying, as ``migrate-index``
+        does: otherwise the re-keyed passages would stay in the article
+        collection, where the gap fill cannot see them. Moves vectors, embeds
+        nothing. A failure is logged and the run goes on: the index keeps
+        working the way it did.
+        """
+        from . import index_migration
+        from .chroma_client import ChromaClient
+
+        if not isinstance(self.chroma_client, ChromaClient):
+            return  # not the local ChromaDB (the server's worker process, a test double): nothing to rename here
+        try:
+            layout = self.chroma_client.index_layout()
+            if not layout.get("legacy_passages"):
+                # Nothing to re-key: an index written by this version goes on as it is.
+                return
+            report = index_migration.split_index(self.chroma_client, lambda message: _report(message + "\n"))
+        except Exception as e:
+            logger.error(f"Splitting the index into article and passage collections failed ({e}); it stays as it is")
+            return
+        if report is not None:
+            stats["index_split"] = {"renamed": report.renamed, "passages_moved": report.moved_passages}
+
+    def _rekey_legacy_passages(self, stats: dict[str, Any]) -> None:
+        """Move passages stored under their parent item to their attachment (``migrate-index``'s second step).
+
+        Embeds nothing. A failure is logged and the run goes on: legacy
+        passages keep working where they are.
+        """
+        layout_of = getattr(self.chroma_client, "index_layout", None)
+        layout = layout_of() if layout_of else None
+        if not isinstance(layout, dict) or not layout.get("legacy_passages"):
+            return
+        from . import index_migration
+
+        report = index_migration.MigrationReport(self.chroma_client.persist_directory, dry_run=False)
+        try:
+            _report(f"Re-keying the passages of {layout['legacy_passage_items']} items to their attachments.\n")
+            with index_migration.open_sources(self.config_path, db_path=self.db_path) as sources:
+                index_migration.rekey_legacy_passages(
+                    self.chroma_client.persist_directory,
+                    self.chroma_client.collection_name,
+                    self.chroma_client,
+                    sources,
+                    report,
+                    lambda _message: None,
+                    config_path=self.config_path,
+                )
+        except Exception as e:
+            logger.error(f"Re-keying legacy passages failed ({e}); they stay as they are")
+        stats["passages_rekeyed"] = {
+            "items": report.rekeyed_items,
+            "passages": report.rekeyed_passages,
+            "dropped_items": report.dropped_items,
+            "skipped_items": report.skipped_items,
+        }
+
+    def _attachment_parents(self, keys: list[str]) -> dict[str, str | None]:
+        """``{attachment key: parent key or None}`` for the attachments Zotero says it has among ``keys``.
+
+        None is a standalone file. An attachment Zotero does not list (gone,
+        trashed, or in a library that cannot be read) is left out: nothing
+        can be said about it. Local mode asks zotero.sqlite once for every
+        library; otherwise each library's attachments are listed through its
+        client, which costs a paged request or more per library.
+        """
+        reader = None
+        try:
+            reader = self._open_local_reader()
+        except Exception as e:
+            logger.debug(f"Parent hints: no local database ({e})")
+        if reader is not None:
+            try:
+                known = reader.get_attachment_parents(group_id=None)
+            except Exception as e:
+                logger.warning(f"Reading attachment parents from zotero.sqlite failed: {e}")
+                return {}
+            finally:
+                close = getattr(reader, "close", None)
+                if close:
+                    close()
+            return {key: known[key] for key in keys if key in known}
+
+        bound = None
+        try:
+            bound = self._client_group_id()
+        except ValueError:
+            pass
+        libraries = self.chroma_client.item_group_ids(keys)
+        by_library: dict[int | None, list[str]] = {}
+        for key in keys:
+            by_library.setdefault(libraries.get(key, bound), []).append(key)
+        found: dict[str, str | None] = {}
+        for library, wanted in by_library.items():
+            client = self.zotero_client if library is None or library == bound else self._client_for_group(library)
+            if client is None:
+                continue
+            try:
+                rows = _paginate(client.items, itemType="attachment") or []
+            except Exception as e:
+                logger.warning(f"Could not list the attachments of library {library} for the parent hints: {e}")
+                continue
+            parents = {
+                (row.get("key") or (row.get("data") or {}).get("key")): (row.get("data") or {}).get("parentItem") or None
+                for row in rows
+                if isinstance(row, dict) and (row.get("data") or {}).get("itemType") == "attachment"
+            }
+            found.update({key: parents[key] for key in wanted if key in parents})
+        return found
+
+    def _backfill_parent_hints(self, stats: dict[str, Any]) -> None:
+        """Give attachment records and passages written before hints their ``parent_hint`` (``migrate-index`` does the same).
+
+        Metadata only: nothing is embedded. An attachment Zotero cannot place
+        is counted as unresolved and left as it is; the next explicit run
+        tries again. A failure is logged and the run goes on: a missing hint
+        only keeps web-mode filtered searches on their slower path (#826).
+        """
+        try:
+            keys = self.chroma_client.unhinted_attachment_keys()
+            if not keys:
+                return
+            parents = self._attachment_parents(keys)
+            changed = self.chroma_client.set_parent_hints(parents) if parents else 0
+        except Exception as e:
+            logger.error(f"Setting parent hints failed ({e}); filtered searches stay on the slower path")
+            return
+        stats["parent_hints"] = {
+            "attachments": len(parents), "records": changed, "unresolved": len(keys) - len(parents),
+        }
+
     def _find_index_gaps(
         self, *, limit: int | None, force_rebuild: bool, fill_passages: bool = True
     ) -> dict[str, set[str]]:
@@ -2878,7 +3042,16 @@ class ZoteroSemanticSearch:
         if limit is not None or force_rebuild or not self._separate_passages():
             return {}
         articles, passages = self.chroma_client.item_keys_by_level()
-        missing_articles = passages - articles
+        # Passages the migration moved to an attachment's key belong to a
+        # legacy item and have no attachment record, by design (#826).
+        moved = getattr(self.chroma_client, "rekeyed_targets", None)
+        missing_articles = passages - articles - (moved() if moved else set())
+        if not fill_passages and missing_articles:
+            # The migration's re-keying leaves attachments with passages and no
+            # article record; an automatic run must not embed one for each. An
+            # item the 0.17 split left without one (legacy passages) still is.
+            legacy_keys = getattr(self.chroma_client, "legacy_passage_keys", None)
+            missing_articles &= legacy_keys() if legacy_keys else missing_articles
         gaps: dict[str, set[str]] = {key: {SEARCH_ARTICLES} for key in missing_articles}
         # An automatic run (startup, pre-search) leaves passage gaps alone:
         # after chunking is switched on that is the whole library, which a paid
@@ -3251,6 +3424,37 @@ class ZoteroSemanticSearch:
             return False
         return _same_moment(existing.get("date_modified"), unit.get("data", {}).get("dateModified"))
 
+    def _passages_only_action(
+        self, key: str, stored: dict[str, Any] | None, file_stamp: str, stamps: dict[str, str],
+        gap: set[str] | None,
+    ) -> str | None:
+        """What to do with ``key``, whose record is only its first passage: ``"fill"``, ``"hold"`` or None.
+
+        What the migration leaves (and a stopped run could): passages with no
+        attachment record. When the file is as the passages were cut from it
+        they are paid for and fine, so only the record is missing: an explicit
+        run fills it (``"fill"``: the record only, from the file's text), an
+        automatic one ``"hold"``s the file. None is the normal path: not a
+        passage-only key, passages missing, or a real change. ``stored`` is
+        the metadata of the key's record, else its first passage; ``gap`` the
+        levels the index lacks for it. The file has changed when the
+        migration recorded it (``stamps``) under another local stamp.
+        """
+        if not stored or "chunk_index" not in stored:
+            return None
+        seen = stamps.get(key)
+        if seen is not None and seen != file_stamp and _stamp_kind(file_stamp) == "local":
+            return None
+        if gap == {SEARCH_ARTICLES}:
+            return "fill"
+        count = stored.get("n_chunks")
+        existing = getattr(self.chroma_client, "get_existing_ids", None)
+        if existing is None or not isinstance(count, int) or count < 1:
+            return None
+        if len(existing([f"{key}#{n}" for n in range(count)])) != count:
+            return None
+        return "hold" if self._automatic_run else "fill"
+
     def _plan_units(self, items: list[dict[str, Any]], *, force_rebuild: bool) -> list[dict[str, Any]]:
         """The work units an API-fetched list of items needs written this run.
 
@@ -3260,12 +3464,17 @@ class ZoteroSemanticSearch:
         record gets a new bibliographic record and keeps its passages; a
         legacy item that has changed (``_legacy_action``) is rewritten in full,
         its legacy passages going once its new records are in; an unchanged
-        one is left alone. Records already current are left alone.
+        one is left alone. Records already current are left alone, and so is
+        a file whose passages a migration moved here and which has not
+        changed: an automatic run holds it, an explicit one writes only its
+        record.
         """
         units: list[dict[str, Any]] = []
+        stamps_seen: dict[str, str] | None = None
 
         def judged(attachments: list[dict[str, Any]], *, rewrite: bool) -> list[dict[str, Any]]:
             """The attachment units that need writing."""
+            nonlocal stamps_seen
             kept: list[dict[str, Any]] = []
             for attachment in attachments:
                 key = attachment["key"]
@@ -3276,6 +3485,16 @@ class ZoteroSemanticSearch:
                         attachment["_index_levels"] = gap
                         kept.append(attachment)
                     continue
+                if stamps_seen is None:
+                    stamps_seen = fulltext_cache.rekeyed_stamps(self.config_path)
+                action = self._passages_only_action(key, stored, attachment["file_stamp"], stamps_seen, gap)
+                if action == "hold":
+                    # Its passages are there and its file has not changed; only
+                    # the attachment record is missing.
+                    self._records_held += 1
+                    continue
+                if action == "fill":
+                    attachment["_index_levels"] = {SEARCH_ARTICLES}
                 kept.append(attachment)
             return kept
 
@@ -4313,6 +4532,7 @@ class ZoteroSemanticSearch:
             # library.
             self._run_group_id = self._client_group_id()
             self._automatic_run = automatic
+            self._records_held = 0
             # Set by this run's scan, if it covers the whole library.
             self._scan_desired_keys = None
             self._api_outranked = set()
@@ -4503,6 +4723,14 @@ class ZoteroSemanticSearch:
                 except Exception:
                     pass
 
+            # Passages stored the old way move to their attachments first: it
+            # costs no embedding, and the scan below then sees them in place.
+            # Only a run somebody asked for does this (#826).
+            if not automatic and not force_full_rebuild:
+                self._split_unmigrated_index(stats)
+                self._rekey_legacy_passages(stats)
+                self._backfill_parent_hints(stats)
+
             # Pick up a layout changed by another process (a migration) before
             # deciding where this run writes.
             layout_of = getattr(self.chroma_client, "index_layout", None)
@@ -4680,6 +4908,14 @@ class ZoteroSemanticSearch:
                 all_items = [
                     item for item in all_items if not (item.get("unit") and item.get("key") in outranked)
                 ]
+
+            if self._records_held:
+                stats["attachment_records_held"] = self._records_held
+                logger.info(
+                    "%d attachment(s) have their passages and no attachment record yet; "
+                    "run `zotero-mcp update-db` to write them (automatic updates leave this to you)",
+                    self._records_held,
+                )
 
             # From here on the run works on units: a bibliographic record per
             # regular item, an attachment record (and passages) per file (#826).

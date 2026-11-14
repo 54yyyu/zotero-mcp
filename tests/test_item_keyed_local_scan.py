@@ -373,8 +373,8 @@ def test_an_unchanged_legacy_item_writes_nothing(env):
     search, _ = env(reader, update=False)
     _seed_legacy(search)
 
-    # An explicit run leaves an untouched legacy item alone too.
-    search, _ = env(reader)
+    # An explicit update re-keys legacy passages first (test_item_keyed_rekey_update.py).
+    search, _ = env(reader, automatic=True)
 
     assert search.chroma_client.embedded == []
     assert reader.extracted == []
@@ -404,11 +404,18 @@ def test_an_item_with_only_old_passages_is_a_legacy_item_and_writes_nothing(env)
     search, _ = env(reader, update=False)
     _seed_unmigrated_passages(search)
 
-    search, _ = env(reader)
-
+    # An automatic run leaves it alone: nothing embedded, moved or read.
+    search, _ = env(reader, automatic=True)
     assert search.chroma_client.embedded == []
     assert reader.extracted == []
     assert _ids(search) == {"ITEM0001#0", "ITEM0001#1", "ITEM0001#2"}  # not split, nothing added
+
+    # An explicit one splits it (no embedding; this fake has no Zotero database to re-key from) and
+    # only writes the missing article record.
+    search, _ = env(reader)
+    assert len(search.chroma_client.embedded) == 1
+    assert reader.extracted == []
+    assert len(_ids(search, f"{NAME}_passages")) == 3
 
 
 def test_an_article_record_written_beside_old_passages_keeps_the_item_legacy(env):
@@ -550,7 +557,8 @@ def test_legacy_passages_stay_while_their_item_exists(env):
     search, _ = env(reader, update=False)
     _seed_legacy(search)
 
-    search, stats = env(reader)
+    # An explicit update re-keys legacy passages first (test_item_keyed_rekey_update.py).
+    search, stats = env(reader, automatic=True)
 
     assert stats.get("deleted_items", 0) == 0
     assert _all_ids(search) == {"ITEM0001", "ITEM0001#0", "ITEM0001#1", "ITEM0001#2"}
