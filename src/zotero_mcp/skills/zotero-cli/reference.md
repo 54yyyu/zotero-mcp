@@ -177,7 +177,18 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--tags` -- Tags (comma-separated, or a JSON array if a name has a comma)
  - `--if-exists` -- one of `file`, `skip`, `duplicate` -- default `file` -- When the item already exists: 'file' (default) reuses it and adds missing collections/tags; 'skip' leaves it untouched; 'duplicate' creates a new item anyway
  - `--create-collections` -- Create collections that don't exist yet (including parent/child paths)
- - `--attach-mode` -- one of `auto`, `linked_url`, `import_file`, `none`, `required` -- default `auto`
+ - `--attach-mode` -- one of `auto`, `linked_url`, `import_file`, `none`, `required` -- How to attach a PDF found online (default auto; none when --attach-file is given)
+ - `--attach-file` -- Attach this local file to the item in the same call, instead of fetching one; an item already in the library gets the file unless it is already attached
+
+### `add folder`
+
+ - `<folder>`
+ - `--collections` -- Comma-separated collection keys, names, or paths
+ - `-c, --collection` -- Collection key, name, or parent/child path (repeatable; not comma-split, so names with commas work)
+ - `--tags` -- Tags (comma-separated, or a JSON array if a name has a comma)
+ - `--if-exists` -- one of `file`, `skip`, `duplicate` -- default `file` -- When the item already exists: 'file' (default) reuses it and adds missing collections/tags; 'skip' leaves it untouched; 'duplicate' creates a new item anyway
+ - `--create-collections` -- Create collections that don't exist yet (including parent/child paths)
+ - `--dry-run` -- Only show the DOI found in each PDF (metadata and the whole first page)
 
 ### `add url`
 

@@ -101,6 +101,8 @@ zotero-cli ann search "highlight text"
 
 # Add items
 zotero-cli add doi 10.1038/s41586-021-03819-2
+zotero-cli add doi 10.1038/s41586-021-03819-2 --attach-file ~/papers/p.pdf -c Course --tags week-3   # add and attach a local PDF in one call
+zotero-cli add folder ~/papers/week3 -c Course --tags week-3 [--dry-run]   # every PDF in a folder, by the DOI inside it
 zotero-cli add url https://arxiv.org/abs/2301.00001
 zotero-cli add file --filepath /path/to/paper.pdf --title "Override Title"
 zotero-cli add isbn 9780262046305

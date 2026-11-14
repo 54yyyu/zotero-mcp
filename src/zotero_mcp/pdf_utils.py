@@ -1103,3 +1103,49 @@ def union_box(boxes: list[list[float]]) -> list[float]:
     right = max(b[0] + b[2] for b in boxes)
     bottom = max(b[1] + b[3] for b in boxes)
     return [round(v, 4) for v in (left, top, right - left, bottom - top)]
+
+
+_DOI_IN_TEXT_RE = re.compile(r"10\.\d{4,9}/[^\s\"'<>]+")
+
+
+def doi_from_pdf(pdf) -> tuple[str | None, str]:
+    """The DOI of the article a PDF holds, and where it was found (or why not).
+
+    Looks at the document's metadata (including XMP) and at the whole first
+    page, not just its first lines: a PDF cut from a journal spread carries the
+    neighbouring article's DOI too, so the answer is only given when it is
+    unambiguous. Metadata wins when it names exactly one DOI. Otherwise the
+    first page must name one DOI, or one that appears more often than any
+    other. A tie returns ``(None, "ambiguous: ...")`` rather than a guess.
+    """
+    from zotero_mcp.identifiers import doi_match_key, normalize_doi
+
+    def dois_in(text: str) -> dict[str, list]:
+        found: dict[str, list] = {}
+        for match in _DOI_IN_TEXT_RE.finditer(text or ""):
+            doi = normalize_doi(match.group(0))
+            if doi:
+                entry = found.setdefault(doi_match_key(doi), [doi, 0])
+                entry[1] += 1
+        return found
+
+    with open_pdf(pdf) as doc:
+        meta = " ".join(str(v) for v in (doc.metadata or {}).values() if v)
+        try:
+            meta += " " + (doc.get_xml_metadata() or "")
+        except Exception:
+            pass
+        first_page = doc[0].get_text() if len(doc) else ""
+
+    from_meta = dois_in(meta)
+    if len(from_meta) == 1:
+        return next(iter(from_meta.values()))[0], "metadata"
+    on_page = dois_in(first_page)
+    if not on_page:
+        return None, "no DOI in the metadata or on page 1"
+    ranked = sorted(on_page.values(), key=lambda entry: -entry[1])
+    if len(ranked) == 1:
+        return ranked[0][0], "page 1"
+    if ranked[0][1] > ranked[1][1]:
+        return ranked[0][0], f"page 1 (most often of {len(ranked)})"
+    return None, "ambiguous: " + ", ".join(entry[0] for entry in ranked[:3])

@@ -141,6 +141,16 @@ edited and written back with `notes update` keeps its citations and images;
 named collection rather than creating a duplicate. Use `--if-exists skip` to
 never touch an existing item.
 
+To file a PDF you already have, in one call: `zotero-cli add doi DOI
+--attach-file /path/paper.pdf -c COLLECTION --tags week-3` adds the item by DOI,
+files and tags it, and attaches that file (no second copy is fetched; an item
+already in the library just gets the file, unless it already has it).
+`zotero-cli add folder DIR -c COLLECTION --tags week-3` does that for every PDF
+in a folder, reading each one's DOI from its metadata and its whole first page.
+A PDF cut from a journal spread names two articles; it is listed as ambiguous,
+never guessed, so add those with `add doi ... --attach-file`. `--dry-run` shows
+the DOIs found without writing.
+
 Before a destructive change (`delete`, `duplicates merge`, a `batch` over
 many items), confirm with the user and show what will be affected. `delete
 item` refuses notes unless `--allow-note` is passed.

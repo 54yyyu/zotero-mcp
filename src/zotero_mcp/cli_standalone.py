@@ -863,6 +863,89 @@ def _collect_collection_specs(args) -> list | None:
     return specs or None
 
 
+_ITEM_KEY_RE = re.compile(r"Item key: `([^`]+)`")
+
+
+def _attach_to_added(write_mod, added: str, path: str, ctx) -> str:
+    """Attach a local file to the item an `add` just reported, in the same call.
+
+    Returns the add's text with the attach result under it. A failure comes
+    back starting with "Error", so it is reported as one, even though the item
+    itself was added.
+    """
+    import os
+
+    match = _ITEM_KEY_RE.search(added)
+    if not match:
+        return added  # the add failed or named no item; its own message says why
+    attached = write_mod.attach_file(
+        item_key=match.group(1), file_path=os.path.abspath(os.path.expanduser(path)), ctx=ctx)
+    if _reports_failure(attached):
+        return f"Error: the item was added ({match.group(1)}) but its file was not attached.\n\n{attached}"
+    return f"{added}\n\n{attached}"
+
+
+def _add_folder(args, write_mod, collections, tags, if_exists, create_missing, ctx) -> None:
+    """`add folder`: add and attach every PDF in a folder, by the DOI found in each."""
+    import os
+
+    from zotero_mcp.pdf_utils import doi_from_pdf
+
+    folder = os.path.abspath(os.path.expanduser(args.folder))
+    if not os.path.isdir(folder):
+        raise _cli_json.CliError(f"Not a folder: {folder}", code="bad_folder")
+    files = sorted(name for name in os.listdir(folder) if name.lower().endswith(".pdf"))
+    if not files:
+        raise _cli_json.CliError(f"No PDF files in {folder}", code="empty_folder")
+
+    rows = []
+    for name in files:
+        path = os.path.join(folder, name)
+        row = {"file": name, "doi": None, "status": "", "item_key": None}
+        rows.append(row)
+        try:
+            row["doi"], found = doi_from_pdf(path)
+        except Exception as exc:
+            row["status"] = f"unresolved: could not read the PDF ({exc})"
+            continue
+        if not row["doi"]:
+            row["status"] = f"unresolved: {found}"
+        elif args.dry_run:
+            row["status"] = f"would add ({found})"
+        else:
+            added = write_mod.add_by_doi(
+                doi=row["doi"], collections=collections, tags=tags, attach_mode="none",
+                if_exists=if_exists, create_missing_collections=create_missing,
+                page_check="thin_only", ctx=ctx)
+            match = _ITEM_KEY_RE.search(added)
+            if not match:
+                row["status"] = "failed: " + _cli_vocabulary(added.strip().splitlines()[0])
+                continue
+            row["item_key"] = match.group(1)
+            attached = write_mod.attach_file(item_key=row["item_key"], file_path=path, ctx=ctx)
+            if _reports_failure(attached):
+                row["status"] = "added, not attached: " + _cli_vocabulary(attached.strip().splitlines()[0])
+            else:
+                row["status"] = (
+                    ("already in the library, " if added.startswith("Already in library") else "added, ")
+                    + ("file already attached" if "already" in attached.lower() else "file attached")
+                    + f" ({found})")
+
+    unresolved = [r for r in rows if r["status"].startswith(("unresolved", "failed", "added, not"))]
+    if _json_mode(args):
+        _cli_json.emit("add folder", {"folder": folder, "dry_run": bool(args.dry_run), "files": rows,
+                                      "unresolved": len(unresolved)})
+    else:
+        width = max(len(r["file"]) for r in rows)
+        for r in rows:
+            print(f"{r['file']:<{width}}  {(r['doi'] or '-'):<32}  {r['status']}")
+        print(f"\n{len(rows) - len(unresolved)}/{len(rows)} resolved"
+              + (f"; {len(unresolved)} need attention: add those by hand with "
+                 "`zotero-cli add doi DOI --attach-file PATH`" if unresolved else ""))
+    if unresolved:
+        sys.exit(1)
+
+
 def cmd_add(args):
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
@@ -873,11 +956,18 @@ def cmd_add(args):
     create_missing = getattr(args, "create_collections", False)
 
     if args.subcommand == "doi":
-        _out(args, "add doi", text=write_mod.add_by_doi(
+        attach_file = getattr(args, "attach_file", None)
+        text = write_mod.add_by_doi(
             doi=args.doi, collections=collections, tags=tags,
-            attach_mode=args.attach_mode, if_exists=if_exists,
+            # A file in hand is the attachment; fetching an open-access copy too would make two.
+            attach_mode=args.attach_mode or ("none" if attach_file else "auto"), if_exists=if_exists,
             create_missing_collections=create_missing, ctx=ctx,
-        ))
+        )
+        if attach_file:
+            text = _attach_to_added(write_mod, text, attach_file, ctx)
+        _out(args, "add doi", text=text)
+    elif args.subcommand == "folder":
+        _add_folder(args, write_mod, collections, tags, if_exists, create_missing, ctx)
     elif args.subcommand == "url":
         _out(args, "add url", text=write_mod.add_by_url(
             url=args.url, collections=collections, tags=tags,
@@ -1851,7 +1941,16 @@ def build_parser() -> argparse.ArgumentParser:
     adoi = add_sub.add_parser("doi", help="Add item by DOI")
     adoi.add_argument("doi")
     _add_common_flags(adoi)
-    adoi.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file", "none", "required"], default="auto")
+    adoi.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file", "none", "required"],
+                      help="How to attach a PDF found online (default auto; none when --attach-file is given)")
+    adoi.add_argument("--attach-file", metavar="PATH",
+                      help="Attach this local file to the item in the same call, instead of fetching one; "
+                           "an item already in the library gets the file unless it is already attached")
+    afol = add_sub.add_parser("folder", help="Add every PDF in a folder by its DOI, attaching the file")
+    afol.add_argument("folder")
+    _add_common_flags(afol)
+    afol.add_argument("--dry-run", action="store_true",
+                      help="Only show the DOI found in each PDF (metadata and the whole first page)")
     aurl = add_sub.add_parser("url", help="Add item by URL")
     aurl.add_argument("url")
     _add_common_flags(aurl)
