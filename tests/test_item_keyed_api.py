@@ -133,6 +133,12 @@ class FakeZotero:
             rows = [r for r in rows if r["data"]["itemType"] == "attachment"]
         return rows[start : start + limit]
 
+    def top(self, start=0, limit=100, **kwargs):
+        """Top-level items only, as the API lists them: children are left out."""
+        self.calls.append(("top", None))
+        rows = [r for r in self.live() if not r["data"].get("parentItem")]
+        return rows[start : start + limit]
+
     def item(self, key):
         self.calls.append(("item", key))
         return self.rows[key]
@@ -499,7 +505,6 @@ def test_a_new_pdf_on_an_existing_item_embeds_only_that_file(env):
     library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
     env.update()
     env.zot.put(attachment("PDFBBBBB", "ITEM0001"), version=6)
-    env.zot.put(paper("ITEM0001"), version=6)
     env.zot.texts["PDFBBBBB"] = TEXT + " extra"
 
     search, _stats = env.update()
@@ -512,7 +517,6 @@ def test_a_replaced_pdf_is_embedded_again(env):
     library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
     env.update()
     env.zot.put(attachment("PDFAAAAA", "ITEM0001", md5="newmd5", mtime="200", date="2024-02-01T00:00:00Z"), version=6)
-    env.zot.put(paper("ITEM0001"), version=6)
     env.zot.texts["PDFAAAAA"] = "Replacement text " + TEXT
 
     search, _stats = env.update()
@@ -536,6 +540,27 @@ def test_an_outranking_pdf_removes_the_snapshot_records(env):
     assert records(search) == {"ITEM0001", "PDFAAAAA"}
     assert not any(i.startswith("SNAPSHOT") for i in all_ids(search))
 
+
+def test_a_trashed_attachment_loses_its_records(env):
+    library(
+        env,
+        paper("ITEM0001"),
+        attachment("PDFAAAAA", "ITEM0001"),
+        attachment("PDFBBBBB", "ITEM0001"),
+        PDFAAAAA=TEXT,
+        PDFBBBBB=TEXT,
+    )
+    env.update()
+    # Trashed, but still listed by item_versions(since=...) and fetchable.
+    env.zot.rows["PDFBBBBB"]["data"]["deleted"] = 1
+    env.zot.rows["PDFBBBBB"]["version"] = 6
+    env.zot.version = 6
+    env.zot.trashed_in_versions = True
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA"}
+    assert not any(i.startswith("PDFBBBBB") for i in all_ids(search))
 
 
 def test_an_attachment_moved_between_parents_writes_nothing_when_the_records_are_current(env):
@@ -580,6 +605,24 @@ def test_a_files_text_is_cut_to_what_its_records_can_use(env, monkeypatch):
     # (The text is parked on disk between steps, so a unit may show none.)
     assert seen and all(length <= cap for length, cap in seen)
     assert any(length == cap for length, cap in seen)
+
+
+def test_a_top_level_listing_still_purges_records_of_child_notes_and_annotations(env):
+    """A listing of top-level items never shows children, so their stale records are typed by asking (#604)."""
+    note = {"key": "NOTE0001", "version": 1, "data": {"key": "NOTE0001", "itemType": "note", "note": "x", "parentItem": "ITEM0001", "dateModified": DATE}}
+    ann = {"key": "ANNO0001", "version": 1, "data": {"key": "ANNO0001", "itemType": "annotation", "parentItem": "PDFAAAAA", "dateModified": DATE}}
+    library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), note, ann, PDFAAAAA=TEXT)
+    env.update()
+    search = env.search()
+    _legacy_record(search, "NOTE0001")
+    _legacy_record(search, "ANNO0001")
+    env.forget_sync_version()
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA"}
+    assert not {"NOTE0001", "ANNO0001"} & set(all_ids(search))
+    assert [c for c in env.zot.calls if c[0] == "top"]
 
 
 def test_unchanged_files_cost_no_fulltext_requests(env):
@@ -763,7 +806,6 @@ def test_a_replaced_local_file_is_embedded_again(env, monkeypatch, tmp_path):
     env.update()
     pdf.write_bytes(b"replacement pdf bytes, longer")
     env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=6)
-    env.zot.put(paper("ITEM0001"), version=6)
 
     search, _stats = env.update()
 
@@ -798,7 +840,6 @@ def test_a_stamp_of_the_other_kind_is_not_a_change_by_itself(env, monkeypatch, t
 
     # Its own dateModified moved: now it is a change.
     env.zot.put(attachment("PDFAAAAA", "ITEM0001", date="2024-05-05T00:00:00Z"), version=6)
-    env.zot.put(paper("ITEM0001"), version=6)
 
     search, _stats = env.update()
 
@@ -820,6 +861,36 @@ def test_unit_currency_across_stamp_kinds():
     assert not current({**unit, "file_stamp": "6:9"}, same_day)
 
 
+def test_a_changed_attachment_counts_as_a_change_of_its_legacy_parent(env):
+    library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
+    search = env.search()
+    _legacy_record(search, "ITEM0001")
+    # The parent is unchanged, but a file under it is new: only the child is listed since the watermark.
+    env.zot.put(paper("ITEM0001"), version=5)
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=6)
+    config = json.loads(Path(env.config).read_text())
+    config["semantic_search"]["last_sync_version"] = 5
+    Path(env.config).write_text(json.dumps(config))
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA"}
+    assert "title" not in meta(search, "ITEM0001")
+
+
+def test_a_trashed_standalone_attachment_is_removed_by_an_incremental_run(env):
+    library(env, paper("ITEM0001"), attachment("LONEPDF1"), LONEPDF1=TEXT)
+    search, _stats = env.update()
+    assert "LONEPDF1" in records(search)
+    env.zot.rows["LONEPDF1"]["data"]["deleted"] = 1
+    env.zot.rows["LONEPDF1"]["version"] = 6
+    env.zot.version = 6
+    env.zot.trashed_in_versions = True
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001"}
+    assert not any(i.startswith("LONEPDF1") for i in all_ids(search))
 
 
 def _watermark(env):
@@ -844,8 +915,7 @@ def test_a_failed_fulltext_request_holds_back_the_sync_version_and_is_retried(en
     library(env, paper("ITEM0001"))
     env.update()
     assert _watermark(env) == 5
-    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=4)
-    env.zot.put(paper("ITEM0001"), version=6)
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=6)
     env.zot.texts["PDFAAAAA"] = TEXT
     broken = _fail_once_then_recover(env, monkeypatch, "fulltext_item")
 
@@ -864,8 +934,7 @@ def test_a_failed_fulltext_request_holds_back_the_sync_version_and_is_retried(en
 def test_a_failed_children_request_holds_back_the_sync_version_and_is_retried(env, monkeypatch):
     library(env, paper("ITEM0001"))
     env.update()
-    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=4)
-    env.zot.put(paper("ITEM0001"), version=6)
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=6)
     env.zot.texts["PDFAAAAA"] = TEXT
     broken = _fail_once_then_recover(env, monkeypatch, "children")
 
@@ -880,6 +949,24 @@ def test_a_failed_children_request_holds_back_the_sync_version_and_is_retried(en
     assert records(search) == {"ITEM0001", "PDFAAAAA"}
     assert _watermark(env) == 6
 
+
+def test_a_failed_parent_request_holds_back_the_sync_version_and_is_retried(env, monkeypatch):
+    library(env, paper("ITEM0001"))
+    env.update()
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=6)
+    env.zot.texts["PDFAAAAA"] = TEXT
+    broken = _fail_once_then_recover(env, monkeypatch, "item", only="ITEM0001")
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001"}
+    assert _watermark(env) == 5
+
+    broken["on"] = False
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA"}
+    assert _watermark(env) == 6
 
 
 def test_a_failed_item_request_holds_back_the_sync_version_and_is_retried(env, monkeypatch):

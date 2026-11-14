@@ -61,6 +61,12 @@ class ScanReader:
     def get_date_modified_by_key(self):
         return dict(self.dates)
 
+    # Keys of the library's notes and annotations, as the database types them.
+    non_indexed: frozenset = frozenset()
+
+    def get_non_indexed_item_keys(self):
+        return set(self.non_indexed)
+
     def _resolve_extraction_targets(self, item_id):
         return list(self.targets.get(item_id, []))
 

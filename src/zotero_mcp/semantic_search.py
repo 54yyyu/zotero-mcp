@@ -1670,6 +1670,9 @@ class ZoteroSemanticSearch:
     # Only these may be deleted among the keys item_versions() still lists. None: a local scan.
     _scan_removed_keys: set[str] | None = None
     _api_textless: set[str] = set()
+    # Keys the scan knows, from live Zotero data, to be notes or annotations:
+    # their stored records are invalid, not merely gone (#604). None: not known.
+    _non_indexed_keys: set[str] | None = None
     # Attachment keys an API run saw but did not select (outranked, trashed or
     # moved out of selection): their records go once the run's changes are in.
     _api_outranked: frozenset[str] | set[str] = frozenset()
@@ -2480,6 +2483,10 @@ class ZoteroSemanticSearch:
                 # actually see — a fresh read taken later could already
                 # include rows from a WAL checkpoint that landed mid-scan.
                 self._last_scan_snapshot_keys = reader.get_all_item_keys()
+                try:
+                    self._non_indexed_keys = set(reader.get_non_indexed_item_keys())
+                except Exception as e:
+                    logger.debug(f"Could not read the note and annotation keys: {e}")
                 # Library attribution (#163): map every item key to its
                 # group_id (0 = personal, else Zotero groupID) via direct SQL
                 # on the same connection this scan uses. Feed/publications
@@ -3735,7 +3742,7 @@ class ZoteroSemanticSearch:
             levels = bib.pop("_index_levels", None)
             # Files the API paths already selected and read (and judged
             # against their records), ahead of any the item's own text names.
-            for flag in ("_api_attachments", "_api_selected"):
+            for flag in ("_attachments_changed", "_api_attachments", "_api_selected"):
                 bib.pop(flag, None)
             fetched = item.get("_api_attachments") or []
             if force_rebuild:
@@ -4126,10 +4133,11 @@ class ZoteroSemanticSearch:
         """What an API-fetched item whose records are legacy needs: ``"skip"``, ``"article"``, ``"passages"`` or ``"rewrite"``.
 
         An unchanged legacy item keeps its records until ``--force-rebuild``
-        (#826). It has changed when it has no library attribution or its
-        ``date_modified`` moved. One indexed with text that only lacks
-        passages (chunking was turned on) gets just those, under its
-        attachment's key (``"passages"``).
+        (#826). It has changed when it has no library attribution, its
+        ``date_modified`` moved, or one of its attachments changed
+        (``_attachments_changed``: attaching a file does not bump the parent).
+        One indexed with text that only lacks passages (chunking was turned
+        on) gets just those, under its attachment's key (``"passages"``).
         """
         levels = item.get("_index_levels")
         if levels == {SEARCH_ARTICLES}:
@@ -4137,7 +4145,11 @@ class ZoteroSemanticSearch:
             # passages, which cost money, as they are.
             return "article"
         data = item.get("data") or {}
-        if "group_id" not in legacy or not _same_moment(legacy.get("date_modified"), data.get("dateModified")):
+        if (
+            "group_id" not in legacy
+            or item.get("_attachments_changed")
+            or not _same_moment(legacy.get("date_modified"), data.get("dateModified"))
+        ):
             return "rewrite"
         if levels == {SEARCH_PASSAGES} and legacy.get("has_fulltext") is True:
             return "passages"
@@ -4518,6 +4530,13 @@ class ZoteroSemanticSearch:
             attachment_rows.extend(
                 item for item in items if item.get("data", {}).get("itemType") == "attachment"
             )
+            # Typed by this listing: a stored record of one is invalid (#604).
+            seen = {
+                item.get("key") for item in items
+                if item.get("key") and item.get("data", {}).get("itemType") in ("note", "annotation")
+            }
+            if seen:
+                self._non_indexed_keys = (self._non_indexed_keys or set()) | seen
             filtered_items = [
                 item for item in items if item.get("data", {}).get("itemType") not in _NON_INDEXED_ITEM_TYPES
             ]
@@ -4530,6 +4549,9 @@ class ZoteroSemanticSearch:
 
         if limit:
             all_items = all_items[:limit]
+
+        if not limit and list_page is not self.zotero_client.items:
+            self._type_unlisted_records(seen_keys)
 
         self._tag_group_id(all_items)
 
@@ -4568,6 +4590,36 @@ class ZoteroSemanticSearch:
 
         logger.info(f"Retrieved {len(all_items)} items from API")
         return all_items
+
+    def _type_unlisted_records(self, listed: set[str]) -> None:
+        """Find the stored records of child notes and annotations, which a top-level listing never shows (#604).
+
+        A listing of top-level items cannot type them, so a stale record of
+        one would stay (``item_versions()`` lists the item). Only records no
+        listed item accounts for are asked about, 50 keys to a request: an
+        attachment's own record (it has a ``file_stamp``) is never one, so on
+        a clean index this asks nothing.
+        """
+        try:
+            group_id = int(self._run_group_id) if self._run_group_id is not None else None
+            bare = sorted(i for i in self.chroma_client.get_all_ids() if "#" not in i and i not in listed)
+            stored = self.chroma_client.get_metadatas(bare) if bare else {}
+        except Exception as e:
+            logger.debug(f"Could not look for stale note records: {e}")
+            return
+        unknown = [
+            key for key, meta in stored.items()
+            if "file_stamp" not in meta and (group_id is None or meta.get("group_id") == group_id)
+        ]
+        if not unknown:
+            return
+        found, _failed = self._fetch_items_by_keys(unknown)
+        seen = {
+            key for key, item in found.items()
+            if (item.get("data") or {}).get("itemType") in ("note", "annotation")
+        }
+        if seen:
+            self._non_indexed_keys = (self._non_indexed_keys or set()) | seen
 
     def _get_changed_items_from_api(
         self, since_version: int, include_fulltext: bool = False
@@ -4658,17 +4710,31 @@ class ZoteroSemanticSearch:
                 continue
             changed_items.append(item)
 
+        if include_fulltext and changed_attachments:
+            owners, unresolved = self._owners_of_changed_attachments(changed_attachments, changed_items)
+            changed_items.extend(owners)
+        else:
+            unresolved = set()
         self._tag_group_id(changed_items)
 
         if include_fulltext:
             standalone_rows = [
                 row for row in changed_attachments if not (row.get("data") or {}).get("parentItem")
             ]
-            standalone, _selected, outranked, _complete = self._api_attachment_units(
+            standalone, selected, outranked, complete = self._api_attachment_units(
                 changed_items, standalone_rows=standalone_rows
             )
             changed_items.extend(standalone)
             self._api_outranked = self._api_outranked | outranked
+            if complete:
+                # A changed attachment that selection no longer picks
+                # (trashed, outranked, moved out of reach) loses its records.
+                # When a request failed the selection is not known, and
+                # nothing is deleted on its strength.
+                self._api_outranked = self._api_outranked | {
+                    self._row_key(row) for row in changed_attachments
+                    if self._row_key(row) not in selected | unresolved
+                }
 
         return changed_items, current_keys
 
@@ -4741,6 +4807,44 @@ class ZoteroSemanticSearch:
     # The library's item keys as _verify_local_snapshot_version listed them,
     # for the deletion pass of the same run. Reset per run by update_database.
     _library_keys_seen: set[str] | None = None
+
+    def _owners_of_changed_attachments(
+        self, attachments: list[dict[str, Any]], changed_items: list[dict[str, Any]]
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        """``(parents not yet in changed_items, keys of attachments whose parent is unknown)``.
+
+        A changed file changes what its parent's selection is, though the
+        parent itself did not change, so the parent is fetched and judged
+        again; it is flagged so a legacy parent counts as changed too. A
+        parent that is gone or trashed has no selection: its attachment's
+        records go. One that can't be fetched leaves its attachment's records
+        alone (the key comes back in the second set).
+        """
+        by_key = {item.get("key"): item for item in changed_items}
+        owners: list[dict[str, Any]] = []
+        unresolved: set[str] = set()
+        for row in attachments:
+            parent = (row.get("data") or {}).get("parentItem")
+            if not parent:
+                continue
+            owner = by_key.get(parent)
+            if owner is None:
+                try:
+                    owner = self.zotero_client.item(parent)
+                except ResourceNotFoundError:
+                    continue
+                except Exception as e:
+                    logger.debug(f"item({parent}) failed while following a changed attachment: {e}")
+                    unresolved.add(self._row_key(row))
+                    self._api_fetch_failures += 1
+                    continue
+                data = (owner or {}).get("data") or {}
+                if not owner or data.get("deleted") or data.get("itemType") in _NON_INDEXED_ITEM_TYPES:
+                    continue
+                by_key[parent] = owner
+                owners.append(owner)
+            owner["_attachments_changed"] = True
+        return owners, unresolved
 
     def _verify_local_snapshot_version(self, target_sync_version: int) -> int | None:
         """Decide whether the local sqlite snapshot supports promoting the
@@ -5371,10 +5475,14 @@ class ZoteroSemanticSearch:
                 )
                 stats["deletion_skipped_reason"] = "empty_item_versions"
             else:
-                to_delete_keys = sorted(
-                    k for k in (stored_item_keys - current_library_keys) if k
-                )
-                indexed_items = len(stored_item_keys)
+                candidates = sorted(k for k in (stored_item_keys - current_library_keys) if k)
+                # Records of notes and annotations (#604) are known to be
+                # invalid, never a sign of a truncated listing, so the guard
+                # does not apply to them; every other candidate stays under it.
+                known = self._non_indexed_keys or set()
+                purged = [k for k in candidates if k in known]
+                to_delete_keys = [k for k in candidates if k not in known]
+                indexed_items = len(stored_item_keys) - len(purged)
                 if (
                     narrowed
                     and not allow_mass_deletion
@@ -5388,7 +5496,7 @@ class ZoteroSemanticSearch:
                         for i in self.chroma_client.get_all_ids(
                             where={"group_id": int(self._run_group_id)}
                         )
-                    })
+                    }) - len(purged)
                 if (
                     to_delete_keys
                     and not allow_mass_deletion
@@ -5408,7 +5516,10 @@ class ZoteroSemanticSearch:
                     )
                     stats["deletion_skipped_reason"] = "mass_deletion_guard"
                     to_delete_keys = []
-                if to_delete_keys:
+                if purged or to_delete_keys:
+                    if purged:
+                        stats["purged_non_indexed"] = len(purged)
+                    to_delete_keys = purged + to_delete_keys
                     for k in to_delete_keys:
                         if k in keys_with_passages:
                             # Scoped: a chunk set can carry mixed
@@ -5425,6 +5536,11 @@ class ZoteroSemanticSearch:
                     stats["deleted_items"] = len(to_delete_keys)
                     try:
                         sys.stderr.write(f"\nDeleted {len(to_delete_keys)} items no longer present in Zotero.\n")
+                        if purged:
+                            sys.stderr.write(
+                                f"  {len(purged)} of them were records of notes and annotations, "
+                                "which are never indexed.\n"
+                            )
                     except Exception:
                         pass
         except Exception as e:
@@ -5936,6 +6052,7 @@ class ZoteroSemanticSearch:
                                 current_library_keys = set(
                                     (self.zotero_client.item_versions() or {}).keys()
                                 )
+                            current_library_keys = current_library_keys - (self._non_indexed_keys or set())
                             if self._scan_removed_keys is not None:
                                 # An API scan: the keys Zotero lists stay, but
                                 # for those the scan saw and does not want
@@ -6371,6 +6488,8 @@ class ZoteroSemanticSearch:
                 )
                 if stats["recovered_items"]:
                     summary += f", {stats['recovered_items']} recovered"
+                if purged := stats.get("purged_non_indexed"):
+                    summary += f", {purged} stale note/annotation records removed"
                 if stats["refreshed_unchanged"]:
                     summary += f", {stats['refreshed_unchanged']} unchanged (stamp refreshed)"
                 if reused := stats["reused_from_hash"]["attachments"]:
@@ -6437,6 +6556,7 @@ class ZoteroSemanticSearch:
             self._failure_counts_to_save = None
             self._scan_removed_keys = None
             self._api_textless = set()
+            self._non_indexed_keys = None
             self._run_hash_first = None
             self._api_outranked = frozenset()
             # The server keeps one instance: the next run starts without these.
