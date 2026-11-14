@@ -339,6 +339,12 @@ def test_split_filters_routes_stored_fields_to_chroma_and_bibliographic_ones_liv
     assert live == {"item_type": "book"}
 
 
+@pytest.mark.parametrize("field", ["date", "creators", "url"])
+def test_split_filters_rejects_fields_only_legacy_records_carry(field):
+    with pytest.raises(ValueError, match=f"{field}.*Supported fields:.*item_type"):
+        split_filters({"$and": [{"item_type": "book"}, {field: "x"}]})
+
+
 def test_split_filters_single_side():
     assert split_filters({"tags": "x"}) == (None, {"tags": "x"})
     assert split_filters({"page": {"$gte": 3}}) == ({"page": {"$gte": 3}}, None)
@@ -358,8 +364,13 @@ def test_split_filters_mixed_or_is_evaluated_live_whole():
     assert split_filters(pure_chroma) == (pure_chroma, None)
 
 
+def test_split_filters_multi_key_dict_is_an_implicit_and():
+    chroma, live = split_filters({"section": "Methods", "doi": "10.1/x"})
+    assert chroma == {"section": "Methods"} and live == {"doi": "10.1/x"}
+
+
 def test_evaluator_operators():
-    f = {"item_type": "book", "page": 4, "tags": "a b"}
+    f = {"item_type": "book", "page": 4, "tags": frozenset({"a", "b"})}
     assert matches({"item_type": "book"}, f)
     assert matches({"item_type": {"$eq": "book"}}, f)
     assert not matches({"item_type": {"$ne": "book"}}, f)
@@ -371,57 +382,8 @@ def test_evaluator_operators():
     assert matches({"$and": [{"page": 4}, {"item_type": "book"}]}, f)
     assert matches({"$or": [{"page": 9}, {"item_type": "book"}]}, f)
     assert not matches({"$or": [{"page": 9}, {"item_type": "x"}]}, f)
-    # As in Chroma, a field the hit does not carry matches $ne and $nin, and nothing else.
-    assert matches({"section": {"$ne": "Methods"}}, f)
-    assert matches({"section": {"$nin": ["Methods"]}}, f)
-    assert not matches({"section": "Methods"}, f)
-    assert not matches({"section": {"$in": ["Methods"]}}, f)
-    assert not matches({"section": {"$gt": 1}}, f)
-    # tags is the space-joined string, compared as a string: no membership.
-    assert matches({"tags": "a b"}, f)
-    assert not matches({"tags": "a"}, f)
-    assert matches({"tags": {"$ne": "a"}}, f)
-
-
-def test_evaluator_types_are_strict_as_in_chroma():
-    f = {"flag": True, "n": 0, "x": 1.5, "s": "0"}
-    assert matches({"flag": True}, f) and not matches({"flag": 1}, f)
-    assert not matches({"n": True}, f) and not matches({"n": False}, f)
-    assert matches({"n": 0.0}, f) and matches({"n": {"$in": [0.0]}}, f)
-    assert not matches({"n": "0"}, f) and not matches({"s": 0}, f)
-    # $ne against another type matches.
-    assert matches({"n": {"$ne": "0"}}, f) and matches({"s": {"$ne": 0}}, f)
-    # Range operators compare numbers only, and not booleans or strings.
-    assert matches({"x": {"$gt": 1}}, f)
-    assert not matches({"flag": {"$gt": 0}}, f) and not matches({"s": {"$gt": -1}}, f)
-    # A stored value is a scalar: $contains finds nothing, $not_contains everything.
-    assert not matches({"s": {"$contains": "0"}}, f) and matches({"s": {"$not_contains": "0"}}, f)
-
-
-def test_live_fields_use_the_formats_the_index_stored():
-    item = _regular(
-        "K1",
-        title="T",
-        tags=["a", "b c"],
-        doi="10.1/x",
-        date="2020-05",
-        dateAdded="2021-01-01T00:00:00Z",
-        dateModified="2021-02-02T00:00:00Z",
-        url="https://x.test",
-        publicationTitle="J",
-        extra="tex.foo: 1\nCitation Key: smith2020",
-        creators=[{"lastName": "Smith", "firstName": "Ann"}, {"name": "Org"}],
-    )
-    assert live_fields(item) == {
-        "item_key": "K1", "item_type": "journalArticle", "title": "T", "date": "2020-05",
-        "date_added": "2021-01-01T00:00:00Z", "date_modified": "2021-02-02T00:00:00Z",
-        "creators": "Smith, Ann; Org", "publication": "J", "url": "https://x.test", "doi": "10.1/x",
-        "citation_key": "smith2020", "tags": "a b c",
-    }
-    bare = live_fields(_regular("K2"))
-    assert bare["creators"] == "No authors listed" and bare["tags"] == "" and bare["citation_key"] == ""
-    # The citationKey field is not read: 0.17 took the key from extra only.
-    assert live_fields(_regular("K3", citationKey="doe2021"))["citation_key"] == ""
+    # A field the hit does not carry matches nothing, as in Chroma.
+    assert not matches({"section": {"$ne": "Methods"}}, f)
 
 
 def test_evaluator_rejects_several_operators_in_one_condition():
@@ -443,9 +405,23 @@ def test_a_bad_live_filter_is_an_error_even_without_hits(monkeypatch, tmp_path):
 
     out = s.search("q", limit=5, filters={"doi": {"$in": "10.1/x"}})
 
-    assert out["error"] == (
-        "Expected operand value to be an list for operator $in, got 10.1/x in query."
-    )
+    assert "takes a list" in out["error"]
+
+
+def test_evaluator_tags_are_membership():
+    f = {"tags": frozenset({"thesis", "ai"})}
+    assert matches({"tags": "thesis"}, f)
+    assert not matches({"tags": "the"}, f)
+    assert matches({"tags": {"$in": ["x", "ai"]}}, f)
+    assert not matches({"tags": {"$nin": ["x", "ai"]}}, f)
+    assert matches({"tags": {"$ne": "x"}}, f)
+
+
+def test_live_fields_reads_citation_key_from_field_or_extra():
+    item = _regular("K1", extra="tex.foo: 1\nCitation Key: smith2020")
+    assert live_fields(item)["citation_key"] == "smith2020"
+    item = _regular("K1", citationKey="doe2021")
+    assert live_fields(item)["citation_key"] == "doe2021"
 
 
 # ---------------------------------------------------------------------------
@@ -599,129 +575,6 @@ def test_has_fulltext_on_records():
     assert s._hit_has_fulltext({"title": "x", "has_fulltext": True}, _regular("P1"))
     assert not s._hit_has_fulltext({"title": "x", "has_fulltext": "failed"}, _regular("P1"))
     assert not s._hit_has_fulltext({}, _regular("P1"))
-
-
-def test_a_filter_chroma_would_refuse_fails_with_chromas_message(monkeypatch, tmp_path):
-    hits, zot = _filter_corpus()
-    s, _ = _search(monkeypatch, tmp_path, hits, zot)
-
-    multi = s.search("q", limit=5, filters={"item_type": "book", "tags": "keep"})
-    assert multi["error"] == (
-        "Expected where to have exactly one operator, got {'item_type': 'book', 'tags': 'keep'} in query."
-    )
-    assert multi["results"] == [] and s.chroma_client.calls == []
-
-    one = s.search("q", limit=5, filters={"$and": [{"item_type": "book"}]})
-    assert one["error"] == (
-        "Expected where value for $and or $or to be a list with at least two where expressions, "
-        "got [{'item_type': 'book'}] in query."
-    )
-
-    # With a library named the where is {"$and": [filters, {"group_id": n}]}: the same text, one level down.
-    grouped = s.search("q", limit=5, filters={"item_type": "book", "doi": "x"}, group_id=0)
-    assert grouped["error"].startswith("Expected where to have exactly one operator, got {'item_type': 'book'")
-
-    bad_operand = s.search("q", limit=5, filters={"title": {"$gt": "a"}})
-    assert bad_operand["error"] == "Expected operand value to be an int or a float for operator $gt, got a in query."
-    bool_range = s.search("q", limit=5, filters={"page": {"$gt": True}})
-    assert bool_range["error"] == "Invalid where clause"
-    unknown = s.search("q", limit=5, filters={"title": {"$like": "a"}})
-    assert unknown["error"].startswith("Expected where operator to be one of $gt, $gte")
-    assert s.chroma_client.calls == []
-
-
-def test_a_single_element_and_is_an_error_but_two_are_fine(monkeypatch, tmp_path):
-    hits, zot = _filter_corpus()
-    s, _ = _search(monkeypatch, tmp_path, hits, zot)
-
-    out = s.search("q", limit=5, filters={"$and": [{"item_type": "book"}, {"doi": "10.1/book"}]})
-
-    assert _keys(out) == ["BOOK0001"]
-
-
-def test_ne_on_a_field_a_hit_does_not_have_matches_as_in_chroma(monkeypatch, tmp_path):
-    hits, zot = _filter_corpus()
-    s, _ = _search(monkeypatch, tmp_path, hits, zot)
-
-    # No record here has fulltext_source: absent matches $ne/$nin and nothing else.
-    assert _keys(s.search("q", limit=5, filters={"fulltext_source": {"$ne": "x"}})) == [
-        "ARTICLE1", "BOOK0001", "LEGACY01"
-    ]
-    assert _keys(s.search("q", limit=5, filters={"fulltext_source": {"$nin": ["x"]}})) == [
-        "ARTICLE1", "BOOK0001", "LEGACY01"
-    ]
-    assert _keys(s.search("q", limit=5, filters={"fulltext_source": "x"})) == []
-
-
-def test_has_fulltext_is_a_bool_and_one_is_not_true(monkeypatch, tmp_path):
-    hits, zot = _filter_corpus()
-    s, _ = _search(monkeypatch, tmp_path, hits, zot)
-
-    assert _keys(s.search("q", limit=5, filters={"has_fulltext": True})) == ["ARTICLE1", "BOOK0001"]
-    assert _keys(s.search("q", limit=5, filters={"has_fulltext": 1})) == []
-    assert _keys(s.search("q", limit=5, filters={"has_fulltext": {"$ne": True}})) == ["LEGACY01"]
-
-
-def test_tags_filter_compares_the_joined_string(monkeypatch, tmp_path):
-    hits = [
-        _hit("ATTONE#0", item_key="ATTONE", chunk_index=0, n_chunks=1),
-        _hit("ATTTWO#0", item_key="ATTTWO", chunk_index=0, n_chunks=1),
-    ]
-    zot = [
-        _regular("ONETAG01", tags=["x"]),
-        _attachment("ATTONE", "ONETAG01"),
-        _regular("TWOTAGS1", tags=["x", "y"]),
-        _attachment("ATTTWO", "TWOTAGS1"),
-    ]
-    s, _ = _search(monkeypatch, tmp_path, hits, zot)
-
-    # Only an item whose ONLY tag is x: a string comparison, not membership.
-    assert _keys(s.search("q", limit=5, filters={"tags": "x"})) == ["ONETAG01"]
-    assert _keys(s.search("q", limit=5, filters={"tags": "x y"})) == ["TWOTAGS1"]
-    assert _keys(s.search("q", limit=5, filters={"tags": {"$ne": "x"}})) == ["TWOTAGS1"]
-
-
-def test_date_creators_and_url_filters_work_as_in_0_17(monkeypatch, tmp_path):
-    hits = [_hit("PAPER001", item_key="PAPER001")]
-    zot = [
-        _regular(
-            "PAPER001", date="2020-05-01", url="https://x.test/p", dateModified="2024-02-02T00:00:00Z",
-            creators=[{"creatorType": "author", "lastName": "Smith", "firstName": "Ann"}],
-        )
-    ]
-    s, _ = _search(monkeypatch, tmp_path, hits, zot, chunking=False)
-
-    assert _keys(s.search("q", filters={"date": "2020-05-01"})) == ["PAPER001"]
-    assert _keys(s.search("q", filters={"creators": "Smith, Ann"})) == ["PAPER001"]
-    assert _keys(s.search("q", filters={"url": {"$in": ["https://x.test/p"]}})) == ["PAPER001"]
-    assert _keys(s.search("q", filters={"date_modified": "2024-02-02T00:00:00Z"})) == ["PAPER001"]
-    assert _keys(s.search("q", filters={"creators": "Smith"})) == []
-
-
-def test_parent_item_key_exists_on_passages_only(monkeypatch, tmp_path):
-    hits = [
-        _hit("ATTPASS#0", item_key="ATTPASS", chunk_index=0, n_chunks=1),
-        _hit("PLAIN001", item_key="PLAIN001"),
-    ]
-    zot = [_regular("PARENT01"), _attachment("ATTPASS", "PARENT01"), _regular("PLAIN001")]
-    s, _ = _search(monkeypatch, tmp_path, hits, zot)
-
-    assert _keys(s.search("q", limit=5, filters={"parent_item_key": "PARENT01"})) == ["PARENT01"]
-    assert _keys(s.search("q", limit=5, filters={"parent_item_key": {"$ne": "PARENT01"}})) == ["PLAIN001"]
-
-
-def test_local_prefilter_is_skipped_for_a_tag_with_a_space(monkeypatch, tmp_path):
-    hits = [_hit("ATT1#0", item_key="ATT1", chunk_index=0, n_chunks=1)]
-    reader = FakeReader(
-        [_regular("PAR1", tags=["a", "b"]), _attachment("ATT1", "PAR1")],
-        [_owner("PAR1", tags=["a", "b"], attachments=["ATT1"])],
-    )
-    s, _ = _search(monkeypatch, tmp_path, hits, [], local=True, reader=reader)
-
-    out = s.search("q", limit=2, filters={"tags": "a b"})
-
-    assert reader.owner_calls == []
-    assert _keys(out) == ["PAR1"]
 
 
 def test_web_post_filter_requeries_up_to_three_rounds(monkeypatch, tmp_path):
@@ -986,7 +839,7 @@ def test_get_filter_owners_lists_live_owners_with_their_attachments(tmp_path):
     fields = live_fields(paper)
     assert fields["title"] == "Paper One" and fields["doi"] == "10.1/one"
     assert fields["citation_key"] == "one2020"
-    assert fields["tags"] == "keep"
+    assert fields["tags"] == frozenset({"keep"})
     assert fields["item_type"] == "journalArticle"
     assert live_fields(owners["STANDATT"])["item_type"] == "attachment"
 

@@ -82,7 +82,8 @@ store an item's passages under the item's key. They keep working and
 `zotero-mcp migrate-index` re-keys them without embedding anything, but treat
 it the same way: report it once and ask first. Semantic hits are parent items;
 a hit on one of several files shows `Attachment:` in its Location line. Filters
-on `title`, `doi`, `tags`, `item_type` and the like read current Zotero data.
+on `title`, `doi`, `tags`, `item_type` and the like read current Zotero data,
+and `tags` means "has this tag".
 
 Every search covers one library — the active one. When you don't know which
 library holds something, or a search comes up empty and the item might live in

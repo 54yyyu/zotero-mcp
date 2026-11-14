@@ -64,11 +64,11 @@ from .extract import (
 from .identifiers import metadata_match_keys
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
 from .semantic_filters import (
-    check_where,
+    OWNER_FIELDS,
     combine,
     live_fields,
     matches,
-    prefilter_safe,
+    referenced_fields,
     split_filters,
     web_query_plan,
 )
@@ -7226,9 +7226,6 @@ class ZoteroSemanticSearch:
             if reranker:
                 fetch_limit = max(fetch_limit, limit * multiplier)
 
-            # 0.17 handed the filter to ChromaDB, which refused a bad one with its
-            # own message; the same check runs here, before any hit is read.
-            check_where(filters, group_id)
             chroma_filters, live_where = split_filters(filters)
             where_parts = [chroma_filters]
             if group_id is not None:
@@ -7564,7 +7561,7 @@ class ZoteroSemanticSearch:
         when the filter needs hit-time data (``has_fulltext``, or passage
         fields under a mixed ``$or``), or above ``PREFILTER_MAX_KEYS`` keys.
         """
-        if not prefilter_safe(live_where):
+        if not live_where or referenced_fields(live_where) - OWNER_FIELDS:
             return None
         try:
             reader = self._open_local_reader()
@@ -7733,10 +7730,6 @@ class ZoteroSemanticSearch:
                 **live_fields(hit["owner"]),
                 "has_fulltext": hit["owner_key"] in fulltext_owners,
             }
-            if "chunk_index" in hit["meta"]:
-                fields["parent_item_key"] = hit["owner_key"]  # as 0.17: on passages only
-            else:
-                fields.pop("parent_item_key", None)
             if matches(live_where, fields):
                 kept.append(hit)
         return kept

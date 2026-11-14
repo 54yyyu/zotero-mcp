@@ -14,7 +14,7 @@ import pytest
 
 import zotero_mcp.server  # noqa: F401
 from zotero_mcp._app import mcp
-from zotero_mcp.semantic_filters import CHROMA_FIELDS, LIVE_FIELDS
+from zotero_mcp.semantic_filters import CHROMA_FIELDS, LIVE_FIELDS, split_filters
 
 KNOWN_FILTER_KEYS = CHROMA_FIELDS | LIVE_FIELDS
 
@@ -36,3 +36,18 @@ def test_filters_example_is_a_single_stored_key(semantic_search_description):
     assert len(example) == 1, "multi-key filters need $and; the example must show one key"
     (key,) = example
     assert key in KNOWN_FILTER_KEYS, f"{key!r} is not a key semantic search filters on"
+
+
+KEYS_RE = re.compile(r"keys (.*?);")
+
+
+def test_description_lists_the_live_and_passage_keys(semantic_search_description):
+    m = KEYS_RE.search(semantic_search_description)
+    assert m, "no 'keys ...;' list found in the description"
+    words = set(re.findall(r"\b[a-z][a-z_]*\b", m.group(1)))
+    assert LIVE_FIELDS | {"section", "page"} <= words
+
+
+def test_example_is_evaluated_live(semantic_search_description):
+    example = ast.literal_eval(EXAMPLE_RE.search(semantic_search_description).group(1))
+    assert split_filters(example) == (None, example)

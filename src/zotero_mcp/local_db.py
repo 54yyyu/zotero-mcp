@@ -3295,7 +3295,7 @@ class LocalZoteroReader:
         return {item["key"]: item for item in self._build_full_items(conn, rows)}
 
     #: The owner fields semantic-search filters read (semantic_filters.live_fields).
-    _FILTER_OWNER_FIELDS = ("title", "DOI", "publicationTitle", "extra")
+    _FILTER_OWNER_FIELDS = ("title", "DOI", "publicationTitle", "extra", "citationKey")
 
     def get_filter_owners(self, *, group_id: int | None = PERSONAL_LIBRARY_GROUP_ID) -> list[dict]:
         """Every item a semantic hit can resolve to, for filtering by live data (#826).
