@@ -437,6 +437,11 @@ await test("chat title: Enter or Esc during IME composition neither saves nor ca
 });
 
 await test("history: renaming another chat's row leaves the open chat's header alone", async (p) => {
+  // The default names a chat after the open paper; name by the question so each chat has its own row text.
+  await p.locator('button[aria-label="Settings"]').click();
+  await p.locator('select[aria-label="Name new chats by"]').selectOption("question");
+  await p.waitForFunction(() => window.__zmc.host.getSettings().titleSource === "question");
+  await p.keyboard.press("Escape");
   await send(p, "the first chat");
   await ended(p, 1);
   await p.locator('button[aria-label="New chat"]').click();
@@ -449,7 +454,7 @@ await test("history: renaming another chat's row leaves the open chat's header a
   await p.locator(".hrow__edit").press("Enter");
   await p.waitForFunction(() => [...window.__zmc.shadow.querySelectorAll(".hrow__t")].some((e) => e.textContent === "Renamed first"));
   await p.keyboard.press("Escape");
-  assert.match(await p.locator(".hd__title").innerText(), /the second chat|Are Emily and Greg/, "the open chat keeps its own name");
+  assert.match(await p.locator(".hd__title").innerText(), /the second chat/, "the open chat keeps its own name");
   const lockedOpen = await sim(p, async () => (await window.__zmc.host.sessions()).filter((s) => s.titleLocked).map((s) => s.title));
   assert.deepEqual(lockedOpen, ["Renamed first"], "only the renamed row is locked");
 });
