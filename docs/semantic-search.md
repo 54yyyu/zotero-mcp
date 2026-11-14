@@ -176,7 +176,7 @@ Back matter), and search results show it first in the **Location** line. A hit
 in someone's Introduction is a citation of a finding; a hit in their Results is
 the finding.
 
-The label is ordinary chunk metadata, so it can be filtered on:
+The label is stored with the passage, so it can be filtered on (see [Filters](#filters) for the fields that are not):
 
 ```python
 zotero_semantic_search(query="...", filters={"section": {"$ne": "Introduction"}})
@@ -196,6 +196,24 @@ Two consequences:
   and many book PDFs extract without any heading the parser can read.
   Unlabelled passages are still searched; only a `section` filter excludes
   them.
+
+## Filters
+
+`zotero_semantic_search` and `zotero-cli search --mode semantic --filters` take a ChromaDB `where` dict, as in earlier versions: one key per dict, `$and` / `$or` to combine (with two or more entries), and the operators `$eq`, `$ne`, `$in`, `$nin`, `$gt`, `$gte`, `$lt`, `$lte`. A filter ChromaDB would refuse, such as a dict with several keys, fails with ChromaDB's own message.
+
+Stored in the index and filtered by ChromaDB: `group_id`, `section`, `page`, `chunk_index`, `n_chunks`, `char_start`, `char_end`.
+
+Read from Zotero when the search runs: `item_key`, `item_type`, `title`, `date`, `date_added`, `date_modified`, `creators`, `publication`, `url`, `doi`, `tags`, `citation_key` (from `extra`), `parent_item_key` and `has_fulltext`. They are evaluated against the current data of the result's parent item (the item itself when it has none), not against anything copied into the index, so an edit in Zotero applies to the next search without re-indexing. Values have the formats the index used to store (`creators` is the formatted author string, `tags` the space-joined tag string compared as a string), and operators follow ChromaDB: a field that is missing matches `$ne` and `$nin` and nothing else, types are strict, and range operators take numbers. `has_fulltext` is true when the item has indexed text; it is judged from the hits of the search, so an item found only through its own record reads as false, and the old `"failed"` value is not produced for new records. `fulltext_source`, `attachment_keys` and `attachment_priority` exist only on records from earlier versions.
+
+```python
+zotero_semantic_search(query="...", filters={"$and": [{"item_type": "journalArticle"}, {"tags": "to-read"}]})
+```
+
+Several fields are combined with `$and`. A condition that mixes stored and Zotero fields under `$or` is evaluated against Zotero as a whole. Records written by earlier versions still carry copies of some of these fields; they are not consulted.
+
+How a filter on these fields is applied depends on the mode. In local mode zotero.sqlite names the matching items and ChromaDB only returns their records. In web mode, a filter made of `item_type`, `tags` and `item_key` conditions (equal to, or in a list, joined by `$and`; a tag with a space in it is not sent) is sent to the Zotero API in one keys-only request per library, and ChromaDB returns only records of the matching items or of attachments whose `parent_hint` names one; the hint is the attachment's parent when it was indexed, used only for this, so an attachment moved since then can be missed by a filtered search until its record is next rewritten, but a hit is always resolved and checked against Zotero before it is shown. Any other filter, an index with records from before the hint (`update-db` or `migrate-index` sets it without embedding anything), or a failed request searches first and filters the hits after, asking again for more candidates up to three times.
+
+Results show the parent item. When the hit was in one of several files, or in a standalone attachment, the Location line starts with `Attachment:` and the file's name.
 
 ## Re-ranking
 

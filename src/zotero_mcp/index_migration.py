@@ -17,6 +17,16 @@ so a run that dies part way loses nothing and the next run carries on.
 
 This does not embed anything. Article vectors are missing after a migration, and
 the next ``update-db`` finds and embeds them through its normal gap fill.
+
+The second step re-keys the passages (#826). Before the item-keyed index a
+passage ``KEY#n`` belonged to its parent item and carried the item's whole
+metadata; now it belongs to its attachment, ``ATT#n``, and carries only its
+own. Passages that carry ``title`` are the old ones. Each item's passages are
+written under the attachment's key with the same vectors, offsets shifted past
+the metadata text the old chunk 0 began with, then the old ids are deleted.
+An item whose attachment cannot be told with certainty loses its passages
+instead, and the next ``update-db`` embeds them again: a wrong guess would
+leave text searchable under the wrong file.
 """
 
 from __future__ import annotations
@@ -25,10 +35,13 @@ import json
 import logging
 import os
 import sqlite3
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from .extract import select_attachment_rows
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +64,29 @@ class MigrationReport:
     moved_articles: int = 0
     moved_passages: int = 0
     items_needing_articles: int = 0
+    # Re-keying legacy passages. ``legacy_*`` is what the index held when the
+    # run began; the rest is what was done (what would be done, in a dry run).
+    legacy_passages: int = 0
+    legacy_items: int = 0
+    rekeyed_items: int = 0
+    rekeyed_passages: int = 0
+    dropped_items: int = 0
+    dropped_passages: int = 0
+    # Left as they are because Zotero could not be asked (unreachable).
+    skipped_items: int = 0
+    skipped_passages: int = 0
+    # Attachments whose record or passages had no ``parent_hint`` when the run
+    # began, and the records given one (0 in a dry run).
+    parent_hints_missing: int = 0
+    parent_hints_set: int = 0
 
 
 def _after_rename() -> None:
     """Runs right after the rename, so a test can kill the process at that point."""
+
+
+def _after_rekey_upsert() -> None:
+    """Runs after an item's passages are written under the attachment's key, before the old ones go."""
 
 
 def _delete_moved(collection: Any, ids: list[str]) -> None:
@@ -117,22 +149,407 @@ def _move(
     return moved
 
 
+# What the old chunk 0 tells about its item: where its text came from, and the
+# text itself (the metadata prefix and, after it, the file's).
+_FIRST_PASSAGE_FIELDS = (
+    "fulltext_source", "attachment_keys", "attachment_priority", "group_id",
+    "title", "creators", "publication", "tags", "chroma:document",
+)
+
+
+class _Unknown:
+    """Zotero could not be asked which attachment an item's passages came from."""
+
+    def __repr__(self) -> str:
+        return "UNKNOWN"
+
+
+UNKNOWN = _Unknown()
+
+
+@dataclass
+class LegacyItem:
+    """One regular item's legacy passages, as stored."""
+
+    key: str
+    passages: list[tuple[str, str]]  # (id, collection name), in chunk order
+    first: dict[str, Any]  # stored fields of the first surviving passage (chunk 0 unless it is gone)
+
+
+def legacy_items(persist_dir: str, collection_name: str) -> list[LegacyItem]:
+    """Every item with legacy passages, read-only from SQLite (nothing is opened through ChromaDB)."""
+    from .chroma_client import read_legacy_passage_ids, read_stored_fields
+
+    found = read_legacy_passage_ids(persist_dir, collection_name)
+    # Every passage carries the item's metadata, so whichever survives says as much as chunk 0.
+    firsts = [passages[0] for passages in found.values()]
+    stored = read_stored_fields(persist_dir, firsts, _FIRST_PASSAGE_FIELDS)
+    return [LegacyItem(key, passages, stored.get(passages[0], {})) for key, passages in sorted(found.items())]
+
+
+class LocalSources:
+    """Tells which attachment a legacy item's passages were cut from.
+
+    ``reader`` is a ``LocalZoteroReader`` (None when there is no local Zotero:
+    only web-API indexes can then be re-keyed). The answer is the attachment
+    key, or None when it cannot be told for certain.
+    """
+
+    def __init__(self, reader: Any = None, config_path: str | None = None) -> None:
+        self.reader = reader
+        self.config_path = config_path
+        self._targets: dict[str, Any] = {}
+        self._prefixes: dict[str, str] = {}
+
+    def attachment_for(self, item: LegacyItem) -> str | None | _Unknown:
+        """The attachment ``item``'s passages came from, if it can be told for certain.
+
+        A web-API index recorded it (``fulltext_source`` is
+        ``web-api:attachment:<key>``). A local index recorded a fingerprint
+        of the item's attachments (records of the oldest versions did not) and
+        the priority they were chosen under, so the choice is made again and
+        trusted only when a recorded fingerprint and priority are unchanged;
+        with several files the largest of the first category is the source,
+        as it was chosen before #826.
+
+        None is a positive finding (the item is gone from Zotero, the choice
+        is ambiguous or has changed): its passages cannot be kept.
+        ``UNKNOWN`` means Zotero could not be asked, which says nothing about
+        the item: its passages must be left as they are.
+        """
+        from .semantic_search import _WEB_ATTACHMENT_SOURCE
+
+        source = str(item.first.get("fulltext_source") or "")
+        if source.startswith(_WEB_ATTACHMENT_SOURCE):
+            return source[len(_WEB_ATTACHMENT_SOURCE):] or None
+        if self.reader is None or not item.first:
+            return UNKNOWN
+        try:
+            local = self.reader.get_item_by_key(item.key)
+            if local is None:
+                return None
+            rows = self.reader.get_fulltext_meta_for_item(local.item_id)
+            fingerprint = ",".join(sorted(row[0] for row in rows))
+            stored = item.first.get("attachment_keys")
+            if stored is not None and stored != fingerprint:
+                return None
+            priority = item.first.get("attachment_priority")
+            if priority is not None and priority != ",".join(self.reader.attachment_priority):
+                return None
+            if not rows:
+                return None
+            targets = self.reader._resolve_extraction_targets(local.item_id)
+            # What the database selects, not what happens to be on disk: a file
+            # on an unmounted drive, kept on demand, or in a format only
+            # Zotero's text cache covers says nothing about where the passages
+            # came from, and must not cost the user them.
+            selected = select_attachment_rows(rows, self.reader.attachment_priority)
+        except Exception as e:
+            logger.warning(f"Could not look up {item.key} in Zotero ({e}); its passages are left as they are")
+            return UNKNOWN
+        if sorted(t.key for t in targets) != selected:
+            return UNKNOWN
+        if len(targets) == 1:
+            chosen = targets[0]
+        elif targets and stored is not None:
+            # Several files, the attachments unchanged since the passages were
+            # written: the choice then was the first category's largest file.
+            chosen = max(targets, key=lambda t: t.size)
+        else:
+            return None
+        self._targets[chosen.key] = chosen
+        self._prefixes[item.key] = _live_prefix(local)
+        return chosen.key
+
+    def attachment_parents(self, keys: list[str]) -> dict[str, str | None]:
+        """``{attachment key: parent key or None}`` for the ``keys`` Zotero lists; {} when it cannot be asked."""
+        if self.reader is None:
+            return {}
+        try:
+            known = self.reader.get_attachment_parents(group_id=None)
+        except Exception as e:
+            logger.warning(f"Could not read the attachments' parents from Zotero ({e}); no parent hints set")
+            return {}
+        return {key: known[key] for key in keys if key in known}
+
+    def live_prefix(self, key: str) -> str | None:
+        """The metadata text Zotero's current record of ``key`` gives, or None if it was not looked up."""
+        return self._prefixes.get(key)
+
+    def remember_hash(self, attachment_key: str) -> None:
+        """Hash the live file and keep the digest in the hash cache, where a later update finds it."""
+        from . import file_hash
+
+        target = self._targets.get(attachment_key)
+        if target is not None:
+            file_hash.get_file_hash(target.key, target.path, target.file_stamp, config_path=self.config_path)
+
+
+def _live_prefix(item: Any) -> str:
+    """The metadata text a local ``--fulltext`` run put before the file's text.
+
+    That recipe is what the legacy records were written with. It lives here
+    as it was, not as ``_create_document_text`` is today, so a later change to
+    the current recipe cannot misplace the offsets of records already written.
+    """
+    from .semantic_search import ZoteroSemanticSearch
+    from .utils import format_creators
+
+    # Neither method reads the instance.
+    creators = ZoteroSemanticSearch._parse_creators_string(None, item.creators or "")  # type: ignore[arg-type]
+    return " ".join(filter(None, [item.title or "", format_creators(creators), item.abstract or ""]))
+
+
+@contextmanager
+def open_sources(config_path: str | None, db_path: str | None = None) -> Iterator[LocalSources]:
+    """Sources over this install's Zotero database (``db_path`` beats the configured one), or over nothing when there is no local Zotero."""
+    from .utils import is_local_mode
+
+    reader = None
+    if is_local_mode():
+        section: dict[str, Any] = {}
+        if config_path and os.path.exists(config_path):
+            with open(config_path) as f:
+                section = json.load(f).get("semantic_search", {})
+        try:
+            from .local_db import LocalZoteroReader
+
+            reader = LocalZoteroReader(
+                db_path=db_path or section.get("zotero_db_path"),
+                attachment_priority=(section.get("extraction") or {}).get("attachment_priority"),
+                config_path=config_path,
+            )
+        except Exception as e:
+            logger.warning(f"Could not open the Zotero database ({e}); only web-API passages can be kept")
+    try:
+        yield LocalSources(reader, config_path)
+    finally:
+        close = getattr(reader, "close", None)
+        if close:
+            close()
+
+
+def file_text_offset(first_document: str, first: dict[str, Any], live_prefix: str | None) -> int:
+    """Where the file's text starts in a legacy item's text (its metadata text, then the file's).
+
+    The legacy chunk 0 begins with that metadata text and a blank line, and the
+    passages' offsets count from there. In order of certainty:
+
+    1. the metadata text Zotero gives now, when chunk 0 begins with it;
+    2. rebuilt from what chunk 0's metadata stored (title, creators,
+       publication, tags): the abstract in between is the unknown, so the text
+       ends at the first blank line after the tags, or after the creators when
+       there are none;
+    3. 0, when nothing identifies a prefix.
+
+    The offsets only place a quote in the file's text, so a miss by an abstract
+    paragraph is harmless.
+    """
+    if live_prefix is not None:
+        if not live_prefix.strip():
+            return 0
+        if first_document.startswith(live_prefix + "\n\n"):
+            return len(live_prefix) + 2
+    head = " ".join(filter(None, [first.get("title") or "", first.get("creators") or ""]))
+    if not head or not first_document.startswith(head):
+        return 0
+    tail = " ".join(filter(None, [first.get("publication") or "", first.get("tags") or ""]))
+    end = first_document.find(f"{tail}\n\n" if tail else "\n\n", len(head))
+    return end + len(tail) + 2 if end >= 0 else 0
+
+
+def _rekeyed(item: LegacyItem, attachment: str, records: list[dict[str, Any]], offset: int) -> list[dict[str, Any]]:
+    """The item's passages as ``ATT#n`` records: same vectors, only the passage's own metadata.
+
+    The legacy key is the attachment's parent, so it is the ``parent_hint``.
+    """
+    from .semantic_search import _LEGACY_METADATA_KEYS
+
+    out = []
+    for record in records:
+        old = record["metadata"]
+        number = int(record["id"].rsplit("#", 1)[1])
+        meta: dict[str, Any] = {"item_key": attachment}
+        if old.get("group_id") is not None:
+            meta["group_id"] = int(old["group_id"])
+        meta["chunk_index"] = number
+        meta["n_chunks"] = old.get("n_chunks")
+        for field_name in ("char_start", "char_end"):
+            if old.get(field_name) is not None:
+                meta[field_name] = max(0, int(old[field_name]) - offset)
+        # ChromaDB's upsert merges into a stored record's metadata: None clears
+        # what an earlier run left under this id (and is not stored otherwise).
+        meta["page"] = old.get("page")
+        meta["section"] = old.get("section")
+        meta.update(dict.fromkeys((*_LEGACY_METADATA_KEYS, "date_modified")))
+        meta["parent_hint"] = item.key
+        out.append({"id": f"{attachment}#{number}", "document": record["document"],
+                    "embedding": record["embedding"], "metadata": meta})
+    return out
+
+
+def rekey_legacy_passages(
+    persist_dir: str,
+    collection_name: str,
+    client: Any,
+    sources: LocalSources,
+    report: MigrationReport,
+    progress: Callable[[str], None],
+    *,
+    config_path: str | None = None,
+) -> None:
+    """Re-key the legacy passages of every item to their attachment; fills the report.
+
+    ``client`` is None for a dry run, which only decides what would happen.
+    Each item is its own step: its passages are written under the attachment
+    key, its article record (if any) marked ``rekeyed_to``, and only then the
+    old ids deleted, so an interrupted run finds either both or only the new
+    ones, and a rerun carries on. Nothing is embedded.
+    """
+    from . import file_hash
+
+    items = legacy_items(persist_dir, collection_name)
+    report.legacy_items = len(items)
+    report.legacy_passages = sum(len(item.passages) for item in items)
+    with file_hash.batched(config_path):
+        for number, item in enumerate(items, 1):
+            attachment = sources.attachment_for(item)
+            ids = [doc_id for doc_id, _name in item.passages]
+            if attachment is UNKNOWN:
+                report.skipped_items += 1
+                report.skipped_passages += len(ids)
+            elif attachment is None:
+                report.dropped_items += 1
+                report.dropped_passages += len(ids)
+                if client is not None:
+                    client.delete_records(ids)
+            else:
+                report.rekeyed_items += 1
+                report.rekeyed_passages += len(ids)
+                if client is not None:
+                    _rekey_item(client, sources, item, attachment, ids)
+            if client is not None and number % 200 == 0:
+                progress(f"  re-keyed {number}/{len(items)} items")
+
+
+def _rekey_item(client: Any, sources: LocalSources, item: LegacyItem, attachment: str, ids: list[str]) -> None:
+    # An attachment record exists only when an update has already written the
+    # file in the new shape: its passages are the current ones.
+    if attachment not in client.get_existing_ids([attachment]):
+        records = client.read_records(ids)
+        first = next((r for r in records if r["id"].endswith("#0")), None)
+        offset = (
+            file_text_offset(first["document"], item.first, sources.live_prefix(item.key)) if first else 0
+        )
+        written = _rekeyed(item, attachment, records, offset)
+        client.upsert_embeddings(
+            documents=[r["document"] for r in written],
+            metadatas=[r["metadata"] for r in written],
+            ids=[r["id"] for r in written],
+            embeddings=[r["embedding"] for r in written],
+        )
+        _after_rekey_upsert()
+        sources.remember_hash(attachment)
+    # The article record says its passages moved, so they are not "missing".
+    # The whole metadata goes back: not every ChromaDB version merges.
+    stored = client.get_metadatas([item.key]).get(item.key)
+    if stored is not None and stored.get("rekeyed_to") != attachment:
+        client.update_metadatas([item.key], [{**stored, "rekeyed_to": attachment}])
+    client.delete_records(ids)
+
+
+def _split(
+    client: Any,
+    report: MigrationReport,
+    layout: dict[str, Any],
+    unmigrated: bool,
+    stray_articles: list[str],
+    stray_passages: list[str],
+    progress: Callable[[str], None],
+) -> None:
+    """The split proper: rename an unmigrated index's collection, then move what is in the wrong one."""
+    from .chroma_client import passage_collection_name
+
+    collection_name = client.collection_name
+    passages_name = passage_collection_name(collection_name)
+    if unmigrated:
+        if layout["passage_collection_exists"]:
+            # Empty, or the index would not count as unmigrated.
+            client.client.delete_collection(name=passages_name)
+        progress(f"Renaming {collection_name} to {passages_name} ...")
+        client.collection.modify(name=passages_name)
+        report.renamed = True
+        _after_rename()
+        progress(f"Creating a new {collection_name} for article vectors ...")
+        client.collection = client._open_collection(collection_name)
+        client._passage_collection = None
+        client._unmigrated = False
+
+    if stray_articles:
+        progress(f"Moving {len(stray_articles)} article records to {collection_name} ...")
+        report.moved_articles = _move(client._passages(), client.collection, stray_articles, progress)
+    if stray_passages:
+        progress(f"Moving {len(stray_passages)} passages to {passages_name} ...")
+        report.moved_passages = _move(
+            client.collection, client._passages(), stray_passages, progress, keep_existing=True
+        )
+
+
+def split_index(client: Any, progress: Callable[[str], None] = lambda _message: None) -> MigrationReport | None:
+    """Split ``client``'s index into an article and a passage collection if it needs it, else None.
+
+    What ``migrate-index`` does first, on a client that is already open (an
+    explicit ``update-db`` runs this before re-keying, in the plan's order).
+    Moves vectors; embeds nothing.
+    """
+    from .chroma_client import passage_collection_name, read_index_layout
+
+    layout = read_index_layout(client.persist_directory, client.collection_name)
+    unmigrated = layout["unmigrated_passages"] > 0
+    db = Path(client.persist_directory) / "chroma.sqlite3"
+    stray_passages = [] if unmigrated or not layout["passages_in_article_collection"] else _ids_in(
+        db, client.collection_name, passages=True
+    )
+    if not unmigrated and not stray_passages:
+        return None
+    report = MigrationReport(persist_directory=client.persist_directory, dry_run=False, needed=True)
+    report.passage_records = layout["passage_records"]
+    _split(client, report, layout, unmigrated, [], stray_passages, progress)
+    if unmigrated:
+        # Bare records beside the passages were article vectors: they move to the new collection.
+        bare = _ids_in(db, passage_collection_name(client.collection_name), passages=False)
+        if bare:
+            progress(f"Moving {len(bare)} article records to {client.collection_name} ...")
+            report.moved_articles = _move(client._passages(), client.collection, bare, progress)
+    return report
+
+
 def migrate_index(
     config_path: str | None = None,
     *,
     dry_run: bool = False,
     progress: Callable[[str], None] = print,
+    sources: LocalSources | None = None,
+    parents_of: Callable[[list[str]], dict[str, str | None]] | None = None,
 ) -> MigrationReport:
-    """Split the configured index into an article and a passage collection.
+    """Split the configured index into an article and a passage collection, then re-key its passages.
 
-    Safe to run again at any point: on a split index it only tidies up records
-    in the wrong collection, and finding none it does nothing.
+    The split comes first, and only an unmigrated or half-moved index needs it;
+    the re-key moves every legacy passage ``KEY#n`` to its attachment's key
+    (see the module docstring). Safe to run again at any point: it only
+    finishes what is left, and finding nothing it does nothing. ``sources``
+    answers which attachment a passage came from; by default it reads the
+    local Zotero database. Attachment records and passages written before
+    ``parent_hint`` get one, from the same database or, without one, from
+    ``parents_of`` (the Zotero web API, supplied by the command); nothing is
+    embedded.
     """
     from .chroma_client import (
         create_chroma_client,
         passage_collection_name,
         read_index_layout,
         read_item_keys_by_level,
+        read_unhinted_attachment_keys,
     )
     from .config import resolve_chroma_dir
 
@@ -158,7 +575,9 @@ def migrate_index(
     # Bare records beside the passages: in the collection about to be renamed,
     # or left in the passage collection by a run that did not finish.
     stray_articles = _ids_in(db, collection_name if unmigrated else passages_name, passages=False)
-    report.needed = unmigrated or bool(stray_passages or stray_articles)
+    report.legacy_passages = layout["legacy_passages"]
+    report.legacy_items = layout["legacy_passage_items"]
+    report.needed = unmigrated or bool(stray_passages or stray_articles) or report.legacy_passages > 0
 
     articles, passages = read_item_keys_by_level(str(persist_dir), collection_name)
     if unmigrated:
@@ -167,38 +586,87 @@ def migrate_index(
     elif stray_articles:
         articles |= set(stray_articles)
     report.items_needing_articles = len(passages - articles)
+    report.parent_hints_missing = len(read_unhinted_attachment_keys(str(persist_dir), collection_name))
 
     if dry_run:
         report.moved_articles = len(stray_articles)
         report.moved_passages = len(stray_passages)
+        if report.legacy_passages:
+            with _sources_or(sources, config_path) as src:
+                rekey_legacy_passages(str(persist_dir), collection_name, None, src, report, progress)
         return report
-    if not report.needed:
+    if not report.needed and not report.parent_hints_missing:
         return report
 
     client = create_chroma_client(config_path, persist_directory=str(persist_dir))
+    if report.needed:
+        _split(client, report, layout, unmigrated, stray_articles, stray_passages, progress)
 
-    if unmigrated:
-        if layout["passage_collection_exists"]:
-            # Empty, or the index would not count as unmigrated.
-            client.client.delete_collection(name=passages_name)
-        progress(f"Renaming {collection_name} to {passages_name} ...")
-        client.collection.modify(name=passages_name)
-        report.renamed = True
-        _after_rename()
-        progress(f"Creating a new {collection_name} for article vectors ...")
-        client.collection = client._open_collection(collection_name)
-        client._passage_collection = None
-        client._unmigrated = False
-
-    if stray_articles:
-        progress(f"Moving {len(stray_articles)} article records to {collection_name} ...")
-        report.moved_articles = _move(client._passages(), client.collection, stray_articles, progress)
-    if stray_passages:
-        progress(f"Moving {len(stray_passages)} passages to {passages_name} ...")
-        report.moved_passages = _move(
-            client.collection, client._passages(), stray_passages, progress, keep_existing=True
-        )
+    if report.legacy_passages:
+        progress(f"Re-keying the passages of {report.legacy_items} items to their attachments ...")
+        with _sources_or(sources, config_path) as src:
+            rekey_legacy_passages(
+                str(persist_dir), collection_name, client, src, report, progress, config_path=config_path
+            )
+    if report.parent_hints_missing:
+        with _sources_or(sources, config_path) as src:
+            backfill_parent_hints(client, src, report, progress, parents_of)
     return report
+
+
+def backfill_parent_hints(
+    client: Any,
+    sources: LocalSources,
+    report: MigrationReport,
+    progress: Callable[[str], None],
+    parents_of: Callable[[list[str]], dict[str, str | None]] | None = None,
+) -> None:
+    """Set ``parent_hint`` on the attachment records and passages that lack it; fills the report.
+
+    Metadata only, nothing is embedded. The parents come from the local
+    Zotero database; without one, from ``parents_of``. What Zotero cannot
+    place stays as it is, for the next run.
+    """
+    keys = client.unhinted_attachment_keys()
+    if not keys:
+        return
+    progress(f"Setting the parent hint of {len(keys)} attachments ...")
+    parents = sources.attachment_parents(keys)
+    if not parents and sources.reader is None and parents_of is not None:
+        try:
+            parents = parents_of(keys)
+        except Exception as e:
+            logger.warning(f"Could not ask Zotero for the attachments' parents ({e}); run zotero-mcp update-db")
+    if parents:
+        report.parent_hints_set = client.set_parent_hints(parents)
+
+
+@contextmanager
+def _sources_or(sources: LocalSources | None, config_path: str | None) -> Iterator[LocalSources]:
+    if sources is not None:
+        yield sources
+    else:
+        with open_sources(config_path) as opened:
+            yield opened
+
+
+def rekey_note(legacy_items: int, legacy_passages: int) -> list[str]:
+    """What status says about passages still keyed by their parent item: what they are and what to run.
+
+    ``legacy_items`` and ``legacy_passages`` are ``legacy_passage_items`` and
+    ``legacy_passages`` of ``chroma_client.read_index_layout``. Empty when
+    there are none.
+    """
+    if not legacy_passages:
+        return []
+    return [
+        f"{legacy_passages:,} passages of {legacy_items:,} items are still stored the way earlier versions "
+        "did, under their item's key with the item's metadata. Search keeps working with them.",
+        "zotero-mcp migrate-index re-keys them to their attachments without embedding anything "
+        "(add --dry-run to see what would change); so does a manual zotero-mcp update-db, "
+        "which runs it first. Items whose attachment cannot be told for certain have their "
+        "passages embedded again by that update.",
+    ]
 
 
 def status_note(migration: dict[str, Any], update_command: str, *, local_mode: bool) -> list[str]:

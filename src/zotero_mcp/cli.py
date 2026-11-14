@@ -446,13 +446,40 @@ def _print_migration_report(report) -> None:
         print("Nothing to migrate: this index already keeps passages in their own collection, or has none.")
     else:
         print(f"\nMigration {'check (dry run)' if report.dry_run else 'completed'}:")
-        print(f"- Passages kept, with their vectors: {report.passage_records}")
+        print(f"- Passages kept, with their vectors: {report.passage_records - report.dropped_passages}")
         if report.moved_articles:
             print(f"- Article records moved to the article-level ChromaDB collection: {report.moved_articles}")
         if report.moved_passages:
             print(f"- Passages moved out of the article-level ChromaDB collection: {report.moved_passages}")
+        if report.legacy_items:
+            verb = "would be" if report.dry_run else "were"
+            print(
+                f"- Items whose passages {verb} re-keyed to their attachment, vectors unchanged: "
+                f"{report.rekeyed_items} ({report.rekeyed_passages} passages)"
+            )
+            if report.skipped_items:
+                print(
+                    f"- Items skipped because Zotero could not be asked about them (Zotero unreachable): "
+                    f"{report.skipped_items} ({report.skipped_passages} passages left as they are; "
+                    "start Zotero and run this again)"
+                )
+            if report.dropped_items:
+                print(
+                    f"- Items whose attachment could not be told for certain, so their {report.dropped_passages} "
+                    f"passages {verb} dropped and embedded again by the next update-db: {report.dropped_items}"
+                )
     if report.items_needing_articles:
         print(f"- Items without an article vector: {report.items_needing_articles}")
+    if report.parent_hints_missing:
+        if report.dry_run:
+            print(f"- Attachments whose records would get a parent hint, nothing embedded: {report.parent_hints_missing}")
+        else:
+            print(
+                f"- Attachments that had no parent hint: {report.parent_hints_missing} "
+                f"({report.parent_hints_set} records updated, nothing embedded)"
+            )
+            if report.parent_hints_set == 0:
+                print("  Zotero could not say; an explicit update of the index sets them.")
     if report.dry_run:
         if report.needed:
             print("\nNothing was changed. Run without --dry-run to migrate.")
@@ -521,6 +548,7 @@ def _print_update_stats(stats: dict) -> None:
         print(f"- Added: {stats.get('added_items', 0)}")
         print(f"- Updated: {stats.get('updated_items', 0)}")
     print(f"- Skipped: {stats.get('skipped_items', 0)}")
+    _print_reused(stats)
     print(f"- Errors: {stats.get('errors', 0)}")
     print(f"- Duration: {stats.get('duration', 'Unknown')}")
     if stats.get("batch_submitted"):
@@ -586,6 +614,17 @@ def _print_batch_status(status: dict, provider: str = "openai") -> None:
         print(f"\nPending chunks (throttled): {len(pending)} (~{pending_tokens:,} tokens)")
 
 
+def _print_reused(stats: dict) -> None:
+    """The files whose records were copied from an identical file's (#495)."""
+    if stats.get("refreshed_unchanged"):
+        print(f"- Unchanged files (stamp refreshed, not re-embedded): {stats['refreshed_unchanged']}")
+    reused = stats.get("reused_from_hash") or {}
+    if reused.get("attachments"):
+        print(f"- Reused from identical files: {reused['attachments']} ({reused.get('records', 0)} records)")
+    if stats.get("reuse_left_for_next_run"):
+        print(f"- Left for the next update: {stats['reuse_left_for_next_run']} (their source was not written)")
+
+
 def _print_batch_import(stats: dict, provider: str = "openai") -> None:
     print(f"=== {_provider_label(provider)} Batch Import ===")
     print(f"Run: {stats.get('run_id')}")
@@ -598,6 +637,7 @@ def _print_batch_import(stats: dict, provider: str = "openai") -> None:
     print(f"- Imported records: {stats.get('imported_items', 0)}")
     print(f"- Added items: {stats.get('added_items', 0)}")
     print(f"- Updated items: {stats.get('updated_items', 0)}")
+    _print_reused(stats)
     print(f"- Failed rows: {stats.get('failed_items', 0)}")
     print(f"- Missing rows: {stats.get('missing_items', 0)}")
     if stats.get("deferred"):
@@ -1450,9 +1490,10 @@ def main():
             print(f"Document count: {collection_info.get('count', 0)}")
             print(f"  Article-level records: {collection_info.get('article_records', 0)}")
             print(f"  Passage-level records: {collection_info.get('passage_records', 0)}")
-            for label, key in (("Items with article records", "article_items"), ("Items with passages", "passage_items")):
-                if key in collection_info:
-                    print(f"  {label}: {'unknown' if collection_info[key] is None else collection_info[key]}")
+            from zotero_mcp.chroma_client import legacy_status_note, level_status_rows
+
+            for label, value in level_status_rows(collection_info):
+                print(f"  {label}: {value}")
             print(f"Embedding model: {collection_info.get('embedding_model', 'Unknown')}")
             print(f"Database path: {collection_info.get('persist_directory', 'Unknown')}")
             if collection_info.get("migration"):
@@ -1461,6 +1502,11 @@ def main():
 
                 print("\nIndex migration:")
                 for line in status_note(collection_info["migration"], "zotero-mcp update-db", local_mode=is_local_mode()):
+                    print(f"  {line}")
+
+            if legacy_lines := legacy_status_note(collection_info):
+                print("\nLegacy records:")
+                for line in legacy_lines:
                     print(f"  {line}")
 
             update_config = status.get("update_config", {})
@@ -1498,15 +1544,30 @@ def main():
 
     elif args.command == "migrate-index":
         from zotero_mcp.index_migration import MigrationError, migrate_index
-        from zotero_mcp.semantic_search import _acquire_update_lock, _update_lock_path
+        from zotero_mcp.semantic_search import (
+            _acquire_update_lock,
+            _update_lock_path,
+            create_semantic_search,
+        )
+        from zotero_mcp.utils import is_local_mode
 
+        # Local mode decides whether the Zotero database can say which
+        # attachment a passage came from.
+        setup_zotero_environment()
         config_path = _semantic_config_path(args.config_path)
         with _acquire_update_lock(_update_lock_path()) as acquired:
             if not acquired:
                 print("Error: a database update is running; try again when it has finished.", file=sys.stderr)
                 sys.exit(1)
             try:
-                report = migrate_index(str(config_path), dry_run=args.dry_run)
+                report = migrate_index(
+                    str(config_path),
+                    dry_run=args.dry_run,
+                    # Without a local database the attachments' parents come from the web API.
+                    parents_of=None if is_local_mode() else (
+                        lambda keys: create_semantic_search(str(config_path))._attachment_parents(keys)
+                    ),
+                )
             except MigrationError as e:
                 print(f"Error: {e}", file=sys.stderr)
                 sys.exit(1)
@@ -1516,14 +1577,8 @@ def main():
         # Setup Zotero environment variables
         setup_zotero_environment()
 
-        from collections import Counter
-
+        from zotero_mcp.index_inspect import inspect_index
         from zotero_mcp.semantic_search import create_semantic_search
-
-        # Batch size for paginated collection scans (see _iter_all_metadatas).
-        # Keeps each col.get() well under SQLite's bound-variable ceiling
-        # regardless of collection size.
-        DB_INSPECT_BATCH_SIZE = 500
 
         # Determine config path
         config_path = args.config_path
@@ -1533,113 +1588,13 @@ def main():
             config_path = Path(config_path)
 
         try:
-            search = create_semantic_search(str(config_path))
-            client = search.chroma_client
-
-            def _iter_all_metadatas(batch_size=DB_INSPECT_BATCH_SIZE, include_documents=False):
-                """Paginate through the whole collection in bounded batches.
-
-                A single unbounded ``col.get(include=[...])`` call (no limit/offset)
-                asks Chroma's SQLite backend to bind one parameter per row for the
-                entire collection; past roughly a few tens of thousands of rows this
-                exceeds SQLite's bound-variable ceiling and raises
-                ``too many SQL variables``. Fetching in small batches keeps every
-                query well under that limit regardless of collection size, and lets
-                filtering scan the *whole* collection instead of silently being
-                limited to whatever the first raw batch happened to contain.
-                """
-                inc = ["metadatas", "documents"] if include_documents else ["metadatas"]
-                for col in client.collections():
-                    total = col.count()
-                    offset = 0
-                    while offset < total:
-                        batch = col.get(limit=batch_size, offset=offset, include=inc)
-                        metas = batch.get("metadatas", [])
-                        if not metas:
-                            break
-                        docs = batch.get("documents", [None] * len(metas)) if include_documents else [None] * len(metas)
-                        for m, d in zip(metas, docs):
-                            yield (m or {}), d
-                        offset += batch_size
-
-            if args.stats:
-                # Show aggregate stats (merged from former db-stats).
-                #
-                # Single streaming pass over _iter_all_metadatas(): only the
-                # small aggregates below (counters) are held in memory, never
-                # a list of the collection's ~100k+ metadata dicts.
-                print("=== Semantic DB Inspection (Stats) ===")
-                info = client.get_collection_info()
-                print(f"Collection: {info.get('name')} @ {info.get('persist_directory')}")
-                print(f"Count: {info.get('count')}")
-
-                ct_types = Counter()
-                ct_titles = Counter()
-                coverage = {}
-                for m, _ in _iter_all_metadatas():
-                    m = m or {}
-                    t = m.get("item_type", "") or "(missing)"
-                    ct_types[t] += 1
-
-                    title = m.get("title", "")
-                    if title:
-                        ct_titles[title] += 1
-
-                    cov = coverage.setdefault(t, {"total": 0, "with_fulltext": 0, "pdf": 0, "html": 0})
-                    cov["total"] += 1
-                    if m.get("has_fulltext"):
-                        cov["with_fulltext"] += 1
-                        src = (m.get("fulltext_source") or "").lower()
-                        if src == "pdf":
-                            cov["pdf"] += 1
-                        elif src == "html":
-                            cov["html"] += 1
-
-                print("Item types:")
-                for t, c in ct_types.most_common(20):
-                    print(f"  {t or '(missing)'}: {c}")
-
-                print("Fulltext coverage (by type):")
-                for t, cov in coverage.items():
-                    print(f"  {t}: {cov['with_fulltext']}/{cov['total']} (pdf:{cov['pdf']}, html:{cov['html']})")
-
-                common = ct_titles.most_common(10)
-                if common:
-                    print("Common titles:")
-                    for t, c in common:
-                        print(f"  {t[:80]}{'...' if len(t)>80 else ''}: {c}")
-                return
-
-            print("=== Semantic DB Inspection ===")
-            total = client.get_collection_info().get("count", 0)
-            print(f"Total documents: {total}")
-            print(f"Showing up to: {args.limit}")
-
-            # Scan the whole collection in batches (not just the first raw batch),
-            # so --filter actually finds matches wherever they live in a large
-            # collection instead of only checking whatever `limit` records the
-            # backend happened to return first.
-            shown = 0
-            for meta, doc in _iter_all_metadatas(include_documents=args.show_documents):
-                title = meta.get("title", "")
-                creators = meta.get("creators", "")
-                if args.filter_text:
-                    needle = args.filter_text.lower()
-                    if needle not in (title or "").lower() and needle not in (creators or "").lower():
-                        continue
-                print(f"- {title} | {creators}")
-                if args.show_documents:
-                    full = (doc or "").strip()
-                    snippet = full[:200].replace("\n", " ")
-                    if snippet:
-                        print(f"  doc: {snippet}{'...' if len(full) > 200 else ''}")
-                shown += 1
-                if shown >= args.limit:
-                    break
-
-            if shown == 0:
-                print("No records matched your filter.")
-
+            inspect_index(
+                create_semantic_search(str(config_path)),
+                stats=args.stats,
+                limit=args.limit,
+                filter_text=args.filter_text,
+                show_documents=args.show_documents,
+            )
         except Exception as e:
             print(f"Error inspecting database: {e}")
             sys.exit(1)
