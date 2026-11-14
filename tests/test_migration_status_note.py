@@ -26,6 +26,8 @@ from zotero_mcp.chroma_client import ChromaClient, read_collection_status
 from zotero_mcp.index_migration import migrate_index
 
 NAME = "zotero_library"
+# An article-level record of a file (#826).
+FILE = {"file_stamp": "1:1"}
 
 
 @pytest.fixture(autouse=True)
@@ -85,7 +87,7 @@ def _passages(key, lengths, fulltext=True):
 def _seed_unmigrated(directory, extra=(), fulltext=True):
     """AAA (3,000 characters), BBB (90,000), and OLD, an article record from before chunking."""
     records = (_passages("AAA", [1500, 3000], fulltext) + _passages("BBB", [1500, 3000, 90000], fulltext)
-               + [("OLD", {})])
+               + [("OLD", FILE)])
     _write(_client(directory, legacy=True), records + list(extra))
 
 
@@ -159,7 +161,7 @@ def test_migrated_index_has_no_note_and_counts_both_levels(index):
 
 def test_item_level_index_has_no_note(index):
     directory, config = index
-    _write(_client(directory, legacy=False), [("AAA", {}), ("BBB", {})])
+    _write(_client(directory, legacy=False), [("AAA", FILE), ("BBB", FILE)])
 
     info = read_collection_status(config)
 
@@ -318,8 +320,8 @@ def test_status_tool_explains_an_unmigrated_index(index):
 
     _assert_note(out, "zotero-mcp update-db --fulltext")
     assert "9,000 tokens" in out
-    assert "**Items with Article Records:** 1" in out
-    assert "**Items with Passages:** 2" in out
+    assert "**Attachments with Article Records:** 1" in out
+    assert "**Attachments with Passages:** 2" in out
 
 
 @pytest.mark.parametrize("which, update", [("db-status", "zotero-mcp update-db --fulltext"),
@@ -332,8 +334,8 @@ def test_cli_status_explains_an_unmigrated_index(index, monkeypatch, capsys, whi
 
     _assert_note(out, update)
     assert "512 tokens" in out
-    assert "Items with article records: 1" in out
-    assert "Items with passages: 2" in out
+    assert "Attachments with article records: 1" in out
+    assert "Attachments with passages: 2" in out
 
 
 def test_status_tool_says_nothing_about_migrating_a_migrated_index(index):
@@ -344,18 +346,18 @@ def test_status_tool_says_nothing_about_migrating_a_migrated_index(index):
     out = _status_tool()
 
     assert "migrate-index" not in out
-    assert "**Items with Passages:** 2" in out
+    assert "**Attachments with Passages:** 2" in out
 
 
 @pytest.mark.parametrize("which", ["db-status", "zotero-cli"])
 def test_cli_status_says_nothing_about_migrating_an_item_level_index(index, monkeypatch, capsys, which):
     directory, config = index
-    _write(_client(directory, legacy=False), [("AAA", {})])
+    _write(_client(directory, legacy=False), [("AAA", FILE)])
 
     out = _cli_status(monkeypatch, capsys, config, directory, which)
 
     assert "migrate-index" not in out
-    assert "Items with article records: 1" in out
+    assert "Attachments with article records: 1" in out
 
 
 def test_step_four_is_the_update_migrate_index_itself_names(index, capsys):

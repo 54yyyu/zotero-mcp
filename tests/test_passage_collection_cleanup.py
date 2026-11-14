@@ -131,7 +131,8 @@ def test_pruning_passages_keeps_the_article_record(both):
     assert both.get_all_ids() == {"AAA", "BBB", "AAA#0"}
 
 
-def test_pruning_an_unmigrated_index_still_drops_the_bare_record(directory):
+def test_pruning_an_unmigrated_index_keeps_the_bare_record(directory):
+    """Every layout now writes an article-level record beside passages (#826)."""
     legacy = ChromaClient(collection_name=NAME, persist_directory=directory)
     legacy.route_passages = False
     _write(
@@ -142,7 +143,7 @@ def test_pruning_an_unmigrated_index_still_drops_the_bare_record(directory):
 
     legacy.prune_item_chunks("AAA", keep=1)
 
-    assert legacy.get_all_ids() == {"AAA#0"}
+    assert legacy.get_all_ids() == {"AAA", "AAA#0"}
 
 
 def test_reset_empties_both_collections(both, directory):
