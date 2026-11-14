@@ -92,3 +92,48 @@ def test_default_embedding_takes_threads_from_zotero_onnx_threads(env, threads, 
     collection.query(query_texts=["attention"], n_results=1)
 
     assert _Session.threads and set(_Session.threads) == {threads}
+
+
+@pytest.mark.parametrize(
+    "env, threads",
+    [
+        (None, 0),
+        ("", 0),
+        ("0", 0),
+        (" 4 ", 4),  # whitespace is fine
+        ("2", 2),
+        ("99999999999", 256),  # clamped: a huge value makes ONNX Runtime raise on every call
+        ("-1", 0),
+        ("2.5", 0),
+        ("abc", 0),
+    ],
+)
+def test_configured_threads(env, threads, monkeypatch):
+    from zotero_mcp.embeddings.providers import default
+
+    if env is None:
+        monkeypatch.delenv("ZOTERO_ONNX_THREADS", raising=False)
+    else:
+        monkeypatch.setenv("ZOTERO_ONNX_THREADS", env)
+    monkeypatch.setattr(default, "_warned_bad_value", False)
+    assert default._configured_threads() == threads
+
+
+def test_a_bad_value_warns_once(monkeypatch, caplog):
+    from zotero_mcp.embeddings.providers import default
+
+    monkeypatch.setenv("ZOTERO_ONNX_THREADS", "abc")
+    monkeypatch.setattr(default, "_warned_bad_value", False)
+    with caplog.at_level("WARNING", logger=default.logger.name):
+        default._configured_threads()
+        default._configured_threads()
+    assert [r.getMessage() for r in caplog.records].count("ZOTERO_ONNX_THREADS='abc' is not a positive whole number; ignoring it") == 1
+
+
+def test_ensure_registered_reclaims_default(monkeypatch):
+    from zotero_mcp.embeddings.providers import DefaultEmbeddingFunction as Ours
+    from zotero_mcp.embeddings.providers import ensure_embedding_functions_registered
+
+    monkeypatch.setitem(known_embedding_functions, "default", DefaultEmbeddingFunction)
+    ensure_embedding_functions_registered()
+    assert known_embedding_functions["default"] is Ours

@@ -61,7 +61,9 @@ def ensure_embedding_functions_registered() -> None:
     opened means a built-in that got imported after this module still cannot
     shadow us and mis-handle our persisted config (issue #382).
     """
-    for cls in CUSTOM_EMBEDDING_FUNCTIONS:
+    # "default" too: ChromaDB registers its own class under that name whenever a
+    # collection is opened with it, which would switch ZOTERO_ONNX_THREADS off.
+    for cls in (*CUSTOM_EMBEDDING_FUNCTIONS, DefaultEmbeddingFunction):
         try:
             register_embedding_function(cls)
         except Exception as e:  # pragma: no cover - registry API change
