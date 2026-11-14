@@ -194,6 +194,8 @@ const fr: Catalog = {
   "settings.chat.usage": "Afficher les jetons et le coût",
   "settings.chat.usageHint": "Une petite ligne sous chaque réponse. Désactivé par défaut.",
   "settings.chat.openAtStart": "Ouvrir le panneau au démarrage de Zotero",
+  "settings.chat.scroll": "Aller au message le plus récent à l'envoi",
+  "settings.chat.scrollHint": "Désactivé : la conversation reste là où vous lisez ; le bouton de saut, ou le défilement vers le bas, vous ramène au message le plus récent.",
   "settings.chat.titleSource": "Titre des nouvelles conversations",
   "settings.chat.titleAgent": "Le résumé de l'agent",
   "settings.chat.titlePaper": "L'article ouvert à la première question",

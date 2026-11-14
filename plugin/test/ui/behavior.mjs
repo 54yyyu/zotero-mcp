@@ -428,6 +428,35 @@ await test("settings: the title-source dropdown names the next chat", async (p) 
   await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hd__title")?.textContent === "a question with a paper in focus");
 });
 
+const atBottomSel = "(() => { const s = window.__zmc.shadow.querySelector('.feed'); return s.scrollHeight - s.clientHeight - s.scrollTop < 4; })()";
+const topOf = "window.__zmc.shadow.querySelector('.feed').scrollTop";
+
+await test("scroll on send: the default jumps to the newest message; off holds a scrolled-up reader's place", async (p) => {
+  await send(p, "long");
+  await ended(p, 1);
+  const scrollable = await p.evaluate(() => { const s = window.__zmc.shadow.querySelector(".feed"); return s.scrollHeight > s.clientHeight + 100; });
+  assert.ok(scrollable, "the long answer makes the feed scrollable");
+  // a reader going back over the text: the scroller takes keys (Home is one of follow.ts's up intents);
+  // the feed scrolls smoothly, so wait for the position to settle rather than a fixed delay
+  const toTop = async () => { await p.locator(".feed").focus(); await p.keyboard.press("Home"); await p.waitForFunction("window.__zmc.shadow.querySelector('.feed').scrollTop === 0", null, { timeout: 3000 }); };
+  await toTop();
+  assert.equal(await p.evaluate(topOf), 0, "scrolled up");
+  // default (on): sending jumps back to the newest message
+  await send(p, "another");
+  await ended(p, 2);
+  await p.waitForFunction(atBottomSel, null, { timeout: 3000 }).catch(() => {});
+  assert.ok(await p.evaluate(atBottomSel), "at the newest message after send (default)");
+  // off: sending while scrolled up holds the position through the turn and its answer
+  await toTop();
+  await sim(p, () => window.__zmc.sim.setSettingsElsewhere({ scrollOnSend: false }));
+  await send(p, "one from up here");
+  await ended(p, 3);
+  assert.ok((await p.evaluate(topOf)) < 100, `the feed holds the reader's place while the answer streams (top=${await p.evaluate(topOf)})`);
+  // the jump pill is the way back down
+  await p.locator(".jump").click();
+  await p.waitForFunction(atBottomSel, null, { timeout: 3000 });
+});
+
 await test("settings: api key saved, removed; prompts edited and shortcut runs it", async (p) => {
   await p.locator('button[aria-label="Settings"]').click();
   await p.getByRole("radio", { name: "API key" }).click();

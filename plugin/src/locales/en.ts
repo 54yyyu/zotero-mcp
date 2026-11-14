@@ -194,6 +194,8 @@ const en = {
   "settings.chat.usage": "Show tokens and cost",
   "settings.chat.usageHint": "A small line under each answer. Off by default.",
   "settings.chat.openAtStart": "Open the panel when Zotero starts",
+  "settings.chat.scroll": "Scroll to the newest message on send",
+  "settings.chat.scrollHint": "Off: the feed stays where you are reading; the jump button, or scrolling down, brings you back to the newest message.",
   "settings.chat.titleSource": "Name new chats by",
   "settings.chat.titleAgent": "The agent's own summary",
   "settings.chat.titlePaper": "The paper open at the first question",

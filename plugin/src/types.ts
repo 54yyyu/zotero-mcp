@@ -320,6 +320,8 @@ export interface PanelSettings {
   openAtStart: boolean;
   /** The first-run welcome (agent choice and setup check) has been finished or skipped. */
   welcomed: boolean;
+  /** true: sending scrolls the feed to the newest message. false: the feed holds the reader's position (a reader at the bottom still follows the stream). */
+  scrollOnSend: boolean;
   /** How a new chat is first named: the agent's own summary (falling back to the focused paper, then the question), the paper focused at the first question, or the question text. Snapshotted onto each chat when it is named. */
   titleSource: "agent" | "paper" | "question";
   /** Where new chats run: the agent's working directory, and where the zotero-cli skill is installed. "" = the default folder. */

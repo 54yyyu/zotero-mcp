@@ -93,7 +93,7 @@ export function defaultSettings(): PanelSettings {
       { id: "p4", title: "Compare key findings to other studies", text: "Compare the key findings to other studies in my library.", slot: 4 },
     ],
     followFocus: true, attachSelection: true, attachAreas: true,
-    enterToSend: true, showThinking: true, expandTools: false, showUsage: false, openAtStart: false, welcomed: true, titleSource: "agent", chatFolder: "",
+    enterToSend: true, showThinking: true, expandTools: false, showUsage: false, openAtStart: false, welcomed: true, scrollOnSend: true, titleSource: "agent", chatFolder: "",
     translate: true, translateTo: "en", translateModel: { "claude-code": "", codex: "", pi: "", opencode: "" }, uiLanguage: "",
     appearance: { ...DEFAULT_APPEARANCE },
   };

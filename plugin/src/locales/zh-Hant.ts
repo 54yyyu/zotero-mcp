@@ -194,6 +194,8 @@ const zhHant: Catalog = {
   "settings.chat.usage": "顯示 token 用量與費用",
   "settings.chat.usageHint": "在每則回答下方顯示一小行資訊。預設為關閉。",
   "settings.chat.openAtStart": "Zotero 啟動時開啟面板",
+  "settings.chat.scroll": "傳送時捲動到最新訊息",
+  "settings.chat.scrollHint": "關閉後，對話停留在目前閱讀位置；用跳轉按鈕或向下捲動即可回到最新訊息。",
   "settings.chat.titleSource": "新對話的命名方式",
   "settings.chat.titleAgent": "Agent 自動摘要",
   "settings.chat.titlePaper": "首次提問時開啟的論文",
