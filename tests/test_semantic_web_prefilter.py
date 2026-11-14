@@ -173,10 +173,7 @@ def _corpus(articles=6, books=3):
             {"$and": [{"tags": "a"}, {"tags": "b"}, {"item_type": "book"}]},
             {"itemType": "book", "tag": ["a", "b"], "item_keys": None},
         ),
-        (
-            {"$and": [{"item_type": "book"}, {"tags": "a"}]},
-            {"itemType": "book", "tag": ["a"], "item_keys": None},
-        ),
+        ({"item_type": "book", "tags": "a"}, {"itemType": "book", "tag": ["a"], "item_keys": None}),
         ({"item_key": "KEY00001"}, {"itemType": None, "tag": [], "item_keys": {"KEY00001"}}),
         ({"tags": "-x"}, {"itemType": None, "tag": ["\\-x"], "item_keys": None}),
     ],
@@ -199,15 +196,7 @@ def test_the_plan_of_a_filter_the_api_can_express(where, plan):
         {"publication": "J"},
         {"citation_key": "k"},
         {"has_fulltext": True},
-        {"$and": [{"item_type": "book"}, {"doi": "10.1/x"}]},
-        # A dict of several keys is an error in Chroma, so it is never planned.
         {"item_type": "book", "doi": "10.1/x"},
-        {"item_type": "book", "tags": "a"},
-        # The tags are one space-joined string: a value with a space, or an empty one, cannot be sent.
-        {"tags": "two words"},
-        {"tags": ""},
-        {"tags": {"$in": ["a", "b c"]}},
-        {"$and": [{"item_type": "book"}, {"tags": "x y"}]},
         {"item_type": "a || b"},
         {"item_type": {"$in": []}},
         {"item_type": {"$gt": "a"}},
@@ -251,7 +240,7 @@ def test_the_pre_filter_combines_with_the_library_and_the_chroma_filters(monkeyp
     hits, items = _corpus(articles=1, books=2)
     s, _ = _search(monkeypatch, tmp_path, hits, items)
 
-    s.search("q", limit=2, filters={"$and": [{"item_type": "book"}, {"section": "Methods"}]}, group_id=0)
+    s.search("q", limit=2, filters={"item_type": "book", "section": "Methods"}, group_id=0)
 
     where = s.chroma_client.calls[0]["where"]
     assert where["$and"][0] == {"section": "Methods"}
@@ -356,34 +345,10 @@ def test_item_key_and_item_type_are_intersected(monkeypatch, tmp_path):
     hits, items = _corpus(articles=2, books=2)
     s, zot = _search(monkeypatch, tmp_path, hits, items)
 
-    out = s.search(
-        "q", limit=5, filters={"$and": [{"item_type": "book"}, {"item_key": {"$in": ["BOOK0001", "ART00000"]}}]}
-    )
+    out = s.search("q", limit=5, filters={"item_type": "book", "item_key": {"$in": ["BOOK0001", "ART00000"]}})
 
     assert len(zot.top_calls) == 1
     assert _keys(out) == ["BOOK0001"]
-
-
-def test_a_tag_with_a_space_or_empty_is_filtered_after_the_search_not_sent(monkeypatch, tmp_path):
-    hits, items = _corpus(articles=1, books=1)
-    items[0]["data"]["tags"] = [{"tag": "to read"}]
-    s, zot = _search(monkeypatch, tmp_path, hits, items)
-
-    out = s.search("q", limit=5, filters={"tags": "to read"})
-    assert _keys(out) == ["ART00000"] and zot.top_calls == []
-
-    out = s.search("q", limit=5, filters={"tags": ""})
-    assert _keys(out) == ["BOOK0000"] and zot.top_calls == []
-
-
-def test_a_filter_of_several_keys_is_an_error_and_asks_nobody(monkeypatch, tmp_path):
-    hits, items = _corpus()
-    s, zot = _search(monkeypatch, tmp_path, hits, items)
-
-    out = s.search("q", limit=5, filters={"item_type": "book", "tags": "a"})
-
-    assert out["error"].startswith("Expected where to have exactly one operator")
-    assert zot.top_calls == [] and s.chroma_client.calls == []
 
 
 def test_clauses_that_exclude_each_other_return_nothing_without_a_query(monkeypatch, tmp_path):

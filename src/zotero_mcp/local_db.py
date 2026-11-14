@@ -3593,7 +3593,7 @@ class LocalZoteroReader:
         return {item["key"]: item for item in self._build_full_items(conn, rows)}
 
     #: The owner fields semantic-search filters read (semantic_filters.live_fields).
-    _FILTER_OWNER_FIELDS = ("title", "DOI", "publicationTitle", "extra")
+    _FILTER_OWNER_FIELDS = ("title", "DOI", "publicationTitle", "extra", "citationKey")
 
     @staticmethod
     def _owner_condition_item_type(values: list[str]) -> tuple[str, list[str]]:
@@ -3605,12 +3605,8 @@ class LocalZoteroReader:
 
     @staticmethod
     def _owner_condition_tags(values: list[str]) -> tuple[str, list[str]] | None:
-        # A filter's ``tags`` is the space-joined tag string, so a value
-        # without a space equals it only for an item with that one tag: having
-        # the tag is a superset. A value with a space could equal a joined
-        # pair, so it is not pushed down.
-        if any(" " in v for v in values):
-            return None
+        # A filter's ``tags`` is the owner's set of tags and ``$eq`` / ``$in``
+        # mean membership, so having one of the values is exactly the condition.
         return (
             "EXISTS (SELECT 1 FROM itemTags itg JOIN tags t ON t.tagID = itg.tagID"
             f" WHERE itg.itemID = i.itemID AND t.name IN ({','.join('?' * len(values))}))",
