@@ -496,6 +496,18 @@ class TestPanels:
         layout = pdf_layout.detect_page_regions(panel_pdf(tmp_path, letters="ACD"), 1, panels=True)
         assert {r["confidence"] for r in layout["regions"] if r["source"] == "panel"} == {"low"}
 
+    def test_stray_bold_letters_on_a_text_page_are_low_confidence(self):
+        from zotero_mcp import pdf_layout
+
+        doc = fitz.open()
+        page = doc.new_page(width=612, height=792)
+        for i in range(30):
+            page.insert_text((50, 60 + i * 16), f"Body text line {i} of the paper", fontsize=10)
+        page.insert_text((50, 700), "A", fontsize=10, fontname="hebo")
+        page.insert_text((300, 720), "B", fontsize=10, fontname="hebo")
+        layout = pdf_layout.detect_page_regions(doc, 1, panels=True)
+        assert {r["confidence"] for r in layout["regions"] if r["source"] == "panel"} == {"low"}
+
     def test_one_letter_is_not_a_split(self, tmp_path):
         from zotero_mcp import pdf_layout
 
@@ -630,7 +642,7 @@ PLAN = [
     {"page": 1, "rect": [0.10, 0.30, 0.25, 0.15], "comment": "FIG 1A | first panel of the figure, with a long comment"},
     {"page": 2, "rect": [0.55, 0.40, 0.30, 0.20], "comment": "FIG 1B | rotated page"},
     {"page": 1, "text": "synthetic paper", "comment": "PROBLEM. the sentence"},
-    {"page": 3, "rect": [0.30, 0.60, 0.25, 0.20]},                       # nothing to tell it apart by
+    {"page": 3, "rect": [0.30, 0.60, 0.25, 0.20]},                       # told apart by its box
 ]
 
 
@@ -646,10 +658,9 @@ class TestIdempotentBatch:
 
         second = write(store, existing="skip")
         assert all(r["ok"] for r in second)
-        assert [bool(r.get("skipped")) for r in second] == [True, True, True, False]
-        # Only the entry with no comment and no text is created again.
-        assert len(store.created) == made + 1
-        assert second[0]["annotation_key"] == first[0]["annotation_key"]
+        assert [bool(r.get("skipped")) for r in second] == [True, True, True, True]
+        assert len(store.created) == made
+        assert [r["annotation_key"] for r in second] == [r["annotation_key"] for r in first]
 
     def test_without_the_option_a_rerun_duplicates(self, store):
         write(store)
@@ -659,9 +670,9 @@ class TestIdempotentBatch:
     def test_replace_deletes_the_old_ones_after_creating_the_new(self, store):
         first = write(store, existing="replace")
         second = write(store, existing="replace")
-        old = {r["annotation_key"] for r in first[:3]}
+        old = {r["annotation_key"] for r in first}
         assert set(store.deleted) == old
-        assert [r.get("replaced") for r in second[:3]] == [[k] for k in (r["annotation_key"] for r in first[:3])]
+        assert [r.get("replaced") for r in second] == [[r["annotation_key"]] for r in first]
         assert not old & set(store.items)
         assert all(r["ok"] for r in second)
 
@@ -673,13 +684,76 @@ class TestIdempotentBatch:
         ], existing="skip")
         assert [bool(r.get("skipped")) for r in again] == [True, False]
 
+    def test_a_box_and_a_highlight_with_the_same_comment_are_different(self, store):
+        write(store, [{"page": 1, "text": "synthetic paper", "comment": "same words"}])
+        (again,) = write(store, [{"page": 1, "rect": [0.1, 0.1, 0.1, 0.1], "comment": "same words"}],
+                         existing="replace")
+        assert again["ok"] and not again.get("replaced") and not store.deleted
+
+    def test_a_comment_less_box_elsewhere_on_the_page_is_new(self, store):
+        write(store, [{"page": 3, "rect": [0.30, 0.60, 0.25, 0.20]}])
+        (again,) = write(store, [{"page": 3, "rect": [0.30, 0.10, 0.25, 0.20]}], existing="skip")
+        assert again["ok"] and not again.get("skipped")
+
+    def test_replace_refuses_when_two_on_file_match_one_entry(self, store):
+        """Two boxes whose comments share the first 40 characters: deleting both, or a guessed
+        one, would lose an annotation the batch does not recreate."""
+        head = "FIG 2 | the knockout reduces expression in"
+        write(store, [{"page": 1, "rect": [0.1, 0.1, 0.1, 0.1], "comment": head + " neurons"},
+                      {"page": 1, "rect": [0.5, 0.5, 0.1, 0.1], "comment": head + " glia"}])
+        before = set(store.items)
+        (result,) = write(store, [{"page": 1, "rect": [0.1, 0.1, 0.1, 0.1], "comment": head + " neurons!"}],
+                          existing="replace")
+        assert not result["ok"] and "unclear" in result["error"]
+        assert set(store.items) == before and not store.deleted
+
+    def test_each_one_on_file_is_matched_once(self, store):
+        head = "FIG 2 | the knockout reduces expression in"
+        plan = [{"page": 1, "rect": [0.1, 0.1, 0.1, 0.1], "comment": head + " neurons"},
+                {"page": 1, "rect": [0.5, 0.5, 0.1, 0.1], "comment": head + " glia"}]
+        first = write(store, plan)
+        second = write(store, plan, existing="replace")
+        assert all(r["ok"] and not r.get("warning") for r in second)
+        assert sorted(store.deleted) == sorted(r["annotation_key"] for r in first)
+        assert len(set(r["replaced"][0] for r in second)) == 2
+
+    def test_replace_never_deletes_what_is_no_longer_an_annotation_here(self, store):
+        (first,) = write(store, [{"page": 1, "rect": [0.1, 0.1, 0.1, 0.1], "comment": "moved away"}])
+        real_item = store.item
+
+        def moved(key):
+            item = real_item(key)
+            if key == first["annotation_key"]:
+                item["data"]["parentItem"] = "OTHER001"
+            return item
+
+        store.item = moved
+        (again,) = write(store, [{"page": 1, "rect": [0.1, 0.1, 0.1, 0.1], "comment": "moved away"}],
+                         existing="replace")
+        assert again["ok"] and "not deleted" in again["warning"] and not store.deleted
+
+    def test_cli_summary_counts_old_annotations_left_behind(self, store, tmp_path, capsys):
+        import argparse
+
+        from zotero_mcp import cli_standalone
+
+        plan = tmp_path / "plan.jsonl"
+        plan.write_text(json.dumps(PLAN[0]))
+        write(store, [PLAN[0]])
+        store.delete_item = MagicMock(side_effect=RuntimeError("412 Precondition Failed"))
+        args = argparse.Namespace(verbose=False, json_out=False, subcommand="batch", attachment_key=ATTACHMENT,
+                                  file=str(plan), dry_run=False, render=None, on_existing="replace")
+        cli_standalone._annotations_batch(args, annotations, MagicMock())
+        out = capsys.readouterr().out
+        assert "WARN" in out and "1 old annotation(s) not deleted" in out
+
     def test_a_dry_run_reports_what_it_would_do_and_writes_nothing(self, store):
         write(store, existing="skip")
         made, gone = len(store.created), len(store.deleted)
         skip = write(store, dry_run=True, existing="skip")
         replace = write(store, dry_run=True, existing="replace")
-        assert [bool(r.get("skipped")) for r in skip] == [True, True, True, False]
-        assert [bool(r.get("replaced")) for r in replace] == [True, True, True, False]
+        assert [bool(r.get("skipped")) for r in skip] == [True, True, True, True]
+        assert [bool(r.get("replaced")) for r in replace] == [True, True, True, True]
         assert len(store.created) == made and len(store.deleted) == gone
 
     def test_cli_counts_what_was_skipped(self, store, tmp_path, capsys):
@@ -695,14 +769,14 @@ class TestIdempotentBatch:
         capsys.readouterr()
         cli_standalone._annotations_batch(args, annotations, MagicMock())
         data = json.loads(capsys.readouterr().out)["data"]
-        assert (data["skipped"], data["failed"]) == (3, 0)
+        assert (data["skipped"], data["failed"]) == (4, 0)
 
 
 class TestOfflineDryRun:
     def test_pure_matching_reads_the_file_zotero_holds_and_needs_no_client(self, pdf_path, monkeypatch):
         from pathlib import Path
 
-        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key: Path(pdf_path))
+        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key, **_kw: Path(pdf_path))
         monkeypatch.setattr(annotations, "_download_clients",
                             lambda: pytest.fail("a dry run must not need a Zotero client"))
         monkeypatch.setattr(annotations, "_get_note_write_client",
@@ -714,10 +788,23 @@ class TestOfflineDryRun:
         assert all(r["ok"] for r in results), results
         assert results[0]["matched_text"] == "synthetic paper"
 
+    def test_a_parent_key_is_not_read_as_one_of_its_attachments(self, pdf_path, monkeypatch):
+        """The real write refuses a parent key, so the dry run must not pass it on a guessed PDF."""
+        from pathlib import Path
+
+        from zotero_mcp import library
+
+        reader = MagicMock()
+        reader.resolve_attachment_file.return_value = None
+        reader.get_attachment_paths.return_value = [{"resolved_path": Path(pdf_path), "exists": True}]
+        monkeypatch.setattr(library, "_sqlite_reader", lambda: reader)
+        assert library.attachment_path_for("PARENT01") == Path(pdf_path)
+        assert library.attachment_path_for("PARENT01", own_only=True) is None
+
     def test_a_real_write_still_asks_for_a_client(self, pdf_path, monkeypatch):
         from pathlib import Path
 
-        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key: Path(pdf_path))
+        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key, **_kw: Path(pdf_path))
         monkeypatch.setattr(annotations, "_get_note_write_client", lambda _op: (None, "Error: no write access"))
         (result,) = annotations.create_annotations(ATTACHMENT, [{"page": 1, "text": "synthetic"}], ctx=MagicMock())
         assert result["error"] == "Error: no write access"
@@ -727,7 +814,7 @@ class TestOfflineDryRun:
 
         from zotero_mcp import cli_standalone
 
-        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key: None)
+        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key, **_kw: None)
         monkeypatch.setattr(annotations, "_download_clients", lambda: (None, None))
         monkeypatch.setattr(annotations._utils, "is_local_mode", lambda: False)
         plan = tmp_path / "plan.jsonl"

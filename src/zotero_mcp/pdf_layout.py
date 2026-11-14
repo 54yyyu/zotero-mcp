@@ -855,6 +855,11 @@ def _ink_boxes(page) -> list[list[float]]:
     return [b for b in shown if (b[2] - b[0]) * (b[3] - b[1]) < LAYOUT_MAX_REGION_AREA]
 
 
+def _centre_in(box, outer) -> bool:
+    x, y = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    return outer[0] <= x <= outer[2] and outer[1] <= y <= outer[3]
+
+
 def panel_regions(page, figure_regions: list[dict]) -> list[dict]:
     """One region per panel letter on a page, boxed to the ink in its cell.
 
@@ -908,7 +913,10 @@ def panel_regions(page, figure_regions: list[dict]) -> list[dict]:
         bottom = min([o["box"][1] for o in letters
                       if o["box"][1] > ly + tolerance and lx - 0.03 <= o["box"][0] < right]
                      + [bounds[3]])
-        inside = [b for b in ink if lx <= (b[0] + b[2]) / 2 <= right and ly <= (b[1] + b[3]) / 2 <= bottom]
+        # The letter's own word is not the panel's ink: a stray bold letter on a
+        # text page would otherwise come back as a confident letter-sized panel.
+        inside = [b for b in ink if lx <= (b[0] + b[2]) / 2 <= right and ly <= (b[1] + b[3]) / 2 <= bottom
+                  and not _centre_in(b, letter["box"])]
         if inside:
             cell = [min(b[0] for b in inside), min(b[1] for b in inside),
                     max(b[2] for b in inside), max(b[3] for b in inside)]

@@ -34,10 +34,19 @@ def make_pdf(path, first_page_lines=(), metadata=None, filler=0):
 
 
 class TestDoiFromPdf:
-    def test_metadata_wins(self, tmp_path):
-        path = make_pdf(tmp_path / "a.pdf", ["see 10.9999/other.article.1 for details"],
-                        metadata={"subject": "doi:10.1016/j.cell.2020.01.001"})
+    def test_metadata_wins_when_page_1_agrees_or_is_silent(self, tmp_path):
+        meta = {"subject": "doi:10.1016/j.cell.2020.01.001"}
+        path = make_pdf(tmp_path / "a.pdf", ["https://doi.org/10.1016/j.cell.2020.01.001",
+                                             "see 10.9999/other.article.1 for details"], metadata=meta)
         assert doi_from_pdf(path) == ("10.1016/j.cell.2020.01.001", "metadata")
+        path = make_pdf(tmp_path / "a2.pdf", ["no identifiers printed"], metadata=meta)
+        assert doi_from_pdf(path) == ("10.1016/j.cell.2020.01.001", "metadata")
+
+    def test_metadata_that_page_1_contradicts_is_ambiguous(self, tmp_path):
+        path = make_pdf(tmp_path / "a3.pdf", ["https://doi.org/10.1016/j.cell.2020.02.002"],
+                        metadata={"subject": "doi:10.1016/j.cell.2020.01.001"})
+        doi, why = doi_from_pdf(path)
+        assert doi is None and why.startswith("ambiguous") and "02.002" in why
 
     def test_the_whole_first_page_is_read_not_its_first_3000_characters(self, tmp_path):
         path = make_pdf(tmp_path / "b.pdf", ["DOI: https://doi.org/10.1038/s41586-021-03819-2"], filler=70)
@@ -51,10 +60,15 @@ class TestDoiFromPdf:
         doi, why = doi_from_pdf(path)
         assert doi is None and why.startswith("ambiguous") and "02.002" in why
 
-    def test_the_article_named_most_often_wins(self, tmp_path):
+    def test_naming_one_article_more_often_is_still_ambiguous(self, tmp_path):
+        """A spread's neighbour can be named twice (header and footer) and this article once."""
         path = make_pdf(tmp_path / "d.pdf", ["10.1016/j.cell.2020.01.001", "10.1016/j.cell.2020.01.001",
                                              "10.1016/j.cell.2020.02.002"])
-        assert doi_from_pdf(path)[0] == "10.1016/j.cell.2020.01.001"
+        assert doi_from_pdf(path)[0] is None
+
+    def test_a_doi_wrapped_at_its_hyphen_is_read_whole(self, tmp_path):
+        path = make_pdf(tmp_path / "w.pdf", ["https://doi.org/10.1038/s41586-", "021-03819-2"])
+        assert doi_from_pdf(path) == ("10.1038/s41586-021-03819-2", "page 1")
 
     def test_no_doi(self, tmp_path):
         doi, why = doi_from_pdf(make_pdf(tmp_path / "e.pdf", ["nothing here"]))
@@ -124,8 +138,30 @@ class TestAttachFile:
         write_mod = MagicMock()
         write_mod.add_by_doi.return_value = "Error: CrossRef has no record of 10.1/x"
         with pytest.raises(SystemExit):
-            run(args_for(doi="10.1/x", attach_file=str(tmp_path / "p.pdf")), write_mod)
+            run(args_for(doi="10.1/x", attach_file=make_pdf(tmp_path / "p.pdf", ["x"])), write_mod)
         write_mod.attach_file.assert_not_called()
+
+    @pytest.mark.parametrize("make", ["missing", "symlink"])
+    def test_a_file_attach_would_refuse_is_caught_before_the_item_is_added(self, tmp_path, make):
+        from zotero_mcp.cli_json import CliError
+
+        path = tmp_path / "p.pdf"
+        if make == "symlink":
+            path.symlink_to(make_pdf(tmp_path / "real.pdf", ["x"]))
+        write_mod = MagicMock()
+        with pytest.raises(CliError, match="not a regular file"):
+            run(args_for(doi="10.1/x", attach_file=str(path)), write_mod)
+        write_mod.add_by_doi.assert_not_called()
+
+    def test_if_exists_skip_attaches_nothing_to_an_existing_item(self, tmp_path, capsys):
+        write_mod = MagicMock()
+        write_mod.add_by_doi.return_value = (
+            "Already in library: **A Paper** (`ABCD1234`, matched by DOI)\n\nItem key: `ABCD1234`\n"
+            "No changes made (if_exists='skip').")
+        run(args_for(doi="10.1/x", attach_file=make_pdf(tmp_path / "p.pdf", ["x"]), if_exists="skip"),
+            write_mod)
+        write_mod.attach_file.assert_not_called()
+        assert "not attached" in capsys.readouterr().out
 
 
 class TestAddFolder:
@@ -153,6 +189,16 @@ class TestAddFolder:
         assert "spread.pdf" in out and "ambiguous" in out
         assert "none.pdf" in out and "no DOI" in out
         assert "notes.txt" not in out and "1/3 resolved" in out
+
+    def test_a_symlinked_pdf_is_listed_not_followed(self, tmp_path, capsys):
+        folder = tmp_path / "in"
+        folder.mkdir()
+        (folder / "link.pdf").symlink_to(make_pdf(tmp_path / "real.pdf", ["10.1016/j.cell.2020.01.001"]))
+        write_mod = MagicMock()
+        with pytest.raises(SystemExit):
+            run(args_for(subcommand="folder", folder=str(folder)), write_mod)
+        write_mod.add_by_doi.assert_not_called()
+        assert "symlinks are not followed" in capsys.readouterr().out
 
     def test_dry_run_writes_nothing(self, tmp_path, capsys):
         write_mod = MagicMock()
