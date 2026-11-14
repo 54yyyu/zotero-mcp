@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Search results are looked up in Zotero in batches, once per key** (#826). Hits are resolved to their parent item (a hit on an attachment shows its parent), collapsed by item, and dropped when the item is in the trash or gone, with one batched lookup per library (local mode reads zotero.sqlite) instead of one request per hit. A search that asks for more candidates does not look up keys again. Thanks @mronkko.
+- **Web-mode filtered searches ask the Zotero API once per library instead of filtering after the search** (#826). A filter on `item_type`, `tags` or `item_key` is sent as a keys-only request, up to four libraries at a time (Zotero's limit for concurrent requests, backoffs shared), and ChromaDB returns only records of the matching items; hits are still checked against Zotero. Other filters behave as before. A filter that matches more than 5,000 items, or a request that fails, falls back to filtering after the search. Thanks @mronkko.
+- **Filters are evaluated against current Zotero data, with the same syntax as before** (#826). A filter on `item_type`, `item_key`, `title`, `date`, `creators`, `publication`, `url`, `doi`, `tags`, `citation_key`, `date_added`, `date_modified` or `has_fulltext` is checked against the item as Zotero has it now, not against what was copied into the index, so an edit applies to the next search without re-indexing. Values have the formats the index stored (`tags` is the space-joined tag string) and ChromaDB's operator rules. `has_fulltext` is true when the item has indexed text, judged from the hits of the search; 0.17's `"failed"` value is not matched. Thanks @mronkko.
+
 ## [0.17.1] - 2026-11-12
 
 ### Added

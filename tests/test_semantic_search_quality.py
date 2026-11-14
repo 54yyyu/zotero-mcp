@@ -585,11 +585,28 @@ class TestTiktokenSpecialTokenHandling:
 # Fix 5: Cross-encoder re-ranking
 # ---------------------------------------------------------------------------
 
+def _zotero_serving_every_key():
+    """A pyzotero mock whose batched itemKey lookup finds every key."""
+    zot = MagicMock()
+    zot.items.side_effect = lambda itemKey="", **kw: [
+        {"key": k, "data": {"title": "mock"}} for k in itemKey.split(",")
+    ]
+    return zot
+
+
 class TestReranking:
+    @pytest.fixture(autouse=True)
+    def _isolated(self, monkeypatch, tmp_path):
+        """Searches resolve hits through zotero.sqlite in local mode (#826)."""
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+        monkeypatch.delenv("ZOTERO_LOCAL", raising=False)
+        self._config_path = str(tmp_path / "config.json")
+
     def _make_search_with_reranker(self, enabled=True):
         fake_client = FakeChromaClient()
         with patch.object(semantic_search, "get_zotero_client", return_value=MagicMock()):
-            s = semantic_search.ZoteroSemanticSearch(chroma_client=fake_client)
+            s = semantic_search.ZoteroSemanticSearch(chroma_client=fake_client, config_path=self._config_path)
         s._reranker_config = {
             "enabled": enabled,
             "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
@@ -611,8 +628,7 @@ class TestReranking:
         s._reranker = mock_reranker
 
         # Mock the Zotero client to avoid API calls
-        s.zotero_client = MagicMock()
-        s.zotero_client.item.return_value = {"data": {"title": "mock"}}
+        s.zotero_client = _zotero_serving_every_key()
 
         result = s.search("birds", limit=3)
 
@@ -626,20 +642,31 @@ class TestReranking:
         s._reranker = MagicMock()
         s._reranker.rerank.return_value = [0, 1]
 
-        s.zotero_client = MagicMock()
-        s.zotero_client.item.return_value = {"data": {"title": "mock"}}
+        s.zotero_client = _zotero_serving_every_key()
 
         s.search("test", limit=2)
 
-        # candidate_multiplier=3, so n_results should be 2*3=6
-        assert s.chroma_client._last_query_kwargs["n_results"] == 6
+        # candidate_multiplier=3 is below the ×4 every search over-fetches
+        # to collapse hits to owners (#826), so n_results is 2*4=8.
+        assert s.chroma_client._last_query_kwargs["n_results"] == 8
 
-    def test_search_without_reranker_uses_original_limit(self):
+    def test_search_overfetches_by_a_larger_reranker_multiplier(self):
+        s = self._make_search_with_reranker(enabled=True)
+        s._reranker_config["candidate_multiplier"] = 6
+        s._reranker = MagicMock()
+        s._reranker.rerank.return_value = [0, 1]
+        s.zotero_client = _zotero_serving_every_key()
+
+        s.search("test", limit=2)
+
+        assert s.chroma_client._last_query_kwargs["n_results"] == 12
+
+    def test_search_without_reranker_overfetches_for_owner_collapse(self):
         s = self._make_search_with_reranker(enabled=False)
 
-        s.zotero_client = MagicMock()
-        s.zotero_client.item.return_value = {"data": {"title": "mock"}}
+        s.zotero_client = _zotero_serving_every_key()
 
         s.search("test", limit=5)
 
-        assert s.chroma_client._last_query_kwargs["n_results"] == 5
+        # Hits collapse to their owners and trashed ones drop out (#826).
+        assert s.chroma_client._last_query_kwargs["n_results"] == 20
