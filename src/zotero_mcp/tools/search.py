@@ -1570,6 +1570,7 @@ def semantic_search(
         search_results = results.get("results", [])
         level_note = results.get("level_note")
         load_note = results.get("load_note")
+        filter_note = results.get("filter_note")
 
         if not search_results:
             empty = f"No semantically similar items found for query: '{query}'"
@@ -1577,6 +1578,7 @@ def semantic_search(
                 n for n in (
                     f"*{level_note}*" if level_note else None,
                     f"*{load_note}*" if load_note else None,
+                    f"*{filter_note}*" if filter_note else None,
                     stale_note,
                 ) if n
             ]
@@ -1592,6 +1594,9 @@ def semantic_search(
             output.append("")
         if load_note:
             output.append(f"*{load_note}*")
+            output.append("")
+        if filter_note:
+            output.append(f"*{filter_note}*")
             output.append("")
         output.append(f"Found {len(search_results)} similar items:")
         output.append("")
@@ -1635,7 +1640,11 @@ def semantic_search(
             # Provenance for citing: page (when the index carries page breaks),
             # else which passage of how many, else an approximate char offset.
             loc_bits = []
-            # Section first: it is what tells a reader whether the hit is this
+            # The file the hit came from, when an item has several (#826).
+            if attachment := result.get("matched_attachment"):
+                if name := attachment.get("title") or attachment.get("filename"):
+                    loc_bits.append(f"Attachment: {name}")
+            # Section next: it is what tells a reader whether the hit is this
             # paper's own claim or a citation of someone else's, which changes
             # how the result should be read before anything else does.
             if section := result.get("section"):
