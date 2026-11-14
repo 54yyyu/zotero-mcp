@@ -222,6 +222,32 @@ def failed(attachment_key: str, file_stamp: str, config_path: str | None = None)
     return isinstance(failures, dict) and failures.get(attachment_key) == file_stamp
 
 
+def remember_rekeyed_stamp(attachment_key: str, file_stamp: str, config_path: str | None = None) -> None:
+    """Remember the file's stamp as of the moment its legacy passages were re-keyed to it.
+
+    ``migrate-index`` writes it; a later update compares it with the file's
+    live stamp to tell a migrated attachment whose file is as the passages
+    were cut from it from one that has changed since. Kept in the index under
+    ``rekeyed_stamps``, which :func:`clear_all` drops with everything else.
+    """
+    root = get_fulltext_cache_root(config_path)
+    with _INDEX_LOCK:
+        index = _load_index_unlocked(root)
+        stamps = index.get("rekeyed_stamps")
+        if not isinstance(stamps, dict):
+            stamps = index["rekeyed_stamps"] = {}
+        stamps[attachment_key] = file_stamp
+        _save_index_unlocked(root, index)
+
+
+def rekeyed_stamps(config_path: str | None = None) -> dict[str, str]:
+    """``{attachment key: file stamp}`` of every re-keyed attachment on record, read once for a whole scan."""
+    root = get_fulltext_cache_root(config_path)
+    with _INDEX_LOCK:
+        stamps = _load_index_unlocked(root).get("rekeyed_stamps")
+    return {k: v for k, v in stamps.items() if isinstance(v, str) and v} if isinstance(stamps, dict) else {}
+
+
 def evict_many(item_keys: Iterable[str], config_path: str | None = None) -> int:
     """Remove every cache entry belonging to the given item keys.
 

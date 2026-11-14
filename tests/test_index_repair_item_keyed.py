@@ -162,11 +162,11 @@ def test_a_bare_record_beside_incomplete_legacy_chunks_is_still_left_out(tmp_pat
     assert report.excluded == {"ATT00001": "chunks missing"}
 
 
-def test_legacy_records_beside_item_keyed_passages_are_repaired_as_before(tmp_path):
+def test_legacy_records_and_a_rekeyed_marker_are_repaired_as_before(tmp_path):
     persist, config = _make(
         tmp_path,
         {
-            "zotero_library": [("PARENT01", {"item_key": "PARENT01", "title": "T"})],
+            "zotero_library": [("PARENT01", {"item_key": "PARENT01", "title": "T", "rekeyed_to": "ATT00001"})],
             PASSAGES: [(f"ATT00001#{n}", _passage(n)) for n in range(3)],
         },
     )
