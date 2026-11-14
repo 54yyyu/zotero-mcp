@@ -172,7 +172,12 @@ zotero-cli read ITEM_KEY --start-page 4 --format image --rect 0.35,0.49,0.3,0.05
 To annotate, plan everything, check it, then write it in one run:
 
 1. `zotero-cli --json layout ATTACHMENT_KEY` lists figure, table and
-   equation boxes with their captions and a paste-ready `rect_arg`.
+   equation boxes with their captions and a paste-ready `rect_arg`. Add
+   `--panels` to also get one box per figure panel, found from the single
+   bold panel letters (A, B, C ...) in the PDF text; each carries its letter
+   and a confidence. It needs those letters in the text layer, so it works
+   for most Cell and Nature figures and not for figures drawn as one image
+   with the letters baked in.
 2. Write one JSON object per line: `{"page": 4, "text": "exact words",
    "comment": "...", "color": "yellow"}` for a highlight (add
    `"underline": true` to underline instead), or
@@ -181,6 +186,12 @@ To annotate, plan everything, check it, then write it in one run:
    centered on a point (its text is the comment). Copy
    highlight text exactly from `read`; it is searched for on that page and
    two pages either side.
+   Instead of working out a panel's box by hand, give `"rect": "auto"` and
+   a rough `"near": "x,y,w,h"`: the box is fitted to the detected panel or
+   figure that overlaps the hint most. When nothing matches, or the match is
+   low confidence, the hint is kept as given and the output says so, so
+   look at those rows. `annotations create --rect auto --near x,y,w,h` does
+   the same for one box.
 3. `zotero-cli annotations batch --attachment-key ATTACHMENT_KEY --file plan.jsonl --dry-run`
    shows the words each highlight would cover. Fix every miss. Add
    `--render DIR` to also draw every planned box and highlight on page PNGs;

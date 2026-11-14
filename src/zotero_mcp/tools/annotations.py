@@ -1916,6 +1916,11 @@ def _annotation_payload(
     if rect is not None:
         if file_type != "pdf":
             return None, {"error": "Error: area annotations need a PDF attachment"}
+        auto = None
+        if isinstance(rect, str) and rect.strip().lower() == "auto":
+            rect, auto, error = _fit_box(source, page, spec.get("near"))
+            if error:
+                return None, {"error": error}
         box = _helpers._normalize_float_list_input(rect, 4, "rect")
         if box is None:
             return None, {"error": (
@@ -1935,7 +1940,7 @@ def _annotation_payload(
             annotationPosition=build_annotation_position(position["pageIndex"], position["rects"]),
             annotationPageLabel=label,
         )
-        return payload, {"page_label": label}
+        return payload, {"page_label": label, **({"auto": auto} if auto else {})}
 
     if note is not None:
         if file_type != "pdf":
@@ -2001,6 +2006,25 @@ def _annotation_payload(
     if with_text:
         details["matched_text"] = text_in_rects(source, position["pageIndex"], position["rects"])
     return payload, details
+
+
+def _fit_box(source, page: int, near) -> tuple[list[float] | None, dict | None, str | None]:
+    """Resolve ``"rect": "auto"``: (rect, how it was chosen, error).
+
+    ``near`` is the optional ``[x, y, w, h]`` hint. See ``pdf_layout.auto_box``.
+    """
+    from zotero_mcp import pdf_layout
+
+    if near is not None:
+        near = _helpers._normalize_float_list_input(near, 4, "near")
+        if near is None or _rect_error(*near):
+            return None, None, "Error: near must be four numbers x,y,width,height, normalized to 0-1"
+    found = pdf_layout.auto_box(source, page, near)
+    if "error" in found:
+        return None, None, f"Error: rect auto: {found['error']}"
+    rect = [round(v, 4) for v in found["rect"]]
+    return rect, {"rect": rect, "source": found["source"], "confidence": found["confidence"],
+                  "note": found["note"]}, None
 
 
 def _spec_type(spec: dict) -> str:
@@ -2160,13 +2184,14 @@ def detect_layouts(
     attachment_key: str,
     pages: list[int] | None,
     *,
+    panels: bool = False,
     ctx: Context,
 ) -> tuple[list[dict], str, str | None]:
     """Detect figure/table regions on several pages of one PDF attachment.
 
     The attachment is fetched once for all pages. ``pages=None`` means every
     page. Shared by the MCP tool (one page) and ``zotero-cli layout`` (any
-    number of pages).
+    number of pages). ``panels`` also splits figures at their panel letters.
 
     Returns:
         (layouts, filename, error). Each layout is detect_page_regions output
@@ -2197,7 +2222,7 @@ def detect_layouts(
                 pages = list(range(1, page_count + 1))
             for page in pages:
                 ctx.info(f"Detecting regions on page {page}...")
-                layout = pdf_layout.detect_page_regions(source, page)
+                layout = pdf_layout.detect_page_regions(source, page, **({"panels": True} if panels else {}))
                 if "error" in layout:
                     return [], filename, f"Error: {layout['error']}"
                 layouts.append({**layout, "page": page})

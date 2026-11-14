@@ -112,7 +112,8 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--page` -- **required**
  - `--text` -- Exact text to highlight
  - `--underline` -- Underline --text instead of highlighting it
- - `--rect` -- Area box x,y,width,height, normalized 0-1; `zotero-cli layout` prints boxes for figures and tables
+ - `--rect` -- Area box x,y,width,height, normalized 0-1; `zotero-cli layout` prints boxes for figures and tables. `auto` fits the box to the figure or panel nearest --near
+ - `--near` -- With --rect auto: x,y,width,height, roughly where the box goes; kept as given when nothing detected matches it
  - `--note` -- Sticky note centered at x,y, normalized 0-1; its text is --comment
  - `--comment`
  - `--color` -- default `#ffd400` -- Hex, or a Zotero color name: yellow, red, green, blue, purple, magenta, orange, gray
@@ -122,7 +123,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 ### `annotations batch`
 
  - `--attachment-key` -- **required** -- Attachment for lines that do not name their own
- - `--file` -- default `-` -- JSON Lines (or a JSON array) of {page, text|rect|note, underline, comment, color, tags}; - reads stdin
+ - `--file` -- default `-` -- JSON Lines (or a JSON array) of {page, text|rect|note, underline, comment, color, tags}; "rect": "auto" (with an optional "near": "x,y,w,h") fits a box to the nearest figure or panel; - reads stdin
  - `--dry-run` -- Locate every highlight and underline and report what it would cover, without writing
  - `--render` -- With --dry-run: draw the planned boxes and highlight matches on page PNGs in DIR, from the position that would be stored
 
@@ -137,6 +138,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 
  - `<attachment_key>`
  - `--pages` -- default `all` -- Pages to scan: all (default), 3, 3-6, or 1,4,6-9
+ - `--panels` -- Also box each figure panel, using the single bold panel letters (A, B, C ...) in the PDF's text; each box carries its letter
 
 ## `notes (alias: n)`
 

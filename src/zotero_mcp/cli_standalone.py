@@ -512,6 +512,11 @@ def cmd_annotations(args):
             return
         print(result)
     elif args.subcommand == "create":
+        if str(getattr(args, "rect", None) or "").strip().lower() == "auto":
+            _create_auto_box(args, annotations, ctx)
+            return
+        if getattr(args, "near", None):
+            raise _cli_json.CliError("--near goes with --rect auto", code="bad_rect")
         text = annotations.create_annotation(
             attachment_key=args.attachment_key, page=args.page,
             text=getattr(args, "text", None),
@@ -553,6 +558,32 @@ def cmd_annotations(args):
         else:
             print(f"Unknown 'annotations' subcommand: {args.subcommand}", file=sys.stderr)
         sys.exit(1)
+
+
+def _create_auto_box(args, annotations, ctx) -> None:
+    """`annotations create --rect auto`: fit a box to the nearest figure or panel."""
+    if getattr(args, "text", None) or getattr(args, "note", None):
+        raise _cli_json.CliError("--rect auto cannot go with --text or --note", code="bad_rect")
+    spec = {"page": args.page, "rect": "auto", "near": _parse_rect(getattr(args, "near", None), flag="--near"),
+            "comment": getattr(args, "comment", None), "color": _resolve_color(args.color),
+            "tags": _split_tags(getattr(args, "tags", None))}
+    (result,) = annotations.create_annotations(args.attachment_key, [spec], ctx=ctx)
+    if not result["ok"]:
+        _out(args, "annotations create", text=result["error"])
+        return
+    auto = result["auto"]
+    x, y, w, h = auto["rect"]
+    text = "\n".join([
+        "Successfully created area annotation", "",
+        f"**Annotation Key:** {result['annotation_key']}",
+        f"**Page:** {result['page_label']}",
+        f"**Rect (normalized):** x={x:.4f}, y={y:.4f}, width={w:.4f}, height={h:.4f}",
+        f"**Fitted to:** {auto['source']}, {auto['confidence']} confidence"
+        + (f" ({auto['note']})" if auto["note"] else ""),
+    ])
+    if getattr(args, "open", False):
+        _launch_url(_reader_url(args.attachment_key, page=args.page, annotation_key=result["annotation_key"]))
+    _out(args, "annotations create", text=text)
 
 
 def _annotations_preview(args, annotations, ctx) -> None:
@@ -614,6 +645,16 @@ def _read_annotation_specs(source: str) -> list[dict]:
     return specs
 
 
+def _auto_note(result: dict) -> str:
+    """What `rect: auto` chose for one batch row, so a fallback to the hint is never silent."""
+    auto = result.get("auto")
+    if not auto:
+        return ""
+    x, y, w, h = auto["rect"]
+    note = f"; {auto['note']}" if auto["note"] else ""
+    return f" (auto: {auto['source']}, {auto['confidence']}: {x:.4f},{y:.4f},{w:.4f},{h:.4f}{note})"
+
+
 def _annotations_batch(args, annotations, ctx) -> None:
     """`annotations batch`: create (or with --dry-run, locate) many annotations.
 
@@ -635,7 +676,7 @@ def _annotations_batch(args, annotations, ctx) -> None:
     groups: dict[str, list[int]] = {}
     for position, spec in enumerate(specs):
         groups.setdefault(spec.get("attachment_key") or args.attachment_key, []).append(position)
-        for key, size in (("rect", 4), ("note", 2)):
+        for key, size in (("rect", 4), ("note", 2), ("near", 4)):
             if spec.get(key) is not None:
                 try:
                     spec[key] = _parse_rect(spec[key], size=size, flag=key)
@@ -676,9 +717,9 @@ def _annotations_batch(args, annotations, ctx) -> None:
                 moved = f" (found on p{found})" if found not in (None, r["page"]) else ""
                 print(f"ok    {where}{moved}: {r.get('matched_text', '')[:120]}")
             elif args.dry_run:
-                print(f"ok    {where} area")
+                print(f"ok    {where} area{_auto_note(r)}")
             else:
-                print(f"ok    {where} {r['type']} {r['annotation_key']}")
+                print(f"ok    {where} {r['type']} {r['annotation_key']}{_auto_note(r)}")
         verb = "Located" if args.dry_run else "Created"
         print(f"\n{verb} {len(results) - len(failed)}/{len(results)} in {seconds}s"
               + (f"; {len(failed)} failed" if failed else ""))
@@ -694,7 +735,8 @@ def cmd_layout(args):
     setup_zotero_environment()
     _s, _r, annotations, _w, _c = _import_tools()
     pages = _parse_pages(args.pages)
-    layouts, filename, error = annotations.detect_layouts(args.attachment_key, pages, ctx=_ctx(args))
+    layouts, filename, error = annotations.detect_layouts(
+        args.attachment_key, pages, panels=getattr(args, "panels", False), ctx=_ctx(args))
     if error:
         _out(args, "layout", text=error)
         return
@@ -1690,7 +1732,10 @@ def build_parser() -> argparse.ArgumentParser:
     ac.add_argument("--underline", action="store_true",
                     help="Underline --text instead of highlighting it")
     ac.add_argument("--rect", help="Area box x,y,width,height, normalized 0-1; "
-                                   "`zotero-cli layout` prints boxes for figures and tables")
+                                   "`zotero-cli layout` prints boxes for figures and tables. "
+                                   "`auto` fits the box to the figure or panel nearest --near")
+    ac.add_argument("--near", help="With --rect auto: x,y,width,height, roughly where the box goes; "
+                                   "kept as given when nothing detected matches it")
     ac.add_argument("--note", help="Sticky note centered at x,y, normalized 0-1; "
                                    "its text is --comment")
     ac.add_argument("--comment")
@@ -1704,7 +1749,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Attachment for lines that do not name their own")
     ab.add_argument("--file", default="-",
                     help="JSON Lines (or a JSON array) of {page, text|rect|note, underline, comment, "
-                         "color, tags}; "
+                         "color, tags}; \"rect\": \"auto\" (with an optional \"near\": \"x,y,w,h\") "
+                         "fits a box to the nearest figure or panel; "
                          "- reads stdin")
     ab.add_argument("--dry-run", action="store_true",
                     help="Locate every highlight and underline and report what it would cover, "
@@ -1724,6 +1770,9 @@ def build_parser() -> argparse.ArgumentParser:
     ly_p.add_argument("attachment_key")
     ly_p.add_argument("--pages", default="all",
                       help="Pages to scan: all (default), 3, 3-6, or 1,4,6-9")
+    ly_p.add_argument("--panels", action="store_true",
+                      help="Also box each figure panel, using the single bold panel letters "
+                           "(A, B, C ...) in the PDF's text; each box carries its letter")
 
     # notes
     n_p = sub.add_parser("notes", help="Manage notes", aliases=["n"])

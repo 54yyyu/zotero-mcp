@@ -426,3 +426,167 @@ class TestPreviewCli:
         cli_standalone._annotations_preview(args, annotations, MagicMock())
         out = capsys.readouterr().out
         assert "p1:" in out and "1 annotation(s)" in out and (tmp_path / "o" / f"{ATTACHMENT}-p1.png").exists()
+
+
+# ---------------------------------------------------------------------------
+# 4. Panels and `rect: auto`
+# ---------------------------------------------------------------------------
+
+#: A 2 x 2 figure: panel letter at the top-left of each, a framed plot under it.
+PANELS = {"A": (60, 100), "B": (320, 100), "C": (60, 300), "D": (320, 300)}
+PANEL_W, PANEL_H = 220, 160
+
+
+def panel_pdf(tmp_path, letters="ABCD", rotation=0, name="figure.pdf"):
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    for letter, (x, y) in PANELS.items():
+        page.draw_rect(fitz.Rect(x + 10, y + 14, x + PANEL_W - 10, y + PANEL_H - 10), width=1)
+        page.draw_line((x + 10, y + 100), (x + PANEL_W - 10, y + 60), width=2)
+        if letter in letters:
+            page.insert_text((x, y + 9), letter, fontsize=9, fontname="hebo")
+    page.insert_text((60, 480), "Figure 1. A synthetic figure with four panels.", fontsize=9)
+    if rotation:
+        page.set_rotation(rotation)
+    path = str(tmp_path / name)
+    doc.save(path)
+    doc.close()
+    return path
+
+
+def panel_inner(letter):
+    """The framed plot of a panel, normalized on the unrotated 612 x 792 page."""
+    x, y = PANELS[letter]
+    return [(x + 10) / 612, (y + 14) / 792, (PANEL_W - 20) / 612, (PANEL_H - 24) / 792]
+
+
+def contains(outer, inner, slack=0.004):
+    return (outer[0] <= inner[0] + slack and outer[1] <= inner[1] + slack
+            and outer[0] + outer[2] >= inner[0] + inner[2] - slack
+            and outer[1] + outer[3] >= inner[1] + inner[3] - slack)
+
+
+def overlaps(a, b):
+    return a[0] < b[0] + b[2] and b[0] < a[0] + a[2] and a[1] < b[1] + b[3] and b[1] < a[1] + a[3]
+
+
+class TestPanels:
+    def test_panel_letters_split_a_figure_page_into_boxes(self, tmp_path):
+        from zotero_mcp import pdf_layout
+
+        layout = pdf_layout.detect_page_regions(panel_pdf(tmp_path), 1, panels=True)
+        panels = {r["caption_label"]: r for r in layout["regions"] if r["source"] == "panel"}
+        assert sorted(panels) == ["Panel A", "Panel B", "Panel C", "Panel D"]
+        for letter in "ABCD":
+            box = panels[f"Panel {letter}"]["bbox"]
+            assert contains(box, panel_inner(letter))
+            for other in "ABCD".replace(letter, ""):
+                assert not overlaps(box, panel_inner(other)), (letter, other)
+            assert panels[f"Panel {letter}"]["confidence"] in ("high", "medium")
+
+    def test_panels_are_opt_in(self, tmp_path):
+        from zotero_mcp import pdf_layout
+
+        layout = pdf_layout.detect_page_regions(panel_pdf(tmp_path), 1)
+        assert not [r for r in layout["regions"] if r["source"] == "panel"]
+
+    def test_a_gap_in_the_letters_is_low_confidence(self, tmp_path):
+        from zotero_mcp import pdf_layout
+
+        layout = pdf_layout.detect_page_regions(panel_pdf(tmp_path, letters="ACD"), 1, panels=True)
+        assert {r["confidence"] for r in layout["regions"] if r["source"] == "panel"} == {"low"}
+
+    def test_one_letter_is_not_a_split(self, tmp_path):
+        from zotero_mcp import pdf_layout
+
+        layout = pdf_layout.detect_page_regions(panel_pdf(tmp_path, letters="A"), 1, panels=True)
+        assert not [r for r in layout["regions"] if r["source"] == "panel"]
+
+    def test_a_landscape_page_stored_turned_gives_the_same_panels_as_when_upright(self):
+        """Landscape figure pages are usually portrait pages with /Rotate set, the
+        text laid out sideways in the file. Panels are found in the frame the
+        reader displays."""
+        from zotero_mcp import pdf_layout
+
+        upright = fitz.open()
+        page = upright.new_page(width=792, height=612)
+        for letter, (x, y) in {"A": (60, 60), "B": (420, 60), "C": (60, 320), "D": (420, 320)}.items():
+            page.draw_rect(fitz.Rect(x + 10, y + 14, x + 300, y + 200), width=1)
+            page.insert_text((x, y + 9), letter, fontsize=9, fontname="hebo")
+        turned = fitz.open()
+        sideways = turned.new_page(width=612, height=792)
+        sideways.show_pdf_page(sideways.rect, upright, 0, rotate=90)
+        sideways.set_rotation(90)
+
+        def panels(doc):
+            layout = pdf_layout.detect_page_regions(doc, 1, panels=True)
+            return {r["caption_label"]: r["bbox"] for r in layout["regions"] if r["source"] == "panel"}
+
+        want, got = panels(upright), panels(turned)
+        assert sorted(got) == ["Panel A", "Panel B", "Panel C", "Panel D"]
+        for label, bbox in want.items():
+            assert got[label] == pytest.approx(bbox, abs=0.01)
+
+
+class TestAutoBox:
+    def box_of(self, tmp_path, near=None, **kwargs):
+        from zotero_mcp import pdf_layout
+
+        with fitz.open(panel_pdf(tmp_path, **kwargs)) as doc:
+            return pdf_layout.auto_box(doc, 1, near)
+
+    def test_snaps_to_the_panel_under_the_hint(self, tmp_path):
+        near = [0.60, 0.15, 0.30, 0.15]                    # roughly panel B, sloppy
+        found = self.box_of(tmp_path, near)
+        assert found["source"].startswith("panel") and "Panel B" in found["source"]
+        assert contains(found["rect"], panel_inner("B"))
+        assert not overlaps(found["rect"], panel_inner("A")) and not overlaps(found["rect"], panel_inner("D"))
+
+    def test_a_hint_that_matches_nothing_is_kept_and_says_so(self, tmp_path):
+        found = self.box_of(tmp_path, [0.05, 0.85, 0.2, 0.1])
+        assert found["source"] == "hint" and found["rect"] == [0.05, 0.85, 0.2, 0.1]
+        assert "overlaps the hint" in found["note"]
+
+    def test_low_confidence_panels_fall_back_to_the_hint(self, tmp_path):
+        near = [0.10, 0.12, 0.30, 0.20]
+        found = self.box_of(tmp_path, near, letters="ACD")
+        assert found["source"] == "hint" and found["rect"] == near
+        assert "low-confidence" in found["note"]
+
+    def test_without_a_hint_several_panels_are_an_error(self, tmp_path):
+        assert "near hint" in self.box_of(tmp_path)["error"]
+
+    def test_batch_spec_fits_the_box_and_reports_how(self, store, tmp_path, monkeypatch):
+        path = panel_pdf(tmp_path)
+        monkeypatch.setattr(annotations, "_fetch_attachment_file",
+                            lambda key, tmp, **kw: (path, "figure.pdf", "pdf", None))
+        results = annotations.create_annotations(ATTACHMENT, [
+            {"page": 1, "rect": "auto", "near": [0.60, 0.15, 0.30, 0.15], "comment": "FIG 1B"},
+            {"page": 1, "rect": "auto", "near": [0.05, 0.85, 0.2, 0.1], "comment": "nothing here"},
+            {"page": 1, "rect": "auto", "comment": "no hint"},
+            {"page": 1, "rect": "auto", "near": [2, 2, 2, 2]},
+        ], ctx=MagicMock())
+        assert [r["ok"] for r in results] == [True, True, False, False]
+        assert "Panel B" in results[0]["auto"]["source"]
+        stored = json.loads(store.items[results[0]["annotation_key"]]["data"]["annotationPosition"])
+        # The box starts at the panel's letter, a little left of its frame.
+        assert 315 <= stored["rects"][0][0] <= panel_inner("B")[0] * 612 + 1
+        assert results[1]["auto"]["source"] == "hint" and results[1]["auto"]["note"]
+        assert "near hint" in results[2]["error"]
+        assert "near" in results[3]["error"]
+
+    def test_the_cli_prints_a_fallback_instead_of_hiding_it(self, store, tmp_path, monkeypatch, capsys):
+        import argparse
+
+        from zotero_mcp import cli_standalone
+
+        path = panel_pdf(tmp_path)
+        monkeypatch.setattr(annotations, "_fetch_attachment_file",
+                            lambda key, tmp, **kw: (path, "figure.pdf", "pdf", None))
+        specs = tmp_path / "plan.jsonl"
+        specs.write_text(json.dumps({"page": 1, "rect": "auto", "near": "0.05,0.85,0.2,0.1"}))
+        args = argparse.Namespace(verbose=False, json_out=False, subcommand="batch", attachment_key=ATTACHMENT,
+                                  file=str(specs), dry_run=True, render=None)
+        cli_standalone._annotations_batch(args, annotations, MagicMock())
+        out = capsys.readouterr().out
+        assert "auto: hint, low" in out and "kept the near hint" in out

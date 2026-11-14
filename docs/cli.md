@@ -152,10 +152,11 @@ zotero-cli open ABC123 --page 44              # show page 44 in the Zotero reade
 zotero-cli open --annotation ANN01            # jump to an annotation and select it
 
 # Annotating a PDF — boxes to aim at, then a checked plan written in one run
-zotero-cli --json layout ATTACH01 --pages 3-9            # figure, table and equation boxes
+zotero-cli --json layout ATTACH01 --pages 3-9 --panels   # figure, table and equation boxes, plus one per panel letter
 zotero-cli annotations create --attachment-key ATTACH01 --page 4 --text "exact words" --color yellow
 zotero-cli annotations create --attachment-key ATTACH01 --page 5 --text "exact words" --underline
 zotero-cli annotations create --attachment-key ATTACH01 --page 3 --rect 0.32,0.09,0.36,0.41 --comment "Figure 1"
+zotero-cli annotations create --attachment-key ATTACH01 --page 3 --rect auto --near 0.5,0.1,0.4,0.3   # fit to the nearest panel
 zotero-cli --json annotations list --item-key ATTACH01 --positions   # stored page, rects and a rect to pass back to update
 zotero-cli annotations update ANN01 --rect 0.30,0.10,0.36,0.40   # move or resize a box in place (--page N to change page)
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl --dry-run   # where each highlight lands
