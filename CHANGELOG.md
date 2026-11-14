@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`migrate-index` re-keys old passages under their attachment** (#826). Passages that earlier versions stored under the item's key move to their attachment's key with their vectors, no embedding, and lose their copied title, creators and tags. An explicit `update-db` does the same first. Thanks @mronkko.
+- **`migrate-index` re-keys old passages under their attachment** (#826). Passages that earlier versions stored under the item's key move to their attachment's key with their vectors, no embedding, and lose their copied title, creators and tags. An explicit `update-db` does the same first. Status commands (`db-status`, `zotero-cli db status`, `zotero_get_search_database_status`) count bibliographic, attachment, passage and legacy records, and `db-inspect` reports record kinds and reads titles and item types from Zotero. Thanks @mronkko.
 
 ### Changed
 
