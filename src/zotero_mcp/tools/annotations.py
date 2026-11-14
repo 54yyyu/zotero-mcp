@@ -139,7 +139,8 @@ def _add_positions(records: list[dict], annotations: list[dict], ctx: Context) -
 
     for attachment_key, pairs in by_attachment.items():
         with tempfile.TemporaryDirectory() as tmpdir:
-            file_path, _name, _type, error = _fetch_attachment_file(attachment_key, tmpdir, ctx=ctx)
+            file_path, _name, _type, error = _fetch_attachment_file(
+                attachment_key, tmpdir, ctx=ctx, prefer_disk=True)
             if error:
                 for record, _stored in pairs:
                     record["position_note"] = error.strip().splitlines()[0]
@@ -1936,7 +1937,8 @@ def preview_annotations(
         return [], f"No annotations with a stored position on attachment {attachment_key}."
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        file_path, _name, _type, error = _fetch_attachment_file(attachment_key, tmpdir, ctx=ctx)
+        file_path, _name, _type, error = _fetch_attachment_file(
+            attachment_key, tmpdir, ctx=ctx, prefer_disk=True)
         if error:
             return [], error
         with open_pdf(file_path) as doc:
