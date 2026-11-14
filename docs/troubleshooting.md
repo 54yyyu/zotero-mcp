@@ -6,6 +6,7 @@
 - **Can't connect to library**: Check your API key and library ID if using the web API, and that the key has the permissions you need.
 - **Full text not available**: Make sure you're using Zotero 7+ for local full-text access.
 - **Claude Desktop can't find the `zotero-mcp` command**: use the absolute path instead (run `zotero-mcp setup-info` or `which zotero-mcp` to find it) — GUI apps don't always inherit your shell `PATH`.
+- **Windows blocks `zotero-mcp.exe` (Smart App Control, "application control" events 3077/3033)**: the `.exe` is a launcher pip generates, and it is not signed. Run the same command through Python instead: `python -m zotero_mcp authorize-local`, `python -m zotero_mcp setup`, `python -m zotero_mcp serve`. In a client's config, use `"command": "python"` (or its full path) with `"args": ["-m", "zotero_mcp", "serve"]`. Same for `zotero-cli`: `python -m zotero_mcp.cli_standalone`.
 - **Settings seem ignored**: environment variables set in the shell you launch a client from override the values in its config file.
 - **Where to look for errors**: the Claude Desktop logs, or the MCP server's own output.
 - **Installation/search option switching issues**: Database problems from changing install methods or search options can often be resolved with `zotero-mcp update-db --force-rebuild` (see [Database issues](#database-issues)).
