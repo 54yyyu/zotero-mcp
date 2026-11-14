@@ -5,6 +5,7 @@ provider and a real ChromaDB index, so a batch run has to end in the same index
 state as a realtime one.
 """
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -47,12 +48,20 @@ class Client(ChromaClient):
 
 
 class FakeZotero:
+    """Each item ``KEY`` has one PDF ``PKEY``; ``abstracts`` holds the PDFs' text.
+
+    Passages come from files only (#826). A key in ``changed`` was edited:
+    its dateModified moves on.
+    """
+
     def __init__(self, abstracts):
         self.abstracts = dict(abstracts)
         self.version = 5
         self.changed: set[str] = set()
 
     def item(self, key):
+        if key.startswith("P") and key[1:] in self.abstracts:
+            return self._attachment(key[1:])
         return {
             "key": key,
             "version": self.version,
@@ -60,9 +69,26 @@ class FakeZotero:
                 "key": key,
                 "itemType": "journalArticle",
                 "title": f"Title {key}",
-                "abstractNote": self.abstracts[key],
+                "abstractNote": "An abstract.",
                 "creators": [],
                 "dateAdded": "2024-01-01T00:00:00Z",
+                "dateModified": (
+                    f"2024-02-{self.version:02d}T00:00:00Z" if key in self.changed else "2024-01-01T00:00:00Z"
+                ),
+            },
+        }
+
+    def _attachment(self, parent):
+        return {
+            "key": f"P{parent}",
+            "version": self.version,
+            "data": {
+                "key": f"P{parent}",
+                "itemType": "attachment",
+                "parentItem": parent,
+                "contentType": "application/pdf",
+                "md5": hashlib.md5(self.abstracts[parent].encode()).hexdigest(),
+                "mtime": 1,
                 "dateModified": "2024-01-01T00:00:00Z",
             },
         }
@@ -71,14 +97,23 @@ class FakeZotero:
         return [] if start else [self.item(k) for k in self.abstracts]
 
     def item_versions(self, since=None, **kwargs):
-        keys = self.changed if since is not None else self.abstracts
-        return {k: self.version for k in keys}
+        if since is not None:
+            return {k: self.version for k in self.changed}
+        return {k: self.version for key in self.abstracts for k in (key, f"P{key}")}
 
-    def children(self, *a, **kw):
-        return []
+    def children(self, key, *a, **kw):
+        return [self._attachment(key)] if key in self.abstracts else []
+
+    def fulltext_item(self, key):
+        return {"content": self.abstracts[key[1:]]}
 
     def last_modified_version(self, **kwargs):
         return self.version
+
+
+def _records(*keys):
+    """Each item's metadata record, its PDF's record, then the PDF's five passages."""
+    return [i for key in keys for i in (key, f"P{key}", *(f"P{key}#{n}" for n in range(5)))]
 
 
 class FakeOpenAI:
@@ -134,7 +169,7 @@ def env(monkeypatch, tmp_path):
         monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: zotero)
         existing = json.loads(config_path.read_text()) if config_path.exists() else {"semantic_search": {}}
         existing["semantic_search"].update(
-            include_fulltext=False,
+            include_fulltext=True,
             index_schema_version=semantic_search._INDEX_SCHEMA_VERSION,
             chunking={"enabled": chunking, "chunk_size": 400, "overlap": 50, "max_chunks_per_item": 5},
             openai_batch={"enabled": True, **(batch_extra or {})},
@@ -179,7 +214,7 @@ def test_chunking_on_submits_an_article_and_its_passages(env):
 
     assert stats["batch_submitted"] is True
     assert "chunking_ignored" not in stats
-    assert _submitted(env) == ["AAA", "AAA#0", "AAA#1", "AAA#2", "AAA#3", "AAA#4"]
+    assert _submitted(env) == _records("AAA")
 
 
 def test_import_ends_in_the_same_index_as_a_realtime_run(env):
@@ -188,12 +223,17 @@ def test_import_ends_in_the_same_index_as_a_realtime_run(env):
 
     _land(env, search)
 
-    assert _ids(search) == {"AAA"}
+    assert _ids(search) == {"AAA", "PAAA"}
     assert len(_passages(search)) == 5
-    stored = search.chroma_client.client.get_collection(f"{NAME}_passages").get(ids=["AAA#2"])
-    assert stored["metadatas"][0]["parent_item_key"] == "AAA"
+    stored = search.chroma_client.client.get_collection(f"{NAME}_passages").get(ids=["PAAA#2"])
+    # Keyed by the PDF itself, with nothing of its parent (#826).
+    assert stored["metadatas"][0]["item_key"] == "PAAA"
+    assert "parent_item_key" not in stored["metadatas"][0]
     assert stored["metadatas"][0]["chunk_index"] == 2
     assert stored["metadatas"][0]["n_chunks"] == 5
+    article = search.chroma_client.collection.get(ids=["PAAA"], include=["metadatas"])["metadatas"][0]
+    assert article["file_stamp"].startswith("api:")
+    assert "title" not in article
 
 
 def test_chunking_off_submits_only_the_article(env):
@@ -201,7 +241,7 @@ def test_chunking_off_submits_only_the_article(env):
 
     search.update_database()
 
-    assert _submitted(env) == ["AAA"]
+    assert _submitted(env) == ["AAA", "PAAA"]
 
 
 def test_enabling_chunking_submits_only_the_missing_passages(env):
@@ -215,7 +255,7 @@ def test_enabling_chunking_submits_only_the_missing_passages(env):
     search = env.build(zotero, chunking=True)
     search.update_database()
 
-    assert _submitted(env) == [f"AAA#{i}" for i in range(5)]
+    assert _submitted(env) == [f"PAAA#{i}" for i in range(5)]
 
 
 def test_a_document_that_shrank_loses_its_extra_passages_on_import(env):
@@ -231,8 +271,8 @@ def test_a_document_that_shrank_loses_its_extra_passages_on_import(env):
     search.update_database()
     _land(env, search)
 
-    assert _ids(search) == {"AAA"}
-    assert _passages(search) == {"AAA#0"}
+    assert _ids(search) == {"AAA", "PAAA"}
+    assert _passages(search) == {"PAAA#0"}
 
 
 def test_a_passage_split_across_files_is_not_pruned_away(env):
@@ -251,14 +291,15 @@ def test_stats_count_items_not_passages(env):
 
     stats = search.update_database()
 
-    assert stats["submitted_items"] == 2
-    assert stats["submitted_records"] == 12
-    assert stats["estimated_added_items"] == 2
+    # Counted by record key: each item's metadata record and its PDF's.
+    assert stats["submitted_items"] == 4
+    assert stats["submitted_records"] == 14
+    assert stats["estimated_added_items"] == 4
 
     env.fake.finish_all()
     imported = search._import_batch("openai")
-    assert imported["added_items"] == 2
-    assert imported["imported_items"] == 12
+    assert imported["added_items"] == 4
+    assert imported["imported_items"] == 14
 
 
 def test_a_passage_that_keeps_failing_sends_its_item_back_to_the_gap_fill(env):
@@ -267,15 +308,15 @@ def test_a_passage_that_keeps_failing_sends_its_item_back_to_the_gap_fill(env):
     search = env.build(zotero, chunking=True)
     search.update_database()
 
-    _land(env, search, skip={"AAA#3"})
+    _land(env, search, skip={"PAAA#3"})
 
-    assert len([p for p in _passages(search) if p.startswith("AAA")]) == 4
-    assert len([p for p in _passages(search) if p.startswith("BBB")]) == 5
-    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
+    assert len([p for p in _passages(search) if p.startswith("PAAA")]) == 4
+    assert len([p for p in _passages(search) if p.startswith("PBBB")]) == 5
+    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"PAAA": {"passages"}}
 
     search._import_batch("openai")
 
-    assert len([p for p in _passages(search) if p.startswith("AAA")]) == 4
+    assert len([p for p in _passages(search) if p.startswith("PAAA")]) == 4
 
 
 def test_filling_articles_with_chunking_off_keeps_the_passages(env):
@@ -284,16 +325,16 @@ def test_filling_articles_with_chunking_off_keeps_the_passages(env):
     search = env.build(zotero, chunking=True)
     search.update_database()
     _land(env, search)
-    search.chroma_client.delete_documents(["AAA"])
+    search.chroma_client.delete_documents(["PAAA"])
     env.fake.jobs.clear()
     env.fake.uploads.clear()
 
     search = env.build(zotero, chunking=False)
     search.update_database()
-    assert _submitted(env) == ["AAA"]
+    assert _submitted(env) == ["PAAA"]
     _land(env, search)
 
-    assert _ids(search) == {"AAA"}
+    assert _ids(search) == {"AAA", "PAAA"}
     assert len(_passages(search)) == 5
 
 
@@ -331,7 +372,7 @@ def test_no_second_submission_while_a_fill_is_unfinished(env):
     search = env.build(zotero, chunking=True)
     search.update_database()
     submitted = len(env.fake.jobs)
-    assert env.fake.ids_in(f"job-{submitted - 1}") == [f"AAA#{i}" for i in range(5)]
+    assert env.fake.ids_in(f"job-{submitted - 1}") == [f"PAAA#{i}" for i in range(5)]
 
     search = env.build(zotero, chunking=True)
     search.update_database()
@@ -360,7 +401,7 @@ def test_a_superseded_run_does_not_write_its_stale_passages(env):
     search._import_batch("openai", [newer_id])
     search._import_batch("openai", [older_id])
 
-    assert _passages(search) == {"AAA#0"}
+    assert _passages(search) == {"PAAA#0"}
 
 
 def test_unmigrated_index_gets_its_batch_passages_where_the_others_are(env):
@@ -370,7 +411,157 @@ def test_unmigrated_index_gets_its_batch_passages_where_the_others_are(env):
     _land(env, search)
 
     assert read_index_layout(search.chroma_client.persist_directory, NAME)["unmigrated_passages"] == 5
-    assert _ids(search) == {f"AAA#{i}" for i in range(5)}
+    # Every record in the one collection, article-level records too (#826).
+    assert _ids(search) == set(_records("AAA"))
+
+
+def test_a_changed_legacy_item_lands_in_the_item_keyed_shape(env, monkeypatch, tmp_path):
+    """Its metadata record replaces the legacy one, and its legacy passages go (#826)."""
+    _isolate_home(monkeypatch, tmp_path)
+    zotero = FakeZotero({"AAA": LONG})
+    search = env.build(zotero, chunking=True)
+    legacy = {
+        "item_key": "AAA", "title": "Title AAA", "group_id": search._pinned_group_id(),
+        "date_modified": "2023-01-01T00:00:00Z", "has_fulltext": True,
+    }
+    ids = ["AAA", *(f"AAA#{n}" for n in range(3))]
+    metas = [legacy, *({**legacy, "parent_item_key": "AAA", "chunk_index": n, "n_chunks": 3} for n in range(3))]
+    search.chroma_client.upsert_embeddings(
+        documents=["old"] * 4, metadatas=metas, ids=ids, embeddings=[[0.0, 1.0]] * 4
+    )
+
+    stats = search.update_database()
+    # The legacy passages wait for the files' records; the import settles them.
+    manifest = json.loads(Path(stats["batch_manifest"]).read_text())
+    assert list(manifest["legacy_settle"]) == ["AAA"]
+    _land(env, search)
+
+    assert _ids(search) == {"AAA", "PAAA"}
+    assert _passages(search) == {f"PAAA#{n}" for n in range(5)}
+    stored = search.chroma_client.collection.get(ids=["AAA"], include=["metadatas"])["metadatas"][0]
+    assert set(stored) == {"item_key", "group_id", "date_modified"}
+
+
+def _legacy_item(search):
+    legacy = {
+        "item_key": "AAA", "title": "Title AAA", "group_id": search._pinned_group_id(),
+        "date_modified": "2023-01-01T00:00:00Z", "has_fulltext": True,
+    }
+    ids = ["AAA", *(f"AAA#{n}" for n in range(3))]
+    metas = [legacy, *({**legacy, "parent_item_key": "AAA", "chunk_index": n, "n_chunks": 3} for n in range(3))]
+    search.chroma_client.upsert_embeddings(
+        documents=["old"] * 4, metadatas=metas, ids=ids, embeddings=[[0.0, 1.0]] * 4
+    )
+
+
+def test_a_failed_attachment_record_keeps_a_legacy_items_passages_through_the_import(env, monkeypatch, tmp_path):
+    """The passages are dropped only once every file of the item has landed (fix round 2)."""
+    _isolate_home(monkeypatch, tmp_path)
+    search = env.build(FakeZotero({"AAA": LONG}), chunking=True)
+    _legacy_item(search)
+
+    search.update_database()
+    _land(env, search, skip={"PAAA"})
+
+    stored = _ids(search) | _passages(search)
+    assert "PAAA" not in stored
+    assert {f"AAA#{n}" for n in range(3)} <= stored, "the only copy of the text stays"
+
+
+def _import_only(env, search, finish_jobs, **finish):
+    """Finish and import only the first ``finish_jobs`` jobs; the rest stay in progress."""
+    jobs = list(env.fake.jobs.values())
+    later = jobs[finish_jobs:]
+    for job in later:
+        job.status = "validating"  # still running: finish_all leaves it
+    env.fake.finish_all(**finish)
+    for job in later:
+        job.status = "in_progress"
+    search._import_batch("openai")
+
+
+def _all_stored(search):
+    return _ids(search) | _passages(search)
+
+
+def test_legacy_passages_stay_until_every_passage_of_the_file_has_landed(env, monkeypatch, tmp_path):
+    """The attachment's passages span several files; two of five landed is not replaced (fix round 2b)."""
+    _isolate_home(monkeypatch, tmp_path)
+    search = env.build(FakeZotero({"AAA": LONG}), chunking=True, batch_extra={"batch_max_requests": 2})
+    _legacy_item(search)
+    search.update_database()
+    assert len(env.fake.jobs) >= 3
+
+    # Jobs hold [AAA, PAAA], [PAAA#0, PAAA#1], then the rest of the passages.
+    _import_only(env, search, 2)
+
+    assert {"PAAA", "PAAA#0", "PAAA#1"} <= _all_stored(search)
+    assert "PAAA#2" not in _all_stored(search)
+    assert {f"AAA#{n}" for n in range(3)} <= _all_stored(search), "the new set is incomplete"
+
+    _land(env, search)
+
+    assert _ids(search) == {"AAA", "PAAA"}
+    assert _passages(search) == {f"PAAA#{n}" for n in range(5)}
+
+
+def test_a_failed_passage_row_keeps_the_legacy_passages(env, monkeypatch, tmp_path):
+    _isolate_home(monkeypatch, tmp_path)
+    search = env.build(FakeZotero({"AAA": LONG}), chunking=True)
+    _legacy_item(search)
+    search.update_database()
+
+    env.fake.finish_all(skip={"PAAA#3"})
+    search._import_batch("openai")
+
+    assert "PAAA#3" not in _all_stored(search)
+    assert {f"AAA#{n}" for n in range(3)} <= _all_stored(search), "one new passage is missing"
+
+
+def test_a_passage_set_missing_one_is_refilled_by_the_next_run(env):
+    """Only that file's passages are submitted again (fix round 2b)."""
+    zotero = FakeZotero({"AAA": LONG})
+    search = env.build(zotero, chunking=True)
+    search.update_database()
+    env.fake.finish_all(skip={"PAAA#3"})
+    search._import_batch("openai")
+    assert "PAAA#3" not in _passages(search)
+    env.fake.jobs.clear()
+    env.fake.uploads.clear()
+
+    search.update_database()
+
+    assert _submitted(env) and all(i.startswith("PAAA#") for i in _submitted(env)), _submitted(env)
+    _land(env, search)
+    assert _passages(search) == {f"PAAA#{n}" for n in range(5)}
+
+
+def test_api_planning_judges_an_item_by_its_bare_record_whatever_the_storage_order(env, monkeypatch, tmp_path):
+    """Legacy passages stored before the item's new bare record must not make it a legacy item (fix round 2b)."""
+    _isolate_home(monkeypatch, tmp_path)
+    zotero = FakeZotero({"AAA": LONG})
+    search = env.build(zotero, chunking=True, route=False)
+    legacy = {
+        "item_key": "AAA", "title": "Title AAA", "group_id": search._pinned_group_id(),
+        "date_modified": "2023-01-01T00:00:00Z", "has_fulltext": True,
+    }
+    passages = [{**legacy, "parent_item_key": "AAA", "chunk_index": n, "n_chunks": 3} for n in range(3)]
+    search.chroma_client.upsert_embeddings(
+        documents=["old"] * 3, metadatas=passages, ids=[f"AAA#{n}" for n in range(3)], embeddings=[[0.0, 1.0]] * 3
+    )
+    # Inserted last: the item's own record, in the new shape and current.
+    search.chroma_client.upsert_embeddings(
+        documents=["Title AAA"],
+        metadatas=[{
+            "item_key": "AAA", "group_id": search._pinned_group_id(), "date_modified": "2024-01-01T00:00:00Z",
+        }],
+        ids=["AAA"], embeddings=[[1.0, 0.0]],
+    )
+
+    units = search._plan_units([zotero.item("AAA")], force_rebuild=False)
+
+    assert not [u for u in units if u.get("legacy_rewrite")], "the bare record is new-shape and current"
+    assert [u["key"] for u in units if u["key"] == "AAA"] == []
 
 
 def test_db_status_no_longer_distinguishes_requested_from_effective(env):
@@ -382,8 +573,8 @@ def test_db_status_no_longer_distinguishes_requested_from_effective(env):
 
 def test_passage_ids_round_trip_through_the_gemini_format():
     records = [
-        {"id": "AAA#0", "document": "first passage", "metadata": {"parent_item_key": "AAA"}},
-        {"id": "AAA#1", "document": "second passage", "metadata": {"parent_item_key": "AAA"}},
+        {"id": "AAA#0", "document": "first passage", "metadata": {"item_key": "AAA"}},
+        {"id": "AAA#1", "document": "second passage", "metadata": {"item_key": "AAA"}},
     ]
     requests = [gemini_batch.build_embedding_request(r, "gemini-embedding-001") for r in records]
     assert [r["key"] for r in requests] == ["AAA#0", "AAA#1"]
@@ -431,9 +622,9 @@ def test_article_records_are_submitted_before_any_passage(env, monkeypatch, tmp_
     search.update_database()
 
     submitted = _submitted(env)
-    assert submitted[:3] == keys
-    assert all("#" in i for i in submitted[3:])
-    assert len(submitted) == 18
+    assert submitted[:6] == ["AAA", "PAAA", "BBB", "PBBB", "CCC", "PCCC"]
+    assert all("#" in i for i in submitted[6:])
+    assert len(submitted) == 21
 
 
 def test_items_are_counted_once_when_articles_and_passages_land_apart(env, monkeypatch, tmp_path):
@@ -451,8 +642,8 @@ def test_items_are_counted_once_when_articles_and_passages_land_apart(env, monke
         if not [j for j in env.fake.jobs.values() if j.status == "in_progress"]:
             break
 
-    assert (added, updated) == (3, 0)
-    assert _ids(search) == set(keys)
+    assert (added, updated) == (6, 0)
+    assert _ids(search) == {k for key in keys for k in (key, f"P{key}")}
     assert len(_passages(search)) == 15
 
 
@@ -476,7 +667,7 @@ def _finish_where(env, wanted):
 
 def _passage_texts(search, key):
     return search.chroma_client.client.get_collection(f"{NAME}_passages").get(
-        where={"parent_item_key": key}, include=["documents"]
+        where={"item_key": key}, include=["documents"]
     )["documents"]
 
 
@@ -501,9 +692,9 @@ def test_an_article_landing_drops_its_items_stale_passages(env, monkeypatch, tmp
     _finish_where(env, lambda i: "#" not in i)
     search._import_batch("openai")
 
-    assert _passage_texts(search, "AAA") == []
-    assert len(_passage_texts(search, "CCC")) == 5, "an unchanged item keeps its passages"
-    assert "AAA" in search._find_index_gaps(limit=None, force_rebuild=False)
+    assert _passage_texts(search, "PAAA") == []
+    assert len(_passage_texts(search, "PCCC")) == 5, "an unchanged file keeps its passages"
+    assert "PAAA" in search._find_index_gaps(limit=None, force_rebuild=False)
 
 
 def test_an_article_landing_after_its_passages_keeps_them(env, monkeypatch, tmp_path):
@@ -514,7 +705,7 @@ def test_an_article_landing_after_its_passages_keeps_them(env, monkeypatch, tmp_
     _finish_where(env, lambda i: True)
     search._import_batch("openai")
 
-    texts = _passage_texts(search, "AAA")
+    texts = _passage_texts(search, "PAAA")
     assert len(texts) == 5
     assert all("Sentence number" not in t for t in texts)
 
@@ -529,10 +720,10 @@ def test_an_article_landing_keeps_the_cached_text_for_its_passages(env, monkeypa
 
     _finish_where(env, lambda i: "#" not in i)
     search._import_batch("openai")
-    assert "AAA" not in evicted
+    assert "PAAA" not in evicted
 
     _land(env, search)
-    assert "AAA" in evicted
+    assert "PAAA" in evicted
 
 
 def test_a_superseded_runs_article_landing_keeps_the_newer_passages(env, monkeypatch, tmp_path):
@@ -556,9 +747,8 @@ def test_a_superseded_runs_article_landing_keeps_the_newer_passages(env, monkeyp
     newer = [f"Newer passage {n} of AAA." for n in range(5)]
     search.chroma_client.upsert_embeddings(
         documents=newer,
-        metadatas=[{"item_key": "AAA", "parent_item_key": "AAA", "chunk_index": n, "n_chunks": 5}
-                   for n in range(5)],
-        ids=[f"AAA#{n}" for n in range(5)],
+        metadatas=[{"item_key": "PAAA", "chunk_index": n, "n_chunks": 5} for n in range(5)],
+        ids=[f"PAAA#{n}" for n in range(5)],
         embeddings=[[1.0, 0.0]] * 5,
     )
     _finish_where(env, lambda i: "#" not in i)
@@ -566,7 +756,7 @@ def test_a_superseded_runs_article_landing_keeps_the_newer_passages(env, monkeyp
     stats = search._import_batch("openai", batch_ids=article_jobs[:1])
 
     assert stats["imported_items"] >= 1
-    assert sorted(_passage_texts(search, "AAA")) == sorted(newer)
+    assert sorted(_passage_texts(search, "PAAA")) == sorted(newer)
 
 
 @pytest.mark.parametrize("failure", ["read", "delete"])
@@ -597,8 +787,8 @@ def test_stale_passages_an_article_landing_could_not_drop_are_noted_and_warned(
     with caplog.at_level(logging.WARNING, logger="zotero_mcp.semantic_search"):
         search._import_batch("openai")
 
-    assert "AAA" in noted
-    assert any("AAA" in r.getMessage() for r in caplog.records if r.name == "zotero_mcp.semantic_search")
+    assert "PAAA" in noted
+    assert any("PAAA" in r.getMessage() for r in caplog.records if r.name == "zotero_mcp.semantic_search")
 
 
 def _age(env, manifest):
@@ -622,7 +812,7 @@ def test_a_superseded_fill_still_writes_the_passages_the_newer_run_lacks(env, mo
     search.update_database()
     fill_jobs = [job_id for job_id in env.fake.jobs if job_id not in before]
     fill = openai_batch.find_manifest(env.config)
-    assert sorted(fill["item_keys"]) == ["AAA", "BBB"]
+    assert sorted(fill["item_keys"]) == ["PAAA", "PBBB"], "a fill carries files' passages only"
     _age(env, fill)
 
     zotero.version = 6
@@ -631,16 +821,16 @@ def test_a_superseded_fill_still_writes_the_passages_the_newer_run_lacks(env, mo
     stats = search.update_database(automatic=True)
     assert stats["batch_submitted"] is True
     newer = openai_batch.find_manifest(env.config)
-    assert newer["item_keys"] == ["AAA"]
+    assert newer["item_keys"] == ["AAA", "PAAA"]
 
     env.fake.finish_all()
     search._import_batch("openai", fill_jobs)
 
-    assert len(_passage_texts(search, "BBB")) == 5
-    assert _passage_texts(search, "AAA") == [], "the newer run has AAA's current passages"
+    assert len(_passage_texts(search, "PBBB")) == 5
+    assert _passage_texts(search, "PAAA") == [], "the newer run has PAAA's current passages"
 
     search._import_batch("openai")
-    texts = _passage_texts(search, "AAA")
+    texts = _passage_texts(search, "PAAA")
     assert len(texts) == 5
     assert all("Sentence number" not in t for t in texts)
     assert search._find_index_gaps(limit=None, force_rebuild=False) == {}
@@ -691,14 +881,14 @@ def _change_aaa(env, monkeypatch, tmp_path, *, submit_chunking, import_chunking)
 def test_a_run_cut_without_passages_drops_stale_ones_though_chunking_is_on_now(env, monkeypatch, tmp_path):
     search = _change_aaa(env, monkeypatch, tmp_path, submit_chunking=False, import_chunking=True)
 
-    assert _passage_texts(search, "AAA") == []
-    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
+    assert _passage_texts(search, "PAAA") == []
+    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"PAAA": {"passages"}}
 
 
 def test_a_run_cut_with_passages_keeps_them_though_chunking_is_off_now(env, monkeypatch, tmp_path):
     search = _change_aaa(env, monkeypatch, tmp_path, submit_chunking=True, import_chunking=False)
 
-    texts = _passage_texts(search, "AAA")
+    texts = _passage_texts(search, "PAAA")
     assert len(texts) == 5
     assert all("Sentence number" not in t for t in texts)
 
@@ -719,7 +909,8 @@ def test_an_automatic_update_does_not_submit_the_whole_library_passage_fill(env)
 
     zotero.version = 6
     zotero.changed = {"AAA"}
+    zotero.abstracts["AAA"] = CHANGED
     search.update_database(automatic=True)
 
     new = [i for job_id in list(env.fake.jobs)[submitted:] for i in env.fake.ids_in(job_id)]
-    assert new == ["AAA"] + [f"AAA#{i}" for i in range(5)], "a changed item gets both levels, BBB nothing"
+    assert new == ["AAA", "PAAA"] + [f"PAAA#{i}" for i in range(5)], "a changed file gets both levels, PBBB nothing"
