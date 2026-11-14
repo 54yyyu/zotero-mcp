@@ -496,6 +496,18 @@ class TestPanels:
         layout = pdf_layout.detect_page_regions(panel_pdf(tmp_path, letters="ACD"), 1, panels=True)
         assert {r["confidence"] for r in layout["regions"] if r["source"] == "panel"} == {"low"}
 
+    def test_stray_bold_letters_on_a_text_page_are_low_confidence(self):
+        from zotero_mcp import pdf_layout
+
+        doc = fitz.open()
+        page = doc.new_page(width=612, height=792)
+        for i in range(30):
+            page.insert_text((50, 60 + i * 16), f"Body text line {i} of the paper", fontsize=10)
+        page.insert_text((50, 700), "A", fontsize=10, fontname="hebo")
+        page.insert_text((300, 720), "B", fontsize=10, fontname="hebo")
+        layout = pdf_layout.detect_page_regions(doc, 1, panels=True)
+        assert {r["confidence"] for r in layout["regions"] if r["source"] == "panel"} == {"low"}
+
     def test_one_letter_is_not_a_split(self, tmp_path):
         from zotero_mcp import pdf_layout
 
