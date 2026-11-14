@@ -548,7 +548,7 @@ class TestCmdAdd:
     def _args(self, **kwargs):
         defaults = dict(
             verbose=False, collections=None, collection=None, tags=None,
-            if_exists="file", create_collections=False,
+            if_exists="file", create_collections=False, attach_file=None,
         )
         defaults.update(kwargs)
         return MagicMock(**defaults)
