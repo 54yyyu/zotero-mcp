@@ -162,32 +162,26 @@ def _chunking_search(monkeypatch, config=None, existing=None):
 
 
 def _long_item(key="ITEM0001"):
+    """A file with a long text: passages come from attachments only (#826)."""
     body = "Mindfulness reduces relapse. " * 60
-    return {
-        "key": key,
-        "data": {
-            "title": "Mindfulness Paper",
-            "itemType": "journalArticle",
-            "abstractNote": "An abstract.",
-            "creators": [],
-            "fulltext": body,
-        },
-    }
+    return semantic_search._attachment_unit(key, body, file_stamp="1:1", group_id=0)
 
 
 def test_chunking_emits_multiple_passage_ids(monkeypatch):
     s = _chunking_search(monkeypatch)
     stats = s._process_item_batch([_long_item("ITEM0001")], force_rebuild=True)
 
-    # One *item* processed, but many chunk ids upserted.
+    # One *item* processed: its article record, then many chunk ids.
     assert stats["processed"] == 1
-    assert len(s.chroma_client.upserted_ids) > 1
-    assert all(cid.startswith("ITEM0001#") for cid in s.chroma_client.upserted_ids)
+    article, *passages = s.chroma_client.upserted_ids
+    assert article == "ITEM0001"
+    assert len(passages) > 1
+    assert all(cid.startswith("ITEM0001#") for cid in passages)
     # Each chunk carries passage provenance in its metadata.
-    meta0 = s.chroma_client.upserted_metas[0]
-    assert meta0["parent_item_key"] == "ITEM0001"
+    meta0 = s.chroma_client.upserted_metas[1]
+    assert meta0["item_key"] == "ITEM0001"
     assert meta0["chunk_index"] == 0
-    assert meta0["n_chunks"] == len(s.chroma_client.upserted_ids)
+    assert meta0["n_chunks"] == len(passages)
     assert "char_start" in meta0 and "char_end" in meta0
 
 
@@ -198,7 +192,7 @@ def test_chunking_added_vs_updated_is_item_granular(monkeypatch):
     assert stats["updated"] == 1
     assert stats["added"] == 0
     # Stale chunks beyond the new passage count were pruned after the write.
-    n = len(s.chroma_client.upserted_ids)
+    n = len([cid for cid in s.chroma_client.upserted_ids if "#" in cid])
     assert s.chroma_client.pruned == [("ITEM0001", n)]
 
 
@@ -269,7 +263,8 @@ def test_chunk_size_unchanged_when_model_limit_fits(monkeypatch, caplog):
 def test_passages_fit_small_model(monkeypatch):
     s = _fit_search(monkeypatch, 256, max_chunks_per_item=100)
     s._process_item_batch([_long_item("ITEM0001")], force_rebuild=True)
-    docs = s.chroma_client.upserted_docs
+    client = s.chroma_client
+    docs = [doc for doc, cid in zip(client.upserted_docs, client.upserted_ids) if "#" in cid]
     assert len(docs) > 1
     assert max(len(d) for d in docs) <= int(256 * 4 * 0.85)
 

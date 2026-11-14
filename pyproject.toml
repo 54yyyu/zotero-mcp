@@ -68,7 +68,9 @@ dependencies = [
 semantic = [
     # >=1.0.0 for chromadb.utils.embedding_functions.register_embedding_function,
     # used to register the custom OpenAI/Gemini/HF embedding functions (#315).
-    "chromadb>=1.0.0",
+    # >=1.0.2 because the item-keyed index sends None metadata values (they clear
+    # a key on upsert), which 1.0.0 and 1.0.1 reject in validate_metadata (#826).
+    "chromadb>=1.0.2",
     "sentence-transformers>=2.2.0",
     "openai>=1.30.0",
     "google-genai>=0.7.0",

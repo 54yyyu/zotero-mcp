@@ -321,7 +321,8 @@ def _retry_run(tmp_path, monkeypatch, chroma, passages):
 
     def failing_batch(batch, force_rebuild, failed_docs):
         for i in range(passages):
-            meta = {"parent_item_key": "AAAA1111", "chunk_index": i, "n_chunks": passages}
+            # Passages carry their own record key as item_key (#826).
+            meta = {"item_key": "AAAA1111", "chunk_index": i, "n_chunks": passages}
             failed_docs.append((f"text {i}", meta, f"AAAA1111#{i}"))
         return {"processed": 1, "added": 0, "updated": 0, "skipped": 0, "errors": passages}
 

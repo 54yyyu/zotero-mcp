@@ -6,6 +6,7 @@ paying for the articles again. Runs against a real ChromaDB index in a temp
 directory with an embedding function that records what it embeds.
 """
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -61,14 +62,25 @@ class RecordingClient(ChromaClient):
 
 
 class FakeZotero:
+    """Each item ``KEY`` has one PDF ``PKEY``; ``abstract`` is the PDF's text.
+
+    Passages come from files only (#826). An item in ``changed`` was edited,
+    and its PDF replaced with that new text.
+    """
+
     def __init__(self, keys, abstract=LONG):
         self.keys = list(keys)
         self.abstract = abstract
         self.version = 5
-        # Items changed since the last sync: key -> new abstract.
+        # Items changed since the last sync: key -> new file text.
         self.changed: dict[str, str] = {}
 
+    def text(self, key):
+        return self.changed.get(key, self.abstract)
+
     def item(self, key):
+        if key.startswith("P") and key[1:] in self.keys:
+            return self._attachment(key[1:])
         return {
             "key": key,
             "version": self.version,
@@ -76,25 +88,51 @@ class FakeZotero:
                 "key": key,
                 "itemType": "journalArticle",
                 "title": f"Title {key}",
-                "abstractNote": self.changed.get(key, self.abstract),
+                "abstractNote": "An abstract.",
                 "creators": [],
                 "dateAdded": "2024-01-01T00:00:00Z",
                 "dateModified": "2024-02-01T00:00:00Z" if key in self.changed else "2024-01-01T00:00:00Z",
             },
         }
 
+    def _attachment(self, parent):
+        return {
+            "key": f"P{parent}",
+            "version": self.version,
+            "data": {
+                "key": f"P{parent}",
+                "itemType": "attachment",
+                "parentItem": parent,
+                "contentType": "application/pdf",
+                "md5": hashlib.md5(self.text(parent).encode()).hexdigest(),
+                "mtime": 1,
+                "dateModified": "2024-01-01T00:00:00Z",
+            },
+        }
+
     def items(self, start=0, limit=100, **kwargs):
+        if kwargs.get("itemType") == "attachment":
+            return [] if start else [self._attachment(k) for k in self.keys]
         return [] if start else [self.item(k) for k in self.keys]
 
     def item_versions(self, since=None, **kwargs):
-        keys = self.changed if since is not None else self.keys
-        return {k: self.version for k in keys}
+        if since is not None:
+            return {k: self.version for k in self.changed}
+        return {k: self.version for key in self.keys for k in (key, f"P{key}")}
 
-    def children(self, *a, **kw):
-        return []
+    def children(self, key, *a, **kw):
+        return [] if kw.get("start") or key not in self.keys else [self._attachment(key)]
+
+    def fulltext_item(self, key):
+        return {"content": self.text(key[1:])}
 
     def last_modified_version(self, **kwargs):
         return self.version
+
+
+def _is_passage(text):
+    """A passage, not a whole file or an item's metadata record."""
+    return len(text) < 600 and not text.startswith("Title ")
 
 
 @pytest.fixture()
@@ -104,7 +142,7 @@ def build(monkeypatch, tmp_path):
     monkeypatch.setattr(semantic_search, "is_local_mode", lambda: False)
     config_path = tmp_path / "config.json"
 
-    def _build(zotero, *, parallel=1, route=True, chunking=True, include_fulltext=False):
+    def _build(zotero, *, parallel=1, route=True, chunking=True, include_fulltext=True):
         monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: zotero)
         existing = json.loads(config_path.read_text()) if config_path.exists() else {"semantic_search": {}}
         existing["semantic_search"].update(
@@ -152,6 +190,7 @@ def _assert_articles_first(writes, count):
 
 
 KEYS = [f"K{n:03d}" for n in range(30)]  # more than one slice of 25
+ALL_KEYS = {k for key in KEYS for k in (key, f"P{key}")}  # each item and its PDF
 
 
 @pytest.mark.parametrize("parallel", [1, 2], ids=["sequential", "streaming"])
@@ -161,11 +200,11 @@ def test_every_article_is_written_before_any_passage(build, parallel):
     stats = search.update_database()
 
     assert stats.get("error") is None
-    _assert_articles_first(search.writes, len(KEYS))
-    assert _ids(search) == set(KEYS)
+    _assert_articles_first(search.writes, len(ALL_KEYS))
+    assert _ids(search) == ALL_KEYS
     assert len(_passage_ids(search)) == 5 * len(KEYS)
-    assert stats["added_items"] == len(KEYS), "each item counted once, not once per pass"
-    assert stats["processed_items"] == len(KEYS)
+    assert stats["added_items"] == len(ALL_KEYS), "each record counted once, not once per pass"
+    assert stats["processed_items"] == len(ALL_KEYS)
     assert stats["updated_items"] == 0
 
 
@@ -174,33 +213,30 @@ def test_full_text_is_fetched_once_and_not_held_in_memory_between_passes(
     build, monkeypatch, parallel
 ):
     fetched: list[str] = []
+    zotero = FakeZotero(KEYS, abstract="A short abstract.")
 
-    def fetch(self, key):
-        fetched.append(key)
-        return FULLTEXT, "pdf", False
+    def fulltext_item(key):
+        fetched.append(key[1:])  # the item the PDF belongs to
+        return {"content": FULLTEXT}
 
-    monkeypatch.setattr(semantic_search.ZoteroSemanticSearch, "_fetch_fulltext_checked", fetch)
-    # Ask per item, so each fetch names its item.
-    monkeypatch.setattr(semantic_search.ZoteroSemanticSearch, "_BULK_ATTACHMENT_WALK_MIN_ITEMS", 10_000)
-    search = build(FakeZotero(KEYS, abstract="A short abstract."), parallel=parallel, include_fulltext=True)
+    monkeypatch.setattr(zotero, "fulltext_item", fulltext_item)
+    search = build(zotero, parallel=parallel, include_fulltext=True)
 
-    items_seen: list[list[dict]] = []
-    original_source = search._get_items_from_source
+    units_seen: list[list[dict]] = []
+    original_plan = search._plan_units
 
     def capture(*args, **kwargs):
-        items = original_source(*args, **kwargs)
-        items_seen.append(items)
-        return items
+        units = original_plan(*args, **kwargs)
+        units_seen.append(units)
+        return units
 
-    monkeypatch.setattr(search, "_get_items_from_source", capture)
+    monkeypatch.setattr(search, "_plan_units", capture)
     in_memory_at_passage_pass: list[int] = []
     original_prepare = search._prepare_and_classify_slice
 
     def prepare(items, *args, **kwargs):
         if kwargs.get("level") == semantic_search.SEARCH_PASSAGES and not in_memory_at_passage_pass:
-            in_memory_at_passage_pass.append(
-                sum(1 for item in items_seen[0] if item["data"].get("fulltext"))
-            )
+            in_memory_at_passage_pass.append(sum(1 for unit in units_seen[0] if unit.get("text")))
         return original_prepare(items, *args, **kwargs)
 
     monkeypatch.setattr(search, "_prepare_and_classify_slice", prepare)
@@ -209,7 +245,7 @@ def test_full_text_is_fetched_once_and_not_held_in_memory_between_passes(
 
     assert stats.get("error") is None
     assert sorted(fetched) == sorted(KEYS), "each item's text fetched once"
-    _assert_articles_first(search.writes, len(KEYS))
+    _assert_articles_first(search.writes, len(ALL_KEYS))
     assert in_memory_at_passage_pass == [0], "text is kept on disk between the passes"
     passages = search.chroma_client.client.get_collection(f"{NAME}_passages").get(
         include=["documents"]
@@ -232,7 +268,7 @@ def test_a_stop_between_the_passes_resumes_through_the_gap_fill(build, monkeypat
     original_call = type(ef).__call__
 
     def refuse_passages(self, input):
-        if any(len(text) < 600 for text in input):  # a passage, not a whole article
+        if any(_is_passage(text) for text in input):
             raise EmbeddingAPIUnreachable("openai", "api.example", "connection refused")
         return original_call(self, input)
 
@@ -243,7 +279,7 @@ def test_a_stop_between_the_passes_resumes_through_the_gap_fill(build, monkeypat
     # 0.16 sets a batch that fails mid-run aside and retries it at the end;
     # the run finishes with errors and leaves the sync version alone.
     assert stats.get("errors")
-    assert _ids(search) == set(KEYS), "every article written before the stop"
+    assert _ids(search) == ALL_KEYS, "every article written before the stop"
     assert _passage_ids(search) == set()
     assert evicted == [], "the extracted text stays cached for the passages"
     config = json.loads(Path(search.config_path).read_text())
@@ -284,7 +320,8 @@ def test_the_text_cache_is_evicted_after_the_passage_pass(build, monkeypatch):
 
     search.update_database()
 
-    assert sorted(evicted) == sorted(KEYS)
+    # Text is cached under the PDF it came from (#826).
+    assert sorted(evicted) == sorted(f"P{key}" for key in KEYS)
     assert order.index("evict") > order.index("passages"), order
 
 
@@ -295,7 +332,10 @@ def test_an_unmigrated_index_writes_in_one_pass(build, route):
     stats = search.update_database()
 
     assert stats.get("error") is None
-    assert search.writes == [f"AAA#{n}" for n in range(5)] + [f"BBB#{n}" for n in range(5)]
+    # One pass, each record's article and passages together (#826).
+    assert search.writes == [
+        "AAA", "PAAA", *(f"PAAA#{n}" for n in range(5)), "BBB", "PBBB", *(f"PBBB#{n}" for n in range(5))
+    ]
 
 
 def test_an_item_level_index_writes_articles_only(build):
@@ -303,7 +343,7 @@ def test_an_item_level_index_writes_articles_only(build):
 
     search.update_database()
 
-    assert search.writes == ["AAA", "BBB"]
+    assert search.writes == ["AAA", "PAAA", "BBB", "PBBB"]
 
 
 CHANGED = " ".join(f"Rewritten sentence {i} of the new abstract." for i in range(100))
@@ -314,7 +354,7 @@ def _stop_in_the_passage_pass(monkeypatch, search):
     original_call = type(ef).__call__
 
     def refuse_passages(self, input):
-        if any(len(text) < 600 for text in input):  # a passage, not a whole article
+        if any(_is_passage(text) for text in input):
             raise EmbeddingAPIUnreachable("openai", "api.example", "connection refused")
         return original_call(self, input)
 
@@ -328,7 +368,7 @@ def _stop_in_the_passage_pass(monkeypatch, search):
 
 def _passages_of(search, key):
     got = search.chroma_client.client.get_collection(f"{NAME}_passages").get(
-        where={"parent_item_key": key}, include=["documents"]
+        where={"item_key": key}, include=["documents"]
     )
     return got["documents"]
 
@@ -348,8 +388,8 @@ def test_a_stop_leaves_a_changed_item_without_its_stale_passages(build, monkeypa
     zotero = _changed_and_stopped(build, monkeypatch, parallel)
     search = build(zotero, parallel=parallel)
 
-    assert _passages_of(search, "AAA") == []
-    assert len(_passages_of(search, "BBB")) == 5, "an unchanged item keeps its passages"
+    assert _passages_of(search, "PAAA") == []
+    assert len(_passages_of(search, "PBBB")) == 5, "an unchanged file keeps its passages"
 
 
 @pytest.mark.parametrize("parallel", [1, 2], ids=["sequential", "streaming"])
@@ -365,10 +405,10 @@ def test_a_full_scan_after_a_stop_writes_a_changed_items_new_passages(build, mon
     stats = search.update_database()
 
     assert stats.get("error") is None
-    passages = _passages_of(search, "AAA")
+    passages = _passages_of(search, "PAAA")
     assert len(passages) == 5
     assert all("Sentence number" not in p for p in passages)
-    assert len(search.chroma_client.embedded) == 5, "AAA's passages only, not its article"
+    assert len(search.chroma_client.embedded) == 5, "PAAA's passages only, not its article"
 
 
 
@@ -380,9 +420,9 @@ def test_the_next_incremental_run_after_a_stop_pays_only_for_the_passages(build,
     stats = search.update_database()
 
     assert stats.get("error") is None
-    assert len(_passages_of(search, "AAA")) == 5
-    assert all("Rewritten sentence" in p or "Title AAA" in p for p in _passages_of(search, "AAA"))
-    assert len(search.chroma_client.embedded) == 5, "AAA's current article is not embedded again"
+    assert len(_passages_of(search, "PAAA")) == 5
+    assert all("Rewritten sentence" in p for p in _passages_of(search, "PAAA"))
+    assert len(search.chroma_client.embedded) == 5, "PAAA's current article is not embedded again"
 
 
 def test_an_incremental_change_still_rewrites_a_stale_article(build):
@@ -394,25 +434,22 @@ def test_an_incremental_change_still_rewrites_a_stale_article(build):
     search = build(zotero)
     search.update_database()
 
-    assert len(search.chroma_client.embedded) == 6, "the article and five passages"
+    assert len(search.chroma_client.embedded) == 7, "the metadata, the file's article and five passages"
 
 
-def test_an_article_written_with_full_text_is_rewritten_by_a_run_without_it(build, monkeypatch):
-    """Passages-only would leave the two levels written from different text."""
-    monkeypatch.setattr(
-        semantic_search.ZoteroSemanticSearch, "_fetch_fulltext_checked",
-        lambda self, key: (FULLTEXT, "pdf", False),
-    )
+def test_a_files_missing_passages_wait_for_a_run_with_its_text(build, monkeypatch):
+    """A record's levels are cut from one text, its file's (#826): never from metadata."""
     zotero = FakeZotero(["AAA"])
-    build(zotero, include_fulltext=True).update_database()
-    zotero.version = 6
-    zotero.changed = {"AAA": CHANGED}
-    _stop_in_the_passage_pass(monkeypatch, build(zotero, include_fulltext=True))
+    search = build(zotero, include_fulltext=True)
+    search.update_database()
+    search.chroma_client.delete_documents([f"PAAA#{n}" for n in range(5)])
 
     search = build(zotero, include_fulltext=False)
     search.update_database()
 
-    assert len(search.chroma_client.embedded) == 6, "the article and five passages"
+    assert search.chroma_client.embedded == []
+    config = json.loads(Path(search.config_path).read_text())
+    assert config["semantic_search"]["update_config"]["gaps_waiting_for_text"] == ["PAAA"]
 
 
 def test_the_spilled_text_is_removed_after_a_stop(build, monkeypatch, tmp_path):
@@ -421,11 +458,6 @@ def test_the_spilled_text_is_removed_after_a_stop(build, monkeypatch, tmp_path):
     spill = tmp_path / "spill"
     spill.mkdir()
     monkeypatch.setattr(tempfile, "tempdir", str(spill))
-    monkeypatch.setattr(
-        semantic_search.ZoteroSemanticSearch, "_fetch_fulltext_checked",
-        lambda self, key: (FULLTEXT, "pdf", False),
-    )
-    monkeypatch.setattr(semantic_search.ZoteroSemanticSearch, "_BULK_ATTACHMENT_WALK_MIN_ITEMS", 10_000)
     search = build(FakeZotero(KEYS), include_fulltext=True)
     held: list[str] = []
     original_hold = semantic_search._HeldText.hold
@@ -447,11 +479,11 @@ def test_held_text_after_close_stays_in_memory():
     """A producer thread still running after the run closed must not make a new directory."""
     held = semantic_search._HeldText()
     held.close()
-    item = {"key": "AAA", "data": {"fulltext": "text"}}
+    item = semantic_search._attachment_unit("AAA", "text", file_stamp="1:1")
 
     held.hold(item)
 
-    assert item["data"]["fulltext"] == "text"
+    assert item["text"] == "text"
     assert "_held_fulltext" not in item
 
 
@@ -480,8 +512,8 @@ def test_old_passages_that_could_not_be_deleted_are_reported(build, monkeypatch,
     with caplog.at_level(logging.WARNING, logger="zotero_mcp.semantic_search"):
         _stop_in_the_passage_pass(monkeypatch, search)
 
-    assert noted == ["AAA"]
-    assert any("AAA" in r.getMessage() and "passages" in r.getMessage() for r in caplog.records)
+    assert noted == ["PAAA"]
+    assert any("PAAA" in r.getMessage() and "passages" in r.getMessage() for r in caplog.records)
 
 
 def test_undropped_passages_do_not_carry_over_to_the_next_run(build, monkeypatch):
