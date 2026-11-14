@@ -1,7 +1,7 @@
 // The conversation: the transcript state, the agent session behind it, and saving. No DOM here; the panel
 // renders `tr` whenever `onChange` fires.
 import type { AgentSession, ChatEvent, ContextChip, PanelHost, PanelSettings, SavedSession } from "../types.ts";
-import { clip, errMessage, nextId } from "./dom.ts";
+import { cleanTitle, clip, errMessage, nextId } from "./dom.ts";
 import { summary } from "./context.ts";
 import { chipHash, planContext } from "./economy.ts";
 import { Persister } from "./persist.ts";
@@ -174,24 +174,28 @@ export class Chat {
   /** The agent named the conversation (ACP `session_info_update`): it replaces the fallback name whenever it arrives — unless the chat runs under another naming source, or the user has named it themselves. */
   private takeAgentTitle(title: string): void {
     const s = this.saved;
-    if (!s || s.titleLocked || (s.titleSource === "paper" || s.titleSource === "question")) return;
-    this.saved = { ...s, title };
+    const name = cleanTitle(title); // agent text: control characters and length are ours to bound (it renders as text, never markup)
+    if (!s || !name || s.titleLocked || (s.titleSource === "paper" || s.titleSource === "question")) return;
+    this.saved = { ...s, title: name };
   }
 
   /** A user rename, from the chat header or the history list: it wins over every automatic source, permanently. Empty changes nothing. */
   async rename(title: string): Promise<void> {
     const s = this.saved;
-    const name = title.replace(/\s+/g, " ").trim();
+    const name = cleanTitle(title);
     if (!s || !name || (s.title === name && s.titleLocked)) return;
-    await this.d.host.renameSession(s.id, name);
+    // Take it in memory first: the transcript saver rewrites this chat's index entry from `this.saved` while the
+    // answer streams, and a write queued behind the rename must not put the old title (and no lock) back.
     this.saved = { ...s, title: name, titleLocked: true };
     this.d.onChange();
+    try { await this.d.host.renameSession(s.id, name); }
+    catch (e) { if (this.saved?.id === s.id) this.saved = s; this.d.onChange(); throw e; }
   }
 
-  /** A rename done elsewhere (the history list) for this open chat: mirror it, so the header stays in step. */
-  adoptRename(title: string): void {
+  /** A rename done elsewhere (the history list): when it is this open chat's, mirror it, so the header stays in step. */
+  adoptRename(id: string, title: string): void {
     const s = this.saved;
-    if (!s) return;
+    if (!s || s.id !== id) return;
     this.saved = { ...s, title, titleLocked: true };
     this.d.onChange();
   }

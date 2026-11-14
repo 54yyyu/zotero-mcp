@@ -210,6 +210,11 @@ export function clip(s: string, n: number): string {
   return t.length > n ? t.slice(0, n - 1) + "…" : t;
 }
 
+/** A chat title from outside (an agent's `session_info_update`, a typed rename): control, zero-width and bidi-override characters become spaces, whitespace collapses, and it is cut to `n`. Empty when nothing visible is left. */
+export function cleanTitle(s: string, n = 120): string {
+  return clip(s.replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g, " "), n);
+}
+
 export function fmtTokens(n: number): string {
   return n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : n >= 10000 ? `${Math.round(n / 1000)}k` : n >= 1000 ? `${+(n / 1000).toFixed(1)}k` : String(n);
 }

@@ -417,6 +417,43 @@ await test("history: rename from a row; the row, the store and the open chat's h
   assert.equal(await p.locator(".hd__title").innerText(), "A clearer name", "the open chat's header follows a rename done in the list");
 });
 
+await test("chat title: Enter or Esc during IME composition neither saves nor cancels the rename (header and history row)", async (p) => {
+  await send(p, "hello there");
+  await ended(p, 1);
+  await p.locator(".hd__title").click();
+  await p.locator(".hd__title-input").fill("zhongwen");
+  await p.locator(".hd__title-input").dispatchEvent("keydown", { key: "Enter", isComposing: true, bubbles: true });
+  await p.locator(".hd__title-input").dispatchEvent("keydown", { key: "Escape", isComposing: true, bubbles: true });
+  assert.equal(await p.locator(".hd__title-input").count(), 1, "the edit is still open: that Enter picked a candidate");
+  await p.locator(".hd__title-input").press("Enter");
+  await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hd__title")?.textContent === "zhongwen");
+  await p.locator('button[aria-label="History"]').click();
+  await p.locator(".hrow__ren").first().click();
+  await p.locator(".hrow__edit").fill("nihongo");
+  await p.locator(".hrow__edit").dispatchEvent("keydown", { key: "Enter", isComposing: true, bubbles: true });
+  assert.equal(await p.locator(".hrow__edit").count(), 1, "the row edit is still open too");
+  await p.locator(".hrow__edit").press("Enter");
+  await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hrow__t")?.textContent === "nihongo");
+});
+
+await test("history: renaming another chat's row leaves the open chat's header alone", async (p) => {
+  await send(p, "the first chat");
+  await ended(p, 1);
+  await p.locator('button[aria-label="New chat"]').click();
+  await send(p, "the second chat");
+  await ended(p, 1);
+  await p.locator('button[aria-label="History"]').click();
+  const row = p.locator(".hrow", { hasText: "the first chat" });
+  await row.locator(".hrow__ren").click();
+  await p.locator(".hrow__edit").fill("Renamed first");
+  await p.locator(".hrow__edit").press("Enter");
+  await p.waitForFunction(() => [...window.__zmc.shadow.querySelectorAll(".hrow__t")].some((e) => e.textContent === "Renamed first"));
+  await p.keyboard.press("Escape");
+  assert.match(await p.locator(".hd__title").innerText(), /the second chat|Are Emily and Greg/, "the open chat keeps its own name");
+  const lockedOpen = await sim(p, async () => (await window.__zmc.host.sessions()).filter((s) => s.titleLocked).map((s) => s.title));
+  assert.deepEqual(lockedOpen, ["Renamed first"], "only the renamed row is locked");
+});
+
 await test("settings: the title-source dropdown names the next chat", async (p) => {
   await p.locator('button[aria-label="Settings"]').click();
   await p.locator('select[aria-label="Name new chats by"]').selectOption("question");

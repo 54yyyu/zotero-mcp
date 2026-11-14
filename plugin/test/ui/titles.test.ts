@@ -150,3 +150,52 @@ describe("a resumed pre-feature chat", () => {
     assert.equal(c.saved!.title, "The audit-study question, summarised by the agent", "a missing snapshot reads as agent-named");
   });
 });
+
+describe("titles from outside are bounded and rename stays consistent", () => {
+  const take = (c: Chat, title: string) => (c as unknown as { takeAgentTitle(t: string): void }).takeAgentTitle(title);
+
+  it("an agent title loses control characters and bidi overrides, collapses whitespace, and is cut at 120", async () => {
+    const host = new FakeHost({ speed: 0, noHistory: true });
+    const c = chat(host);
+    await say(host, c, "hello", []);
+    take(c, "Line one\nline\ttwo\u0000‮ <img src=x onerror=alert(1)>");
+    assert.equal(c.saved!.title, "Line one line two <img src=x onerror=alert(1)>", "markup stays literal text: every surface renders titles with textContent");
+    take(c, "x".repeat(500));
+    assert.equal(c.saved!.title.length, 120);
+  });
+
+  it("an agent title with nothing visible in it changes nothing", async () => {
+    const host = new FakeHost({ speed: 0, noHistory: true });
+    const c = chat(host);
+    await say(host, c, "hello", []);
+    for (const blank of ["   ", "\n\t", "​‮", ""]) take(c, blank);
+    assert.equal(c.saved!.title, "hello");
+  });
+
+  it("a rename done in the history list for another chat does not touch the open one", async () => {
+    const host = new FakeHost({ speed: 0, noHistory: true });
+    const c = chat(host);
+    await say(host, c, "hello", []);
+    c.adoptRename("some-other-chat", "Not mine");
+    assert.equal(c.saved!.title, "hello");
+    assert.equal(c.saved!.titleLocked, undefined);
+    c.adoptRename(c.saved!.id, "Mine");
+    assert.equal(c.saved!.title, "Mine");
+    assert.equal(c.saved!.titleLocked, true);
+  });
+
+  it("a rename is in effect before the store answers (a streaming save must not put the old title back), and undone if the store fails", async () => {
+    const host = new FakeHost({ speed: 0, noHistory: true });
+    const c = chat(host);
+    await say(host, c, "hello", []);
+    let fail!: (e: Error) => void;
+    host.renameSession = () => new Promise<void>((_, rej) => { fail = rej; });
+    const p = c.rename("Pending name");
+    assert.equal(c.saved!.title, "Pending name");
+    assert.equal(c.saved!.titleLocked, true);
+    fail(new Error("disk full"));
+    await assert.rejects(p, /disk full/);
+    assert.equal(c.saved!.title, "hello");
+    assert.equal(c.saved!.titleLocked, undefined);
+  });
+});

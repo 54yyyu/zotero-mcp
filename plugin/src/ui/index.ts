@@ -4,7 +4,7 @@
 import type { BackendId, Catalog, MountPanel, PanelHost, ZoteroRef } from "../types.ts";
 import { STYLES } from "./styles.ts";
 import { Look } from "./appearance.ts";
-import { clear, clip, copyText, env, errMessage, h, icon, initEnv, setKids } from "./dom.ts";
+import { clear, cleanTitle, clip, copyText, env, errMessage, h, icon, initEnv, setKids } from "./dom.ts";
 import { Composer } from "./composer.ts";
 import { imageChips, imageFiles } from "./images.ts";
 import { chatStats, contextFill, sentLine } from "./economy.ts";
@@ -204,7 +204,7 @@ class Panel {
     const back = () => this.show("chat");
     const host = this.host;
     const screen =
-      v === "history" ? historyView(host, { current: () => this.chat.saved?.id ?? null, back, resume: (s) => void this.openSaved(s), deleted: (id) => { if (this.chat.saved?.id === id) void this.newChat(); }, renamed: (s) => this.chat.adoptRename(s.title) })
+      v === "history" ? historyView(host, { current: () => this.chat.saved?.id ?? null, back, resume: (s) => void this.openSaved(s), deleted: (id) => { if (this.chat.saved?.id === id) void this.newChat(); }, renamed: (s) => this.chat.adoptRename(s.id, s.title) })
       : v === "welcome" ? welcomeView(host, this.health, { done: () => void this.finishWelcome(), recheck: () => void this.health.refresh(), changed: () => this.onSettings(), openSettings: () => this.show("settings") })
       : v === "status" ? statusView(host, { back, initial: this.health.checks, openSettings: () => this.show("settings"), changed: (c) => this.health.set(c) })
       : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), look: this.look,
@@ -228,12 +228,12 @@ class Panel {
     if (!saved || this.titleInput) return;
     const wrap = this.titleBtn.parentElement;
     if (!wrap) return;
-    const input = h("input.input.hd__title-input", { type: "text", value: saved.title, "aria-label": t("header.renameTip") }) as HTMLInputElement;
+    const input = h("input.input.hd__title-input", { type: "text", value: saved.title, maxlength: "120", "aria-label": t("header.renameTip") }) as HTMLInputElement;
     let closed = false;
     const done = (save: boolean) => {
       if (closed) return;
       closed = true;
-      const name = input.value.replace(/\s+/g, " ").trim();
+      const name = cleanTitle(input.value);
       input.remove();
       this.titleInput = null;
       this.titleBtn.hidden = false;
@@ -241,6 +241,8 @@ class Panel {
       else this.render();
     };
     input.addEventListener("keydown", (e) => {
+      // An Enter or Esc that belongs to an IME (Chinese, Japanese, Korean: picking a candidate) is not ours; keyCode 229 is WebKit's older way to say so.
+      if (e.isComposing || e.keyCode === 229) { e.stopPropagation(); return; }
       if (e.key === "Enter") { e.preventDefault(); done(true); }
       else if (e.key === "Escape") { e.preventDefault(); done(false); }
       e.stopPropagation(); // the panel's own Escape handler closes views; this Esc only closes the edit

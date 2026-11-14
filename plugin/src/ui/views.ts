@@ -1,7 +1,7 @@
 // The panel's other screens: the empty state, history, settings, and the doctor/status view.
 // Each is a plain function returning an element and a `refresh` where it has data to reload.
 import type { BackendId, DoctorCheck, PanelHost, SavedSession } from "../types.ts";
-import { copyText, dayGroup, env, errMessage, h, icon, isMac, relTime, setKids, slotLabel, svg } from "./dom.ts";
+import { cleanTitle, copyText, dayGroup, env, errMessage, h, icon, isMac, relTime, setKids, slotLabel, svg } from "./dom.ts";
 import { shortPath } from "./settings-model.ts";
 import { skillLabel } from "./skills-model.ts";
 import { t } from "../i18n.ts";
@@ -127,7 +127,7 @@ export function historyView(host: PanelHost, o: { current(): string | null; back
 
   /** A rename typed in the row's edit: saved (and locked) through the host, both the row and the saved chat follow. */
   const doRename = async (s: SavedSession) => {
-    const v = renameDraft.replace(/\s+/g, " ").trim();
+    const v = cleanTitle(renameDraft);
     renaming = null;
     if (!v || v === s.title) { paint(); return; }
     let done: SavedSession | null = null;
@@ -168,8 +168,9 @@ export function historyView(host: PanelHost, o: { current(): string | null; back
         continue;
       }
       if (renaming === s.id) {
-        const input = h("input.input.hrow__edit", { type: "text", value: renameDraft, "aria-label": t("history.renameFor", { title: s.title || t("history.chat") }), oninput: () => { renameDraft = (input as HTMLInputElement).value; } }) as HTMLInputElement;
+        const input = h("input.input.hrow__edit", { type: "text", value: renameDraft, maxlength: "120", "aria-label": t("history.renameFor", { title: s.title || t("history.chat") }), oninput: () => { renameDraft = (input as HTMLInputElement).value; } }) as HTMLInputElement;
         input.addEventListener("keydown", (e) => {
+          if (e.isComposing || e.keyCode === 229) { e.stopPropagation(); return; } // an IME's Enter or Esc, not ours
           if (e.key === "Enter") { e.preventDefault(); void doRename(s); }
           else if (e.key === "Escape") { e.preventDefault(); renaming = null; paint(); }
           e.stopPropagation();
