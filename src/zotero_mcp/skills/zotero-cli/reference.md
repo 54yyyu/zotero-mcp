@@ -383,6 +383,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--context` -- default `12` -- With --find: words of context on each side of a match (1-60, default 12)
  - `--format` -- one of `text`, `image` -- default `text` -- image writes PNG page images (up to 10 pages) for math, figures and tables
  - `--rect` -- With --format image: crop the start page to x,y,width,height (normalized 0-1), e.g. from `zotero-cli layout`
+ - `--grid` -- With --format image: draw a grid on the image, a line every 0.05 and a label every 0.1, in the page coordinates --rect and annotation boxes use (also on a zoomed --rect, so a box can be read off the picture)
  - `--out` -- With --format image: directory for the PNG files (default: a new temporary directory)
 
 ## `attach`

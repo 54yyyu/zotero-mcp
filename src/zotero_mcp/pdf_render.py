@@ -63,6 +63,8 @@ def render_page(page, *, scale: float = 1.5, clip: list[float] | None = None,
     region = fitz.Rect(page.rect.x0 + cx * width, page.rect.y0 + cy * height,
                        page.rect.x0 + (cx + cw) * width, page.rect.y0 + (cy + ch) * height)
     pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=region, alpha=False)
+    if not grid and not boxes:
+        return {"png": pixmap.tobytes("png"), "width": pixmap.width, "height": pixmap.height, "boxes": []}
     sx, sy = pixmap.width / region.width, pixmap.height / region.height
 
     def to_px(nx: float, ny: float) -> tuple[float, float]:

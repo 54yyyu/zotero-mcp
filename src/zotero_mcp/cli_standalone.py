@@ -1423,6 +1423,8 @@ def cmd_read(args):
     find = getattr(args, "find", None)
     if rect is not None and not as_image:
         raise _cli_json.CliError("--rect needs --format image", code="bad_rect")
+    if getattr(args, "grid", False) and not as_image:
+        raise _cli_json.CliError("--grid needs --format image", code="bad_grid")
     if find is not None and as_image:
         raise _cli_json.CliError("--find searches text; it cannot go with --format image",
                                  code="bad_find")
@@ -1446,13 +1448,14 @@ def cmd_read(args):
         import tempfile
 
         header, pages = read_pdf_mod.render_pdf_pages(
-            args.item_key, args.start_page, args.end_page, rect=rect, ctx=_ctx(args),
+            args.item_key, args.start_page, args.end_page, rect=rect,
+            grid=getattr(args, "grid", False), ctx=_ctx(args),
         )
         out_dir = getattr(args, "out", None) or tempfile.mkdtemp(prefix="zotero_pages_")
         os.makedirs(out_dir, exist_ok=True)
         images = []
         for page in pages:
-            suffix = "-region" if rect is not None else ""
+            suffix = ("-region" if rect is not None else "") + ("-grid" if getattr(args, "grid", False) else "")
             path = os.path.join(out_dir, f"{args.item_key}-p{page['page']}{suffix}.png")
             with open(path, "wb") as handle:
                 handle.write(page["png"])
@@ -2102,6 +2105,10 @@ def build_parser() -> argparse.ArgumentParser:
                       help="image writes PNG page images (up to 10 pages) for math, figures and tables")
     rd_p.add_argument("--rect", help="With --format image: crop the start page to x,y,width,height "
                                      "(normalized 0-1), e.g. from `zotero-cli layout`")
+    rd_p.add_argument("--grid", action="store_true",
+                      help="With --format image: draw a grid on the image, a line every 0.05 and a "
+                           "label every 0.1, in the page coordinates --rect and annotation boxes use "
+                           "(also on a zoomed --rect, so a box can be read off the picture)")
     rd_p.add_argument("--out", help="With --format image: directory for the PNG files "
                                     "(default: a new temporary directory)")
 

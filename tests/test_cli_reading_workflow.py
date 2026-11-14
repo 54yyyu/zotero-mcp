@@ -870,6 +870,26 @@ class TestRenderPages:
         # 40% of the page width, rendered larger than that share of the full page.
         assert crop[0]["width"] > 0.4 * full[0]["width"] * 1.5
 
+    def test_grid_draws_lines_in_whole_page_coordinates(self, two_page_pdf):
+        from zotero_mcp.tools import read_pdf
+
+        def png_pixel(png, x, y):
+            return tuple(fitz.Pixmap(png).pixel(int(x), int(y)))[:3]
+
+        _h, (plain,) = read_pdf.render_pdf_pages("KEY00001", 1, ctx=MagicMock())
+        _h, (gridded,) = read_pdf.render_pdf_pages("KEY00001", 1, grid=True, ctx=MagicMock())
+        assert (plain["width"], plain["height"]) == (gridded["width"], gridded["height"])
+        x, y = 0.5 * gridded["width"], 0.6 * gridded["height"]
+        assert png_pixel(plain["png"], x, y + 5) == (255, 255, 255)
+        assert png_pixel(gridded["png"], x, y + 5) != (255, 255, 255)      # on the 0.5 line
+        assert png_pixel(gridded["png"], 0.43 * gridded["width"], y + 5) == (255, 255, 255)   # between lines
+
+        # Zoomed to x 0.1-0.5, the 0.3 line sits half way across the crop, not at 0.3 of its width.
+        _h, (crop,) = read_pdf.render_pdf_pages("KEY00001", 1, rect=[0.1, 0.1, 0.4, 0.2],
+                                                grid=True, ctx=MagicMock())
+        assert png_pixel(crop["png"], 0.5 * crop["width"], 0.6 * crop["height"]) != (255, 255, 255)
+        assert png_pixel(crop["png"], 0.3 * crop["width"], 0.6 * crop["height"]) == (255, 255, 255)
+
     @pytest.mark.parametrize("kwargs,code", [
         (dict(rect=[0.5, 0.5, 0.6, 0.1]), "bad_rect"),
         (dict(rect="nope"), "bad_rect"),
@@ -927,6 +947,29 @@ class TestCliReadImages:
         assert image["path"] == os.path.join(str(tmp_path), "KEY00001-p4-region.png")
         with open(image["path"], "rb") as handle:
             assert handle.read() == b"\x89PNGdata"
+
+    def test_grid_reaches_the_renderer_and_marks_the_file_name(self, tmp_path, capsys, monkeypatch):
+        from zotero_mcp.tools import read_pdf
+
+        seen = {}
+
+        def render(*a, **k):
+            seen.update(k)
+            return "# Pages 4-4 of Paper", [{"page": 4, "png": b"\x89PNGdata", "width": 10, "height": 20}]
+
+        monkeypatch.setattr(read_pdf, "render_pdf_pages", render)
+        args = _args(item_key="KEY00001", start_page=4, end_page=None, format="image", rect=None,
+                     grid=True, out=str(tmp_path), json_out=True)
+        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
+            cli_standalone.cmd_read(args)
+        assert seen["grid"] is True
+        assert json.loads(capsys.readouterr().out)["data"]["images"][0]["path"].endswith("KEY00001-p4-grid.png")
+
+    def test_grid_without_image_format_is_a_usage_error(self):
+        with pytest.raises(CliError) as exc:
+            cli_standalone.cmd_read(_args(item_key="K", start_page=1, end_page=None,
+                                          format="text", rect=None, grid=True, out=None))
+        assert exc.value.code == "bad_grid"
 
     def test_rect_without_image_format_is_a_usage_error(self):
         with pytest.raises(CliError) as exc:

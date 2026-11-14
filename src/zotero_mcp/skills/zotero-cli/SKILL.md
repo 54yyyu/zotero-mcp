@@ -177,7 +177,12 @@ For those pages, look at the page itself if you can view images:
 ```bash
 zotero-cli read ITEM_KEY --start-page 4 --format image                         # PNG per page, up to 10
 zotero-cli read ITEM_KEY --start-page 4 --format image --rect 0.35,0.49,0.3,0.05   # zoom into one region
+zotero-cli read ITEM_KEY --start-page 4 --format image --grid                  # with a 0.05 grid, labelled every 0.1
 ```
+
+`--grid` draws lines in the same page coordinates that `--rect` and the
+annotation boxes use (also on a zoomed region), so you can read a box's
+numbers straight off the picture instead of writing a script to do it.
 
 To annotate, plan everything, check it, then write it in one run:
 
