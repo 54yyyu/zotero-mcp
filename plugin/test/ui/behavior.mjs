@@ -368,6 +368,66 @@ await test("history: resume, continue, delete; new chat clears", async (p) => {
   assert.ok(await p.locator(".empty").isVisible());
 });
 
+const ended = (p, n) => p.waitForFunction((k) => window.__zmc.shadow.querySelectorAll(`.msg--assistant[data-state="end_turn"]`).length >= k, n, { timeout: 8000 });
+
+await test("chat title: the paper names the chat; the header edit saves on Enter, cancels on Esc, blank does nothing", async (p) => {
+  await send(p, "what is the callback gap?"); // the default context is the open reader: the paper's title names the chat
+  await ended(p, 1);
+  await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hd__title")?.textContent.includes("Are Emily and Greg"));
+  assert.ok(!(await p.locator(".hd__title").getAttribute("hidden")));
+  await p.locator(".hd__title").click();
+  await p.locator(".hd__title-input").fill("a name I typed");
+  await p.locator(".hd__title-input").press("Escape");
+  assert.match(await p.locator(".hd__title").innerText(), /Are Emily and Greg/, "Esc keeps the name");
+  await p.locator(".hd__title").click();
+  await p.locator(".hd__title-input").fill("   ");
+  await p.locator(".hd__title-input").press("Enter");
+  assert.match(await p.locator(".hd__title").innerText(), /Are Emily and Greg/, "a blank rename changes nothing");
+  await p.locator(".hd__title").click();
+  await p.locator(".hd__title-input").fill("My own name");
+  await p.locator(".hd__title-input").press("Enter");
+  await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hd__title")?.textContent === "My own name");
+  await send(p, "retitle this please"); // the agent names the session mid-turn
+  await ended(p, 2);
+  assert.equal(await p.locator(".hd__title").innerText(), "My own name", "a user rename is final: the agent's title no longer wins");
+  const locked = await sim(p, async () => (await window.__zmc.host.sessions()).find((s) => s.title === "My own name")?.titleLocked);
+  assert.equal(locked, true, "the store carries the lock");
+});
+
+await test("chat title: the agent's own summary replaces the paper name while the chat is untouched", async (p) => {
+  await send(p, "retitle: summarize the discussion");
+  await ended(p, 1);
+  await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hd__title")?.textContent === "The audit-study question, summarised by the agent");
+  await p.locator('button[aria-label="History"]').click();
+  assert.match(await p.locator(".hrow__t").first().innerText(), /summarised by the agent/, "the history row carries the agent's name");
+});
+
+await test("history: rename from a row; the row, the store and the open chat's header follow", async (p) => {
+  await send(p, "hello there");
+  await ended(p, 1);
+  await p.locator('button[aria-label="History"]').click();
+  await p.locator(".hrow__ren").first().hover();
+  await p.locator(".hrow__ren").first().click();
+  await p.locator(".hrow__edit").fill("A clearer name");
+  await p.locator(".hrow__edit").press("Enter");
+  await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hrow__t")?.textContent === "A clearer name");
+  const stored = await sim(p, async () => { const s = (await window.__zmc.host.sessions()).sort((a, b) => b.updatedAt - a.updatedAt)[0]; return [s.title, s.titleLocked]; });
+  assert.deepEqual(stored, ["A clearer name", true]);
+  await p.keyboard.press("Escape"); // back to the chat, which is the one just renamed
+  assert.equal(await p.locator(".hd__title").innerText(), "A clearer name", "the open chat's header follows a rename done in the list");
+});
+
+await test("settings: the title-source dropdown names the next chat", async (p) => {
+  await p.locator('button[aria-label="Settings"]').click();
+  await p.locator('select[aria-label="Name new chats by"]').selectOption("question");
+  await p.waitForFunction(() => window.__zmc.host.getSettings().titleSource === "question");
+  await p.keyboard.press("Escape");
+  await p.locator('button[aria-label="New chat"]').click();
+  await send(p, "a question with a paper in focus"); // the reader chip is attached, but the source says: the question
+  await ended(p, 1);
+  await p.waitForFunction(() => window.__zmc.shadow.querySelector(".hd__title")?.textContent === "a question with a paper in focus");
+});
+
 await test("settings: api key saved, removed; prompts edited and shortcut runs it", async (p) => {
   await p.locator('button[aria-label="Settings"]').click();
   await p.getByRole("radio", { name: "API key" }).click();
@@ -507,7 +567,7 @@ await test("pickers: effort, model and mode act on the live session and save int
   assert.deepEqual([s.effort.codex, s.effort.pi, s.mode.codex, s.model["claude-code"]], ["", "", "", ""]);
   await openSettings(p);
   await p.locator(".seg__opt", { hasText: /^pi$/ }).first().click();
-  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".radio").length === 0 && window.__zmc.shadow.querySelectorAll(".field").length === 2);
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".radio").length === 0 && window.__zmc.shadow.querySelectorAll(".field").length === 3); // model, translate target — and the title-source dropdown
   await p.keyboard.press("Escape");
   assert.equal(await p.locator(".pick--mode").isVisible(), false, "pi has no permission modes");
   assert.match(await p.locator(".pick--model .pick__e").innerText(), /Off/, "pi's own effort default");

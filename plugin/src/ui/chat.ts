@@ -101,6 +101,7 @@ export class Chat {
       this.sent.clear(); // a new or resumed session: everything goes in full once (DESIGN.md "Context budget")
       this.resume = null;
       this.unsub = sess.on((ev) => {
+        if (ev.t === "session_title") this.takeAgentTitle(ev.title); // before dispatch: the persist writes the new title to the index
         this.dispatch(ev);
         if (ev.t === "turn_end") { this.d.turnEnded(ev.stop); this.persister.flush(); }
       });
@@ -126,7 +127,13 @@ export class Chat {
     if (this.busy || this.d.blockReason()) return;
     const host = this.d.host;
     if (!this.saved) {
-      this.saved = { id: nextId("s") + Date.now().toString(36), title: clip(text, 60), backend: host.getSettings().backend, cwd: this.resume?.cwd ?? "", agentSessionId: this.resume?.agentSessionId ?? "", updatedAt: Date.now() };
+      const set = host.getSettings();
+      // The chat's name starts on the first filled rung of its source's chain: agent summary can never be ready
+      // here (it arrives during the turn), so agent falls to the focused paper, then the question. The source is
+      // snapshotted onto the chat: changing the setting later never re-rules an existing conversation.
+      const titleSource = set.titleSource;
+      const paper = titleSource === "question" ? null : host.paperTitle(used);
+      this.saved = { id: nextId("s") + Date.now().toString(36), title: paper ? clip(paper, 80) : clip(text, 60), titleSource, backend: set.backend, cwd: this.resume?.cwd ?? "", agentSessionId: this.resume?.agentSessionId ?? "", updatedAt: Date.now() };
     }
     this.sending = true;
     // The bubble shows what the composer showed: context already in this chat is only named to the agent, not shown again.
@@ -162,6 +169,31 @@ export class Chat {
       this.persister.flush();
       this.d.onChange();
     }
+  }
+
+  /** The agent named the conversation (ACP `session_info_update`): it replaces the fallback name whenever it arrives — unless the chat runs under another naming source, or the user has named it themselves. */
+  private takeAgentTitle(title: string): void {
+    const s = this.saved;
+    if (!s || s.titleLocked || (s.titleSource === "paper" || s.titleSource === "question")) return;
+    this.saved = { ...s, title };
+  }
+
+  /** A user rename, from the chat header or the history list: it wins over every automatic source, permanently. Empty changes nothing. */
+  async rename(title: string): Promise<void> {
+    const s = this.saved;
+    const name = title.replace(/\s+/g, " ").trim();
+    if (!s || !name || (s.title === name && s.titleLocked)) return;
+    await this.d.host.renameSession(s.id, name);
+    this.saved = { ...s, title: name, titleLocked: true };
+    this.d.onChange();
+  }
+
+  /** A rename done elsewhere (the history list) for this open chat: mirror it, so the header stays in step. */
+  adoptRename(title: string): void {
+    const s = this.saved;
+    if (!s) return;
+    this.saved = { ...s, title, titleLocked: true };
+    this.d.onChange();
   }
 
   /** Summarise the conversation now (the bridge's own /compact, when it has a verified one); a notice tells the result. */

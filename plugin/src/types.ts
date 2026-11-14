@@ -82,6 +82,7 @@ export type ChatEvent =
   | { t: "plan"; turn: string; entries: { content: string; status: "pending" | "in_progress" | "completed" }[] }
   | { t: "permission"; turn: string; id: string; title: string; kind: ToolKind; input?: unknown; options: PermissionOption[]; resolved?: string; name?: string }
   | { t: "turn_end"; turn: string; stop: "end_turn" | "cancelled" | "max_tokens" | "refusal" | "error"; usage?: Usage }
+  | { t: "session_title"; /** The agent's own name for this conversation (ACP `session_info_update`), whenever it arrives. */ title: string }
   | { t: "notice"; level: "info" | "warn" | "error"; message: string; hint?: string; /** The agent summarised older turns: what was sent before may be gone. */ compacted?: boolean;
       /** The context window's fill right after a compaction the user asked for (no turn_end carries it). */ context?: { used: number; size: number } };
 
@@ -319,6 +320,8 @@ export interface PanelSettings {
   openAtStart: boolean;
   /** The first-run welcome (agent choice and setup check) has been finished or skipped. */
   welcomed: boolean;
+  /** How a new chat is first named: the agent's own summary (falling back to the focused paper, then the question), the paper focused at the first question, or the question text. Snapshotted onto each chat when it is named. */
+  titleSource: "agent" | "paper" | "question";
   /** Where new chats run: the agent's working directory, and where the zotero-cli skill is installed. "" = the default folder. */
   chatFolder: string;
 
@@ -355,6 +358,10 @@ export interface Appearance {
 export interface SavedSession {
   id: string;
   title: string;
+  /** The naming scheme this chat started under (the setting, snapshotted at its first message). Absent on chats saved before it existed: those behave as "agent". */
+  titleSource?: "agent" | "paper" | "question";
+  /** Set by a user rename: no automatic source ever changes the title again. */
+  titleLocked?: boolean;
   backend: BackendId;
   /** The folder the chat ran in. Agents find a session by its folder, so resuming (here or in a terminal) needs this one, not the current setting. */
   cwd: string;
@@ -405,6 +412,10 @@ export interface PanelHost {
   loadEvents(sessionId: string): Promise<ChatEvent[]>;
   appendEvent(session: SavedSession, ev: ChatEvent): Promise<void>;
   deleteSession(sessionId: string): Promise<void>;
+  /** A user rename: sets the title and locks it against every automatic source. */
+  renameSession(sessionId: string, title: string): Promise<void>;
+  /** The title of the paper the chips point at (the reader's, else the first item's), clipped for display; null when they name no item. */
+  paperTitle(chips: ContextChip[]): string | null;
 
   /** Delete every saved chat. */
   clearHistory(): Promise<void>;

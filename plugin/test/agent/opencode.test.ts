@@ -9,7 +9,7 @@ import { OPENCODE_LOCKED, createRuntime } from "../../src/agent/runtime.ts";
 import { shimTarget } from "../../src/agent/windows.ts";
 import type { Spawner } from "../../src/types.ts";
 import { createNodeSpawner } from "../node-spawner.ts";
-import { cleanupTemp, collect, fakeBin, tempDir, textOf } from "./helpers.ts";
+import { cleanupTemp, collect, fakeBin, tempDir, textOf, waitFor } from "./helpers.ts";
 
 after(cleanupTemp);
 
@@ -115,6 +115,36 @@ describe("opencode backend", () => {
 
   it("the terminal resume command is opencode --session", () => {
     assert.equal(resumeCommand("opencode", "/Users/o'neil/Zotero Agent", "ses_abc"), `cd '/Users/o'\\''neil/Zotero Agent' && opencode --session ses_abc`);
+  });
+
+  it("never pushes a title: it is pulled from session/list after the turn ends, once", async () => {
+    const { runtime, dir } = setup();
+    const s = await runtime.start({ backend: "opencode", cwd: dir, brief: "" });
+    try {
+      const { events } = collect(s);
+      const titles = () => events.filter((e) => e.t === "session_title");
+      await s.prompt({ text: "hi" });
+      assert.equal(titles().length, 0, "nothing arrives during the turn");
+      await waitFor(() => titles()[0], 9000, "pulled session_title after the turn");
+      assert.equal(titles()[0]!.title, "Mock agent's summary of the chat", "not the timestamped placeholder");
+      await s.prompt({ text: "again" });
+      await new Promise((r) => setTimeout(r, 2800));
+      assert.equal(titles().length, 1, "adopted once: a later turn does not pull again");
+    } finally {
+      await s.close();
+    }
+  });
+
+  it("resuming a session that never ran a turn: the placeholder on the list is not adopted", async () => {
+    const { runtime, dir } = setup();
+    const s = await runtime.start({ backend: "opencode", cwd: dir, brief: "", resumeSessionId: "mock-untitled-1" });
+    try {
+      const { events } = collect(s);
+      await new Promise((r) => setTimeout(r, 2600)); // the resume pull fires at ~1.2 s
+      assert.equal(events.filter((e) => e.t === "session_title").length, 0, "a 'New session - …' placeholder is never a title");
+    } finally {
+      await s.close();
+    }
   });
 
   it("Windows: where.exe finds npm's opencode.cmd, and its shim is read through to the real opencode.exe", async () => {

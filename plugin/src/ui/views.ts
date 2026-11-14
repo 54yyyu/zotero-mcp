@@ -109,11 +109,13 @@ export function frame(title: string, back: () => void, ...body: (HTMLElement | n
 
 // ───────────────────────────── history ─────────────────────────────
 
-export function historyView(host: PanelHost, o: { current(): string | null; back(): void; resume(s: SavedSession): void; deleted(id: string): void }): { el: HTMLElement; refresh(): void } {
+export function historyView(host: PanelHost, o: { current(): string | null; back(): void; resume(s: SavedSession): void; deleted(id: string): void; renamed?(s: SavedSession): void }): { el: HTMLElement; refresh(): void } {
   const list = h("div.hist__list");
   const q = h("input.input", { type: "search", placeholder: t("history.search"), "aria-label": t("history.search") }) as HTMLInputElement;
   let all: SavedSession[] | null = null;
   let confirming: string | null = null;
+  let renaming: string | null = null;
+  let renameDraft = "";
   let copied: string | null = null;
 
   const copyCmd = async (s: SavedSession, cmd: string) => {
@@ -121,6 +123,23 @@ export function historyView(host: PanelHost, o: { current(): string | null; back
     copied = s.id;
     paint();
     env.win.setTimeout(() => { if (copied === s.id) { copied = null; paint(); } }, 1800);
+  };
+
+  /** A rename typed in the row's edit: saved (and locked) through the host, both the row and the saved chat follow. */
+  const doRename = async (s: SavedSession) => {
+    const v = renameDraft.replace(/\s+/g, " ").trim();
+    renaming = null;
+    if (!v || v === s.title) { paint(); return; }
+    let done: SavedSession | null = null;
+    try { await host.renameSession(s.id, v); done = { ...s, title: v, titleLocked: true }; }
+    catch (e) {
+      setKids(list, h("div.vwerr", { role: "alert" }, t("history.renameFailed", { error: errMessage(e) })));
+      env.win.setTimeout(paint, 2500);
+      return;
+    }
+    all = (all ?? []).map((x) => (x.id === done!.id ? done! : x));
+    o.renamed?.(done);
+    paint();
   };
 
   const skeleton = () => setKids(list, [0, 1, 2, 3].map(() => h("div.sk.sk--row")));
@@ -148,6 +167,19 @@ export function historyView(host: PanelHost, o: { current(): string | null; back
           h("button.btn.btn--sm", { type: "button", onclick: () => { confirming = null; paint(); } }, t("common.cancel"))));
         continue;
       }
+      if (renaming === s.id) {
+        const input = h("input.input.hrow__edit", { type: "text", value: renameDraft, "aria-label": t("history.renameFor", { title: s.title || t("history.chat") }), oninput: () => { renameDraft = (input as HTMLInputElement).value; } }) as HTMLInputElement;
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { e.preventDefault(); void doRename(s); }
+          else if (e.key === "Escape") { e.preventDefault(); renaming = null; paint(); }
+          e.stopPropagation();
+        });
+        out.push(h(`div.hrow.hrow--editing${isCur ? ".hrow--on" : ""}`, { role: "group", "aria-label": t("history.renameFor", { title: s.title || t("history.chat") }) },
+          input,
+          h("button.btn.btn--sm.btn--solid", { type: "button", onclick: () => void doRename(s) }, t("common.save")),
+          h("button.btn.btn--sm", { type: "button", onclick: () => { renaming = null; paint(); } }, t("common.cancel"))));
+        continue;
+      }
       const cmd = host.resumeCommand(s);
       const done = copied === s.id;
       out.push(h(`div.hrow${isCur ? ".hrow--on" : ""}`, null,
@@ -156,6 +188,7 @@ export function historyView(host: PanelHost, o: { current(): string | null; back
           h("span.hrow__m", null, `${BACKEND_LABEL[s.backend] ?? s.backend} · ${relTime(s.updatedAt)}`),
           s.cwd ? h("span.hrow__f", { title: s.cwd }, icon("folder"), h("span", null, shortPath(s.cwd, 30))) : null),
         cmd ? h(`button.${done ? "lnk.hrow__copied" : "iconbtn.iconbtn.iconbtn--sm.hrow__cmd"}`, { type: "button", title: t("history.copyCmd"), "aria-label": done ? t("common.copied") : t("history.copyCmdFor", { title: s.title || t("history.chat") }), onclick: () => void copyCmd(s, cmd) }, icon(done ? "check" : "terminal"), done ? t("common.copied") : null) : null,
+        h("button.iconbtn.iconbtn--sm.hrow__ren", { type: "button", "aria-label": t("history.renameFor", { title: s.title || t("history.chat") }), title: t("history.rename"), onclick: () => { renaming = s.id; renameDraft = s.title; paint(); env.win.setTimeout(() => (list.querySelector(".hrow__edit") as HTMLInputElement | null)?.select(), 0); } }, icon("pencil")),
         h("button.iconbtn.iconbtn--sm.hrow__del", { type: "button", "aria-label": t("history.deleteFor", { title: s.title || t("history.chat") }), title: t("common.delete"), onclick: () => { confirming = s.id; paint(); } }, icon("trash"))));
     }
     setKids(list, out);
