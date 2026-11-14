@@ -33,6 +33,7 @@ from . import batch_common, chroma_worker, fulltext_cache, gemini_batch, openai_
 from .chroma_client import (
     ChromaClient,
     create_chroma_client,
+    record_key,
     unreadable_index_facts,
     unreadable_index_message,
 )
@@ -51,9 +52,21 @@ from .config_light import (  # noqa: F401
 )
 from .embeddings.base import EmbeddingAPIUnreachable
 from .embeddings.registry import batch_capable_providers
-from .extract import PAGE_SEPARATOR
+from .extract import (
+    PAGE_SEPARATOR,
+    select_attachment_rows,
+)
 from .identifiers import metadata_match_keys
 from .local_db import PERSONAL_LIBRARY_GROUP_ID, LocalZoteroReader
+from .semantic_filters import (
+    check_where,
+    combine,
+    live_fields,
+    matches,
+    prefilter_safe,
+    split_filters,
+    web_query_plan,
+)
 from .utils import (
     _paginate,
     ensure_private_dir,
@@ -74,9 +87,25 @@ _BATCH_MODULES = {"openai": openai_batch, "gemini": gemini_batch}
 SEARCH_ARTICLES = "articles"
 SEARCH_PASSAGES = "passages"
 
+#: Above this many record keys the local pre-filter's ``item_key $in`` clause
+#: is left out and the filter is applied to the hits instead (#826).
+PREFILTER_MAX_KEYS = 5000
+#: A post-filtered search queries at most this many times, ×4 candidates each.
+FILTER_QUERY_ROUNDS = 3
+#: Zotero's cap on keys per ``itemKey`` parameter.
+_ITEMKEY_BATCH = 50
+#: Keys per zotero.sqlite lookup, well under SQLite's bound-parameter limit.
+_LOCAL_KEY_BATCH = 500
+# Items whose stored state a local scan reads ahead in one batched lookup.
+_SCAN_SLICE = 500
+
 
 def _count_items(count: int) -> str:
     return f"{count:,} item" if count == 1 else f"{count:,} items"
+
+
+def _count_attachments(count: int) -> str:
+    return f"{count:,} attachment" if count == 1 else f"{count:,} attachments"
 
 # How each provider spells "ready to import", for error text only. OpenAI
 # reports "completed", Gemini "succeeded"; both normalize to
@@ -466,8 +495,152 @@ _STREAM_SENTINEL = object()
 _STREAM_COMMIT_THRESHOLD = 200
 
 
+#: Work-unit kinds (#826). Indexing works on two kinds of unit, both carried as
+#: tagged dicts so they flow through the same queues and passes:
+#:
+#: * ``"item"``: a regular item, the API-shaped item dict, which becomes one
+#:   bibliographic record (``KEY``) built from its metadata alone.
+#: * ``"attachment"``: one file of an item (or a standalone file), which
+#:   becomes one attachment record (``ATT``) and, with chunking, passages
+#:   (``ATT#n``) built from the file's text alone.
+UNIT_ITEM = "item"
+UNIT_ATTACHMENT = "attachment"
+
+#: The prefix ``_attach_web_fulltext`` puts before the attachment key.
+_WEB_ATTACHMENT_SOURCE = "web-api:attachment:"
+
+#: file_stamp of an attachment read through the API whose file Zotero
+#: describes with neither md5 nor version (see _api_file_stamp).
+_API_UNKNOWN_STAMP = "api:unknown"
+
+
+def _item_unit(item: dict[str, Any]) -> dict[str, Any]:
+    """Tag an API-shaped regular item, in place, as a bibliographic unit."""
+    item["unit"] = UNIT_ITEM
+    return item
+
+
+def _attachment_unit(
+    key: str,
+    text: str,
+    *,
+    file_stamp: str,
+    date_modified: str | None = "",
+    group_id: int | None = None,
+    owner_key: str | None = None,
+    label: str = "",
+) -> dict[str, Any]:
+    """An attachment work unit: one file's text and the record's own state.
+
+    ``label`` is for progress in this run only. ``owner_key`` (the parent, or
+    None for a standalone file) is stored on the records as ``parent_hint``,
+    which only narrows a filtered search in web mode (#826); a hit's owner is
+    always read from Zotero.
+    """
+    return {
+        "key": key,
+        "unit": UNIT_ATTACHMENT,
+        "text": text or "",
+        "file_stamp": file_stamp,
+        "date_modified": date_modified or "",
+        "group_id": group_id,
+        "owner_key": owner_key,
+        "label": label,
+    }
+
+
+def _api_file_stamp(row: Any) -> str:
+    """``file_stamp`` of an attachment read through the Zotero API.
+
+    The API gives no file mtime_ns/size, so the stamp is built from what it
+    has: the stored file's ``md5`` with its ``mtime`` when Zotero has them
+    (they change exactly when the file is replaced), else the attachment
+    item's ``version`` (which also changes on a rename, a harmless re-embed).
+    Prefixed so it can never equal a local ``"<mtime_ns>:<size>"`` stamp.
+    """
+    data = (row.get("data") if isinstance(row, dict) else None) or {}
+    if data.get("md5"):
+        return f"api:{data['md5']}:{data.get('mtime', '')}"
+    version = row.get("version", data.get("version")) if isinstance(row, dict) else None
+    if version is not None:
+        return f"api-version:{version}"
+    return _API_UNKNOWN_STAMP
+
+
+def _stamp_kind(stamp: Any) -> str:
+    """``"api"`` for a stamp ``_api_file_stamp`` built, else ``"local"`` (``<mtime_ns>:<size>``)."""
+    # "api:..." and "api-version:..." from _api_file_stamp, and _API_UNKNOWN_STAMP.
+    return "api" if str(stamp or "").startswith("api") else "local"
+
+
+def _is_attachment_unit(unit: dict[str, Any]) -> bool:
+    return unit.get("unit") == UNIT_ATTACHMENT
+
+
+#: Metadata that records written before #826 carried and new records never do.
+_LEGACY_METADATA_KEYS = (
+    "item_type", "title", "date", "date_added", "creators", "publication", "url", "doi",
+    "tags", "citation_key", "has_fulltext", "fulltext_source", "attachment_keys",
+    "attachment_priority", "parent_item_key",
+    # Set by the migration on a legacy record whose passages it moved (index_migration).
+    "rekeyed_to",
+)
+
+
+def _is_legacy_record(metadata: dict[str, Any] | None) -> bool:
+    """A record written before #826: every one of them stored ``title``, no new one does."""
+    return bool(metadata) and "title" in metadata
+
+
+def _text_record_keys(metadatas: list[dict[str, Any]]) -> set[str]:
+    """Record keys among ``metadatas`` built from a file's text: the keys text is cached under.
+
+    A bibliographic record is built from metadata, so it has nothing in the
+    fulltext cache to evict.
+    """
+    return {
+        m["item_key"] for m in metadatas
+        if m.get("item_key") and ("file_stamp" in m or "chunk_index" in m)
+    }
+
+
+def _indexed_with_text(metadata: dict[str, Any] | None) -> bool:
+    """Whether a stored record was built from a file's text.
+
+    An attachment record always is; a legacy record says so in ``has_fulltext``.
+    """
+    metadata = metadata or {}
+    if "file_stamp" in metadata:
+        return True
+    return bool(metadata.get("has_fulltext")) and metadata.get("has_fulltext") != "failed"
+
+
+def _own_metadata(key: str, group_id: Any, date_modified: Any) -> dict[str, Any]:
+    """``item_key``, ``group_id`` and ``date_modified`` of a bare record.
+
+    Library attribution (#163): 0 = personal, else groupID. When it is
+    unknown the key is OMITTED, not defaulted: positive attribution is
+    deletion authority under the group_id-scoped deletion pass, so unknown
+    must stay unknown.
+    """
+    metadata: dict[str, Any] = {"item_key": key}
+    if group_id is not None:
+        metadata["group_id"] = int(group_id)
+    metadata["date_modified"] = date_modified or ""
+    return metadata
+
+
+def _parent_hint(owner_key: str | None) -> str:
+    """The ``parent_hint`` of a record whose attachment has this parent.
+
+    "" for a standalone file: a hint that is absent means the record was
+    written before hints existed, so a known absence needs a value (#826).
+    """
+    return owner_key or ""
+
+
 class _HeldText:
-    """Items' full text kept on disk between the article pass and the passage pass.
+    """Attachments' text kept on disk between the article pass and the passage pass.
 
     A run writing both levels embeds every article record before any passage.
     Holding each item's text in memory until its passages are written would
@@ -485,8 +658,7 @@ class _HeldText:
         self._closed = False
 
     def hold(self, item: dict[str, Any]) -> None:
-        data = item.get("data") or {}
-        text = data.get("fulltext") or ""
+        text = item.get("text") or ""
         if not text or self._closed:
             # After close, a pipeline thread still finishing must not leave
             # a new directory behind: the text stays in memory.
@@ -503,20 +675,19 @@ class _HeldText:
             logger.debug(f"Keeping the text of {item.get('key')} in memory: {e}")
             return
         item[self._KEY] = str(path)
-        data["fulltext"] = ""
+        item["text"] = ""
 
     def restore(self, item: dict[str, Any]) -> None:
         path = item.pop(self._KEY, None)
         if path:
-            item.setdefault("data", {})["fulltext"] = Path(path).read_text(encoding="utf-8")
+            item["text"] = Path(path).read_text(encoding="utf-8")
             Path(path).unlink(missing_ok=True)
 
     @staticmethod
     def release(item: dict[str, Any]) -> None:
-        """Drop the text again once the item's passages are built."""
-        data = item.get("data") or {}
-        if data.get("fulltext"):
-            data["fulltext"] = ""
+        """Drop the text again once the attachment's passages are built."""
+        if item.get("text"):
+            item["text"] = ""
 
     def close(self) -> None:
         self._closed = True
@@ -923,6 +1094,135 @@ def _drop_missing_documents(results: dict) -> int:
     return dropped
 
 
+def _collect_hits(chroma_results: dict) -> list[dict[str, Any]]:
+    """One dict per ChromaDB result: its record key, library, text, scores."""
+    ids = (chroma_results.get("ids") or [[]])[0] or []
+    distances = (chroma_results.get("distances") or [[]])[0] or []
+    documents = (chroma_results.get("documents") or [[]])[0] or []
+    metadatas = (chroma_results.get("metadatas") or [[]])[0] or []
+    rerank_scores = (chroma_results.get("rerank_scores") or [[]])[0] or []
+    hits: list[dict[str, Any]] = []
+    for i, raw_id in enumerate(ids):
+        meta = metadatas[i] if i < len(metadatas) else {}
+        meta = meta if isinstance(meta, dict) else {}
+        group_id = meta.get("group_id")
+        hit = {
+            "record_key": record_key(raw_id),
+            "meta": meta,
+            "library": int(group_id) if group_id is not None else None,
+            "document": documents[i] if i < len(documents) else "",
+            "distance": distances[i] if i < len(distances) else None,
+        }
+        if i < len(rerank_scores):
+            hit["rerank_score"] = rerank_scores[i]
+        hits.append(hit)
+    return hits
+
+
+def _is_trashed(item: dict) -> bool:
+    return bool((item.get("data") or {}).get("deleted"))
+
+
+#: Zotero asks API clients to "generally make no more than 4 concurrent
+#: requests" (Web API v3 basics, Rate Limiting). Shared by every search in
+#: this process, whichever library it asks.
+_API_CONCURRENCY = 4
+_api_slots = threading.BoundedSemaphore(_API_CONCURRENCY)
+_api_backoff_lock = threading.Lock()
+#: The latest Backoff / Retry-After any client was given, as a time.time().
+_api_backoff_until = 0.0
+
+
+def _with_shared_backoff(client: Any, fn: Any) -> Any:
+    """Run ``fn`` in an API slot, honouring and sharing the latest backoff.
+
+    pyzotero keeps a client's backoff on the client and waits it out before
+    its next request; a backoff the server gave one library's client must
+    hold back the others too, as it is this process the server is slowing.
+    """
+    global _api_backoff_until
+    with _api_slots:
+        with _api_backoff_lock:
+            shared = _api_backoff_until
+        # Only a pyzotero client's own number is touched (not a stand-in's).
+        own = getattr(client, "backoff_until", None)
+        if isinstance(own, (int, float)) and not isinstance(own, bool):
+            client.backoff_until = max(own, shared)
+        try:
+            return fn()
+        finally:
+            own = getattr(client, "backoff_until", None)
+            if isinstance(own, (int, float)) and not isinstance(own, bool):
+                with _api_backoff_lock:
+                    _api_backoff_until = max(_api_backoff_until, own)
+
+
+def _run_per_client(jobs: list[tuple[Any, Any]]) -> list[Any]:
+    """Run ``[(client, fn)]`` jobs, up to four at a time; their results in order.
+
+    A pyzotero client keeps per-request state (the last response, its
+    links, the query parameters), so the jobs of one client object run one
+    after another in a single thread; different clients, one per library,
+    run in parallel. An exception from a job is raised once all have ended.
+    """
+    if not jobs:
+        return []
+    groups: dict[int, list[int]] = {}
+    for index, (client, _fn) in enumerate(jobs):
+        groups.setdefault(id(client), []).append(index)
+    results: list[Any] = [None] * len(jobs)
+
+    def run_group(indexes: list[int]) -> None:
+        for index in indexes:
+            client, fn = jobs[index]
+            results[index] = _with_shared_backoff(client, fn)
+
+    if len(groups) == 1:
+        run_group(next(iter(groups.values())))
+        return results
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=min(_API_CONCURRENCY, len(groups))) as pool:
+        futures = [pool.submit(run_group, indexes) for indexes in groups.values()]
+    for future in futures:
+        future.result()
+    return results
+
+
+def _fetch_items_via_client(client, keys: list[str]) -> tuple[dict[str, dict], dict[str, Exception]]:
+    """Fetch ``keys`` through a pyzotero client: ``(found, failed)``.
+
+    Batches of 50 via ``itemKey``. That listing leaves trashed items out, so
+    a key absent from a batch's answer is trashed or deleted, and either way
+    not a result. Where the batch call itself fails, keys are asked for one
+    at a time, so that one failure is reported per key and a not-found key
+    is simply missing.
+    """
+    found: dict[str, dict] = {}
+    failed: dict[str, Exception] = {}
+    for start in range(0, len(keys), _ITEMKEY_BATCH):
+        batch = keys[start:start + _ITEMKEY_BATCH]
+        wanted = set(batch)
+        try:
+            # Paged, not one call: the local API can list the requested
+            # items' children first, past the end of a capped page (#499).
+            for item in _paginate(client.items, itemKey=",".join(batch)) or []:
+                # An itemKey query also returns the items' child notes.
+                if isinstance(item, dict) and item.get("key") in wanted:
+                    found[item["key"]] = item
+            continue
+        except Exception as e:
+            logger.debug(f"Batched item lookup failed, asking per key: {e}")
+        for key in batch:
+            try:
+                found[key] = client.item(key)
+            except ResourceNotFoundError:
+                continue
+            except Exception as e:
+                failed[key] = e
+    return found, failed
+
+
 class CrossEncoderReranker:
     """Optional cross-encoder re-ranker for semantic search results."""
 
@@ -1318,6 +1618,11 @@ class ZoteroSemanticSearch:
 
     # Set per run by update_database; see _prune_stale_chunks.
     _drop_passages_on_write = False
+    # Whether this run is one nobody asked for (startup, pre-search), set per run.
+    _automatic_run = False
+    # Attachments with all their passages and no attachment record that an
+    # automatic run left alone, counted per run.
+    _records_held = 0
     # The gaps a local scan should keep items for, set per run by update_database.
     _scan_gaps: dict[str, set[str]] = {}
     # Items a run only adds a missing level to, set per run by update_database.
@@ -1326,6 +1631,17 @@ class ZoteroSemanticSearch:
     _held_text: _HeldText | None = None
     # Items whose old passages could not be deleted in the article pass, set per run.
     _undropped_passages: set[str] = frozenset()
+    # Items whose legacy (parent-keyed) passages wait for their replacements,
+    # {item key: {"group_id", "wanted": [attachment keys]}} (#826). Set per run;
+    # see _settle_legacy_passages.
+    _legacy_settle: dict[str, dict[str, Any]] | None = None
+    # Record keys a full local scan wants indexed, for the deletion pass;
+    # None when the scan did not produce a complete set.
+    _scan_desired_keys: set[str] | None = None
+    # Other PDF attachments of an item whose text an API run took from one
+    # attachment: their records, if an earlier run wrote any, go once the
+    # run's changes are in.
+    _api_outranked: frozenset[str] | set[str] = frozenset()
     # A gap fill waiting for full text Zotero did not have is asked for it again
     # after this many days, doubling after each answer without text, up to the
     # cap. Zotero indexes PDFs some time after they are added.
@@ -1856,7 +2172,7 @@ class ZoteroSemanticSearch:
                 meta = dict(meta or {})
                 if "group_id" in meta:
                     continue
-                item_key = meta.get("item_key") or doc_id.split("#", 1)[0]
+                item_key = meta.get("item_key") or record_key(doc_id)
                 if key_group_map is not None and item_key in key_group_map:
                     group_id = key_group_map[item_key]
                 else:
@@ -1965,76 +2281,15 @@ class ZoteroSemanticSearch:
         return " ".join(parts)
 
     def _create_metadata(self, item: dict[str, Any]) -> dict[str, Any]:
-        """
-        Create metadata for a Zotero item.
+        """Metadata of a regular item's bibliographic record: its own state only.
 
-        Args:
-            item: Zotero item dictionary
-
-        Returns:
-            Metadata dictionary for ChromaDB
+        ``item_key``, ``group_id`` and ``date_modified`` (#826). Everything
+        bibliographic is resolved live from Zotero at search time, so nothing
+        stored here can go stale; ``date_modified`` is the record's version
+        stamp for change detection.
         """
         data = item.get("data", {})
-
-        metadata = {
-            "item_key": item.get("key", ""),
-            "item_type": data.get("itemType", ""),
-            "title": data.get("title", ""),
-            "date": data.get("date", ""),
-            "date_added": data.get("dateAdded", ""),
-            "date_modified": data.get("dateModified", ""),
-            "creators": format_creators(data.get("creators", [])),
-            "publication": data.get("publicationTitle", ""),
-            "url": data.get("url", ""),
-            "doi": data.get("DOI", ""),
-        }
-        # Library attribution (#163): 0 = personal, else groupID. Every
-        # item-producing path (local scan, API scan, incremental API fetch)
-        # stamps data["group_id"] before this runs. When attribution is
-        # unknown (key missing from the local map), the key is OMITTED, not
-        # defaulted: positive attribution is deletion authority under the
-        # group_id-scoped deletion pass, so unknown must stay unknown.
-        if (group_id := data.get("group_id")) is not None:
-            metadata["group_id"] = int(group_id)
-        # If fulltext was extracted (or attempted), mark it so incremental
-        # updates don't keep re-trying items that failed extraction
-        if data.get("fulltext"):
-            metadata["has_fulltext"] = True
-            if data.get("fulltextSource"):
-                metadata["fulltext_source"] = data.get("fulltextSource")
-        elif data.get("fulltext_attempted"):
-            # Extraction was attempted but failed (timeout, empty, etc.)
-            # Mark so we don't retry on every incremental update
-            metadata["has_fulltext"] = "failed"
-
-        # Record the attachment-key set (local mode only) so update runs can
-        # retry a "failed" item once its attachments change — attaching a file
-        # does not bump the parent's dateModified.
-        if (att_keys := data.get("attachmentKeys")) is not None:
-            metadata["attachment_keys"] = att_keys
-
-        # Which attachment kind won when this document was extracted. A later
-        # run compares it to the current setting: change the priority and the
-        # stored text may now come from the wrong file (#378).
-        if (att_priority := data.get("attachmentPriority")) is not None:
-            metadata["attachment_priority"] = att_priority
-
-        # Add tags as a single string
-        if tags := data.get("tags"):
-            metadata["tags"] = " ".join([tag.get("tag", "") for tag in tags])
-        else:
-            metadata["tags"] = ""
-
-        # Add citation key if available
-        extra = data.get("extra", "")
-        citation_key = ""
-        for line in extra.split("\n"):
-            if line.lower().startswith(("citation key:", "citationkey:")):
-                citation_key = line.split(":", 1)[1].strip()
-                break
-        metadata["citation_key"] = citation_key
-
-        return metadata
+        return _own_metadata(item.get("key", ""), data.get("group_id"), data.get("dateModified"))
 
     def should_update_database(self) -> bool:
         """Check if the database should be updated based on configuration."""
@@ -2148,9 +2403,6 @@ class ZoteroSemanticSearch:
                     config_path=self.config_path,
                 ) as reader,
             ):
-                # Stamped on every document so a later run can tell that the
-                # chosen attachment kind may have changed under it.
-                priority_tag = ",".join(reader.attachment_priority)
                 # Capture the snapshot's full key set on the SAME connection
                 # this scan uses. The staleness check after the (potentially
                 # long) extraction must compare against what this scan could
@@ -2232,350 +2484,550 @@ class ZoteroSemanticSearch:
                     except Exception:
                         pass
 
-                # Phase 2: selectively extract fulltext only when requested
                 if extract_fulltext:
-                    extracted = 0
-                    skipped_existing = 0
-                    updated_existing = 0
-                    items_to_process = []
-                    # Items whose attachment still needs parsing. Collected
-                    # here rather than parsed inline so the expensive half can
-                    # run as one batch — see the phase 2b loop below.
-                    pending_extraction = []
-
-                    total_local = len(local_items)
-                    _skipped_failed = []  # Items skipped because extraction previously failed
-                    # Items skipped that never had anything to extract — kept
-                    # out of the "extraction previously failed" report, which
-                    # alarmed users into force-rebuilds that cannot help (#446).
-                    _skipped_no_source = 0
-
-                    # Temporarily suppress the extractor's logger: a warning
-                    # about one unreadable attachment would otherwise land in
-                    # the middle of the \r progress line.
-                    _extract_logger = logging.getLogger("zotero_mcp.extract")
-                    _prev_level = _extract_logger.level
-                    _extract_logger.setLevel(logging.CRITICAL)
-
-                    for item_idx, it in enumerate(local_items, 1):
-                        # Build display string: Author (Year) — Title
-                        title = getattr(it, "title", "") or ""
-                        creators = getattr(it, "creators", "") or ""
-                        date = getattr(it, "date_added", "") or ""
-                        first_author = ""
-                        if creators:
-                            first_author = creators.split(";")[0].split(",")[0].strip()
-                            if first_author:
-                                first_author += " et al." if ";" in creators else ""
-                        year = ""
-                        if date and len(date) >= 4:
-                            year = date[:4]
-                        citation = ""
-                        if first_author and year:
-                            citation = f"{first_author} ({year}) — "
-                        elif first_author:
-                            citation = f"{first_author} — "
-                        display = f"{citation}{title}"
-                        if len(display) > 60:
-                            display = display[:57] + "..."
-
-                        # Single-line progress with \r overwrite
-                        # MUST fit within terminal width to prevent wrapping
-                        try:
-                            try:
-                                term_width = os.get_terminal_size().columns
-                            except (OSError, ValueError):
-                                term_width = 80
-                            # Build the line and truncate to terminal width - 1
-                            # (- 1 to prevent the cursor from wrapping to next line)
-                            max_len = term_width - 1
-                            status_parts = []
-                            if skipped_existing > 0:
-                                status_parts.append(f"{skipped_existing} up to date")
-                            if extracted > 0:
-                                status_parts.append(f"{extracted} extracted")
-                            status = f" ({', '.join(status_parts)})" if status_parts else ""
-                            prefix = f"  Processing {item_idx}/{total_local}{status} — "
-                            # Truncate display to fit remaining space
-                            remaining = max_len - len(prefix) - 3  # -3 for "..."
-                            if remaining > 0 and display and len(display) > remaining:
-                                display = display[:remaining] + "..."
-                            line = f"{prefix}{display or 'working...'}"
-                            # Clip by display columns so a CJK title can't
-                            # wrap the terminal and garble later \r redraws.
-                            line = _clip_to_width(line, max_len)
-                            sys.stderr.write(f"\r{line}{' ' * max(0, max_len - _display_cols(line))}")
-                            sys.stderr.flush()
-                        except Exception:
-                            pass
-
-                        should_extract = True
-
-                        # Current attachment-key set, stored in metadata so a
-                        # later run can detect attachment changes. Attaching a
-                        # file does NOT bump the parent's dateModified, so the
-                        # date check alone never clears a "failed" marker.
-                        att_keys = ",".join(
-                            sorted(k for k, _p, _c in reader.get_fulltext_meta_for_item(it.item_id))
-                        )
-                        it._attachment_keys = att_keys
-                        it._attachment_priority = priority_tag
-
-                        # CHECK IF ITEM ALREADY EXISTS (unless force_rebuild or no client)
-                        if chroma_client and not force_rebuild:
-                            # With passage-chunking the stored ids are
-                            # "<key>#<n>"; get_document_metadata falls back to
-                            # chunk 0 so chunked items are still recognized.
-                            existing_metadata = chroma_client.get_document_metadata(it.key)
-                            if existing_metadata and "group_id" not in existing_metadata:
-                                # Indexed before multi-library attribution and
-                                # not (yet) covered by the backfill: re-upsert
-                                # so the doc gains its group_id — otherwise an
-                                # unchanged untagged doc is skipped as "up to
-                                # date" forever and stays excluded from
-                                # library-filtered search and cleanup.
-                                updated_existing += 1
-                            elif existing_metadata:
-                                chroma_has_fulltext = existing_metadata.get("has_fulltext", False)
-                                local_has_fulltext = bool(att_keys)
-
-                                # Skip if extraction previously failed AND neither the item
-                                # nor its attachment set has changed since (handles both a
-                                # replaced bad PDF and a PDF newly attached to an item that
-                                # was indexed metadata-only)
-                                if chroma_has_fulltext == "failed":
-                                    chroma_date = existing_metadata.get("date_modified", "")
-                                    item_date = getattr(it, "date_modified", "") or ""
-                                    stored_att_keys = existing_metadata.get("attachment_keys")
-                                    if chroma_date == item_date and stored_att_keys == att_keys:
-                                        # Nothing changed since the failure — don't retry
-                                        should_extract = False
-                                        skipped_existing += 1
-                                        if att_keys:
-                                            _skipped_failed.append(display or f"item {it.key}")
-                                        else:
-                                            # Legacy "failed" marker on an item
-                                            # with no text-bearing attachments:
-                                            # nothing ever failed, there was
-                                            # nothing to try (#446).
-                                            _skipped_no_source += 1
-                                    else:
-                                        # Item or its attachments changed since last
-                                        # failure (legacy records without attachment_keys
-                                        # retry once, then converge) — retry
-                                        updated_existing += 1
-                                elif chroma_has_fulltext and not local_has_fulltext:
-                                    # Indexed with text, but every text-bearing
-                                    # attachment is gone. Re-index metadata-only
-                                    # so the passages from the deleted file stop
-                                    # matching searches (#428).
-                                    updated_existing += 1
-                                elif (
-                                    chroma_has_fulltext
-                                    and existing_metadata.get("attachment_keys") is not None
-                                    and existing_metadata.get("attachment_keys") != att_keys
-                                ):
-                                    # A different attachment set backs the text
-                                    # now, e.g. a replaced PDF (#428). Records
-                                    # written before attachment_keys existed are
-                                    # not compared, or every such index would
-                                    # re-extract in full on upgrade.
-                                    updated_existing += 1
-                                elif not chroma_has_fulltext and local_has_fulltext:
-                                    # Document exists but lacks fulltext - we need to update it
-                                    updated_existing += 1
-                                elif _attachment_priority_changed(
-                                    existing_metadata, priority_tag
-                                ):
-                                    # The stored text may have come from an
-                                    # attachment the user has since deprioritized
-                                    # — re-extract rather than serve a stale
-                                    # PDF-derived embedding (#378).
-                                    updated_existing += 1
-                                else:
-                                    should_extract = False
-                                    skipped_existing += 1
-
-                        if not should_extract and it.key in self._scan_gaps:
-                            action = self._scan_gap_action(
-                                existing_metadata or {}, self._scan_gaps[it.key]
-                            )
-                            it._index_levels = self._scan_gaps[it.key]
-                            skipped_existing -= 1
-                            if action == "extract":
-                                should_extract = True
-                            else:
-                                # Extraction already failed and nothing changed:
-                                # index what metadata there is, as the first run
-                                # did, instead of parsing that file again.
-                                it._fulltext_attempted = True
-                                extracted += 1
-                                items_to_process.append(it)
-
-                        if should_extract:
-                            # Defer the parse itself — see phase 2b.
-                            if not getattr(it, "fulltext", None):
-                                pending_extraction.append(it)
-                            extracted += 1
-                            items_to_process.append(it)
-
-                            # (progress shown inline above via \r)
-
-                    # Phase 2b: parse the chosen attachments. With
-                    # extraction_workers == 1 this is the same sequential walk
-                    # as before; above 1 it fans out over a process pool, and
-                    # results arrive out of order — hence the lookup by id.
-                    if pending_extraction:
-                        by_id = {it.item_id: it for it in pending_extraction}
-                        done = 0
-                        for item_id, result in _extract_fulltext_batch(
-                            reader, [(it.item_id, it.key) for it in pending_extraction]
-                        ):
-                            target = by_id.get(item_id)
-                            if target is None:
-                                continue
-                            if result:
-                                target.fulltext, target.fulltext_source = result
-                            elif getattr(target, "_attachment_keys", ""):
-                                # An attachment existed but produced no text —
-                                # record the attempt so incremental runs don't
-                                # re-parse it until something changes.
-                                target._fulltext_attempted = True
-                            # Items with no text-bearing attachments get no
-                            # marker at all (#446): there was nothing to try,
-                            # "failed" would mislead the skip report, and the
-                            # has_fulltext-absent path already re-indexes them
-                            # the moment a first attachment appears.
-                            done += 1
-                            if done % 10 == 0 or done == len(pending_extraction):
-                                try:
-                                    line = f"  Extracting text: {done}/{len(pending_extraction)}"
-                                    sys.stderr.write(f"\r{line}{' ' * 40}")
-                                    sys.stderr.flush()
-                                except Exception:
-                                    pass
-
-                    _extract_logger.setLevel(_prev_level)
-
-                    # Clear progress line and show extraction summary
-                    try:
-                        sys.stderr.write(f"\r{' ' * _term_width(120)}\r")  # Clear progress line
-                        parts = [f"  Extraction complete: {extracted} items to index"]
-                        if skipped_existing > 0:
-                            parts.append(f"{skipped_existing} already up to date")
-                        sys.stderr.write(", ".join(parts) + "\n")
-                        if updated_existing > 0:
-                            sys.stderr.write(f"  ({updated_existing} items updated with new fulltext)\n")
-                        # Honest accounting for the run's own extraction pass
-                        # (#446): "N indexed" used to cover items whose
-                        # attachments produced no text, so a --force-rebuild
-                        # reported "0 errors" and only the NEXT run's skip
-                        # report revealed how many extractions failed.
-                        _attempt_failed = sum(
-                            1 for _it in pending_extraction
-                            if getattr(_it, "_fulltext_attempted", False)
-                        )
-                        _no_source = sum(
-                            1 for _it in pending_extraction
-                            if not getattr(_it, "fulltext", None)
-                            and not getattr(_it, "_fulltext_attempted", False)
-                        )
-                        if _attempt_failed:
-                            sys.stderr.write(
-                                f"  {_attempt_failed} item(s) had attachments that produced no text "
-                                "(indexed metadata-only; not retried until the item or its attachments change)\n"
-                            )
-                        if _no_source:
-                            sys.stderr.write(
-                                f"  {_no_source} item(s) have no text-bearing attachments (indexed metadata-only)\n"
-                            )
-                        if _skipped_no_source:
-                            sys.stderr.write(
-                                f"  {_skipped_no_source} item(s) remain metadata-only (no text-bearing attachments)\n"
-                            )
-                        if _skipped_failed:
-                            sys.stderr.write(
-                                f"  {len(_skipped_failed)} item(s) skipped (PDF extraction previously failed):\n"
-                            )
-                            for name in _skipped_failed[:5]:  # Show first 5
-                                sys.stderr.write(f"    - {name}\n")
-                            if len(_skipped_failed) > 5:
-                                sys.stderr.write(f"    ... and {len(_skipped_failed) - 5} more\n")
-                            sys.stderr.write(
-                                "  (To retry these, attach or replace the PDF, or run with --force-rebuild)\n"
-                            )
-                    except Exception:
-                        pass
-
-                    # Replace local_items with filtered list
-                    local_items = items_to_process
+                    units = self._scan_local_units(
+                        reader,
+                        local_items,
+                        key_group_map,
+                        excluded_keys,
+                        chroma_client=chroma_client,
+                        force_rebuild=force_rebuild,
+                        collection_keys=collection_keys,
+                        limit=limit,
+                    )
                 else:
-                    # Skip fulltext extraction for faster processing
-                    for it in local_items:
-                        it.fulltext = None
-                        it.fulltext_source = None
+                    units = [self._local_item_unit(it, key_group_map.get(it.key)) for it in local_items]
 
-                # Convert to API-compatible format
-                api_items = []
-                for item in local_items:
-                    # Create API-compatible item structure
-                    api_item = {
-                        "key": item.key,
-                        "version": 0,  # Local items don't have versions
-                        "data": {
-                            "key": item.key,
-                            "itemType": getattr(item, "item_type", None) or "journalArticle",
-                            "title": item.title or "",
-                            "abstractNote": item.abstract or "",
-                            "extra": item.extra or "",
-                            # Include fulltext only when extracted
-                            "fulltext": getattr(item, "fulltext", None) or "" if extract_fulltext else "",
-                            "fulltextSource": getattr(item, "fulltext_source", None) or "" if extract_fulltext else "",
-                            # Flag if extraction was attempted but failed (timeout, empty)
-                            "fulltext_attempted": getattr(item, "_fulltext_attempted", False),
-                            "dateAdded": item.date_added,
-                            "dateModified": item.date_modified,
-                            "creators": self._parse_creators_string(item.creators) if item.creators else [],
-                            # Library attribution (#163): 0 = personal, else
-                            # groupID. Ground truth from get_key_group_map();
-                            # an item missing from the map (e.g. added
-                            # mid-scan) stays UNATTRIBUTED — a guessed
-                            # "personal" would be positive attribution minted
-                            # from nothing, i.e. deletion authority. The next
-                            # incremental sync re-tags it with evidence.
-                            "group_id": key_group_map.get(item.key),
-                        },
-                    }
-                    # Attachment-key set (computed during the extraction scan);
-                    # persisted to metadata so incremental runs can detect
-                    # newly attached files on previously-failed items.
-                    if (att := getattr(item, "_attachment_keys", None)) is not None:
-                        api_item["data"]["attachmentKeys"] = att
-                    if (prio := getattr(item, "_attachment_priority", None)) is not None:
-                        api_item["data"]["attachmentPriority"] = prio
-                    if (levels := getattr(item, "_index_levels", None)) is not None:
-                        api_item["_index_levels"] = levels
-
-                    # Add notes if available
-                    if item.notes:
-                        api_item["data"]["notes"] = item.notes
-
-                    api_items.append(api_item)
-
-                logger.info(f"Retrieved {len(api_items)} items from local database")
-                return api_items
+                logger.info(f"Retrieved {len(units)} work units from local database")
+                return units
 
         except Exception as e:
             logger.error(f"Error reading from local database: {e}")
             logger.info("Falling back to API...")
             return self._get_items_from_api(limit)
 
+    def _local_item_unit(self, item: Any, group_id: int | None) -> dict[str, Any]:
+        """A regular item from the local database as a bibliographic unit."""
+        unit = _item_unit({
+            "key": item.key,
+            "version": 0,  # Local items don't have versions
+            "data": {
+                "key": item.key,
+                "itemType": getattr(item, "item_type", None) or "journalArticle",
+                "title": item.title or "",
+                "abstractNote": item.abstract or "",
+                "extra": item.extra or "",
+                "dateAdded": item.date_added,
+                "dateModified": item.date_modified,
+                "creators": self._parse_creators_string(item.creators) if item.creators else [],
+                # Library attribution (#163): 0 = personal, else groupID.
+                # Ground truth from get_key_group_map(); an item missing from
+                # the map (e.g. added mid-scan) stays UNATTRIBUTED — a guessed
+                # "personal" would be positive attribution minted from
+                # nothing, i.e. deletion authority. The next sync re-tags it.
+                "group_id": group_id,
+            },
+        })
+        if item.notes:
+            unit["data"]["notes"] = item.notes
+        return unit
+
     @staticmethod
-    def _scan_gap_action(existing_metadata: dict[str, Any], gap: set[str] | None) -> str | None:
-        """What a scan does with an up-to-date item that lacks a level, or None."""
-        if not gap:
-            return None
-        return "metadata_only" if existing_metadata.get("has_fulltext") == "failed" else "extract"
+    def _legacy_fields(legacy: dict[str, Any]) -> dict[str, Any]:
+        """The copied metadata of a legacy item's records, for the article record written beside its passages.
+
+        An item that keeps its passages (they cost money) stays a legacy item
+        until it changes. A new-shape article record beside legacy passages
+        would read as a rewrite that kept them for an unreadable file, and the
+        next run would embed every file again. Written with the fields the
+        passages carry, the record is the one 0.17 wrote: judged by the same
+        criteria, left alone while unchanged, rewritten in full when it changes.
+        """
+        return {k: legacy[k] for k in _LEGACY_METADATA_KEYS if k in legacy}
+
+    @staticmethod
+    def _legacy_changed(legacy: dict[str, Any], item: Any, att_keys: str, priority_tag: str) -> bool:
+        """Whether a legacy item changed since its records were written.
+
+        The criteria those records were written under: library attribution,
+        the item's ``date_modified``, the attachment-key fingerprint (attaching
+        a file does not bump the parent's date), the "failed" marker, and the
+        attachment priority (#378, #428, #446). An unchanged legacy item keeps
+        its records until ``--force-rebuild`` (#826, decision 1).
+        """
+        if "group_id" not in legacy:
+            return True
+        if not _same_moment(legacy.get("date_modified"), getattr(item, "date_modified", "")):
+            return True
+        has_fulltext = legacy.get("has_fulltext", False)
+        stored_keys = legacy.get("attachment_keys")
+        if has_fulltext == "failed":
+            # Records without attachment_keys retry once, then converge.
+            return stored_keys != att_keys
+        if has_fulltext and not att_keys:
+            # Its text-bearing attachments are gone (#428).
+            return True
+        if has_fulltext and stored_keys is not None and stored_keys != att_keys:
+            return True
+        if not has_fulltext and att_keys:
+            return True
+        return _attachment_priority_changed(legacy, priority_tag)
+
+    def _scan_local_units(
+        self,
+        reader: Any,
+        local_items: list[Any],
+        key_group_map: dict[str, int],
+        excluded_keys: set[str],
+        *,
+        chroma_client: Any,
+        force_rebuild: bool,
+        collection_keys: list[str] | None,
+        limit: int | None,
+    ) -> list[dict[str, Any]]:
+        """The work units a local ``--fulltext`` scan needs written (#826).
+
+        Every indexable regular item is a bibliographic unit, and the one file
+        ``attachment_priority`` chooses for it (the largest of the first
+        category that has any) an attachment unit. A unit is written when it has
+        no record, or its record is stale: a bibliographic record by
+        ``date_modified``, an attachment record by ``file_stamp``. A file whose
+        extraction failed at this stamp is not tried again until it changes.
+        A legacy item is left alone until it changes; then it is rewritten.
+
+        Also sets ``_scan_desired_keys``, every record key this library should
+        have, for the deletion pass, when the scan covered the whole library.
+        """
+        check = chroma_client is not None and not force_rebuild
+        self._records_held = 0
+        priority_tag = ",".join(reader.attachment_priority)
+        dates = reader.get_date_modified_by_key()
+        desired: set[str] = set()
+        # Units in write order, a regular item's files right after it; files
+        # still to extract hold their target here until then.
+        planned: list[tuple[dict[str, Any], Any]] = []
+        up_to_date = 0
+        skipped_failed: list[str] = []
+        # Targets whose record is current and only lacks a level: a failed
+        # extraction of one must not drop what is already paid for.
+        current_keys: set[str] = set()
+        # Stored metadata read ahead for a slice of items in few batched gets
+        # (#368), instead of two or three single gets per item.
+        prefetched: dict[str, dict[str, Any]] = {}
+        passage_keys: set[str] | None = None
+        # Items with legacy passages left beside (or without) a bare record:
+        # they wait for the item's files to be written (#826).
+        pending_legacy: set[str] = set()
+        if check:
+            try:
+                pending_legacy = set(chroma_client.legacy_passage_keys())
+            except Exception:
+                pass
+            try:
+                # Passages still in the article collection (a 0.16 index not yet
+                # migrated) are not "passages" to the level reader, but they are
+                # the item's records: without them it would look new and be embedded.
+                passage_keys = chroma_client.item_keys_by_level()[1] | pending_legacy
+            except Exception:
+                passage_keys = None  # unknown: probe every key's first passage
+        self._legacy_settle = None
+
+        def prefetch(keys: list[str]) -> None:
+            """Load the stored state of ``keys`` (and first passages of those that have any)."""
+            ids = list(keys)
+            ids += [f"{k}#0" for k in keys if passage_keys is None or k in passage_keys]
+            # Only this slice's state is kept: the whole library's would grow with it.
+            prefetched.clear()
+            batched = getattr(chroma_client, "get_metadatas", None)
+            if batched is not None:
+                prefetched.update(batched(ids))
+            else:
+                for doc_id in ids:
+                    meta = chroma_client.get_document_metadata(doc_id)
+                    if meta is not None:
+                        prefetched[doc_id] = meta
+
+        def stored_of(key: str) -> dict[str, Any] | None:
+            """The record of ``key``, else its first passage, as ``get_document_metadata`` finds it."""
+            return prefetched.get(key) or prefetched.get(f"{key}#0")
+
+        failures_seen: dict[str, str] | None = None
+
+        def failures() -> dict[str, str]:
+            """The failure markers, read once per scan; ``fulltext_cache.record_failure`` keeps them current on disk."""
+            nonlocal failures_seen
+            if failures_seen is None:
+                failures_seen = fulltext_cache.known_failures(self.config_path)
+            return failures_seen
+
+        stamps_seen: dict[str, str] | None = None
+
+        def rekeyed_stamps() -> dict[str, str]:
+            """The file stamps the re-key recorded, read when first needed."""
+            nonlocal stamps_seen
+            if stamps_seen is None:
+                stamps_seen = fulltext_cache.rekeyed_stamps(self.config_path)
+            return stamps_seen
+
+        def selected_keys(item: Any, found: list[Any], chosen: list[Any]) -> list[str]:
+            """The attachment keys whose records ``item`` keeps.
+
+            The file this scan indexes. While the files Zotero's database
+            selects are not all on disk (an unmounted drive, kept on demand),
+            the choice cannot be made: those keys stay wanted, so their
+            records are kept and a legacy item's passages are not settled.
+            """
+            rows = select_attachment_rows(reader.get_fulltext_meta_for_item(item.item_id), reader.attachment_priority)
+            if chosen and set(rows) <= {t.key for t in found}:
+                return [chosen[0].key]
+            return rows
+
+        def queue_file(target: Any, *, group_id: int | None, owner: str | None, label: str,
+                       date_modified: str | None, rewrite: bool) -> None:
+            nonlocal up_to_date
+            unit = _attachment_unit(
+                target.key, "", file_stamp=target.file_stamp, date_modified=date_modified,
+                group_id=group_id, owner_key=owner, label=label,
+            )
+            gap = self._scan_gaps.get(target.key) if check else None
+            on_record = stored_of(target.key) if check else None
+            # A legacy item's rewrite writes every file again, except one whose
+            # passages the migration moved here and whose file has not changed.
+            stored = on_record if not rewrite else None
+            current = self._unit_is_current(unit, stored)
+            if current:
+                if not gap:
+                    up_to_date += 1
+                    return
+                unit["_index_levels"] = gap
+                current_keys.add(target.key)
+            elif check and (
+                action := self._passages_only_action(
+                    target.key, on_record, target.file_stamp, rekeyed_stamps(), gap
+                )
+            ):
+                # Its passages are there and its file has not changed; only the
+                # attachment record is missing. An automatic run leaves it, an
+                # explicit one writes the record, never the passages.
+                if action == "hold":
+                    self._records_held += 1
+                    return
+                unit["_index_levels"] = {SEARCH_ARTICLES}
+                current_keys.add(target.key)
+            # A forced rebuild tries every file again.
+            if check and failures().get(target.key) == target.file_stamp:
+                skipped_failed.append(label or target.key)
+                if not current and target.key not in current_keys:
+                    # A record of an older version of the file is stale.
+                    desired.discard(target.key)
+                return
+            planned.append((unit, target))
+
+        _extract_logger = logging.getLogger("zotero_mcp.extract")
+        _prev_level = _extract_logger.level
+        # A warning about one unreadable attachment would otherwise land in
+        # the middle of the \r progress line.
+        _extract_logger.setLevel(logging.CRITICAL)
+        try:
+            total = len(local_items)
+            resolved: dict[str, list[Any]] = {}
+            for item_idx, it in enumerate(local_items, 1):
+                display = self._scan_display(it)
+                self._scan_progress(item_idx, total, up_to_date, len(planned), display)
+
+                if (item_idx - 1) % _SCAN_SLICE == 0:
+                    resolved = {
+                        other.key: reader._resolve_extraction_targets(other.item_id)
+                        for other in local_items[item_idx - 1:item_idx - 1 + _SCAN_SLICE]
+                    }
+                    if check:
+                        prefetch([
+                            k for key, found in resolved.items()
+                            for k in (key, *(t.key for t in found))
+                        ])
+
+                group_id = key_group_map.get(it.key)
+                bib = self._local_item_unit(it, group_id)
+                found = resolved[it.key]
+                # One file per item: the largest of the first category, as
+                # before #826.
+                targets = [max(found, key=lambda t: t.size)] if found else []
+                selected = selected_keys(it, found, targets)
+                desired.add(it.key)
+                desired.update(target.key for target in targets)
+                desired.update(selected)
+
+                existing = stored_of(it.key) if check else None
+                legacy = self._legacy_metadata(it.key, existing) if existing else None
+                rewrite = False
+                if legacy is not None:
+                    gap = self._scan_gaps.get(it.key)
+                    att_keys = ",".join(
+                        sorted(k for k, _p, _c in reader.get_fulltext_meta_for_item(it.item_id))
+                    )
+                    # Only text has passages: a legacy item indexed without
+                    # any (none found, or extraction failed) lacks none.
+                    lacks_passages = gap == {SEARCH_PASSAGES} and legacy.get("has_fulltext") is True
+                    if self._legacy_changed(legacy, it, att_keys, priority_tag) or lacks_passages:
+                        bib["legacy_rewrite"] = rewrite = True
+                    elif gap == {SEARCH_ARTICLES}:
+                        # Only its article record is missing: write that, and
+                        # leave its passages, which cost money, as they are.
+                        bib["_index_levels"] = gap
+                        bib["legacy_fields"] = self._legacy_fields(legacy)
+                        planned.append((bib, None))
+                        continue
+                    else:
+                        up_to_date += 1
+                        continue
+                if it.key in pending_legacy and (legacy is None or rewrite):
+                    # Its record is (or is about to be) in the new shape; its
+                    # legacy passages stay until every file it selects is
+                    # written, in this run or a later one. An untouched legacy
+                    # item keeps them as its records.
+                    self._expect_replacement(it.key, group_id, selected)
+                if rewrite or not self._unit_is_current(bib, existing):
+                    planned.append((bib, None))
+                else:
+                    up_to_date += 1
+                for target in targets:
+                    queue_file(
+                        target, group_id=group_id, owner=it.key, label=display,
+                        date_modified=dates.get(target.key), rewrite=rewrite,
+                    )
+
+            # Parse the files. With extraction_workers == 1 a sequential
+            # walk; above 1 a process pool, results arriving out of order.
+            pending = {unit["key"]: (unit, target) for unit, target in planned if target is not None}
+            to_extract = [target for _unit, target in pending.values()]
+            failed_now = 0
+            done = 0
+            for att_key, result in reader.extract_targets(to_extract):
+                unit, target = pending[att_key]
+                if result and (result[0] or "").strip():
+                    unit["text"] = result[0]
+                elif att_key in current_keys:
+                    # A gap fill of a record that is current: the file read at
+                    # this stamp before, so the failure is probably transient.
+                    # Keep the paid-for record and leave no failure marker, or
+                    # the gap would stay open until the file changes.
+                    pass
+                else:
+                    # Not tried again until the file changes; a stale record
+                    # of it is outside the desired set and goes.
+                    fulltext_cache.record_failure(att_key, target.file_stamp, config_path=self.config_path)
+                    desired.discard(att_key)
+                    failed_now += 1
+                done += 1
+                if done % 10 == 0 or done == len(to_extract):
+                    _report(f"\r  Extracting text: {done}/{len(to_extract)}{' ' * 40}")
+        finally:
+            _extract_logger.setLevel(_prev_level)
+
+        units = [
+            unit for unit, target in planned
+            if target is None or unit["text"]
+        ]
+        try:
+            sys.stderr.write(f"\r{' ' * _term_width(120)}\r")
+            parts = [f"  Extraction complete: {len(units)} records to write"]
+            if up_to_date:
+                parts.append(f"{up_to_date} already up to date")
+            sys.stderr.write(", ".join(parts) + "\n")
+            if failed_now:
+                sys.stderr.write(
+                    f"  {failed_now} attachment(s) produced no text "
+                    "(not retried until the file changes)\n"
+                )
+            if skipped_failed:
+                sys.stderr.write(
+                    f"  {len(skipped_failed)} attachment(s) skipped (extraction previously failed):\n"
+                )
+                for name in skipped_failed[:5]:
+                    sys.stderr.write(f"    - {name}\n")
+                if len(skipped_failed) > 5:
+                    sys.stderr.write(f"    ... and {len(skipped_failed) - 5} more\n")
+                sys.stderr.write("  (To retry these, replace the file, or run with --force-rebuild)\n")
+        except Exception:
+            pass
+
+        # A limited or collection-filtered scan sees part of the library: its
+        # set would delete the rest. Those runs keep item_versions().
+        if limit is None and not collection_keys:
+            self._scan_desired_keys = desired
+        return units
+
+    @staticmethod
+    def _scan_display(item: Any) -> str:
+        """``Author (Year) — Title`` for the scan's progress line."""
+        title = getattr(item, "title", "") or ""
+        creators = getattr(item, "creators", "") or ""
+        date = getattr(item, "date_added", "") or ""
+        first_author = ""
+        if creators:
+            first_author = creators.split(";")[0].split(",")[0].strip()
+            if first_author:
+                first_author += " et al." if ";" in creators else ""
+        year = date[:4] if date and len(date) >= 4 else ""
+        if first_author and year:
+            citation = f"{first_author} ({year}) — "
+        elif first_author:
+            citation = f"{first_author} — "
+        else:
+            citation = ""
+        display = f"{citation}{title}"
+        return display[:57] + "..." if len(display) > 60 else display
+
+    @staticmethod
+    def _scan_progress(index: int, total: int, up_to_date: int, to_write: int, display: str) -> None:
+        """One \r-overwritten progress line, clipped to the terminal width."""
+        try:
+            max_len = _term_width() - 1
+            status_parts = []
+            if up_to_date:
+                status_parts.append(f"{up_to_date} up to date")
+            if to_write:
+                status_parts.append(f"{to_write} to write")
+            status = f" ({', '.join(status_parts)})" if status_parts else ""
+            line = _clip_to_width(f"  Processing {index}/{total}{status} — {display or 'working...'}", max_len)
+            sys.stderr.write(f"\r{line}{' ' * max(0, max_len - _display_cols(line))}")
+            sys.stderr.flush()
+        except Exception:
+            pass
+
+    def _split_unmigrated_index(self, stats: dict[str, Any]) -> None:
+        """Give a chunked index built before the split its own passage collection (``migrate-index``'s first step).
+
+        An explicit update does this before re-keying, as ``migrate-index``
+        does: otherwise the re-keyed passages would stay in the article
+        collection, where the gap fill cannot see them. Moves vectors, embeds
+        nothing. A failure is logged and the run goes on: the index keeps
+        working the way it did.
+        """
+        from . import index_migration
+        from .chroma_client import ChromaClient
+
+        if not isinstance(self.chroma_client, ChromaClient):
+            return  # not the local ChromaDB (the server's worker process, a test double): nothing to rename here
+        try:
+            layout = self.chroma_client.index_layout()
+            if not layout.get("legacy_passages"):
+                # Nothing to re-key: an index written by this version goes on as it is.
+                return
+            report = index_migration.split_index(self.chroma_client, lambda message: _report(message + "\n"))
+        except Exception as e:
+            logger.error(f"Splitting the index into article and passage collections failed ({e}); it stays as it is")
+            return
+        if report is not None:
+            stats["index_split"] = {"renamed": report.renamed, "passages_moved": report.moved_passages}
+
+    def _rekey_legacy_passages(self, stats: dict[str, Any]) -> None:
+        """Move passages stored under their parent item to their attachment (``migrate-index``'s second step).
+
+        Embeds nothing. A failure is logged and the run goes on: legacy
+        passages keep working where they are.
+        """
+        layout_of = getattr(self.chroma_client, "index_layout", None)
+        layout = layout_of() if layout_of else None
+        if not isinstance(layout, dict) or not layout.get("legacy_passages"):
+            return
+        from . import index_migration
+
+        report = index_migration.MigrationReport(self.chroma_client.persist_directory, dry_run=False)
+        try:
+            _report(f"Re-keying the passages of {layout['legacy_passage_items']} items to their attachments.\n")
+            with index_migration.open_sources(self.config_path, db_path=self.db_path) as sources:
+                index_migration.rekey_legacy_passages(
+                    self.chroma_client.persist_directory,
+                    self.chroma_client.collection_name,
+                    self.chroma_client,
+                    sources,
+                    report,
+                    lambda _message: None,
+                    config_path=self.config_path,
+                )
+        except Exception as e:
+            logger.error(f"Re-keying legacy passages failed ({e}); they stay as they are")
+        stats["passages_rekeyed"] = {
+            "items": report.rekeyed_items,
+            "passages": report.rekeyed_passages,
+            "dropped_items": report.dropped_items,
+            "skipped_items": report.skipped_items,
+        }
+
+    def _attachment_parents(self, keys: list[str]) -> dict[str, str | None]:
+        """``{attachment key: parent key or None}`` for the attachments Zotero says it has among ``keys``.
+
+        None is a standalone file. An attachment Zotero does not list (gone,
+        trashed, or in a library that cannot be read) is left out: nothing
+        can be said about it. Local mode asks zotero.sqlite once for every
+        library; otherwise each library's attachments are listed through its
+        client, which costs a paged request or more per library.
+        """
+        reader = None
+        try:
+            reader = self._open_local_reader()
+        except Exception as e:
+            logger.debug(f"Parent hints: no local database ({e})")
+        if reader is not None:
+            try:
+                known = reader.get_attachment_parents(group_id=None)
+            except Exception as e:
+                logger.warning(f"Reading attachment parents from zotero.sqlite failed: {e}")
+                return {}
+            finally:
+                close = getattr(reader, "close", None)
+                if close:
+                    close()
+            return {key: known[key] for key in keys if key in known}
+
+        bound = None
+        try:
+            bound = self._client_group_id()
+        except ValueError:
+            pass
+        libraries = self.chroma_client.item_group_ids(keys)
+        by_library: dict[int | None, list[str]] = {}
+        for key in keys:
+            by_library.setdefault(libraries.get(key, bound), []).append(key)
+        found: dict[str, str | None] = {}
+        for library, wanted in by_library.items():
+            client = self.zotero_client if library is None or library == bound else self._client_for_group(library)
+            if client is None:
+                continue
+            try:
+                rows = _paginate(client.items, itemType="attachment") or []
+            except Exception as e:
+                logger.warning(f"Could not list the attachments of library {library} for the parent hints: {e}")
+                continue
+            parents = {
+                (row.get("key") or (row.get("data") or {}).get("key")): (row.get("data") or {}).get("parentItem") or None
+                for row in rows
+                if isinstance(row, dict) and (row.get("data") or {}).get("itemType") == "attachment"
+            }
+            found.update({key: parents[key] for key in wanted if key in parents})
+        return found
+
+    def _backfill_parent_hints(self, stats: dict[str, Any]) -> None:
+        """Give attachment records and passages written before hints their ``parent_hint`` (``migrate-index`` does the same).
+
+        Metadata only: nothing is embedded. An attachment Zotero cannot place
+        is counted as unresolved and left as it is; the next explicit run
+        tries again. A failure is logged and the run goes on: a missing hint
+        only keeps web-mode filtered searches on their slower path (#826).
+        """
+        try:
+            keys = self.chroma_client.unhinted_attachment_keys()
+            if not keys:
+                return
+            parents = self._attachment_parents(keys)
+            changed = self.chroma_client.set_parent_hints(parents) if parents else 0
+        except Exception as e:
+            logger.error(f"Setting parent hints failed ({e}); filtered searches stay on the slower path")
+            return
+        stats["parent_hints"] = {
+            "attachments": len(parents), "records": changed, "unresolved": len(keys) - len(parents),
+        }
 
     def _find_index_gaps(
         self, *, limit: int | None, force_rebuild: bool, fill_passages: bool = True
@@ -2590,11 +3042,25 @@ class ZoteroSemanticSearch:
         if limit is not None or force_rebuild or not self._separate_passages():
             return {}
         articles, passages = self.chroma_client.item_keys_by_level()
-        gaps: dict[str, set[str]] = {key: {SEARCH_ARTICLES} for key in passages - articles}
+        # Passages the migration moved to an attachment's key belong to a
+        # legacy item and have no attachment record, by design (#826).
+        moved = getattr(self.chroma_client, "rekeyed_targets", None)
+        missing_articles = passages - articles - (moved() if moved else set())
+        if not fill_passages and missing_articles:
+            # The migration's re-keying leaves attachments with passages and no
+            # article record; an automatic run must not embed one for each. An
+            # item the 0.17 split left without one (legacy passages) still is.
+            legacy_keys = getattr(self.chroma_client, "legacy_passage_keys", None)
+            missing_articles &= legacy_keys() if legacy_keys else missing_articles
+        gaps: dict[str, set[str]] = {key: {SEARCH_ARTICLES} for key in missing_articles}
         # An automatic run (startup, pre-search) leaves passage gaps alone:
         # after chunking is switched on that is the whole library, which a paid
         # embedding API bills; it waits for an update the user starts.
-        missing = articles - passages if self._chunking_enabled else set()
+        # Only attachment and legacy records have passages to lack (#826); a
+        # bibliographic record never has any.
+        bearing = getattr(self.chroma_client, "passage_bearing_keys", None)
+        eligible = articles & bearing() if bearing else articles
+        missing = eligible - passages if self._chunking_enabled else set()
         self._passage_gaps_held = 0 if fill_passages else len(missing)
         if fill_passages:
             for key in missing:
@@ -2628,7 +3094,7 @@ class ZoteroSemanticSearch:
             if not include_fulltext:
                 # No run without text can fill this; don't fetch the item to find out.
                 existing = self.chroma_client.get_document_metadata(key) or {}
-                if existing.get("has_fulltext") and existing.get("has_fulltext") != "failed":
+                if _indexed_with_text(existing):
                     waiting.add(key)
                     continue
             try:
@@ -2637,16 +3103,61 @@ class ZoteroSemanticSearch:
                 logger.debug(f"item({key}) failed while filling index gaps: {e}")
                 self._note_unanswered_recheck(key, waiting)
                 continue
+            if (item or {}).get("data", {}).get("itemType") == "attachment" and include_fulltext:
+                # An attachment record's missing level comes from its own text.
+                items.append(self._attachment_gap_unit(key, item, gaps[key]))
+                continue
             if not item or item.get("data", {}).get("itemType") in _NON_INDEXED_ITEM_TYPES:
                 self._note_unanswered_recheck(key, waiting)
                 continue
             item["_index_levels"] = gaps[key]
             items.append(item)
-        if include_fulltext and items:
-            self._attach_web_fulltext(items)
-        self._tag_group_id(items)
+        api_items = [item for item in items if not item.get("unit")]
+        if include_fulltext and api_items:
+            self._attach_web_fulltext(api_items)
+        self._tag_group_id(api_items)
         self.update_config["gaps_waiting_for_text"] = sorted(waiting)
         return self._without_fills_lacking_text(items)
+
+    def _attachment_gap_unit(
+        self, key: str, item: dict[str, Any], levels: set[str]
+    ) -> dict[str, Any]:
+        """An indexed attachment's unit for a gap fill, with the text Zotero has for it.
+
+        Transitional (#826): the API paths learn to select attachments in a
+        later change. Only the missing level is written while the file is the
+        one the stored record describes; a changed file is written in full.
+        """
+        data = item.get("data") or {}
+        text, failed = "", False
+        try:
+            resp = self.zotero_client.fulltext_item(key)
+            text = str(resp.get("content", "") or "") if isinstance(resp, dict) else (
+                resp if isinstance(resp, str) else ""
+            )
+        except ResourceNotFoundError:
+            pass
+        except Exception as e:
+            logger.debug(f"fulltext_item({key}) failed while filling index gaps: {e}")
+            failed = True
+        unit = _attachment_unit(
+            key,
+            text,
+            file_stamp=_api_file_stamp(item),
+            date_modified=data.get("dateModified"),
+            group_id=self._pinned_group_id(),
+            owner_key=data.get("parentItem"),
+            label=data.get("title", ""),
+        )
+        existing = self.chroma_client.get_document_metadata(key) or {}
+        if existing.get("file_stamp") == unit["file_stamp"]:
+            unit["_index_levels"] = levels
+        elif "chunk_index" in existing and levels == {SEARCH_ARTICLES}:
+            # Its passages are there, and carry no stamp: only the record is missing.
+            unit["_index_levels"] = levels
+        unit["fulltext_attempted"] = not text.strip()
+        unit["fulltext_fetch_failed"] = failed
+        return unit
 
     @staticmethod
     def _local_time(value: Any) -> datetime | None:
@@ -2746,11 +3257,18 @@ class ZoteroSemanticSearch:
         kept: list[dict[str, Any]] = []
         waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
         for item in items:
-            data = item.get("data", {})
+            # An attachment unit carries its text and fetch flags itself.
+            data = item if _is_attachment_unit(item) else item.get("data", {})
+            text = item.get("text") if _is_attachment_unit(item) else data.get("fulltext")
             key = item.get("key")
-            if item.get("_index_levels") and not (data.get("fulltext") or "").strip():
+            # A regular item's missing article record is its bibliographic
+            # record, built from metadata alone (#826): only passages and an
+            # attachment's records need its text.
+            levels = item.get("_index_levels") or set()
+            needs_text = _is_attachment_unit(item) or SEARCH_PASSAGES in levels
+            if levels and needs_text and not (text or "").strip():
                 existing = self.chroma_client.get_document_metadata(key) or {}
-                if existing.get("has_fulltext") and existing.get("has_fulltext") != "failed":
+                if _indexed_with_text(existing):
                     if data.get("fulltext_fetch_failed"):
                         # A failed fetch says nothing about the text: the
                         # item is left for the next run, not parked.
@@ -2766,7 +3284,10 @@ class ZoteroSemanticSearch:
                         }
                         self.update_config["gaps_text_checked"] = checks
                     continue
-            if key in waiting and (data.get("fulltext") or "").strip():
+            if _is_attachment_unit(item) and not (text or "").strip():
+                # Nothing to write from: an attachment unit is its text.
+                continue
+            if key in waiting and (text or "").strip():
                 waiting.discard(key)
                 checks = self._text_checks()
                 checks.pop(key, None)
@@ -2789,20 +3310,45 @@ class ZoteroSemanticSearch:
         kept: list[dict[str, Any]] = []
         for item in items:
             data = item.get("data", {})
+            # Attachment units were judged against their own records when
+            # they were read.
+            if item.get("unit") == UNIT_ATTACHMENT:
+                kept.append(item)
+                continue
             existing = self.chroma_client.get_document_metadata(item.get("key", ""))
             if not existing or not _same_moment(existing.get("date_modified"), data.get("dateModified")):
                 kept.append(item)
                 continue
-            # New text for an item indexed without it: never indexed with
-            # text, or "failed" (asked, none then). Attaching a PDF doesn't
-            # change the item, so this is where its text comes in.
-            if (data.get("fulltext") or "").strip() and existing.get("has_fulltext") is not True:
-                kept.append(item)
-                continue
+            # Attaching a file does not change the item: when its text came
+            # from a file whose record is missing, stale or lacks a level,
+            # the item stays, for ``_plan_units`` to judge that file's record.
+            source = data.get("fulltextSource") or ""
+            if (data.get("fulltext") or "").strip() and source.startswith(_WEB_ATTACHMENT_SOURCE):
+                attachment = source[len(_WEB_ATTACHMENT_SOURCE):]
+                unit = self._as_units([item])[1]
+                if attachment in gaps or not self._unit_is_current(unit, self._stored_metadata(attachment)):
+                    if item.get("key") in gaps:
+                        item["_index_levels"] = gaps[item["key"]]
+                    kept.append(item)
+                    continue
             if item.get("key") in gaps:
+                if gaps[item["key"]] == {SEARCH_PASSAGES} and _is_legacy_record(existing):
+                    # An untouched legacy item keeps its records, and the
+                    # money spent on them, until --force-rebuild (#826).
+                    continue
                 item["_index_levels"] = gaps[item["key"]]
                 kept.append(item)
         return self._without_fills_lacking_text(kept)
+
+    @staticmethod
+    def _fetched_keys(items: list[dict[str, Any]]) -> set[str]:
+        """Keys ``items`` already cover: each item, and the attachment its text came from."""
+        keys = {item.get("key") for item in items}
+        for item in items:
+            source = (item.get("data") or {}).get("fulltextSource") or ""
+            if source.startswith(_WEB_ATTACHMENT_SOURCE):
+                keys.add(source[len(_WEB_ATTACHMENT_SOURCE):])
+        return keys
 
     def _keep_current_articles(
         self, items: list[dict[str, Any]], gaps: dict[str, set[str]]
@@ -2821,7 +3367,7 @@ class ZoteroSemanticSearch:
                 continue
             data = item.get("data", {})
             existing = self.chroma_client.get_document_metadata(key)
-            if not existing or "parent_item_key" in existing:
+            if not existing or "chunk_index" in existing:
                 continue
             if not _same_moment(existing.get("date_modified"), data.get("dateModified")):
                 continue
@@ -2829,6 +3375,163 @@ class ZoteroSemanticSearch:
             if bool((data.get("fulltext") or "").strip()) != (existing.get("has_fulltext") is True):
                 continue
             item["_index_levels"] = gaps[key]
+
+    def _stored_metadata(self, key: str) -> dict[str, Any] | None:
+        """``get_document_metadata``, or None from a client that can't look records up."""
+        lookup = getattr(self.chroma_client, "get_document_metadata", None)
+        return lookup(key) if lookup else None
+
+    def _legacy_metadata(self, key: str, existing: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        """The metadata of a record of ``key`` written before #826, or None.
+
+        A regular item's format is its bare record's: legacy while that record
+        carries ``title``. With no bare record, its first passage stands in (a
+        pre-0.17 chunked index has nothing else). Legacy passages beside a
+        new-shape bare record do not make the item legacy: they are what a
+        rewrite kept because a file was out of reach, and wait for their
+        replacement (``_settle_legacy_passages``). Judging the item by them
+        would rewrite, and so embed, its record on every run. ``existing`` is
+        the item's ``get_document_metadata`` result when the caller has it.
+        """
+        if existing is None:
+            existing = self._stored_metadata(key)
+        return existing if _is_legacy_record(existing) else None
+
+    @staticmethod
+    def _unit_is_current(unit: dict[str, Any], existing: dict[str, Any] | None) -> bool:
+        """Whether ``existing``, a record's stored metadata, already describes ``unit``.
+
+        A bibliographic record is current while its ``date_modified`` is the
+        item's, an attachment record while its ``file_stamp`` is the file's.
+        A record without library attribution, a legacy record, or only a
+        passage of the key is never current.
+        """
+        if not existing or "group_id" not in existing or "chunk_index" in existing:
+            return False
+        if _is_legacy_record(existing):
+            return False
+        if _is_attachment_unit(unit):
+            stored_stamp, stamp = existing.get("file_stamp"), unit.get("file_stamp")
+            if stored_stamp == stamp:
+                return True
+            # One file seen from a machine that has it (a local stamp) and from
+            # one that has not (an API stamp) would otherwise be re-embedded
+            # back and forth. Stamps of different kinds say nothing about the
+            # file, so the attachment's own dateModified decides.
+            if stored_stamp and stamp and _stamp_kind(stored_stamp) != _stamp_kind(stamp):
+                modified = unit.get("date_modified")
+                return bool(modified) and _same_moment(existing.get("date_modified"), modified)
+            return False
+        return _same_moment(existing.get("date_modified"), unit.get("data", {}).get("dateModified"))
+
+    def _passages_only_action(
+        self, key: str, stored: dict[str, Any] | None, file_stamp: str, stamps: dict[str, str],
+        gap: set[str] | None,
+    ) -> str | None:
+        """What to do with ``key``, whose record is only its first passage: ``"fill"``, ``"hold"`` or None.
+
+        What the migration leaves (and a stopped run could): passages with no
+        attachment record. When the file is as the passages were cut from it
+        they are paid for and fine, so only the record is missing: an explicit
+        run fills it (``"fill"``: the record only, from the file's text), an
+        automatic one ``"hold"``s the file. None is the normal path: not a
+        passage-only key, passages missing, or a real change. ``stored`` is
+        the metadata of the key's record, else its first passage; ``gap`` the
+        levels the index lacks for it. The file has changed when the
+        migration recorded it (``stamps``) under another local stamp.
+        """
+        if not stored or "chunk_index" not in stored:
+            return None
+        seen = stamps.get(key)
+        if seen is not None and seen != file_stamp and _stamp_kind(file_stamp) == "local":
+            return None
+        if gap == {SEARCH_ARTICLES}:
+            return "fill"
+        count = stored.get("n_chunks")
+        existing = getattr(self.chroma_client, "get_existing_ids", None)
+        if existing is None or not isinstance(count, int) or count < 1:
+            return None
+        if len(existing([f"{key}#{n}" for n in range(count)])) != count:
+            return None
+        return "hold" if self._automatic_run else "fill"
+
+    def _plan_units(self, items: list[dict[str, Any]], *, force_rebuild: bool) -> list[dict[str, Any]]:
+        """The work units an API-fetched list of items needs written this run.
+
+        Units the local scan made pass through: it already decided. For an API
+        item (#826): its bibliographic record, and one attachment record for
+        the file its text came from. A legacy item missing only its article
+        record gets a new bibliographic record and keeps its passages; a
+        legacy item that has changed (``_legacy_action``) is rewritten in full,
+        its legacy passages going once its new records are in; an unchanged
+        one is left alone. Records already current are left alone, and so is
+        a file whose passages a migration moved here and which has not
+        changed: an automatic run holds it, an explicit one writes only its
+        record.
+        """
+        units: list[dict[str, Any]] = []
+        stamps_seen: dict[str, str] | None = None
+
+        def judged(attachments: list[dict[str, Any]], *, rewrite: bool) -> list[dict[str, Any]]:
+            """The attachment units that need writing."""
+            nonlocal stamps_seen
+            kept: list[dict[str, Any]] = []
+            for attachment in attachments:
+                key = attachment["key"]
+                stored = self._stored_metadata(key)
+                gap = self._scan_gaps.get(key)
+                if not rewrite and self._unit_is_current(attachment, stored):
+                    if gap:
+                        attachment["_index_levels"] = gap
+                        kept.append(attachment)
+                    continue
+                if stamps_seen is None:
+                    stamps_seen = fulltext_cache.rekeyed_stamps(self.config_path)
+                action = self._passages_only_action(key, stored, attachment["file_stamp"], stamps_seen, gap)
+                if action == "hold":
+                    # Its passages are there and its file has not changed; only
+                    # the attachment record is missing.
+                    self._records_held += 1
+                    continue
+                if action == "fill":
+                    attachment["_index_levels"] = {SEARCH_ARTICLES}
+                kept.append(attachment)
+            return kept
+
+        for item in items:
+            if item.get("unit"):
+                units.append(item)
+                continue
+            bib, *attachments = self._as_units([item])
+            levels = bib.pop("_index_levels", None)
+            if force_rebuild:
+                units.append(bib)
+                units.extend(attachments)
+                continue
+            existing = self._stored_metadata(bib["key"])
+            legacy = self._legacy_metadata(bib["key"], existing)
+            if legacy is not None:
+                action = self._legacy_action(item, legacy)
+                if action == "skip":
+                    continue
+                if action == "article":
+                    bib["_index_levels"] = levels
+                    bib["legacy_fields"] = self._legacy_fields(legacy)
+                    units.append(bib)
+                    continue
+                bib["legacy_rewrite"] = True
+                # Its passages go once the files its text comes from are
+                # written; with one unread, they are the only copy.
+                self._expect_replacement(
+                    bib["key"], (bib.get("data") or {}).get("group_id"), [a["key"] for a in attachments]
+                )
+                units.append(bib)
+                units.extend(judged(attachments, rewrite=True))
+                continue
+            if not self._unit_is_current(bib, existing):
+                units.append(bib)
+            units.extend(judged(attachments, rewrite=False))
+        return units
 
     def _unfinished_batch_run(self) -> str | None:
         """Run id of a batch run for this library that has not finished landing.
@@ -2903,8 +3606,25 @@ class ZoteroSemanticSearch:
             logger.debug(f"children({item_key}) failed: {e}")
             return "", "", True
         return self._fulltext_from_attachments_checked(
-            [self._pdf_attachment_key(child) for child in children]
+            [self._note_api_attachment(child) for child in children]
         )
+
+    # What the API run has seen of each PDF attachment, by key: the record
+    # state an attachment unit needs (see _api_file_stamp).
+    _api_attachments: dict[str, dict[str, Any]] | None = None
+
+    def _note_api_attachment(self, row: Any) -> str | None:
+        """``_pdf_attachment_key(row)``, remembering the attachment's file state."""
+        key = self._pdf_attachment_key(row)
+        if key:
+            if self._api_attachments is None:
+                self._api_attachments = {}
+            self._api_attachments[key] = {
+                "file_stamp": _api_file_stamp(row),
+                "date_modified": (row.get("data") or {}).get("dateModified", ""),
+                "parent": (row.get("data") or {}).get("parentItem"),
+            }
+        return key
 
     @staticmethod
     def _pdf_attachment_key(child: Any) -> str | None:
@@ -2948,6 +3668,46 @@ class ZoteroSemanticSearch:
     # of the attachments is cheaper than asking for each item's children.
     _BULK_ATTACHMENT_WALK_MIN_ITEMS = 25
 
+    def _legacy_action(self, item: dict[str, Any], legacy: dict[str, Any]) -> str:
+        """What an API-fetched item whose records are legacy needs: ``"skip"``, ``"article"`` or ``"rewrite"``.
+
+        An unchanged legacy item keeps its records until ``--force-rebuild``
+        (#826). It has changed when it has no library attribution, its
+        ``date_modified`` moved, or chunking is on and it was indexed with text but has no passages.
+        """
+        levels = item.get("_index_levels")
+        if levels == {SEARCH_ARTICLES}:
+            # Only its article record is missing: write that, and leave its
+            # passages, which cost money, as they are.
+            return "article"
+        data = item.get("data") or {}
+        if (
+            "group_id" not in legacy
+            or not _same_moment(legacy.get("date_modified"), data.get("dateModified"))
+            or (levels == {SEARCH_PASSAGES} and legacy.get("has_fulltext") is True)
+        ):
+            return "rewrite"
+        return "skip"
+
+    def _delete_records(self, keys: set[str]) -> int:
+        """Delete the records (and passages) of these attachment keys, those present.
+
+        Returns how many keys had any.
+        """
+        if not keys:
+            return 0
+        present = sorted(self._existing_item_keys(sorted(keys)))
+        group_id = int(self._run_group_id) if getattr(self, "_run_group_id", None) is not None else None
+        if group_id is not None and present:
+            # Only this library's records: a key another library also holds is not ours to delete.
+            stored = self.chroma_client.get_metadatas(present)
+            present = [key for key in present if stored.get(key, {}).get("group_id", group_id) == group_id]
+        for key in present:
+            self.chroma_client.delete_item_chunks(key, group_id=group_id)
+        if present:
+            self.chroma_client.delete_documents(present)
+        return len(present)
+
     def _pdf_attachment_keys_by_parent(self) -> dict[str, list[str]] | None:
         """PDF attachment keys grouped by parent key, from one paged listing.
 
@@ -2961,7 +3721,7 @@ class ZoteroSemanticSearch:
             return None
         by_parent: dict[str, list[str]] = {}
         for row in rows:
-            key = self._pdf_attachment_key(row)
+            key = self._note_api_attachment(row)
             parent = (row.get("data") or {}).get("parentItem") if isinstance(row, dict) else None
             if key and parent:
                 by_parent.setdefault(parent, []).append(key)
@@ -3014,6 +3774,15 @@ class ZoteroSemanticSearch:
             if text:
                 data["fulltext"] = text
                 data["fulltextSource"] = source
+                # The attachment the text came from, for its own record (#826).
+                attachment_key = source[len(_WEB_ATTACHMENT_SOURCE):]
+                # One attachment per item: its other PDFs lose their records,
+                # should an earlier run have written one for them.
+                self._api_outranked = set(self._api_outranked) | {
+                    other for other, seen in (self._api_attachments or {}).items()
+                    if seen.get("parent") == key and other != attachment_key
+                }
+                data["fulltextAttachment"] = dict((self._api_attachments or {}).get(attachment_key) or {})
                 fetched += 1
             else:
                 data["fulltext_attempted"] = True
@@ -3101,12 +3870,42 @@ class ZoteroSemanticSearch:
             all_items = all_items[:limit]
 
         if include_fulltext:
-            self._attach_web_fulltext(all_items, whole_library=not limit)
+            # An unchanged legacy item keeps its records until --force-rebuild
+            # (#826): no text is read for it.
+            skip = self._unchanged_legacy_keys(all_items)
+            self._attach_web_fulltext(
+                [item for item in all_items if item.get("key") not in skip] if skip else all_items,
+                whole_library=not limit,
+            )
 
         self._tag_group_id(all_items)
 
         logger.info(f"Retrieved {len(all_items)} items from API")
         return all_items
+
+    def _unchanged_legacy_keys(self, items: list[dict[str, Any]]) -> set[str]:
+        """Keys of ``items`` whose records are legacy and whose ``dateModified`` is unchanged.
+
+        ``_legacy_action`` would leave them alone, so their text is not asked for.
+        """
+        batched = getattr(self.chroma_client, "get_metadatas", None)
+        keys = [item["key"] for item in items if item.get("key")]
+        if batched is None or not keys:
+            return set()
+        try:
+            stored = batched([*keys, *(f"{key}#0" for key in keys)])
+        except Exception:
+            return set()
+        unchanged: set[str] = set()
+        for item in items:
+            key = item.get("key")
+            existing = stored.get(key) or stored.get(f"{key}#0")
+            if not existing:
+                continue
+            legacy = self._legacy_metadata(key, existing)
+            if legacy is not None and self._legacy_action(item, legacy) == "skip":
+                unchanged.add(key)
+        return unchanged
 
     def _get_changed_items_from_api(
         self, since_version: int, include_fulltext: bool = False
@@ -3227,97 +4026,144 @@ class ZoteroSemanticSearch:
         return bool(check) and check() is True
 
     def _levels_to_write(self, item: dict[str, Any]) -> tuple[bool, bool]:
-        """``(article record, passage records)`` an item should get in this run.
+        """``(article record, passage records)`` a work unit should get in this run.
 
-        An item in the index's gap list needs only what it lacks; anything else
-        gets every level the settings call for. An unmigrated index has one
-        level, chosen by the setting, as it always did.
+        A regular item's bibliographic record is article-level only and never
+        has passages. An attachment always gets its article record, plus
+        passages with chunking on, wherever its passages live. A unit in the
+        index's gap list gets only what it lacks.
         """
-        chunking = self._chunking_enabled
-        if not self._separate_passages():
-            return not chunking, chunking
         levels = item.get("_index_levels")
-        if levels:
+        if not _is_attachment_unit(item):
+            return (not levels or SEARCH_ARTICLES in levels), False
+        if levels and self._separate_passages():
             return SEARCH_ARTICLES in levels, SEARCH_PASSAGES in levels
-        return True, chunking
+        return True, self._chunking_enabled
 
     def _build_item_records(
-        self, item: dict[str, Any], *, chunking: bool, article: bool | None = None
+        self, item: dict[str, Any], *, chunking: bool, article: bool = True
     ) -> list[dict[str, Any]]:
-        """Build the index records of one item, without embedding or writing them.
+        """Build the index records of one work unit, without embedding or writing them.
 
-        The one place an item becomes ``{"id", "document", "metadata"}`` records,
-        for the realtime and the Batch API paths alike. With ``chunking``, one
-        record per overlapping passage (``<item_key>#<n>``), so search can return
-        a grounded quote and long PDFs stay searchable past the single-vector
-        truncation limit. With ``article``, which defaults to the opposite of
-        ``chunking``, one record under the item key, first.
+        The one place a unit becomes ``{"id", "document", "metadata"}`` records,
+        for the realtime and the Batch API paths alike (#826):
 
-        Returns ``[]`` for an item with no key or no text. A failure raises with
-        nothing returned, so an item contributes all of its records or none.
+        * a regular item: one bibliographic record ``KEY`` from its metadata
+          text alone (``chunking`` does not apply; it has no passages);
+        * an attachment: one record ``ATT`` from the file's text alone and,
+          with ``chunking``, one record per overlapping passage ``ATT#n``, with
+          offsets, page and section computed on that text. ``max_chunks_per_item``
+          caps the passages of each attachment.
+
+        Every record stores its own state only. Returns ``[]`` for a unit with
+        no key or no text. A failure raises with nothing returned, so a unit
+        contributes all of its records or none.
         """
-        if article is None:
-            article = not chunking
-        item_key = item.get("key", "")
-        if not item_key:
+        key = item.get("key", "")
+        if not key:
             return []
+        if not _is_attachment_unit(item):
+            if not article:
+                return []
+            text = self._create_document_text(item)
+            if not text.strip():
+                return []
+            metadata = self._create_metadata(item)
+            if item.get("legacy_fields"):
+                metadata.update(item["legacy_fields"])
+            if item.get("legacy_rewrite"):
+                # ChromaDB's upsert merges metadata into the stored record's:
+                # a None removes a key, or the legacy fields would stay.
+                metadata.update(dict.fromkeys(_LEGACY_METADATA_KEYS))
+            return [{
+                "id": key,
+                "document": self.chroma_client.truncate_text(text),
+                "metadata": metadata,
+            }]
 
-        # Always include structured fields; append fulltext when available
-        fulltext = item.get("data", {}).get("fulltext", "")
-        structured_text = self._create_document_text(item)
-        if fulltext.strip():
-            doc_text = (structured_text + "\n\n" + fulltext) if structured_text.strip() else fulltext
-        else:
-            doc_text = structured_text
-        metadata = self._create_metadata(item)
-
-        if not doc_text.strip():
+        text = item.get("text") or ""
+        if not text.strip():
             return []
-
+        group_id = item.get("group_id")
         records: list[dict[str, Any]] = []
         if article:
-            # Truncate to fit the configured embedding model's token limit
+            metadata = _own_metadata(key, group_id, item.get("date_modified"))
+            metadata["file_stamp"] = item["file_stamp"]
+            # Always present, "" when standalone: upsert merges, so a file that
+            # lost its parent must say so.
+            metadata["parent_hint"] = _parent_hint(item.get("owner_key"))
             records.append({
-                "id": item_key,
-                "document": self.chroma_client.truncate_text(doc_text),
+                "id": key,
+                "document": self.chroma_client.truncate_text(text),
                 "metadata": metadata,
             })
         if not chunking:
             return records
 
         passages = split_into_passages(
-            doc_text,
+            text,
             self._effective_chunk_size(),
             int(self._chunking_config.get("overlap", 200)),
             int(self._chunking_config.get("max_chunks_per_item", 20)),
         )
-        section_marks = _section_offsets(doc_text) if passages else []
+        section_marks = _section_offsets(text) if passages else []
         for ci, (chunk_text, c0, c1) in enumerate(passages):
-            cmeta = dict(metadata)
-            cmeta["parent_item_key"] = item_key
+            cmeta: dict[str, Any] = {"item_key": key}
+            if group_id is not None:
+                cmeta["group_id"] = int(group_id)
             cmeta["chunk_index"] = ci
             cmeta["n_chunks"] = len(passages)
             cmeta["char_start"] = c0
             cmeta["char_end"] = c1
-            page = _page_for_offset(doc_text, c0)
-            if page is not None:
-                cmeta["page"] = page
-            section = _section_at(section_marks, c0)
-            if section is not None:
-                cmeta["section"] = section
+            # None removes a stale value left by an earlier version (upsert merges).
+            cmeta["page"] = _page_for_offset(text, c0)
+            cmeta["section"] = _section_at(section_marks, c0)
+            cmeta["parent_hint"] = _parent_hint(item.get("owner_key"))
             records.append({
-                "id": f"{item_key}#{ci}",
+                "id": f"{key}#{ci}",
                 "document": self.chroma_client.truncate_text(chunk_text),
                 "metadata": cmeta,
             })
         return records
+
+    def _as_units(self, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Work units for ``items``; units pass through unchanged.
+
+        An API-shaped item becomes a bibliographic unit, plus an attachment
+        unit for the text ``_attach_web_fulltext`` found, keyed by the
+        attachment it came from. Text from no known attachment can't be
+        keyed, so it is not indexed.
+        """
+        units: list[dict[str, Any]] = []
+        for item in items:
+            if item.get("unit"):
+                units.append(item)
+                continue
+            raw = item.get("data") or {}
+            text = raw.get("fulltext") or ""
+            source = raw.get("fulltextSource") or ""
+            attachment = raw.get("fulltextAttachment") or {}
+            # A copy without the text: the attachment unit carries it.
+            data = {k: v for k, v in raw.items() if k not in ("fulltext", "fulltextAttachment")}
+            units.append(_item_unit({**item, "data": data}))
+            if text.strip() and source.startswith(_WEB_ATTACHMENT_SOURCE):
+                units.append(_attachment_unit(
+                    source[len(_WEB_ATTACHMENT_SOURCE):],
+                    text,
+                    file_stamp=attachment.get("file_stamp") or _API_UNKNOWN_STAMP,
+                    date_modified=attachment.get("date_modified"),
+                    group_id=data.get("group_id"),
+                    owner_key=item.get("key"),
+                    label=data.get("title", ""),
+                ))
+        return units
 
     def _prepare_index_records(self, items: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, int]]:
         """Prepare ChromaDB records without embedding or writing them."""
         stats = {"processed": 0, "skipped": 0, "errors": 0}
         records: list[dict[str, Any]] = []
 
-        for item in items:
+        for item in self._as_units(items):
             try:
                 article, passages = self._levels_to_write(item)
                 item_records = self._build_item_records(item, chunking=passages, article=article)
@@ -3343,7 +4189,7 @@ class ZoteroSemanticSearch:
         found = self.chroma_client.get_existing_ids(
             [*item_keys, *(f"{key}#0" for key in item_keys)]
         )
-        return {doc_id.split("#", 1)[0] for doc_id in found}
+        return {record_key(doc_id) for doc_id in found}
 
     def _submit_batch_index(
         self,
@@ -3384,7 +4230,7 @@ class ZoteroSemanticSearch:
         with_article = {record["id"] for record in records if "#" not in record["id"]}
         follow: dict[str, dict[str, str]] = {}
         for record in records:
-            key = record["id"].split("#", 1)[0]
+            key = record_key(record["id"])
             if "#" in record["id"] and key in with_article:
                 follow.setdefault(key, {})[record["id"]] = _passage_digest(record["document"])
                 if record["id"].endswith("#0"):
@@ -3392,7 +4238,7 @@ class ZoteroSemanticSearch:
         for record in records:
             if record["id"] in follow:
                 record["passages_follow"] = follow[record["id"]]
-        item_keys = sorted({record["id"].split("#", 1)[0] for record in records})
+        item_keys = sorted({record_key(record["id"]) for record in records})
         existing_items = (
             self._existing_item_keys(item_keys) if not force_full_rebuild else set()
         )
@@ -3418,6 +4264,11 @@ class ZoteroSemanticSearch:
             run_info={"chunking": self._chunking_enabled, "item_keys": item_keys},
             **submit_kwargs,
         )
+        if self._legacy_settle:
+            # The import settles them once the records have landed, which may
+            # be several imports and processes later.
+            manifest["legacy_settle"] = self._legacy_settle
+            module.save_manifest(manifest)
         stats["batch_provider"] = provider
         stats["batch_submitted"] = True
         stats["batch_run_id"] = manifest["run_id"]
@@ -3470,9 +4321,12 @@ class ZoteroSemanticSearch:
         the incremental one, so a full scan (every local-mode update from the
         MCP tool, which extracts fulltext) never removed deleted items, and
         still promoted the watermark, which then gave the incremental path
-        nothing left to reconcile (#457). ``current_library_keys`` of None
-        means the key set could not be fetched; that records a skip reason,
-        and a skipped pass keeps the watermark where it was.
+        nothing left to reconcile (#457). ``current_library_keys`` is the
+        record keys that may stay: a full local scan's desired set (regular
+        items and the files selected for indexing, #826), else every key
+        ``item_versions()`` lists. Stored records are compared by their own
+        record key. None means the key set could not be fetched; that records
+        a skip reason, and a skipped pass keeps the watermark where it was.
         """
         # Delete docs of THIS library that are no longer present in
         # it. Scope is the run's group_id, applied DB-side: only docs
@@ -3486,10 +4340,10 @@ class ZoteroSemanticSearch:
             stored_ids = self.chroma_client.get_all_ids(
                 where={"group_id": int(self._run_group_id)}
             )
-            stored_item_keys = {i.split("#", 1)[0] for i in stored_ids}
+            stored_item_keys = {record_key(i) for i in stored_ids}
             # Which kind of delete a key needs comes from what is stored, not
             # from the chunking setting, which may have changed since.
-            keys_with_passages = {i.split("#", 1)[0] for i in stored_ids if "#" in i}
+            keys_with_passages = {record_key(i) for i in stored_ids if "#" in i}
             if current_library_keys is None:
                 # item_versions() failed: unknown is not "empty".
                 stats["deletion_skipped_reason"] = "item_versions_unavailable"
@@ -3512,15 +4366,15 @@ class ZoteroSemanticSearch:
                 )
                 stats["deletion_skipped_reason"] = "empty_item_versions"
             else:
-                to_delete_keys = sorted(
-                    k for k in (stored_item_keys - current_library_keys) if k
-                )
+                candidates = sorted(k for k in (stored_item_keys - current_library_keys) if k)
+                to_delete_keys = candidates
+                real_total = len(stored_item_keys)
                 if (
                     to_delete_keys
                     and not allow_mass_deletion
                     and len(to_delete_keys) >= _MASS_DELETION_MIN_DOCS
                     and len(to_delete_keys)
-                    >= _MASS_DELETION_MIN_FRACTION * len(stored_item_keys)
+                    >= _MASS_DELETION_MIN_FRACTION * real_total
                 ):
                     sample = ", ".join(to_delete_keys[:5])
                     logger.warning(
@@ -3533,7 +4387,8 @@ class ZoteroSemanticSearch:
                         "--allow-mass-deletion."
                     )
                     stats["deletion_skipped_reason"] = "mass_deletion_guard"
-                elif to_delete_keys:
+                    to_delete_keys = []
+                if to_delete_keys:
                     for k in to_delete_keys:
                         if k in keys_with_passages:
                             # Scoped: a chunk set can carry mixed
@@ -3676,6 +4531,11 @@ class ZoteroSemanticSearch:
             # zotero_switch_library cannot re-point half a run at another
             # library.
             self._run_group_id = self._client_group_id()
+            self._automatic_run = automatic
+            self._records_held = 0
+            # Set by this run's scan, if it covers the whole library.
+            self._scan_desired_keys = None
+            self._api_outranked = set()
 
             # An index ChromaDB cannot read fails every later step with an
             # error that does not say why (#747). Stop with one that does; a
@@ -3863,6 +4723,14 @@ class ZoteroSemanticSearch:
                 except Exception:
                     pass
 
+            # Passages stored the old way move to their attachments first: it
+            # costs no embedding, and the scan below then sees them in place.
+            # Only a run somebody asked for does this (#826).
+            if not automatic and not force_full_rebuild:
+                self._split_unmigrated_index(stats)
+                self._rekey_legacy_passages(stats)
+                self._backfill_parent_hints(stats)
+
             # Pick up a layout changed by another process (a migration) before
             # deciding where this run writes.
             layout_of = getattr(self.chroma_client, "index_layout", None)
@@ -3960,7 +4828,7 @@ class ZoteroSemanticSearch:
                 self._keep_current_articles(all_items, index_gaps)
                 gap_items = self._get_gap_items_from_api(
                     index_gaps,
-                    already_fetched={item.get("key") for item in all_items},
+                    already_fetched=self._fetched_keys(all_items),
                     library_keys=current_library_keys,
                     include_fulltext=include_fulltext_via_api,
                 )
@@ -4011,17 +4879,47 @@ class ZoteroSemanticSearch:
                 # limited run is a test run; everything else reconciles
                 # deletions here too (#457).
                 if not force_full_rebuild and limit is None:
-                    try:
-                        current_library_keys = set(
-                            (self.zotero_client.item_versions() or {}).keys()
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to fetch current item_versions for deletion check: {e}; "
-                            "skipping deletion detection this run."
-                        )
-                        current_library_keys = None
+                    if self._scan_desired_keys is not None:
+                        # Every record key the library should have (#826):
+                        # what the scan left out (trashed, deleted, outranked
+                        # or unreadable files) goes. item_versions() would keep
+                        # an outranked file, which Zotero still has.
+                        current_library_keys = self._scan_desired_keys
+                    else:
+                        try:
+                            current_library_keys = set(
+                                (self.zotero_client.item_versions() or {}).keys()
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to fetch current item_versions for deletion check: {e}; "
+                                "skipping deletion detection this run."
+                            )
+                            current_library_keys = None
                     self._run_deletion_pass(stats, current_library_keys, allow_mass_deletion)
+
+            # Files an API run passed over for another of the item's PDFs lose
+            # their records, and no gap fill may bring them back.
+            if outranked := set(self._api_outranked):
+                if not force_full_rebuild:
+                    removed = self._delete_records(outranked)
+                    if removed:
+                        stats["deleted_items"] = stats.get("deleted_items", 0) + removed
+                all_items = [
+                    item for item in all_items if not (item.get("unit") and item.get("key") in outranked)
+                ]
+
+            if self._records_held:
+                stats["attachment_records_held"] = self._records_held
+                logger.info(
+                    "%d attachment(s) have their passages and no attachment record yet; "
+                    "run `zotero-mcp update-db` to write them (automatic updates leave this to you)",
+                    self._records_held,
+                )
+
+            # From here on the run works on units: a bibliographic record per
+            # regular item, an attachment record (and passages) per file (#826).
+            all_items = self._plan_units(all_items, force_rebuild=force_full_rebuild)
 
             if limit is not None:
                 # A limited run may index only a subset; promoting would strand
@@ -4115,7 +5013,7 @@ class ZoteroSemanticSearch:
                 self._check_embedding_api()
 
             # User-friendly progress reporting
-            total = stats["total_items"] = len(all_items)
+            total = len(all_items)
             try:
                 sys.stderr.write(f"\nIndexing {total} items...\n\n")
                 sys.stderr.flush()
@@ -4143,7 +5041,7 @@ class ZoteroSemanticSearch:
                 """
                 nonlocal seen_items
                 seen_items += 1
-                title = item.get("data", {}).get("title", "")
+                title = item.get("label") or item.get("data", {}).get("title", "")
                 if title and len(title) > 60:
                     title = title[:57] + "..."
                 pct = int(seen_items / total * 100) if total else 0
@@ -4253,20 +5151,24 @@ class ZoteroSemanticSearch:
 
                 _retry_time.sleep(1)  # Brief pause before retry
                 # Articles first here too.
-                _failed_docs.sort(key=lambda failed: "parent_item_key" in failed[1])
+                _failed_docs.sort(key=lambda failed: "chunk_index" in failed[1])
 
                 retry_ok = 0
                 # Items whose passages all got written, and items with any
                 # passage still failing. Pruning waits until the item's
                 # passages are done, then runs once per item, not per passage.
                 retried_metas: dict[str, dict[str, Any]] = {}
+                retried_articles: list[dict[str, Any]] = []
                 still_failing: set[str] = set()
                 for doc, meta, doc_id in _failed_docs:
-                    parent = meta.get("parent_item_key")
+                    # A passage's own item_key names the record it belongs to.
+                    parent = meta.get("item_key") if "chunk_index" in meta else None
                     try:
                         self.chroma_client.upsert_documents([doc], [meta], [doc_id])
                         if parent is not None:
                             retried_metas[parent] = meta
+                        else:
+                            retried_articles.append(meta)
                         retry_ok += 1
                         stats["errors"] -= 1  # Remove from error count
                         # Don't classify as added vs updated — when the
@@ -4283,13 +5185,18 @@ class ZoteroSemanticSearch:
                 # No workers are running here, so _chroma_call_lock is not
                 # needed for this prune.
                 self._prune_stale_chunks(
-                    [m for k, m in retried_metas.items() if k not in still_failing]
+                    retried_articles
+                    + [m for k, m in retried_metas.items() if k not in still_failing]
                 )
 
                 try:
                     sys.stderr.write(f"  Retry: {retry_ok} recovered, {retry_fail} still failed\n")
                 except Exception:
                     pass
+
+            # Every write of the run is in: old passages whose replacements are all
+            # stored can go now (#610).
+            self._settle_legacy_passages()
 
             # Clear the progress line and show summary
             try:
@@ -4349,6 +5256,9 @@ class ZoteroSemanticSearch:
             self._drop_passages_on_write = False
             self._scan_gaps = {}
             self._level_fill_keys = frozenset()
+            self._legacy_settle = None
+            self._scan_desired_keys = None
+            self._api_outranked = frozenset()
             # The server keeps one instance: the next run starts without these.
             self._undropped_passages = frozenset()
             if self._held_text is not None:
@@ -4400,9 +5310,6 @@ class ZoteroSemanticSearch:
         """
         stats = {"processed": 0, "skipped": 0, "errors": 0}
 
-        chunking = self._chunking_enabled
-        separate = self._separate_passages()
-
         documents: list[str] = []
         metadatas: list[dict[str, Any]] = []
         ids: list[str] = []
@@ -4414,7 +5321,7 @@ class ZoteroSemanticSearch:
         item_doc_counts: list[int] = []
 
         held = self._held_text
-        for item in items:
+        for item in self._as_units(items):
             try:
                 article, passages = self._levels_to_write(item)
                 counts = True
@@ -4459,17 +5366,8 @@ class ZoteroSemanticSearch:
         existing_item_keys: set[str] = set()
         if documents and not force_rebuild:
             with self._chroma_call_lock:
-                if separate:
-                    # An item is indexed if it has a record at either level.
-                    probe_ids = item_keys_order + [f"{k}#0" for k in item_keys_order]
-                    found = self.chroma_client.get_existing_ids(probe_ids)
-                    existing_item_keys = {doc_id.split("#", 1)[0] for doc_id in found}
-                elif chunking:
-                    probe_ids = [f"{k}#0" for k in item_keys_order]
-                    existing_chunk0 = self.chroma_client.get_existing_ids(probe_ids)
-                    existing_item_keys = {cid.split("#", 1)[0] for cid in existing_chunk0}
-                else:
-                    existing_item_keys = self.chroma_client.get_existing_ids(ids)
+                # A unit is indexed if it has a record at either level.
+                existing_item_keys = self._existing_item_keys(item_keys_order)
 
         return {
             "documents": documents,
@@ -4642,7 +5540,8 @@ class ZoteroSemanticSearch:
                 # an item's extracted text has done its job once its embedding
                 # is persisted, so evict per commit rather than at the end.
                 try:
-                    if done := [k for k in write_keys if k not in keep_cached]:
+                    text_keys = _text_record_keys(write_metas)
+                    if done := [k for k in write_keys if k not in keep_cached and k in text_keys]:
                         fulltext_cache.evict_many(done, config_path=self.config_path)
                 except Exception as exc:
                     logger.debug(f"Fulltext cache eviction failed: {exc}")
@@ -4744,7 +5643,7 @@ class ZoteroSemanticSearch:
             self.chroma_client.prune_item_chunks(item_key, 0)
         # The delete logs its errors and goes on, so check that it happened.
         try:
-            left = {doc_id.split("#", 1)[0] for doc_id in self.chroma_client.get_existing_ids(
+            left = {record_key(doc_id) for doc_id in self.chroma_client.get_existing_ids(
                 [f"{item_key}#0" for item_key in item_keys]
             )}
         except Exception as e:
@@ -4817,18 +5716,87 @@ class ZoteroSemanticSearch:
                 m["item_key"]: m.get("group_id")
                 for m in metadatas
                 if m.get("item_key")
-                and "parent_item_key" not in m
+                and "chunk_index" not in m
                 and m["item_key"] not in self._level_fill_keys
             }
             for item_key, group_id in scopes.items():
                 self.chroma_client.delete_item_chunks(item_key, group_id=group_id)
         counts = {
-            m["parent_item_key"]: m["n_chunks"]
+            m["item_key"]: m["n_chunks"]
             for m in metadatas
-            if "parent_item_key" in m and "n_chunks" in m
+            if "chunk_index" in m and "n_chunks" in m and m.get("item_key")
         }
         for item_key, n_chunks in counts.items():
             self.chroma_client.prune_item_chunks(item_key, n_chunks)
+
+    def _expect_replacement(self, item_key: str, group_id: int | None, wanted: list[str]) -> None:
+        """Note that ``item_key``'s legacy passages go once ``wanted``'s records are written (#826).
+
+        ``wanted`` is every attachment Zotero's database selects for the item,
+        whether or not its file is reachable. Settled at the end of the run
+        (``_settle_legacy_passages``).
+        """
+        if self._legacy_settle is None:
+            self._legacy_settle = {}
+        self._legacy_settle[item_key] = {"group_id": group_id, "wanted": sorted(wanted)}
+
+    def _settled_items(self, settle: dict[str, dict[str, Any]]) -> list[str]:
+        """The items of ``settle`` whose replacements for their legacy passages are all stored.
+
+        An item is settled when its bibliographic record is in the new shape
+        and each wanted attachment has its record and, with chunking, every
+        one of its passages (``n_chunks`` of its first, as the record says).
+        Read from the index, so an embed that failed, a copy that was lost, a
+        file out of reach or a batch file still to land all count as not
+        written. A few batched reads for all items, not a round trip each.
+        """
+        keys = {key for key, entry in settle.items() for key in (key, *(entry.get("wanted") or []))}
+        stored = self.chroma_client.get_metadatas(sorted(keys))
+        candidates = [
+            key for key, entry in settle.items()
+            if (bib := stored.get(key)) and not _is_legacy_record(bib) and "chunk_index" not in bib
+            and all("file_stamp" in (stored.get(att) or {}) for att in entry.get("wanted") or [])
+        ]
+        if not self._chunking_enabled:
+            return candidates
+        firsts = sorted({att for key in candidates for att in settle[key].get("wanted") or []})
+        first_meta = self.chroma_client.get_metadatas([f"{att}#0" for att in firsts])
+        counts = {}
+        for att in firsts:
+            meta = first_meta.get(f"{att}#0")
+            if meta is not None:
+                n_chunks = meta.get("n_chunks")
+                counts[att] = n_chunks if isinstance(n_chunks, int) and n_chunks > 0 else 1
+        needed = {att: [f"{att}#{n}" for n in range(count)] for att, count in counts.items()}
+        present = self.chroma_client.get_existing_ids([doc_id for ids in needed.values() for doc_id in ids])
+        whole = {att for att, ids in needed.items() if set(ids) <= present}
+        return [key for key in candidates if set(settle[key].get("wanted") or []) <= whole]
+
+    def _settle_legacy_passages(self, settle: dict[str, dict[str, Any]] | None = None) -> None:
+        """Delete the legacy passages of items whose replacements are all written.
+
+        A rewritten legacy item's old parent-keyed passages are the only copy
+        of its text until every attachment it selects has its own records and
+        all their passages, so they go only then, and only for the items whose
+        attachments all landed. One that failed, was held, or whose file is
+        out of reach leaves them searchable for the next run to try again
+        (#610). Runs after the writes, so a failed embed loses nothing.
+        ``settle`` defaults to this run's; the batch import passes the
+        manifest's, after every import, so a partial one deletes nothing.
+        """
+        settle = self._legacy_settle if settle is None else settle
+        if not settle or not hasattr(self.chroma_client, "delete_item_chunks"):
+            return
+        try:
+            settled = self._settled_items(settle)
+        except Exception as e:
+            logger.debug(f"Could not check the replacements of legacy passages: {e}")
+            return
+        for item_key in settled:
+            try:
+                self.chroma_client.delete_item_chunks(item_key, group_id=settle[item_key].get("group_id"))
+            except Exception as e:
+                logger.debug(f"Could not settle the legacy passages of {item_key}: {e}")
 
     def _process_item_batch(
         self,
@@ -4901,7 +5869,8 @@ class ZoteroSemanticSearch:
                 # roughly proportional to what is still un-embedded, instead
                 # of growing to the size of the whole library.
                 try:
-                    if done := [k for k in item_keys_order if k not in keep_cached]:
+                    text_keys = _text_record_keys(metadatas)
+                    if done := [k for k in item_keys_order if k not in keep_cached and k in text_keys]:
                         fulltext_cache.evict_many(done, config_path=self.config_path)
                 except Exception as e:
                     logger.debug(f"Fulltext cache eviction failed: {e}")
@@ -5236,7 +6205,7 @@ class ZoteroSemanticSearch:
                     # its article record, or its first passage when the run had
                     # no article for it.
                     first_records = {
-                        doc_id.split("#", 1)[0]
+                        record_key(doc_id)
                         for doc_id in ids
                         if "#" not in doc_id
                         or (doc_id.endswith("#0") and not records[doc_id].get("counted_with_article"))
@@ -5253,7 +6222,7 @@ class ZoteroSemanticSearch:
                     # carries its item's new length, so this is safe with the
                     # item's other passages still in a later file.
                     self._level_fill_keys = {
-                        doc_id.split("#", 1)[0] for doc_id in ids if records[doc_id].get("level_fill")
+                        record_key(doc_id) for doc_id in ids if records[doc_id].get("level_fill")
                     }
                     self._prune_stale_chunks(metadatas)
                     followed = [
@@ -5269,13 +6238,17 @@ class ZoteroSemanticSearch:
                     # in ChromaDB, so the transient copy of their extracted
                     # text has done its job. Without this the cache grows to
                     # hold the whole library on the batch flow, since nothing
-                    # else on it ever evicts. Ids are ``<key>`` or
-                    # ``<key>#<n>``, so strip any chunk suffix first.
+                    # else on it ever evicts. Text is cached under the record
+                    # key of the attachment it came from (#826).
                     # An article whose passages are in a later file keeps it:
                     # they may still need to be extracted or rebuilt.
                     try:
+                        text_keys = _text_record_keys(metadatas)
                         fulltext_cache.evict_many(
-                            {doc_id.split("#", 1)[0] for doc_id in ids if doc_id not in followed},
+                            {
+                                record_key(doc_id) for doc_id in ids
+                                if doc_id not in followed and record_key(doc_id) in text_keys
+                            },
                             config_path=self.config_path,
                         )
                     except Exception as e:
@@ -5286,6 +6259,9 @@ class ZoteroSemanticSearch:
                 stats["batches_imported"] += 1
 
             module.save_manifest(manifest)
+
+            if not superseded_by:
+                self._settle_legacy_passages(manifest.get("legacy_settle") or {})
 
             if not selected_ids:
                 # Importing the completed batches freed enqueued-token headroom,
@@ -5434,7 +6410,9 @@ class ZoteroSemanticSearch:
         Args:
             query: Search query text
             limit: Maximum number of results to return
-            filters: Optional metadata filters
+            filters: Optional filters. Stored fields (library, passage
+                location) are filtered by ChromaDB; bibliographic fields are
+                evaluated against each hit's owner as Zotero has it now (#826).
             group_id: Restrict results to one library (0 = personal, else
                 groupID). ``None`` (default) searches every indexed library —
                 DB-side filtering via a ChromaDB ``where`` clause, never a
@@ -5447,7 +6425,7 @@ class ZoteroSemanticSearch:
             Search results with Zotero item details
         """
         try:
-            search_level, chunked, level_note, level_error = self._resolve_search_level(level)
+            search_level, _chunked, level_note, level_error = self._resolve_search_level(level)
             if level_error:
                 return {
                     "query": query,
@@ -5460,64 +6438,87 @@ class ZoteroSemanticSearch:
                 }
             reranker = self._get_reranker()
             multiplier = max(1, int(self._reranker_config.get("candidate_multiplier", 3) or 3))
-            fetch_limit = limit
-            if chunked:
-                # Passages are grouped back to items downstream, so fetch
-                # several chunks per desired item to still surface ~limit
-                # distinct papers.
-                fetch_limit = max(fetch_limit, limit * 4)
+            # Hits collapse to their owners and trashed ones are dropped, at
+            # either level: an attachment's record and its parent's
+            # bibliographic record are two hits of one owner, and passages
+            # several more. So fetch several candidates per wanted result.
+            fetch_limit = limit * 4
             if reranker:
                 fetch_limit = max(fetch_limit, limit * multiplier)
 
-            where = filters
+            # 0.17 handed the filter to ChromaDB, which refused a bad one with its
+            # own message; the same check runs here, before any hit is read.
+            check_where(filters, group_id)
+            chroma_filters, live_where = split_filters(filters)
+            where_parts = [chroma_filters]
             if group_id is not None:
-                group_clause = {"group_id": int(group_id)}
-                where = {"$and": [filters, group_clause]} if filters else group_clause
+                where_parts.append({"group_id": int(group_id)})
+            prefilter_keys, prefilter_where = self._prefilter(live_where, group_id)
+            if prefilter_where:
+                where_parts.append(prefilter_where)
+            where = combine(where_parts)
+            # A post-filter can discard most candidates, so it may ask again
+            # for more; a pre-filtered query already holds only matches.
+            post_filter = bool(live_where) and prefilter_keys is None
+            # A query that returned all it was asked for yet collapsed to fewer
+            # than `limit` owners (one paper's passages crowding the rest out)
+            # asks again too, in the same bounded way.
+            rounds = FILTER_QUERY_ROUNDS
+            use_post_rounds = post_filter
+            # Post-filtering re-ranks only the hits that passed the filter, at
+            # most this many: the candidate set grows ×4 a round, and hosted
+            # re-rankers cap and bill per document.
+            rerank_bound = limit * max(4, multiplier)
 
-            # Perform semantic search
-            search_kwargs: dict[str, Any] = {}
-            # On an unmigrated index everything is in the article collection,
-            # which is what the client searches by default.
-            if search_level == SEARCH_PASSAGES and self.chroma_client.separate_passages():
-                search_kwargs["level"] = SEARCH_PASSAGES
-            results = self.chroma_client.search(
-                query_texts=[query], n_results=fetch_limit, where=where, **search_kwargs
-            )
-            load_note = None
-            if isinstance(results, dict):
-                results.pop("embedding_seconds", None)  # in-process; the worker drops it itself
-                load_note = _passage_load_note(results.pop("passage_load", None))
-
-            _drop_missing_documents(results)
-
+            enriched_results: list[dict[str, Any]] = []
             rerank_info: dict[str, Any] | None = None
-            if reranker and results.get("documents") and results["documents"][0]:
-                documents = results["documents"][0]
-                # Chunked: rank every surviving passage (grouping to `limit`
-                # papers happens in enrichment). Item-level: the historical
-                # top-k = limit.
-                top_k = len(documents) if chunked else limit
-                if isinstance(reranker, (APIReranker, CrossEncoderReranker)):
-                    pairs, rerank_error = reranker.rerank_detailed(query, documents, top_k)
-                else:  # any other object honouring the plain rerank() contract
-                    pairs = [(i, 0.0) for i in reranker.rerank(query, documents, top_k=top_k)]
-                    rerank_error = None
-                ranked_indices = [i for i, _ in pairs]
-                for key in ["ids", "distances", "documents", "metadatas"]:
-                    if results.get(key) and results[key][0]:
-                        results[key][0] = [results[key][0][i] for i in ranked_indices]
-                if rerank_error is None and isinstance(reranker, (APIReranker, CrossEncoderReranker)):
-                    results["rerank_scores"] = [[score for _, score in pairs]]
-                rerank_info = {
-                    "model": getattr(reranker, "label", type(reranker).__name__),
-                    "applied": rerank_error is None,
-                    "error": rerank_error,
-                    "candidates": len(documents),
-                }
+            load_note = None
+            candidates = 0
+            memo = self._new_lookup_memo()
+            if prefilter_keys is None or prefilter_keys:
+                for _ in range(rounds):
+                    if not use_post_rounds:
+                        results, rerank_info, load_note, candidates = self._query_candidates(
+                            query, fetch_limit, where, search_level, reranker
+                        )
+                        # Enrich results with full Zotero item data, collapsing
+                        # hits to their owners and capping at `limit` owners.
+                        # The live filter is checked on every hit even after a
+                        # pre-filter: a hint can be stale (#826).
+                        enriched_results = self._enrich_search_results(
+                            results, query, limit, live_where=live_where, memo=memo
+                        )
+                        if len(enriched_results) >= limit or candidates < fetch_limit:
+                            break
+                        fetch_limit *= 4
+                        use_post_rounds = True
+                        continue
+                    results, _, load_note, candidates = self._query_candidates(
+                        query, fetch_limit, where, search_level, None
+                    )
+                    survivors = self._filter_hits(self._resolve_hits(_collect_hits(results), memo), live_where)
+                    enough = len({h["owner_key"] for h in survivors}) >= limit
+                    if reranker and survivors:
+                        survivors = survivors[:rerank_bound]
+                        order, scores, rerank_info = self._rerank(
+                            query, [h["document"] for h in survivors], reranker
+                        )
+                        survivors = [survivors[i] for i in order]
+                        if scores is not None:
+                            for hit, score in zip(survivors, scores):
+                                hit["rerank_score"] = score
+                    enriched_results = self._build_results(survivors, query, limit)
+                    if enough or candidates < fetch_limit:
+                        break
+                    fetch_limit *= 4
 
-            # Enrich results with full Zotero item data, grouping passages back
-            # to their parent items and capping at `limit` distinct papers.
-            enriched_results = self._enrich_search_results(results, query, limit)
+            filter_note = None
+            if post_filter and len(enriched_results) < limit:
+                found = len(enriched_results)
+                filter_note = (
+                    f"Only {found} item{'' if found == 1 else 's'} matched the filters among the "
+                    f"{candidates} closest records searched."
+                )
 
             return {
                 "query": query,
@@ -5530,6 +6531,7 @@ class ZoteroSemanticSearch:
                 "level": search_level,
                 "level_note": level_note,
                 "load_note": load_note,
+                "filter_note": filter_note,
             }
 
         except Exception as e:
@@ -5557,6 +6559,255 @@ class ZoteroSemanticSearch:
                 # The index is local, but each query is embedded by the API.
                 "embedding_api_unreachable": isinstance(e, EmbeddingAPIUnreachable),
             }
+
+    def _query_candidates(
+        self,
+        query: str,
+        fetch_limit: int,
+        where: dict[str, Any] | None,
+        search_level: str | None,
+        reranker: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None, int]:
+        """Query ChromaDB and re-rank: ``(results, rerank info, load note, candidates)``.
+
+        ``candidates`` is how many records ChromaDB returned, so a caller can
+        tell a short answer from an exhausted index.
+        """
+        search_kwargs: dict[str, Any] = {}
+        # On an unmigrated index everything is in the article collection,
+        # which is what the client searches by default.
+        if search_level == SEARCH_PASSAGES and self.chroma_client.separate_passages():
+            search_kwargs["level"] = SEARCH_PASSAGES
+        results = self.chroma_client.search(
+            query_texts=[query], n_results=fetch_limit, where=where, **search_kwargs
+        )
+        load_note = None
+        if isinstance(results, dict):
+            results.pop("embedding_seconds", None)  # in-process; the worker drops it itself
+            load_note = _passage_load_note(results.pop("passage_load", None))
+        candidates = len((results.get("ids") or [[]])[0] or [])
+
+        _drop_missing_documents(results)
+
+        rerank_info: dict[str, Any] | None = None
+        if reranker and results.get("documents") and results["documents"][0]:
+            # Rank every candidate at either level: collapsing to `limit`
+            # owners happens in enrichment, after trashed hits are dropped.
+            ranked_indices, scores, rerank_info = self._rerank(query, results["documents"][0], reranker)
+            for key in ["ids", "distances", "documents", "metadatas"]:
+                if results.get(key) and results[key][0]:
+                    results[key][0] = [results[key][0][i] for i in ranked_indices]
+            if scores is not None:
+                results["rerank_scores"] = [scores]
+        return results, rerank_info, load_note, candidates
+
+    @staticmethod
+    def _rerank(
+        query: str, documents: list[str], reranker: Any
+    ) -> tuple[list[int], list[float] | None, dict[str, Any]]:
+        """Re-rank ``documents``: ``(order, scores or None, rerank info)``."""
+        top_k = len(documents)
+        if isinstance(reranker, (APIReranker, CrossEncoderReranker)):
+            pairs, rerank_error = reranker.rerank_detailed(query, documents, top_k)
+        else:  # any other object honouring the plain rerank() contract
+            pairs = [(i, 0.0) for i in reranker.rerank(query, documents, top_k=top_k)]
+            rerank_error = None
+        scores = None
+        if rerank_error is None and isinstance(reranker, (APIReranker, CrossEncoderReranker)):
+            scores = [score for _, score in pairs]
+        info = {
+            "model": getattr(reranker, "label", type(reranker).__name__),
+            "applied": rerank_error is None,
+            "error": rerank_error,
+            "candidates": len(documents),
+        }
+        return [i for i, _ in pairs], scores, info
+
+    def _prefilter(
+        self, live_where: dict[str, Any] | None, group_id: int | None
+    ) -> tuple[set[str] | None, dict[str, Any] | None]:
+        """``(owner keys, Chroma where clause)`` that narrow a filtered search, or ``(None, None)``.
+
+        Local mode asks zotero.sqlite; otherwise the Zotero web API answers
+        what it can (``_web_prefilter_keys``). The clause matches the owners'
+        own records and their attachments' (#826): locally the attachment keys
+        are known; on the web an attachment record names its parent in
+        ``parent_hint``, so a stale hint can only make a file missed, never
+        wrongly returned: every hit is still resolved and checked live.
+        """
+        if not live_where:
+            return None, None
+        keys = self._prefilter_keys(live_where, group_id)
+        if keys is not None:
+            return keys, {"item_key": {"$in": sorted(keys)}}
+        if is_local_mode():
+            return None, None
+        keys = self._web_prefilter_keys(live_where, group_id)
+        if keys is None:
+            return None, None
+        listed = sorted(keys)
+        return keys, {"$or": [{"item_key": {"$in": listed}}, {"parent_hint": {"$in": listed}}]}
+
+    def _hints_complete(self, group_id: int | None) -> bool:
+        """Whether every attachment record and passage in scope names its parent (#826).
+
+        Read from the index's layout (SQLite, cached until the index changes).
+        A record from before hints would be missed by a hint-based pre-filter;
+        ``update-db`` or ``migrate-index`` backfills them. Across libraries a
+        file whose library is unknown is a gap too: no library's owner list
+        would reach it.
+        """
+        layout_of = getattr(self.chroma_client, "index_layout", None)
+        try:
+            layout = layout_of() if layout_of else None
+        except Exception as e:
+            logger.debug(f"Filter pre-check: no index layout ({e})")
+            return False
+        if not isinstance(layout, dict):
+            return False
+        if layout.get("attachments_without_parent_hint") != 0 or layout.get("passages_without_parent_hint") != 0:
+            return False
+        return group_id is not None or layout.get("attachments_without_library") == 0
+
+    def _libraries_in_scope(self, group_id: int | None) -> list[int] | None:
+        """The libraries a filtered search covers: ``group_id``, else every library the index holds."""
+        if group_id is not None:
+            return [int(group_id)]
+        try:
+            layout = self.chroma_client.index_layout()
+        except Exception:
+            return None
+        libraries = layout.get("library_ids") if isinstance(layout, dict) else None
+        return [int(g) for g in libraries] if libraries else None
+
+    def _library_client(self, library: int):
+        """The client that reads ``library``: the bound one for its own library, else a scoped one (None if unreachable)."""
+        try:
+            bound = self._client_group_id()
+        except ValueError:
+            bound = None
+        return self.zotero_client if bound is None or library == bound else self._client_for_group(library)
+
+    @staticmethod
+    def _api_key_list(raw: Any) -> set[str]:
+        """Keys from a ``format=keys`` response: newline-separated text (bytes, as pyzotero returns it) or a list."""
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", "replace")
+        if isinstance(raw, str):
+            raw = raw.split()
+        return {str(key) for key in raw or [] if key}
+
+    def _web_owner_keys(self, client: Any, plan: dict[str, Any]) -> set[str] | None:
+        """Keys of one library's owners matching ``plan``: a single keys-only request. None on any failure or a cut-short answer.
+
+        ``top`` lists regular items and standalone attachments, not trashed
+        ones, which is what an owner is. The answer is capped one key past
+        ``PREFILTER_MAX_KEYS``: a library with more owners than the pre-filter
+        takes sends a ``next`` link instead of every key (26,000 journal
+        articles are 236 kB). A ``next`` link means the list is partial, and a
+        partial list would silently lose results, so it is a failure.
+        """
+        params: dict[str, Any] = {"format": "keys", "limit": PREFILTER_MAX_KEYS + 1}
+        if plan["itemType"]:
+            params["itemType"] = plan["itemType"]
+        if plan["tag"]:
+            params["tag"] = plan["tag"] if len(plan["tag"]) > 1 else plan["tag"][0]
+        try:
+            raw = client.top(**params)
+            if (getattr(client, "links", None) or {}).get("next"):
+                return None
+            return self._api_key_list(raw)
+        except Exception as e:
+            logger.warning(f"Filter pre-check through the Zotero API failed ({e}); filtering after the search instead")
+            return None
+
+    def _web_prefilter_keys(self, live_where: dict[str, Any] | None, group_id: int | None) -> set[str] | None:
+        """Owner keys a live filter can match, from the Zotero web API; None to filter after the search instead.
+
+        For a filter the API can express (``web_query_plan``): one keys-only
+        request per library in scope, then the matching owners' keys. None
+        when the filter is not expressible, when attachment records lack their
+        parent hint (``_hints_complete``), when a library cannot be reached
+        or answers incompletely, or above ``PREFILTER_MAX_KEYS`` keys.
+        """
+        plan = web_query_plan(live_where)
+        if plan is None or not self._hints_complete(group_id):
+            return None
+        if plan["empty"]:
+            return set()
+        if not plan["itemType"] and not plan["tag"]:
+            wanted = set(plan["item_keys"] or ())  # only item_key: nothing to ask
+            return wanted if len(wanted) <= PREFILTER_MAX_KEYS else None
+        libraries = self._libraries_in_scope(group_id)
+        if not libraries:
+            return None
+        # The personal library first: usually the largest, so the likeliest
+        # to be over the cap, and then the libraries not yet asked are not.
+        libraries = sorted(libraries, key=lambda library: (library != PERSONAL_LIBRARY_GROUP_ID, library))
+        give_up = threading.Event()
+
+        def ask(client: Any) -> set[str] | None:
+            if give_up.is_set():
+                return None
+            found = self._web_owner_keys(client, plan)
+            if found is None or len(found) > PREFILTER_MAX_KEYS:
+                give_up.set()
+            return found
+
+        jobs: list[tuple[Any, Any]] = []
+        for library in libraries:
+            client = self._library_client(library)
+            if client is None:
+                return None
+            jobs.append((client, functools.partial(ask, client)))
+        keys: set[str] = set()
+        # One request per library, up to four at a time; none once one
+        # library has failed or is over the cap, as the search then falls back.
+        for found in _run_per_client(jobs):
+            if found is None:
+                return None
+            keys |= found
+        if len(keys) > PREFILTER_MAX_KEYS:
+            return None
+        if plan["item_keys"] is not None:
+            keys &= plan["item_keys"]
+        return keys
+
+    def _prefilter_keys(self, live_where: dict[str, Any] | None, group_id: int | None) -> set[str] | None:
+        """Record keys a live filter can match, from zotero.sqlite; None if unknown.
+
+        Local mode only: the filter is evaluated over every owner in scope,
+        and the matches expand to the owners' keys plus their child
+        attachments' keys, which covers every record an owner can have (a
+        legacy record's ``item_key`` is its parent's, so it matches too).
+        None, so that the caller post-filters instead, outside local mode,
+        when the filter needs hit-time data (``has_fulltext``, or passage
+        fields under a mixed ``$or``), or above ``PREFILTER_MAX_KEYS`` keys.
+        """
+        if not prefilter_safe(live_where):
+            return None
+        try:
+            reader = self._open_local_reader()
+        except Exception as e:
+            logger.debug(f"Filter pre-check: no local database ({e})")
+            return None
+        if reader is None:
+            return None
+        try:
+            owners = reader.get_filter_owners(group_id=group_id)
+        except Exception as e:
+            logger.warning(f"Filter pre-check against zotero.sqlite failed: {e}")
+            return None
+        finally:
+            reader.close()
+        keys: set[str] = set()
+        for owner in owners:
+            if matches(live_where, live_fields(owner)):
+                keys.add(owner["key"])
+                keys.update(owner.get("attachment_keys") or ())
+                if len(keys) > PREFILTER_MAX_KEYS:
+                    return None
+        return keys
 
     def _resolve_search_level(
         self, requested: str | None
@@ -5626,199 +6877,316 @@ class ZoteroSemanticSearch:
         the same items, one with articles alone and chunking off, or one still
         unmigrated gets no note; an index with passages alone is told no article
         records are indexed yet.
+
+        Both counts are of files (#826): attachments with an article record,
+        and keys with passages. Bibliographic records have no text, so they
+        are in neither and cannot make the article level look larger. A
+        legacy record built with full text counts as its item's file.
         """
         if layout["unmigrated_passages"] or layout["passage_items"] is None:
             # No passage count could be read: give no counts rather than wrong ones.
             return None
-        items = {SEARCH_ARTICLES: layout["article_records"], SEARCH_PASSAGES: layout["passage_items"]}
+        legacy = bool(layout["legacy_records"] or layout["legacy_passages"])
+        # A legacy index built without full text has no text records to count;
+        # its article records are still what a search covers.
+        articles = layout["article_text_items"] or (layout["article_level_items"] if legacy else 0)
+        items = {SEARCH_ARTICLES: articles, SEARCH_PASSAGES: layout["passage_items"]}
         other = SEARCH_PASSAGES if level == SEARCH_ARTICLES else SEARCH_ARTICLES
         searched, elsewhere = items[level], items[other]
         if not searched:
             return None
 
-        note = f"Searched {level} ({_count_items(searched)} in the index)."
+        def counted(count: int) -> str:
+            return _count_items(count) if legacy else _count_attachments(count)
+
+        note = f"Searched {level} ({counted(searched)} in the index)."
         if elsewhere:
             # Said only when it could change what the agent does next: every
             # search would otherwise pay for a line that tells it nothing.
             if elsewhere <= searched:
                 return None
-            return f'{note} The {other[:-1]} level has {_count_items(elsewhere)}, so level="{other}" may find more.'
+            return f'{note} The {other[:-1]} level has {counted(elsewhere)}, so level="{other}" may find more.'
         if level == SEARCH_PASSAGES:
             return f"{note} No article records are indexed yet."
         return f"{note} No passages are indexed yet." if self._chunking_enabled else None
 
     def _enrich_search_results(
-        self, chroma_results: dict[str, Any], query: str, limit: int | None = None
+        self,
+        chroma_results: dict[str, Any],
+        query: str,
+        limit: int | None = None,
+        live_where: dict[str, Any] | None = None,
+        memo: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        """Enrich ChromaDB results with full Zotero item data.
+        """Resolve hits to their owners live, filter, collapse, cap (#826).
 
-        Chunk-aware: when the collection is indexed as passages, ids look like
-        ``<item_key>#<n>``. Results are grouped back to their parent item — the
-        first (best-ranked) passage per item wins — and capped at ``limit``
-        distinct items. For every hit a grounded ``matched_passage`` quote and,
-        when available, the passage's character offset and page are attached so
-        callers can cite precisely. Item-level collections (ids without ``#``)
-        flow through unchanged.
+        A hit's record key is ``record_key(id)``: an attachment's own key
+        for a new record, the parent's for a legacy one. It is resolved
+        against Zotero now, not from anything stored: its owner is its parent
+        if it has one, else the item itself, so a re-parented attachment shows
+        under its new parent. Hits whose item or owner is trashed or gone are
+        dropped. ``live_where`` is then evaluated per hit, against the owner's
+        current data with passage fields read from the hit. Results collapse
+        by owner, the best-ranked hit winning, and are capped at ``limit``.
+        """
+        hits = _collect_hits(chroma_results)
+        if not hits:
+            return []
+        return self._build_results(self._filter_hits(self._resolve_hits(hits, memo), live_where), query, limit)
+
+    def _filter_hits(
+        self, resolved: list[dict[str, Any]], live_where: dict[str, Any] | None
+    ) -> list[dict[str, Any]]:
+        """The resolved hits that pass ``live_where``, in order (all of them without one)."""
+        if not live_where:
+            return resolved
+        fulltext_owners = {
+            h["owner_key"] for h in resolved
+            if "owner" in h and self._hit_has_fulltext(h["meta"], h["record"])
+        }
+        kept = []
+        for hit in resolved:
+            if "owner" not in hit:
+                continue  # unresolvable, so it cannot be shown to match
+            fields = {
+                **hit["meta"],
+                **live_fields(hit["owner"]),
+                "has_fulltext": hit["owner_key"] in fulltext_owners,
+            }
+            if "chunk_index" in hit["meta"]:
+                fields["parent_item_key"] = hit["owner_key"]  # as 0.17: on passages only
+            else:
+                fields.pop("parent_item_key", None)
+            if matches(live_where, fields):
+                kept.append(hit)
+        return kept
+
+    def _build_results(
+        self, resolved: list[dict[str, Any]], query: str, limit: int | None
+    ) -> list[dict[str, Any]]:
+        """Collapse resolved hits by owner, best first, and cap at ``limit``.
+
+        Each result describes its owner (``item_key``, ``zotero_item``) and
+        the hit that found it: the matched text, a grounded
+        ``matched_passage``, passage provenance from the hit's metadata, and
+        ``matched_attachment`` when the hit's record is an attachment of the
+        owner (not the owner itself).
         """
         enriched: list[dict[str, Any]] = []
-
-        if not chroma_results.get("ids") or not chroma_results["ids"][0]:
-            return enriched
-
-        ids = chroma_results["ids"][0]
-        distances = chroma_results.get("distances", [[]])[0]
-        documents = chroma_results.get("documents", [[]])[0]
-        metadatas = chroma_results.get("metadatas", [[]])[0]
-        rerank_scores = (chroma_results.get("rerank_scores") or [[]])[0] or []
-
-        seen_items: set[str] = set()
-        for i, raw_id in enumerate(ids):
-            item_key = raw_id.split("#", 1)[0]
-            if item_key in seen_items:
+        seen_owners: set[str] = set()
+        for hit in resolved:
+            if hit["owner_key"] in seen_owners:
                 continue
-            seen_items.add(item_key)
+            seen_owners.add(hit["owner_key"])
 
-            distance = distances[i] if i < len(distances) else None
-            document = documents[i] if i < len(documents) else ""
-            meta = metadatas[i] if i < len(metadatas) else {}
-
+            meta, document, distance = hit["meta"], hit["document"], hit["distance"]
             passage, passage_offset = best_snippet(query, document)
 
             enriched_result: dict[str, Any] = {
-                "item_key": item_key,
+                "item_key": hit["owner_key"],
                 "similarity_score": (1 - distance) if distance is not None else 0,
                 "matched_text": document,
                 "matched_passage": passage,
-                "metadata": meta if isinstance(meta, dict) else {},
+                "metadata": meta,
                 "query": query,
             }
-            if i < len(rerank_scores):
-                enriched_result["rerank_score"] = rerank_scores[i]
+            if "rerank_score" in hit:
+                enriched_result["rerank_score"] = hit["rerank_score"]
             # Passage provenance — present only on a chunk-indexed collection.
-            if isinstance(meta, dict):
-                for mk in ("chunk_index", "n_chunks", "char_start", "char_end", "page", "section"):
-                    if mk in meta:
-                        enriched_result[mk] = meta[mk]
+            for mk in ("chunk_index", "n_chunks", "char_start", "char_end", "page", "section"):
+                if mk in meta:
+                    enriched_result[mk] = meta[mk]
             if "char_start" not in enriched_result and passage_offset:
                 enriched_result["passage_offset"] = passage_offset
+
+            if "owner" in hit:
+                enriched_result["zotero_item"] = hit["owner"]
+                record_data = hit["record"].get("data") or {}
+                if hit["record_key"] != hit["owner_key"] and record_data.get("itemType") == "attachment":
+                    enriched_result["matched_attachment"] = {
+                        "key": hit["record_key"],
+                        "title": record_data.get("title", ""),
+                        "filename": record_data.get("filename", ""),
+                    }
+            else:
+                logger.error(f"Error enriching result for item {hit['owner_key']}: {hit['error']}")
+                enriched_result["error"] = f"Could not fetch full item data: {hit['error']}"
 
             enriched.append(enriched_result)
             if limit and len(enriched) >= limit:
                 break
-
-        self._attach_zotero_items(enriched)
         return enriched
 
-    def _attach_zotero_items(self, enriched: list[dict[str, Any]]) -> None:
-        """Fill in each result's ``zotero_item``, in place.
+    @staticmethod
+    def _hit_has_fulltext(meta: dict[str, Any], record: dict[str, Any]) -> bool:
+        """Whether one hit shows its owner has indexed full text.
 
-        Hits from the library ``self.zotero_client`` is scoped to are fetched
-        through it, as before. Hits from any *other* library cannot be: the
-        client is bound to one library and a foreign key simply 404s, which is
-        why a group-library paper was found by semantic search and then
-        reported as an error rather than a result (#163). Those are hydrated
-        from ``zotero.sqlite`` instead, in one batched query, and arrive
-        already carrying their ``library`` attribution.
-
-        Where the local database cannot serve a foreign hit — every web-API
-        install, since there is no ``zotero.sqlite`` there — a client scoped
-        to the hit's *own* library is tried instead (#492). Failures on that
-        path name the library and the credential requirement, because the
-        alternative is the silent 404 this exists to remove.
-
-        A document whose ``group_id`` is missing cannot be recognised as
-        foreign up front — every index built before #396 is untagged, which
-        is most of them. Those go to the client first and fall back to the
-        local database when it cannot serve them, so the fix does not depend
-        on having re-indexed.
+        Defined from what a hit carries, since nothing else is known at search
+        time: an attachment's record is file text; a legacy record says so in
+        its own ``has_fulltext``; a bibliographic record alone does not. An
+        owner has full text when any of its candidate hits does, so one whose
+        attachment records were not among the candidates reads as False.
         """
+        return meta.get("has_fulltext") is True or (record.get("data") or {}).get("itemType") == "attachment"
+
+    @staticmethod
+    def _new_lookup_memo() -> dict[str, Any]:
+        """What one search has looked up so far: ``asked`` keys, and the ``items`` and ``errors`` they gave."""
+        return {"asked": set(), "items": {}, "errors": {}}
+
+    def _resolve_hits(
+        self, hits: list[dict[str, Any]], memo: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Attach ``record``, ``owner`` and ``owner_key`` to each hit, in place.
+
+        Two batched lookups per library: the hits' own keys, then the parents
+        not already fetched. Trashed or missing hits and owners are left out
+        of the returned list. A hit that could not be looked up at all, such
+        as one from a library this configuration cannot reach, stays with an
+        ``error`` and its record key as owner, so the failure is reported
+        rather than silently dropped (#492).
+        """
+        wanted: dict[int | None, set[str]] = {}
+        for hit in hits:
+            wanted.setdefault(hit["library"], set()).add(hit["record_key"])
+        items, errors = self._resolve_items(wanted, memo)
+
+        parents: dict[int | None, set[str]] = {}
+        for (library, _key), item in items.items():
+            parent = (item.get("data") or {}).get("parentItem")
+            if parent and not _is_trashed(item) and (library, parent) not in items and (library, parent) not in errors:
+                parents.setdefault(library, set()).add(parent)
+        if parents:
+            more_items, more_errors = self._resolve_items(parents, memo)
+            items.update(more_items)
+            errors.update(more_errors)
+
+        resolved: list[dict[str, Any]] = []
+        for hit in hits:
+            library, key = hit["library"], hit["record_key"]
+            record = items.get((library, key))
+            if record is None:
+                if (library, key) in errors:
+                    resolved.append({**hit, "owner_key": key, "error": errors[(library, key)]})
+                continue  # gone from Zotero since it was indexed
+            owner_key = (record.get("data") or {}).get("parentItem") or key
+            owner = items.get((library, owner_key))
+            if owner is None:
+                if (library, owner_key) in errors:
+                    resolved.append({**hit, "owner_key": owner_key, "error": errors[(library, owner_key)]})
+                continue
+            if _is_trashed(record) or _is_trashed(owner):
+                continue
+            resolved.append({**hit, "record": record, "owner": owner, "owner_key": owner_key})
+        return resolved
+
+    def _resolve_items(
+        self, wanted: dict[int | None, set[str]], memo: dict[str, Any] | None = None
+    ) -> tuple[dict[tuple[int | None, str], dict], dict[tuple[int | None, str], str]]:
+        """Look up ``{library: keys}``: ``(items, errors)``, both keyed ``(library, key)``.
+
+        Trashed items may be returned, flagged ``data.deleted``; missing ones
+        are in neither mapping. ``library`` None is a hit whose record names no
+        library (indexes from before #396).
+
+        Local mode reads zotero.sqlite first, every library in one place. What
+        it cannot serve (no database, or a snapshot older than the item) goes
+        to the API in batches of 50: through the bound client for its own
+        library and untagged hits, and through a client scoped to the hit's
+        library for any other (#492), whose failures name that library.
+
+        ``memo`` (from ``_new_lookup_memo``) carries what one search has
+        already looked up, so its later rounds do not ask for it again.
+        """
+        items: dict[tuple[int | None, str], dict] = {}
+        errors: dict[tuple[int | None, str], str] = {}
+        if memo is not None:
+            # A search that asks again for more candidates looks up only the
+            # keys no earlier round of it has: one request per 50 new keys.
+            rest: dict[int | None, set[str]] = {}
+            for library, keys in wanted.items():
+                for key in keys:
+                    known = (library, key)
+                    if known not in memo["asked"]:
+                        rest.setdefault(library, set()).add(key)
+                    elif known in memo["items"]:
+                        items[known] = memo["items"][known]
+                    elif known in memo["errors"]:
+                        errors[known] = memo["errors"][known]
+            found, failed = self._resolve_items(rest)
+            memo["asked"].update((library, key) for library, keys in rest.items() for key in keys)
+            memo["items"].update(found)
+            memo["errors"].update(failed)
+            return {**items, **found}, {**errors, **failed}
+        wanted = {library: keys for library, keys in wanted.items() if keys}
+        if not wanted:
+            return items, errors
+        items.update(self._read_local_items(wanted))
+
         try:
             client_group_id = self._client_group_id()
         except ValueError:
             client_group_id = None
-
-        def _is_foreign(result: dict[str, Any]) -> bool:
-            group_id = (result.get("metadata") or {}).get("group_id")
-            if group_id is None or client_group_id is None:
-                return False
-            return int(group_id) != int(client_group_id)
-
-        already_tried = {r["item_key"] for r in enriched if _is_foreign(r)}
-        local_items = self._hydrate_locally(sorted(already_tried))
-
-        unresolved: list[dict[str, Any]] = []
-        for result in enriched:
-            item_key = result["item_key"]
-            if item_key in local_items:
-                result["zotero_item"] = local_items[item_key]
+        jobs: list[tuple[Any, Any]] = []
+        asked: list[tuple[int | None, bool]] = []
+        for library, keys in wanted.items():
+            rest = sorted(k for k in keys if (library, k) not in items)
+            if not rest:
                 continue
-            if _is_foreign(result):
-                # Local hydration came up empty for a hit known to be
-                # foreign. The bound client cannot serve it — that 404 is
-                # the #492 symptom — so ask a client scoped to the hit's own
-                # library instead. Outside local mode this is the only path
-                # that can serve the hit at all.
-                self._fetch_via_scoped_client(result)
+            foreign = library is not None and client_group_id is not None and library != client_group_id
+            client = self._client_for_group(library) if foreign else self.zotero_client
+            if client is None:
+                for key in rest:
+                    errors[(library, key)] = (
+                        f"item belongs to library {library}, which cannot be "
+                        "reached from this configuration — no local Zotero "
+                        "database, and the web API needs ZOTERO_API_KEY plus, for "
+                        "the personal library, a user-scoped ZOTERO_LIBRARY_ID"
+                    )
                 continue
-            try:
-                result["zotero_item"] = self.zotero_client.item(item_key)
-            except Exception as e:
-                result["_enrich_error"] = e
-                unresolved.append(result)
-
-        # Second chance for anything the client could not serve: on an
-        # untagged index that is exactly how a foreign hit presents itself.
-        # Keys the pass above already looked up are skipped — they are known
-        # to be absent, and asking twice cannot change that.
-        retry = [r for r in unresolved if r["item_key"] not in already_tried]
-        if retry:
-            recovered = self._hydrate_locally([r["item_key"] for r in retry])
-            for result in retry:
-                item = recovered.get(result["item_key"])
-                if item is not None:
-                    result["zotero_item"] = item
-                    result.pop("_enrich_error", None)
-
-        for result in enriched:
-            error = result.pop("_enrich_error", None)
-            if error is not None:
-                logger.error(
-                    f"Error enriching result for item {result['item_key']}: {error}"
+            jobs.append((client, functools.partial(_fetch_items_via_client, client, rest)))
+            asked.append((library, foreign))
+        # Libraries are asked in parallel, up to four at a time.
+        for (library, foreign), (found, failed) in zip(asked, _run_per_client(jobs)):
+            items.update(((library, key), item) for key, item in found.items())
+            for key, error in failed.items():
+                errors[(library, key)] = (
+                    f"item belongs to library {library}, and the configured "
+                    f"credentials could not read it from there: {error}"
+                    if foreign else str(error)
                 )
-                result["error"] = f"Could not fetch full item data: {error}"
+        return items, errors
 
-    def _fetch_via_scoped_client(self, result: dict[str, Any]) -> None:
-        """Hydrate one foreign hit through a client scoped to its library.
-
-        Reached only when ``_hydrate_locally`` could not serve a hit whose
-        ``group_id`` names a library other than the bound client's. Fills in
-        ``zotero_item`` on success; on failure records an ``_enrich_error``
-        that names the library and, where relevant, the credential
-        requirement — a foreign hit must never surface as a bare 404 from a
-        library that was never going to have it.
-        """
-        group_id = int((result.get("metadata") or {})["group_id"])
-        client = self._client_for_group(group_id)
-        if client is None:
-            result["_enrich_error"] = RuntimeError(
-                f"item belongs to library {group_id}, which cannot be "
-                "reached from this configuration — no local Zotero "
-                "database, and the web API needs ZOTERO_API_KEY plus, for "
-                "the personal library, a user-scoped ZOTERO_LIBRARY_ID"
-            )
-            return
+    def _read_local_items(
+        self, wanted: dict[int | None, set[str]]
+    ) -> dict[tuple[int | None, str], dict]:
+        """``wanted`` from zotero.sqlite, trashed items included; {} outside local mode."""
         try:
-            result["zotero_item"] = client.item(result["item_key"])
+            reader = self._open_local_reader()
         except Exception as e:
-            result["_enrich_error"] = RuntimeError(
-                f"item belongs to library {group_id}, and the configured "
-                f"credentials could not read it from there: {e}"
-            )
+            logger.debug(f"Resolving search hits: no local database ({e})")
+            return {}
+        if reader is None:
+            return {}
+        found: dict[tuple[int | None, str], dict] = {}
+        try:
+            for library, keys in wanted.items():
+                ordered = sorted(keys)
+                for start in range(0, len(ordered), _LOCAL_KEY_BATCH):
+                    batch = ordered[start:start + _LOCAL_KEY_BATCH]
+                    # group_id=None reads every library, for untagged hits.
+                    for key, item in reader.get_full_items(batch, group_id=library).items():
+                        found[(library, key)] = item
+        except Exception as e:
+            logger.warning(f"Resolving search hits from zotero.sqlite failed: {e}")
+        finally:
+            reader.close()
+        return found
 
     def _client_for_group(self, group_id: int):
         """A pyzotero client scoped to the library ``group_id`` names, or None.
 
-        The per-library complement of ``_hydrate_locally`` (#492): the bound
+        The per-library complement of ``_read_local_items`` (#492): the bound
         client can only serve its own library, and outside local mode there
         is no ``zotero.sqlite`` to fall back on, so a foreign hit needs a
         client of its own. 0 is the personal library; anything else is a
@@ -5859,25 +7227,6 @@ class ZoteroSemanticSearch:
                 )
         self._scoped_clients[group_id] = client
         return client
-
-    def _hydrate_locally(self, keys: list[str]) -> dict[str, dict]:
-        """Hydrate `keys` from zotero.sqlite, or {} if that is not possible."""
-        if not keys:
-            return {}
-        try:
-            reader = self._open_local_reader()
-        except Exception as e:
-            logger.debug(f"Cross-library enrichment: no local database ({e})")
-            return {}
-        if reader is None:
-            return {}
-        try:
-            return reader.get_items_by_keys(keys)
-        except Exception as e:
-            logger.warning(f"Cross-library enrichment failed: {e}")
-            return {}
-        finally:
-            reader.close()
 
     def _open_local_reader(self) -> LocalZoteroReader | None:
         """A reader over this install's ``zotero.sqlite``, or None outside
