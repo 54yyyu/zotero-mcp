@@ -1,6 +1,7 @@
 """Extraction primitives for the item-keyed index (#826).
 
-Many attachments per item and per-file failure markers. None of this changes what the indexer writes yet.
+Many attachments per item, per-file failure markers
+and the stamps a re-key leaves. None of this changes what the indexer writes yet.
 """
 
 import sqlite3
@@ -232,3 +233,28 @@ def test_failure_marker_coexists_with_cached_text(config_path):
     fulltext_cache.put_cached_text("ATTKEY02", 1, 2, "pdf", None, "t", config_path=config_path)
     assert fulltext_cache.failed("ATTKEY01", "1:2", config_path=config_path)
     assert fulltext_cache.get_cached_text("ATTKEY02", 1, 2, config_path=config_path)
+
+
+# ---------------------------------------------------------------------------
+# stamps left by a re-key
+# ---------------------------------------------------------------------------
+
+
+def test_rekeyed_stamps_are_remembered_per_attachment(config_path):
+    assert fulltext_cache.rekeyed_stamps(config_path=config_path) == {}
+
+    fulltext_cache.remember_rekeyed_stamp("ATT1", "1:11000", config_path=config_path)
+    fulltext_cache.remember_rekeyed_stamp("ATT2", "2:5", config_path=config_path)
+    fulltext_cache.remember_rekeyed_stamp("ATT1", "3:11000", config_path=config_path)
+
+    assert fulltext_cache.rekeyed_stamps(config_path=config_path) == {"ATT1": "3:11000", "ATT2": "2:5"}
+
+
+def test_rekeyed_stamps_coexist_with_cached_text_and_failures(config_path):
+    fulltext_cache.put_cached_text("ATT1", 1, 2, "pdf", None, "t", config_path=config_path)
+    fulltext_cache.record_failure("ATT2", "1:2", config_path=config_path)
+    fulltext_cache.remember_rekeyed_stamp("ATT3", "1:3", config_path=config_path)
+
+    assert fulltext_cache.get_cached_text("ATT1", 1, 2, config_path=config_path)
+    assert fulltext_cache.failed("ATT2", "1:2", config_path=config_path)
+    assert fulltext_cache.rekeyed_stamps(config_path=config_path) == {"ATT3": "1:3"}

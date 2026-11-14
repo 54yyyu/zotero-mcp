@@ -446,13 +446,40 @@ def _print_migration_report(report) -> None:
         print("Nothing to migrate: this index already keeps passages in their own collection, or has none.")
     else:
         print(f"\nMigration {'check (dry run)' if report.dry_run else 'completed'}:")
-        print(f"- Passages kept, with their vectors: {report.passage_records}")
+        print(f"- Passages kept, with their vectors: {report.passage_records - report.dropped_passages}")
         if report.moved_articles:
             print(f"- Article records moved to the article-level ChromaDB collection: {report.moved_articles}")
         if report.moved_passages:
             print(f"- Passages moved out of the article-level ChromaDB collection: {report.moved_passages}")
+        if report.legacy_items:
+            verb = "would be" if report.dry_run else "were"
+            print(
+                f"- Items whose passages {verb} re-keyed to their attachment, vectors unchanged: "
+                f"{report.rekeyed_items} ({report.rekeyed_passages} passages)"
+            )
+            if report.skipped_items:
+                print(
+                    f"- Items skipped because Zotero could not be asked about them (Zotero unreachable): "
+                    f"{report.skipped_items} ({report.skipped_passages} passages left as they are; "
+                    "start Zotero and run this again)"
+                )
+            if report.dropped_items:
+                print(
+                    f"- Items whose attachment could not be told for certain, so their {report.dropped_passages} "
+                    f"passages {verb} dropped and embedded again by the next update-db: {report.dropped_items}"
+                )
     if report.items_needing_articles:
         print(f"- Items without an article vector: {report.items_needing_articles}")
+    if report.parent_hints_missing:
+        if report.dry_run:
+            print(f"- Attachments whose records would get a parent hint, nothing embedded: {report.parent_hints_missing}")
+        else:
+            print(
+                f"- Attachments that had no parent hint: {report.parent_hints_missing} "
+                f"({report.parent_hints_set} records updated, nothing embedded)"
+            )
+            if report.parent_hints_set == 0:
+                print("  Zotero could not say; an explicit update of the index sets them.")
     if report.dry_run:
         if report.needed:
             print("\nNothing was changed. Run without --dry-run to migrate.")
@@ -1498,15 +1525,30 @@ def main():
 
     elif args.command == "migrate-index":
         from zotero_mcp.index_migration import MigrationError, migrate_index
-        from zotero_mcp.semantic_search import _acquire_update_lock, _update_lock_path
+        from zotero_mcp.semantic_search import (
+            _acquire_update_lock,
+            _update_lock_path,
+            create_semantic_search,
+        )
+        from zotero_mcp.utils import is_local_mode
 
+        # Local mode decides whether the Zotero database can say which
+        # attachment a passage came from.
+        setup_zotero_environment()
         config_path = _semantic_config_path(args.config_path)
         with _acquire_update_lock(_update_lock_path()) as acquired:
             if not acquired:
                 print("Error: a database update is running; try again when it has finished.", file=sys.stderr)
                 sys.exit(1)
             try:
-                report = migrate_index(str(config_path), dry_run=args.dry_run)
+                report = migrate_index(
+                    str(config_path),
+                    dry_run=args.dry_run,
+                    # Without a local database the attachments' parents come from the web API.
+                    parents_of=None if is_local_mode() else (
+                        lambda keys: create_semantic_search(str(config_path))._attachment_parents(keys)
+                    ),
+                )
             except MigrationError as e:
                 print(f"Error: {e}", file=sys.stderr)
                 sys.exit(1)
