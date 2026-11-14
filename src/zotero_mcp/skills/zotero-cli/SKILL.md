@@ -77,10 +77,12 @@ collection. Search still works; go ahead. Tell the user once, with the steps it
 lists, and that only the update in the last step embeds anything (billed with a
 paid embedding API). Ask before running any of it; never migrate on your own.
 
-Semantic hits are parent items; a hit on a file shows `Attachment:` in its
-Location line. Filters on `title`, `doi`, `tags`, `item_type` and the like read
-current Zotero data. `zotero-mcp migrate-index` also re-keys old passages
-without embedding anything; ask before running it.
+The same section, or a "Legacy records" note, appears when old records still
+store an item's passages under the item's key. They keep working and
+`zotero-mcp migrate-index` re-keys them without embedding anything, but treat
+it the same way: report it once and ask first. Semantic hits are parent items;
+a hit on a file shows `Attachment:` in its Location line. Filters
+on `title`, `doi`, `tags`, `item_type` and the like read current Zotero data.
 
 Every search covers one library — the active one. When you don't know which
 library holds something, or a search comes up empty and the item might live in

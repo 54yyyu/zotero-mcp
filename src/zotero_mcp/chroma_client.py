@@ -1354,6 +1354,7 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
         "passages_without_parent_hint": 0,
         "attachments_without_library": 0,
         "library_ids": [],
+        "bibliographic_records": 0,
         "article_text_items": 0,
         "article_level_items": 0,
         "passage_collection_exists": False,
@@ -1391,8 +1392,9 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
         library_ids=library_ids,
         attachment_records=attachments,
         legacy_records=legacy_records,
-        # Every attachment record and every legacy record, whether or not it
-        # has text; the level note falls back to it on a legacy index.
+        bibliographic_records=bare - attachments - legacy_records,
+        # Every attachment record and every legacy record is an item's article
+        # record, whether or not it has text; this is what status shows.
         article_level_items=attachments + legacy_records,
         # Records that stand for a file's text at article level, to compare
         # with the keys that have passages: an attachment record, or a legacy
@@ -1581,15 +1583,21 @@ def level_item_counts(
 ) -> dict[str, Any]:
     """Items per level for status, and on an unmigrated index what migrating costs.
 
-    ``article_items`` is the items that have an article record of their own:
-    every bare record except an attachment's (#826), so a file's record is not
-    counted as a second item. ``migration`` is there only while passages are
-    still in the article collection, and is what the status note about
-    ``migrate-index`` reads.
+    ``article_items`` is the attachments (or legacy items) that have an
+    article record, ``passage_items`` the keys that have passages. Bibliographic
+    records are in neither. (The level note compares ``article_text_items``,
+    which leaves out legacy records built without full text.) ``migration`` is there only while passages are still in the
+    article collection, and is what the status note about ``migrate-index``
+    reads.
     """
     counts: dict[str, Any] = {
-        "article_items": layout["article_records"] - layout["attachment_records"],
+        "article_items": layout["article_level_items"],
         "passage_items": layout.get("passage_items"),
+        "attachment_records": layout["attachment_records"],
+        "bibliographic_records": layout["bibliographic_records"],
+        "legacy_records": layout["legacy_records"],
+        "legacy_passages": layout["legacy_passages"],
+        "legacy_passage_items": layout["legacy_passage_items"],
     }
     if layout["unmigrated_passages"]:
         migration = read_migration_estimate(
@@ -1598,6 +1606,38 @@ def level_item_counts(
         counts["passage_items"] = migration["items_with_passages"]
         counts["migration"] = migration
     return counts
+
+
+def level_status_rows(info: dict[str, Any]) -> list[tuple[str, str]]:
+    """``(label, value)`` rows for the per-level counts in a status report.
+
+    Shared by the three status displays. Counts the status did not read are
+    left out, and an unreadable passage count shows as ``unknown``. Record
+    kinds with none are left out; the two text counts always show. They say
+    "Attachments" unless legacy records are present, whose items are not
+    attachments; then they say "Items".
+    """
+    rows: list[tuple[str, str]] = []
+    mixed = bool(info.get("legacy_records") or info.get("legacy_passages"))
+    noun = "Items" if mixed else "Attachments"
+    for label, key in (
+        ("Bibliographic records", "bibliographic_records"),
+        ("Attachment records", "attachment_records"),
+        ("Legacy records", "legacy_records"),
+        (f"{noun} with article records", "article_items"),
+        (f"{noun} with passages", "passage_items"),
+        ("Legacy passages", "legacy_passages"),
+    ):
+        if key in info and (info[key] is None or info[key] or key in ("article_items", "passage_items")):
+            rows.append((label, "unknown" if info[key] is None else str(info[key])))
+    return rows
+
+
+def legacy_status_note(info: dict[str, Any]) -> list[str]:
+    """What status says about passages still keyed the old way; empty when there are none."""
+    from .index_migration import rekey_note
+
+    return rekey_note(info.get("legacy_passage_items") or 0, info.get("legacy_passages") or 0)
 
 
 def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tuple[set[str], set[str]]:

@@ -37,6 +37,8 @@ from typing import Any
 
 import numpy as np
 
+from .chroma_client import record_key
+
 logger = logging.getLogger(__name__)
 
 # Rows read per query. A query that hits a damaged page is split in half until
@@ -340,7 +342,7 @@ def _pending_item_keys(
     keys = set()
     for seq_id, topic, doc_id in _scan_rows(con, "embeddings_queue", "seq_id, topic, id", on_skip):
         if topic and topic.endswith(collection_id) and _seq_id(seq_id) > cutoff and doc_id:
-            keys.add(doc_id.split("#", 1)[0])
+            keys.add(record_key(doc_id))
     return keys
 
 
@@ -426,7 +428,7 @@ def _copy_collection(
             row_ids[doc_id] = rid
     by_item: dict[str, list[str]] = defaultdict(list)
     for doc_id in row_ids:
-        by_item[doc_id.split("#", 1)[0]].append(doc_id)
+        by_item[record_key(doc_id)].append(doc_id)
     progress(f"Found {len(row_ids)} chunks in {len(by_item)} items in {source.name}.")
 
     excluded: dict[str, str] = {}
@@ -455,11 +457,11 @@ def _copy_collection(
             continue
         embeddings = source.vectors.get(rows)
         norms = np.linalg.norm(embeddings, axis=1)
-        bad = {ids[i].split("#", 1)[0] for i in np.flatnonzero(~np.isfinite(norms) | (norms == 0))}
+        bad = {record_key(ids[i]) for i in np.flatnonzero(~np.isfinite(norms) | (norms == 0))}
         if bad:
             for key in bad:
                 excluded[key] = "invalid vector"
-            keep = [i for i, d in enumerate(ids) if d.split("#", 1)[0] not in bad]
+            keep = [i for i, d in enumerate(ids) if record_key(d) not in bad]
             ids = [ids[i] for i in keep]
             documents = [documents[i] for i in keep]
             metadatas = [metadatas[i] for i in keep]

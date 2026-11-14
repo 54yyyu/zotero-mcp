@@ -1477,9 +1477,10 @@ def main():
             print(f"Document count: {collection_info.get('count', 0)}")
             print(f"  Article-level records: {collection_info.get('article_records', 0)}")
             print(f"  Passage-level records: {collection_info.get('passage_records', 0)}")
-            for label, key in (("Items with article records", "article_items"), ("Items with passages", "passage_items")):
-                if key in collection_info:
-                    print(f"  {label}: {'unknown' if collection_info[key] is None else collection_info[key]}")
+            from zotero_mcp.chroma_client import legacy_status_note, level_status_rows
+
+            for label, value in level_status_rows(collection_info):
+                print(f"  {label}: {value}")
             print(f"Embedding model: {collection_info.get('embedding_model', 'Unknown')}")
             print(f"Database path: {collection_info.get('persist_directory', 'Unknown')}")
             if collection_info.get("migration"):
@@ -1488,6 +1489,11 @@ def main():
 
                 print("\nIndex migration:")
                 for line in status_note(collection_info["migration"], "zotero-mcp update-db", local_mode=is_local_mode()):
+                    print(f"  {line}")
+
+            if legacy_lines := legacy_status_note(collection_info):
+                print("\nLegacy records:")
+                for line in legacy_lines:
                     print(f"  {line}")
 
             update_config = status.get("update_config", {})
@@ -1558,14 +1564,8 @@ def main():
         # Setup Zotero environment variables
         setup_zotero_environment()
 
-        from collections import Counter
-
+        from zotero_mcp.index_inspect import inspect_index
         from zotero_mcp.semantic_search import create_semantic_search
-
-        # Batch size for paginated collection scans (see _iter_all_metadatas).
-        # Keeps each col.get() well under SQLite's bound-variable ceiling
-        # regardless of collection size.
-        DB_INSPECT_BATCH_SIZE = 500
 
         # Determine config path
         config_path = args.config_path
@@ -1575,113 +1575,13 @@ def main():
             config_path = Path(config_path)
 
         try:
-            search = create_semantic_search(str(config_path))
-            client = search.chroma_client
-
-            def _iter_all_metadatas(batch_size=DB_INSPECT_BATCH_SIZE, include_documents=False):
-                """Paginate through the whole collection in bounded batches.
-
-                A single unbounded ``col.get(include=[...])`` call (no limit/offset)
-                asks Chroma's SQLite backend to bind one parameter per row for the
-                entire collection; past roughly a few tens of thousands of rows this
-                exceeds SQLite's bound-variable ceiling and raises
-                ``too many SQL variables``. Fetching in small batches keeps every
-                query well under that limit regardless of collection size, and lets
-                filtering scan the *whole* collection instead of silently being
-                limited to whatever the first raw batch happened to contain.
-                """
-                inc = ["metadatas", "documents"] if include_documents else ["metadatas"]
-                for col in client.collections():
-                    total = col.count()
-                    offset = 0
-                    while offset < total:
-                        batch = col.get(limit=batch_size, offset=offset, include=inc)
-                        metas = batch.get("metadatas", [])
-                        if not metas:
-                            break
-                        docs = batch.get("documents", [None] * len(metas)) if include_documents else [None] * len(metas)
-                        for m, d in zip(metas, docs):
-                            yield (m or {}), d
-                        offset += batch_size
-
-            if args.stats:
-                # Show aggregate stats (merged from former db-stats).
-                #
-                # Single streaming pass over _iter_all_metadatas(): only the
-                # small aggregates below (counters) are held in memory, never
-                # a list of the collection's ~100k+ metadata dicts.
-                print("=== Semantic DB Inspection (Stats) ===")
-                info = client.get_collection_info()
-                print(f"Collection: {info.get('name')} @ {info.get('persist_directory')}")
-                print(f"Count: {info.get('count')}")
-
-                ct_types = Counter()
-                ct_titles = Counter()
-                coverage = {}
-                for m, _ in _iter_all_metadatas():
-                    m = m or {}
-                    t = m.get("item_type", "") or "(missing)"
-                    ct_types[t] += 1
-
-                    title = m.get("title", "")
-                    if title:
-                        ct_titles[title] += 1
-
-                    cov = coverage.setdefault(t, {"total": 0, "with_fulltext": 0, "pdf": 0, "html": 0})
-                    cov["total"] += 1
-                    if m.get("has_fulltext"):
-                        cov["with_fulltext"] += 1
-                        src = (m.get("fulltext_source") or "").lower()
-                        if src == "pdf":
-                            cov["pdf"] += 1
-                        elif src == "html":
-                            cov["html"] += 1
-
-                print("Item types:")
-                for t, c in ct_types.most_common(20):
-                    print(f"  {t or '(missing)'}: {c}")
-
-                print("Fulltext coverage (by type):")
-                for t, cov in coverage.items():
-                    print(f"  {t}: {cov['with_fulltext']}/{cov['total']} (pdf:{cov['pdf']}, html:{cov['html']})")
-
-                common = ct_titles.most_common(10)
-                if common:
-                    print("Common titles:")
-                    for t, c in common:
-                        print(f"  {t[:80]}{'...' if len(t)>80 else ''}: {c}")
-                return
-
-            print("=== Semantic DB Inspection ===")
-            total = client.get_collection_info().get("count", 0)
-            print(f"Total documents: {total}")
-            print(f"Showing up to: {args.limit}")
-
-            # Scan the whole collection in batches (not just the first raw batch),
-            # so --filter actually finds matches wherever they live in a large
-            # collection instead of only checking whatever `limit` records the
-            # backend happened to return first.
-            shown = 0
-            for meta, doc in _iter_all_metadatas(include_documents=args.show_documents):
-                title = meta.get("title", "")
-                creators = meta.get("creators", "")
-                if args.filter_text:
-                    needle = args.filter_text.lower()
-                    if needle not in (title or "").lower() and needle not in (creators or "").lower():
-                        continue
-                print(f"- {title} | {creators}")
-                if args.show_documents:
-                    full = (doc or "").strip()
-                    snippet = full[:200].replace("\n", " ")
-                    if snippet:
-                        print(f"  doc: {snippet}{'...' if len(full) > 200 else ''}")
-                shown += 1
-                if shown >= args.limit:
-                    break
-
-            if shown == 0:
-                print("No records matched your filter.")
-
+            inspect_index(
+                create_semantic_search(str(config_path)),
+                stats=args.stats,
+                limit=args.limit,
+                filter_text=args.filter_text,
+                show_documents=args.show_documents,
+            )
         except Exception as e:
             print(f"Error inspecting database: {e}")
             sys.exit(1)

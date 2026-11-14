@@ -1838,10 +1838,11 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append(f"**Document Count:** {collection_info.get('count', 0)}")
         output.append(f"**Article-level Records:** {collection_info.get('article_records', 0)}")
         output.append(f"**Passage-level Records:** {collection_info.get('passage_records', 0)}")
-        for label, key in (("Items with Article Records", "article_items"), ("Items with Passages", "passage_items")):
-            if key in collection_info:
-                count = collection_info[key]
-                output.append(f"**{label}:** {'unknown' if count is None else count}")
+        from zotero_mcp.chroma_client import legacy_status_note, level_status_rows
+
+        for label, value in level_status_rows(collection_info):
+            title = " ".join(w if w == "with" else w.capitalize() for w in label.split())
+            output.append(f"**{title}:** {value}")
         if collection_info.get("pending_writes"):
             output.append(
                 f"**Pending Writes:** {collection_info['pending_writes']} "
@@ -1874,6 +1875,13 @@ def get_search_database_status(*, ctx: Context) -> str:
             output.extend(
                 status_note(collection_info["migration"], "zotero-mcp update-db", local_mode=_utils.is_local_mode())
             )
+            output.append("```")
+            output.append("")
+
+        if legacy_lines := legacy_status_note(collection_info):
+            output.append("## Legacy Records")
+            output.append("```")
+            output.extend(legacy_lines)
             output.append("```")
             output.append("")
 
