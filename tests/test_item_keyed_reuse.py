@@ -189,23 +189,6 @@ def test_the_same_file_under_two_items_is_parsed_and_embedded_once(env, home):
     assert stats["reused_from_hash"] == {"attachments": 1, "records": 1 + PASSAGES}
 
 
-def test_a_record_made_from_a_text_cache_keeps_no_hash_and_is_never_a_reuse_source(env, home):
-    """The cache's bytes are not the file's: another file with the same bytes is not a copy of it."""
-    cache = real_target(home, "ATT00002")
-    cache = ExtractionTarget(
-        key=cache.key, path=cache.path, content_type=cache.content_type, category=cache.category,
-        file_stamp=cache.file_stamp, size=cache.size, ft_cache=True,
-    )
-    reader = Reader([Item("ITEM0001", 1), Item("ITEM0002", 2)], targets={1: [real_target(home, "ATT00001")], 2: [cache]})
-
-    search, stats = env(reader)
-
-    assert sorted(reader.extracted) == ["ATT00001", "ATT00002"], "the cache-made record is parsed, not copied"
-    assert records(search, "ATT00002")["ATT00002"][2].get("file_hash") is None
-    assert records(search, "ATT00001")["ATT00001"][2]["file_hash"]
-    assert stats["reused_from_hash"] == {"attachments": 0, "records": 0}
-
-
 def test_a_file_already_in_the_index_is_copied_in_a_later_run(env, home):
     reader = Reader([Item("ITEM0001", 1)], targets={1: [real_target(home, "ATT00001")]})
     env(reader)

@@ -540,6 +540,23 @@ def test_a_legacy_item_with_two_files_is_rekeyed_to_the_larger_when_nothing_chan
     assert set(_read(directory, PASSAGES)) == {f"ATTACH02#{n}" for n in range(3)}
 
 
+def test_a_legacy_item_with_a_file_known_only_by_its_cache_is_not_rekeyed_by_size(index):
+    """The cache's size says nothing about the file's, so the largest cannot be told (fix round 2)."""
+    directory, config = index
+    _seed_split(directory, att_keys="ATTACH01,ATTACH02")
+    on_disk = _sized(ATT, 100)
+    cached = ExtractionTarget(
+        key="ATTACH02", path=on_disk.path, content_type=on_disk.content_type, category=on_disk.category,
+        file_stamp="ftcache:1:900", size=900, ft_cache=True,
+    )
+    reader = MigReader([_item()], targets={1: [on_disk, cached]})
+
+    report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+
+    assert (report.rekeyed_items, report.dropped_items, report.skipped_items) == (0, 0, 1)
+    assert len(_read(directory, PASSAGES)) == 3
+
+
 def test_a_legacy_item_with_two_files_and_a_changed_fingerprint_is_dropped(index):
     directory, config = index
     _seed_split(directory, att_keys="ATTACH01")
