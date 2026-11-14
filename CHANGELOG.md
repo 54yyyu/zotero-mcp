@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`zotero-cli add folder DIR`** adds every PDF in a folder by the DOI found in it, with `-c`, `--tags` and `--if-exists` as in `add doi`, attaches each file, and prints a table of what it did and what it could not resolve (`--dry-run` shows just the DOIs). The DOI comes from the PDF's metadata, or from the whole first page, not the first 3000 characters that `add file` reads. A PDF cut from a journal spread holds two articles' DOIs; it is reported as ambiguous instead of guessed, so it cannot be filed under the neighbouring article.
 - **`zotero-cli read --format image --grid`** draws a grid on the page image: a line every 0.05, labelled every 0.1, in the whole-page coordinates that `--rect` and annotation boxes use, also on a zoomed `--rect`. `--rect` zoom already existed. The page-image, overlay and grid drawing now share one renderer, so the annotate-paper skill no longer needs to tell an agent to write its own grid, zoom and overlay scripts each session.
 
+### Fixed
+
+- **Highlights anchor to the right words when the PDF and your text differ in dashes and hyphens.** A highlight for text with a hyphen-minus where the PDF has a minus sign (U+2212, as in "-5"), a soft hyphen, or a word the PDF breaks across two lines ("regard-" then "less") used to match only through a loose fuzzy search, so the box could start or end a few characters off, on a neighbouring word. These are normalized before matching now, so the box covers exactly the words asked for. Curly quotes and ligatures were already handled.
+- **A highlight that is not found lists the nearest places instead of one guess.** `annotations create`, `batch` and `batch --dry-run` give up to three candidates (page, similarity, the text found there and its box, as `candidates` in JSON), best first, so the right wording can be copied from the closest one.
+
 ## [0.17.1] - 2026-11-12
 
 ### Added

@@ -200,7 +200,11 @@ To annotate, plan everything, check it, then write it in one run:
    `{"page": 1, "note": "x,y", "comment": "..."}` for a sticky note
    centered on a point (its text is the comment). Copy
    highlight text exactly from `read`; it is searched for on that page and
-   two pages either side.
+   two pages either side, and a minus sign, hyphen, curly quote, ligature,
+   soft hyphen or a word hyphenated across lines does not have to match
+   character for character. When a phrase is not found, the row lists the
+   nearest places (page, similarity, the text there, and its box in
+   `candidates`); copy the exact words from the closest one.
    Instead of working out a panel's box by hand, give `"rect": "auto"` and
    a rough `"near": "x,y,w,h"`: the box is fitted to the detected panel or
    figure that overlaps the hint most. When nothing matches, or the match is

@@ -63,6 +63,7 @@ DASH_REPLACEMENTS = {
     '\u2012': '-',  # figure dash
     '\u2011': '-',  # non-breaking hyphen
     '\u2010': '-',  # hyphen
+    '\u2212': '-',  # minus sign, which PDFs and typed text swap with the hyphen-minus
 }
 
 QUOTE_REPLACEMENTS = {
@@ -87,7 +88,8 @@ def normalize_text(text: str) -> str:
 
     Transformations applied:
     - Remove hyphenation at line breaks ("regard-\\nless" -> "regardless")
-    - Normalize dashes (em-dash, en-dash, etc.) to simple hyphen
+    - Remove soft hyphens
+    - Normalize dashes (em-dash, en-dash, minus sign, etc.) to simple hyphen
     - Normalize curly quotes to straight quotes
     - Expand common ligatures (fi, fl, ff, etc.)
     - Collapse whitespace to single spaces
@@ -100,6 +102,7 @@ def normalize_text(text: str) -> str:
     """
     # Remove hyphenation at line breaks
     text = re.sub(r'[\u00ad\u2010\u2011-]\s*\n\s*', '', text)
+    text = text.replace('\u00ad', '')
 
     # Apply character replacements
     for old, new in DASH_REPLACEMENTS.items():
@@ -170,6 +173,23 @@ def _extract_page_spans(page) -> list[dict[str, Any]]:
     return spans
 
 
+def _hyphenates_into_next_line(normalized: str, spans: list[dict], i: int) -> bool:
+    """True when span ``i`` ends in the hyphen of a word broken across lines.
+
+    The hyphen is dropped from the index so that "regard-" and "less" on the
+    next line match a search for "regardless". Only a letter before the
+    hyphen and a lowercase letter starting the next line count, so a dash
+    before a number, or a hyphenated compound whose second half is capitalized,
+    is left alone.
+    """
+    if len(normalized) < 2 or not normalized.endswith("-") or not normalized[-2].isalpha():
+        return False
+    if i + 1 >= len(spans) or spans[i + 1].get("line") == spans[i].get("line"):
+        return False
+    following = spans[i + 1]["text"].lstrip()
+    return bool(following) and following[0].isalpha() and following[0].islower()
+
+
 def _build_normalized_text_index(spans: list[dict]) -> tuple[str, list[tuple[int, int, int]]]:
     """
     Build a normalized cumulative text string and index mapping.
@@ -191,6 +211,8 @@ def _build_normalized_text_index(spans: list[dict]) -> tuple[str, list[tuple[int
     for i, span in enumerate(spans):
         start = len(cumulative)
         normalized = normalize_for_matching(span["text"])
+        if _hyphenates_into_next_line(normalized, spans, i):
+            normalized = normalized[:-1]
         cumulative += normalized
         end = len(cumulative)
         positions.append((start, end, i))
@@ -675,7 +697,7 @@ def _fuzzy_search_page(search_text: str, text_index) -> dict | None:
             match_start, match_start + len(normalized_search), span_positions, spans
         )
         if bboxes:
-            return {"rects": bboxes, "matched_text": " ".join(texts), "score": 1.0}
+            return {"rects": bboxes, "bboxes": bboxes, "matched_text": " ".join(texts), "score": 1.0}
 
     match = _sliding_window_match(cumulative, normalized_search)
     if match is None:
@@ -686,6 +708,7 @@ def _fuzzy_search_page(search_text: str, text_index) -> dict | None:
         return None
     return {
         "rects": bboxes if match_score >= threshold else [],
+        "bboxes": bboxes,
         "matched_text": " ".join(texts),
         "score": match_score,
     }
@@ -791,6 +814,10 @@ def _search_single_page(page, page_index: int, search_text: str, best_debug: dic
             best_debug["match"] = fuzzy_result.get("matched_text")
             best_debug["score"] = score
             best_debug["page"] = page_index
+        best_debug.setdefault("candidates", []).append({
+            "page_index": page_index, "score": score,
+            "matched_text": fuzzy_result.get("matched_text", ""), "bboxes": fuzzy_result["bboxes"],
+        })
         if fuzzy_result.get("rects"):
             rects = _convert_rects_to_zotero(fuzzy_result["rects"], page)
             return {
@@ -894,7 +921,7 @@ def find_text_position(pdf, page_num: int, search_text: str) -> dict:
             if target_index + offset < total_pages:
                 pages_to_search.append(target_index + offset)
 
-        best_debug = {"match": None, "score": 0.0, "page": None}
+        best_debug = {"match": None, "score": 0.0, "page": None, "candidates": []}
         for page_index in pages_to_search:
             result = _search_single_page(doc[page_index], page_index, search_text, best_debug)
             if result:
@@ -906,7 +933,39 @@ def find_text_position(pdf, page_num: int, search_text: str) -> dict:
             "best_score": best_debug["score"],
             "page_found": best_debug["page"] + 1 if best_debug["page"] is not None else None,
             "pages_searched": [p + 1 for p in pages_to_search],
+            "candidates": _nearest_candidates(doc, best_debug["candidates"]),
         }
+
+
+#: A miss lists at most this many near matches, none scoring below the floor.
+MAX_CANDIDATES = 3
+CANDIDATE_MIN_SCORE = 0.4
+
+
+def _nearest_candidates(doc, found: list[dict]) -> list[dict]:
+    """The closest fuzzy matches of a failed search, best first, ready to show.
+
+    Each is ``{"page", "best_match", "score", "rect", "rects"}``; ``rect`` and
+    ``rects`` are ``[x, y, w, h]`` boxes normalized to the page as displayed,
+    the form ``--rect`` and ``annotations preview`` use, so the candidate can
+    be looked at before the text is corrected.
+    """
+    ranked = sorted((c for c in found if c["score"] >= CANDIDATE_MIN_SCORE),
+                    key=lambda c: -c["score"])[:MAX_CANDIDATES]
+    candidates = []
+    for candidate in ranked:
+        page = doc[candidate["page_index"]]
+        rects = zotero_rects_to_shown(page, _convert_rects_to_zotero(candidate["bboxes"], page))
+        if not rects:
+            continue
+        candidates.append({
+            "page": candidate["page_index"] + 1,
+            "best_match": normalize_text(candidate["matched_text"])[:200],
+            "score": round(candidate["score"], 3),
+            "rect": union_box(rects),
+            "rects": rects,
+        })
+    return candidates
 
 
 def get_page_label(pdf, page_num: int) -> str:

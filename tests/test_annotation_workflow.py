@@ -709,3 +709,109 @@ class TestOfflineDryRun:
         out = capsys.readouterr().out
         assert exit_info.value.code == 1
         assert out.count("FAIL") == 1 and "all 4 entries" in out and "Start Zotero" in out
+
+
+# ---------------------------------------------------------------------------
+# 8. Fuzzy text anchors
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def typeset_pdf(tmp_path):
+    """Text that keeps what real typesetting leaves in it: a true minus sign, curly
+    quotes, an fi ligature, a soft hyphen, and a word broken across two lines."""
+    try:
+        font = fitz.Font("cjk")      # a built-in font with those glyphs
+    except Exception:
+        pytest.skip("this PyMuPDF has no built-in font with the typographic glyphs")
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    writer = fitz.TextWriter(page.rect)
+    lines = [
+        "The change was −5 percent in the “quoted” group and the ﬁnal result.",
+        "A soft­hyphen in the middle and a word that is regard-",
+        "less of the sample size, which stays fixed.",
+        "Row two shows 3 − 2 = 1 for every case.",
+    ]
+    for index, line in enumerate(lines):
+        writer.append((72, 100 + 24 * index), line, font=font, fontsize=10)
+    writer.write_text(page)
+    path = str(tmp_path / "typeset.pdf")
+    doc.save(path)
+    doc.close()
+    return path
+
+
+class TestTextNormalisation:
+    @pytest.mark.parametrize("wanted, covers", [
+        ("change was -5 percent", "change was −5 percent"),               # hyphen-minus for a minus sign
+        ("change was −5 percent", "change was −5 percent"),           # and the minus sign itself
+        ("3 - 2 = 1 for every", "3 − 2 = 1 for every"),                    # minus between numbers
+        ("the \"quoted\" group", "the “quoted” group"),               # straight quotes for curly
+        ("and the final result", "and the ﬁnal result"),                   # fi typed as two letters
+        ("softhyphen in the middle", "soft­hyphen in the middle"),         # soft hyphen left out
+        ("a word that is regardless of the sample", "a word that is regard-less of the sample"),   # broken across lines
+        ("word that is regard-\nless of the sample", "word that is regard-less of the sample"),  # break typed as it reads
+    ])
+    def test_matches_cover_exactly_the_wanted_words(self, typeset_pdf, wanted, covers):
+        from zotero_mcp.pdf_utils import find_text_position, normalize_text, text_in_rects
+
+        result = find_text_position(typeset_pdf, 1, wanted)
+        assert "error" not in result, result
+        def letters(text):
+            """Only letters and digits, so the lookalikes and invisible marks do not count."""
+            return "".join(c for c in normalize_text(text).lower() if c.isalnum())
+
+        assert letters(text_in_rects(typeset_pdf, 0, result["rects"])) == letters(covers)
+
+    def test_a_highlight_with_a_unicode_minus_is_created(self, typeset_pdf, monkeypatch):
+        store = FakeStore()
+        monkeypatch.setattr(annotations, "_fetch_attachment_file",
+                            lambda key, tmp, **kw: (typeset_pdf, "t.pdf", "pdf", None))
+        monkeypatch.setattr(annotations, "_get_note_write_client", lambda _op: (store, None))
+        results = annotations.create_annotations(ATTACHMENT, [
+            {"page": 1, "text": "change was −5 percent in the"},
+            {"page": 1, "text": "word that is regardless of the sample size"},
+        ], ctx=MagicMock())
+        assert [r["ok"] for r in results] == [True, True], results
+
+
+class TestNearestCandidates:
+    MISSPELT = "the shift was \u22125 percent among the quoted participants"
+
+    def test_a_miss_lists_the_nearest_places_with_page_score_text_and_box(self, typeset_pdf):
+        from zotero_mcp.pdf_utils import find_text_position
+
+        result = find_text_position(typeset_pdf, 1, self.MISSPELT)
+        assert "error" in result
+        top = result["candidates"][0]
+        assert top["page"] == 1 and 0.5 < top["score"] < 1
+        assert "change was" in top["best_match"]
+        assert len(top["rect"]) == 4 and all(0 <= v <= 1 for v in top["rect"])
+        assert top["rects"] and all(len(r) == 4 for r in top["rects"])
+        assert [c["score"] for c in result["candidates"]] == sorted(
+            (c["score"] for c in result["candidates"]), reverse=True)
+
+    def test_the_candidate_box_is_where_the_text_is(self, typeset_pdf):
+        from zotero_mcp.pdf_utils import find_text_position
+
+        top = find_text_position(typeset_pdf, 1, self.MISSPELT)["candidates"][0]
+        with fitz.open(typeset_pdf) as doc:
+            (line,) = doc[0].search_for("The change was")
+        x, y, w, h = top["rect"]
+        assert x * 612 == pytest.approx(line.x0, abs=3) and abs((y + h / 2) * 792 - (line.y0 + line.y1) / 2) < 8
+
+    def test_nothing_like_the_text_means_no_candidates(self, typeset_pdf):
+        from zotero_mcp.pdf_utils import find_text_position
+
+        result = find_text_position(typeset_pdf, 1, "qqqqqq zzzzzz xxxxxxxx wwwww vvvvvv uuuuuu tttttt")
+        assert "error" in result and result["candidates"] == []
+
+    def test_the_batch_row_carries_the_candidates_in_json_and_text(self, typeset_pdf, monkeypatch):
+        monkeypatch.setattr(annotations, "_fetch_attachment_file",
+                            lambda key, tmp, **kw: (typeset_pdf, "t.pdf", "pdf", None))
+        (result,) = annotations.create_annotations(
+            ATTACHMENT, [{"page": 1, "text": self.MISSPELT}], ctx=MagicMock(), dry_run=True)
+        assert not result["ok"]
+        assert result["candidates"][0]["page"] == 1
+        assert "NEAREST MATCHES" in result["error"] and "p1" in result["error"]
+        assert "Could not find text" in result["error"]

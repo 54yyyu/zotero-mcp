@@ -2051,7 +2051,8 @@ def _annotation_payload(
 
     position = find_text_position(source, page, text)
     if "error" in position:
-        return None, {"error": _describe_text_miss(position, text, file_type)}
+        return None, {"error": _describe_text_miss(position, text, file_type),
+                      "candidates": position.get("candidates") or []}
     # The text may sit on a neighbouring page; label the page it was found on.
     page_found = position["pageIndex"] + 1
     label = label_of(page_found)
@@ -2128,8 +2129,16 @@ def _describe_text_miss(position_data: dict, text: str, file_type: str) -> str:
 
     best_score = position_data.get("best_score", 0)
     best_match = position_data.get("best_match")
+    candidates = position_data.get("candidates") or []
 
-    if best_score >= 0.5 and best_match:
+    if candidates:
+        lines.extend(["", "NEAREST MATCHES (page, similarity, text, then its box x,y,w,h on the page):"])
+        for candidate in candidates:
+            x, y, w, h = candidate["rect"]
+            lines.append(f'  p{candidate["page"]}  {candidate["score"]:.0%}  '
+                         f'"{candidate["best_match"][:120]}"  [{x:.4f},{y:.4f},{w:.4f},{h:.4f}]')
+        lines.extend(["", "TIP: copy the exact words of the closest one, or shorten the phrase until it matches."])
+    elif best_score >= 0.5 and best_match:
         suggestion = best_match[:150].strip()
         if len(best_match) > 150:
             suggestion += "..."
@@ -2150,7 +2159,7 @@ def _describe_text_miss(position_data: dict, text: str, file_type: str) -> str:
     if searched:
         lines.append(f"  {location_type.title()}s searched: {searched}")
 
-    if best_score < 0.5:
+    if best_score < 0.5 and not candidates:
         lines.extend([
             "",
             "Tips:",
