@@ -235,9 +235,9 @@ def test_prune_items_chunks_deletes_what_the_per_item_prune_deletes(tmp_path, ro
     assert left == one_by_one.get_all_ids()
     assert {"A00000#0", "A00000#1", "HOLES#0", "HOLES#1", "UNTOUCHED#3", "GROWN#1"} <= left
     assert not {"A00000#2", "A00000#5", "HOLES#5", "HOLES#6"} & left
-    # Where passages share the article collection, the bare record of an item
-    # now stored as passages goes too; in its own collection it is the article.
-    assert ("A00000" in left) is route_passages
+    # The bare record is the record's article-level vector in every layout
+    # (#826), so a prune never takes it, as the per-item prune does not.
+    assert "A00000" in left
     batched.prune_items_chunks({})
 
 
