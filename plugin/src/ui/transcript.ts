@@ -68,6 +68,8 @@ export function applyEvent(state: TranscriptState, ev: ChatEvent): TranscriptSta
     }
     case "turn_start":
       return { ...withTurn(state, ev.turn, (m) => m), running: ev.turn };
+    case "session_title": // session metadata, not a message: the saved chat's title follows it (chat.ts), the transcript shows nothing
+      return state;
     case "thought":
       return { ...withTurn(state, ev.turn, (m) => ({ ...m, blocks: appendText(m.blocks, "thought", ev.delta) })), running: runningAfter(state, ev.turn) };
     case "text":

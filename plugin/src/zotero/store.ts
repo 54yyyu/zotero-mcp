@@ -48,5 +48,16 @@ export function createStore(dir: string) {
       await IOUtils.remove(file(id), { ignoreAbsent: true });
       await IOUtils.writeUTF8(index, JSON.stringify({ sessions: (await readIndex()).filter((s) => s.id !== id) }));
     }),
+
+    /** A user rename: the new title and the lock that stops every automatic source. */
+    renameSession: (id: string, title: string) => serial(async () => {
+      const all = await readIndex();
+      const i = all.findIndex((s) => s.id === id);
+      const cur = i >= 0 ? all[i] : undefined;
+      if (!cur) return;
+      all[i] = { ...cur, title, titleLocked: true, updatedAt: Date.now() };
+      await IOUtils.makeDirectory(dir, { createAncestors: true, ignoreExisting: true });
+      await IOUtils.writeUTF8(index, JSON.stringify({ sessions: all }));
+    }),
   };
 }

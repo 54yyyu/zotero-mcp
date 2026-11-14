@@ -47,6 +47,10 @@ class Panel {
   private statusBtn!: HTMLButtonElement;
   private accountEl!: HTMLElement;
   private historyBtn!: HTMLButtonElement;
+  /** The chat's name at the top; click to rename. Drawn by build()/render(), rebuilt by relabel(). */
+  private titleBtn!: HTMLButtonElement;
+  /** The inline rename input while it is open; render() must leave it alone. */
+  private titleInput: HTMLInputElement | null = null;
   private look!: Look;
 
   private view: View = "chat";
@@ -147,12 +151,14 @@ class Panel {
 
     const btn = (label: string, ic: Parameters<typeof icon>[0], onclick: () => void) =>
       h("button.iconbtn", { type: "button", "aria-label": label, title: label, onclick }, icon(ic)) as HTMLButtonElement;
+    this.titleInput = null;
+    this.titleBtn = h("button.hd__title", { type: "button", hidden: true, title: t("header.renameTip"), "aria-label": t("header.renameTip"), onclick: () => this.editTitle() }) as HTMLButtonElement;
     this.historyBtn = btn(t("history.title"), "history", () => this.show(this.view === "history" ? "chat" : "history"));
     this.statusBtn = h("button.stat", { type: "button", onclick: () => this.show(this.view === "status" ? "chat" : "status") }, h("span.stat__dot"), this.accountEl) as HTMLButtonElement;
     const hd = h("header.hd", null,
       btn(t("header.close"), "close", () => (root.host ?? this.app).dispatchEvent(new env.win.CustomEvent("zmc-close", { bubbles: true, composed: true }))),
       btn(t("common.newChat"), "plus", () => void this.newChat()), this.historyBtn,
-      h("span.hd__fill"), this.statusBtn,
+      h("span.hd__fill", null, this.titleBtn), this.statusBtn,
       btn(t("settings.title"), "gear", () => this.show(this.view === "settings" ? "chat" : "settings")));
     this.chatEl = h("div.chat", null, this.feed.el, h("div.dock", null, this.setupSlot, this.composer.el));
     this.viewEl = h("div.viewhost", { hidden: true });
@@ -198,7 +204,7 @@ class Panel {
     const back = () => this.show("chat");
     const host = this.host;
     const screen =
-      v === "history" ? historyView(host, { current: () => this.chat.saved?.id ?? null, back, resume: (s) => void this.openSaved(s), deleted: (id) => { if (this.chat.saved?.id === id) void this.newChat(); } })
+      v === "history" ? historyView(host, { current: () => this.chat.saved?.id ?? null, back, resume: (s) => void this.openSaved(s), deleted: (id) => { if (this.chat.saved?.id === id) void this.newChat(); }, renamed: (s) => this.chat.adoptRename(s.title) })
       : v === "welcome" ? welcomeView(host, this.health, { done: () => void this.finishWelcome(), recheck: () => void this.health.refresh(), changed: () => this.onSettings(), openSettings: () => this.show("settings") })
       : v === "status" ? statusView(host, { back, initial: this.health.checks, openSettings: () => this.show("settings"), changed: (c) => this.health.set(c) })
       : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), look: this.look,
@@ -214,6 +220,37 @@ class Panel {
     if (e.key !== "Escape" || this.view === "chat" || this.view === "welcome" || e.defaultPrevented || (e.target as HTMLElement | null)?.tagName === "SELECT") return;
     e.preventDefault();
     this.show("chat");
+  }
+
+  /** Rename the open chat: an inline input in the header. Enter saves (and locks), Esc and a click away cancel, an empty change does nothing. */
+  private editTitle(): void {
+    const saved = this.chat.saved;
+    if (!saved || this.titleInput) return;
+    const wrap = this.titleBtn.parentElement;
+    if (!wrap) return;
+    const input = h("input.input.hd__title-input", { type: "text", value: saved.title, "aria-label": t("header.renameTip") }) as HTMLInputElement;
+    let closed = false;
+    const done = (save: boolean) => {
+      if (closed) return;
+      closed = true;
+      const name = input.value.replace(/\s+/g, " ").trim();
+      input.remove();
+      this.titleInput = null;
+      this.titleBtn.hidden = false;
+      if (save && name && name !== saved.title) void this.chat.rename(name).catch((e) => this.warn(t("header.renameFailed", { error: errMessage(e) })));
+      else this.render();
+    };
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); done(true); }
+      else if (e.key === "Escape") { e.preventDefault(); done(false); }
+      e.stopPropagation(); // the panel's own Escape handler closes views; this Esc only closes the edit
+    });
+    input.addEventListener("blur", () => done(false));
+    this.titleBtn.hidden = true;
+    this.titleInput = input;
+    wrap.append(input);
+    input.focus();
+    input.select();
   }
 
   /** A notice in the chat that is not saved with it. */
@@ -392,7 +429,9 @@ class Panel {
     this.refreshChips();
     void this.chat.send(text, used);
     this.render();
-    this.feed.toBottom(false);
+    // Off: a reader asking from higher up keeps their place — and the follow state machine (follow.ts) keeps
+    // holding it while the answer streams, since they already let go by scrolling up.
+    if (this.host.getSettings().scrollOnSend) this.feed.toBottom(false);
   }
 
   /** A pinned item (the empty state's list, or its shortcut): a prompt sends its text, a skill runs on what is open. */
@@ -445,6 +484,11 @@ class Panel {
     const c = this.chat;
     const empty = c.tr.messages.length === 0;
     if (this.emptyShown !== empty) { this.emptyShown = empty; this.paintEmpty(); }
+    if (!this.titleInput) { // an open rename edit is not clobbered by a repaint
+      const title = c.saved?.title ?? "";
+      this.titleBtn.textContent = title;
+      this.titleBtn.hidden = !title;
+    }
     this.feed.update(c.tr, !c.busy);
     this.composer.setBusy(c.busy);
     this.composer.setContextFill(contextFill(c.tr));
