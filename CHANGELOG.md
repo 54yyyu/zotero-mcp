@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Old passages left beside a new record are cleaned up** (#826). A superseded Batch API import now removes the old `KEY#n` passages its records replaced, and a web-mode run queues an item that is already in the new shape but still has old passages, so a later run removes them once its attachment's records are stored. Nothing is embedded by this, and an untouched 0.17 item keeps its passages. Thanks @mronkko.
+- **Incremental Web API updates pick up a new or replaced PDF on an item that did not otherwise change** (#826). A changed attachment used to be dropped from the changed-items list, so only a full scan found it. Trashed or outranked attachments lose their records too. Thanks @mronkko.
 - **The local `--fulltext` scan notices metadata edits** (#826). Changing a title or creator re-embeds that item's record, not its files. Thanks @mronkko.
 - **The `.zotero-ft-cache` fallback no longer reads a sibling's cache** (#826). With several attachments, text was taken from the first one that had a cache instead of the one being indexed. Thanks @mronkko.
 
