@@ -194,7 +194,7 @@ const de: Catalog = {
   "settings.chat.usage": "Tokens und Kosten anzeigen",
   "settings.chat.usageHint": "Eine kleine Zeile unter jeder Antwort. Standardmäßig aus.",
   "settings.chat.openAtStart": "Seitenleiste beim Start von Zotero öffnen",
-  "settings.chat.scroll": "Beim Senden zum neuesten Abschnitt scrollen",
+  "settings.chat.scroll": "Beim Senden zur neuesten Nachricht scrollen",
   "settings.chat.scrollHint": "Aus: Der Verlauf bleibt, wo Sie gerade lesen; der Springen-Knopf oder das Runterscrollen bringt Sie zur neuesten Nachricht zurück.",
   "settings.chat.titleSource": "Titel neuer Chats",
   "settings.chat.titleAgent": "Zusammenfassung des Agenten",
