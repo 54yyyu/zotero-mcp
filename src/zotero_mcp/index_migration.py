@@ -308,6 +308,9 @@ class LocalSources:
         elif len(targets) > 1:
             # Several files, the attachments unchanged since the passages were
             # written: the choice then was the first category's largest file.
+            # A file known only by its text cache has no size to compare.
+            if any(t.ft_cache for t in targets):
+                return UNKNOWN
             chosen = max(targets, key=lambda t: t.size)
         else:
             return None
