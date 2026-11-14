@@ -64,17 +64,16 @@ def test_hits_are_hydrated_fifty_to_a_request(monkeypatch):
     assert [name for name, _ in zot.calls] == ["items"] * 3
 
 
-def test_a_hit_the_batch_does_not_return_is_asked_for_on_its_own(monkeypatch):
+def test_a_hit_the_batch_does_not_return_is_dropped_not_asked_for_again(monkeypatch):
+    # #826: items(itemKey=...) leaves trashed and deleted items out, so a key
+    # absent from a successful batch is not a result; it costs no request.
     search = _chunking_search(monkeypatch)
-    search.zotero_client = zot = _Zotero(missing={"B", "BROKEN"})
+    search.zotero_client = zot = _Zotero(missing={"B"})
 
-    enriched = search._enrich_search_results(_results(["A", "B", "BROKEN"]), "q", limit=10)
+    enriched = search._enrich_search_results(_results(["A", "B"]), "q", limit=10)
 
-    by_key = {r["item_key"]: r for r in enriched}
-    assert by_key["A"]["zotero_item"]["key"] == "A"
-    assert by_key["B"]["zotero_item"]["key"] == "B"
-    assert "500" in by_key["BROKEN"]["error"] and "zotero_item" not in by_key["BROKEN"]
-    assert ("item", "A") not in zot.calls and ("item", "B") in zot.calls
+    assert [r["item_key"] for r in enriched] == ["A"]
+    assert zot.calls == [("items", "A,B")]
 
 
 def test_a_failed_batch_request_hydrates_per_item(monkeypatch):
@@ -87,10 +86,21 @@ def test_a_failed_batch_request_hydrates_per_item(monkeypatch):
     assert zot.calls == [("items", "A,B"), ("item", "A"), ("item", "B")]
 
 
+def test_a_failed_batch_names_the_item_that_failed(monkeypatch):
+    search = _chunking_search(monkeypatch)
+    search.zotero_client = _Zotero(batch=False)
+
+    enriched = search._enrich_search_results(_results(["A", "BROKEN"]), "q", limit=10)
+
+    by_key = {r["item_key"]: r for r in enriched}
+    assert by_key["A"]["zotero_item"]["key"] == "A"
+    assert "500" in by_key["BROKEN"]["error"] and "zotero_item" not in by_key["BROKEN"]
+
+
 def test_a_single_hit_is_one_request(monkeypatch):
     search = _chunking_search(monkeypatch)
     search.zotero_client = zot = _Zotero()
 
     search._enrich_search_results(_results(["A"]), "q", limit=10)
 
-    assert zot.calls == [("item", "A")]
+    assert zot.calls == [("items", "A")]
