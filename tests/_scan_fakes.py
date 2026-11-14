@@ -14,7 +14,7 @@ from zotero_mcp.local_db import ExtractionTarget
 
 
 def target(key: str, stamp: str = "1:100", category: str = "pdf") -> ExtractionTarget:
-    """A file that does not exist on disk."""
+    """A file that does not exist on disk, so its hash is unknown (None)."""
     return ExtractionTarget(
         key=key,
         path=Path("/nonexistent") / f"{key}.pdf",

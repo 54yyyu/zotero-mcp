@@ -73,11 +73,12 @@ def _regular(key="ITEM0001", group_id=0, fulltext=""):
     return {"key": key, "version": 3, "data": data}
 
 
-def _att(key="ATTKEY01", text=FILE_TEXT, group_id=0):
+def _att(key="ATTKEY01", text=FILE_TEXT, file_hash="ab" * 32, group_id=0):
     return _attachment_unit(
         key,
         text,
         file_stamp="123:456",
+        file_hash=file_hash,
         date_modified="2024-01-03 00:00:00",
         group_id=group_id,
         owner_key="ITEM0001",
@@ -116,8 +117,17 @@ def test_attachment_record_is_file_text_under_its_own_key(make_search):
         "group_id": 0,
         "date_modified": "2024-01-03 00:00:00",
         "file_stamp": "123:456",
+        "file_hash": "ab" * 32,
         "parent_hint": "ITEM0001",
     }
+
+
+def test_attachment_without_a_hash_clears_it(make_search):
+    """None, not absent: ChromaDB's upsert merges, so absent would keep an old hash."""
+    records = make_search(chunking=False)._build_item_records(_att(file_hash=None), chunking=False)
+
+    assert records[0]["metadata"]["file_hash"] is None
+    assert records[0]["metadata"]["file_stamp"] == "123:456"
 
 
 def test_passages_are_keyed_by_the_attachment_with_offsets_into_the_file(make_search):
@@ -173,6 +183,7 @@ def test_web_api_text_becomes_a_unit_of_its_attachment(make_search):
         "group_id": 0,
         "date_modified": "2024-02-01T00:00:00Z",
         "file_stamp": "api:md5x:99",
+        "file_hash": None,
         "parent_hint": "ITEM0001",
     }
     assert "Body of the PDF." not in records[0]["document"]
