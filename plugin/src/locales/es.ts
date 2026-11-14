@@ -194,6 +194,8 @@ const es: Catalog = {
   "settings.chat.usage": "Mostrar tokens y coste",
   "settings.chat.usageHint": "Una línea pequeña bajo cada respuesta. Desactivado de forma predeterminada.",
   "settings.chat.openAtStart": "Abrir el panel al iniciar Zotero",
+  "settings.chat.scroll": "Ir al mensaje más reciente al enviar",
+  "settings.chat.scrollHint": "Desactivado: la conversación se queda donde estás leyendo; el botón de salto, o bajar, te devuelve al mensaje más reciente.",
   "settings.chat.titleSource": "Título de los chats nuevos",
   "settings.chat.titleAgent": "El resumen del agente",
   "settings.chat.titlePaper": "El artículo abierto en la primera pregunta",

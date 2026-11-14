@@ -194,6 +194,8 @@ const ja: Catalog = {
   "settings.chat.usage": "トークン数と料金を表示",
   "settings.chat.usageHint": "各回答の下に小さく表示します。デフォルトはオフです。",
   "settings.chat.openAtStart": "Zotero の起動時にパネルを開く",
+  "settings.chat.scroll": "送信時に最新メッセージまでスクロール",
+  "settings.chat.scrollHint": "オフにすると、読んでいる位置で会話が止まります。ジャンプボタンまたは下へスクロールで最新メッセージに戻れます。",
   "settings.chat.titleSource": "新しいチャットの名前",
   "settings.chat.titleAgent": "エージェントの要約",
   "settings.chat.titlePaper": "最初の質問時に開いていた論文",

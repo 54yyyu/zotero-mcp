@@ -429,7 +429,9 @@ class Panel {
     this.refreshChips();
     void this.chat.send(text, used);
     this.render();
-    this.feed.toBottom(false);
+    // Off: a reader asking from higher up keeps their place — and the follow state machine (follow.ts) keeps
+    // holding it while the answer streams, since they already let go by scrolling up.
+    if (this.host.getSettings().scrollOnSend) this.feed.toBottom(false);
   }
 
   /** A pinned item (the empty state's list, or its shortcut): a prompt sends its text, a skill runs on what is open. */

@@ -221,6 +221,7 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
       ),
       section(t("settings.chat"), t("settings.chat.desc"),
         flag("enterToSend", t("settings.chat.enter"), s.enterToSend ? t("settings.chat.enterOn") : t("settings.chat.enterOff")),
+        flag("scrollOnSend", t("settings.chat.scroll"), t("settings.chat.scrollHint")),
         flag("showThinking", t("settings.chat.thinking"), t("settings.chat.thinkingHint")),
         flag("expandTools", t("settings.chat.tools"), t("settings.chat.toolsHint")),
         flag("showUsage", t("settings.chat.usage"), t("settings.chat.usageHint")),
