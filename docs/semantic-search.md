@@ -219,7 +219,7 @@ How a filter on these fields is applied depends on the mode. In local mode zoter
 
 In local mode this differs from 0.17 in what filters can match, because 0.17 stored the fields it read from zotero.sqlite incompletely. It stored blank `doi`, `date`, `url`, `publication` and `tags`, so a filter on one of them matched nothing useful; they now work. `has_fulltext: false` matched nothing in 0.17 (the field was set only to `true` or `"failed"`); it now matches items with no indexed text. And `date_added` and `date_modified` were stored as `YYYY-MM-DD HH:MM:SS` in local mode and are now compared as `YYYY-MM-DDTHH:MM:SSZ`, as the Zotero API writes them (web mode always stored that form), so a filter value in the old form needs the `T` and `Z`.
 
-Results show the parent item. When the hit was in a file, the Location line starts with `Attachment:` and the file's name.
+Results show the parent item. When the hit was in one of several files, or in a standalone attachment, the Location line starts with `Attachment:` and the file's name.
 
 ## Re-ranking
 

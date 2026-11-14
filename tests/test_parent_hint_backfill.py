@@ -50,8 +50,8 @@ class HintReader(LibReader):
         for item in self.items:
             for t in self.targets.get(item.item_id, []):
                 parents[t.key] = item.key
-        # A file with no parent, as an index of another version may hold records for.
-        parents["STANDALN"] = None
+        for row in self.standalone:
+            parents[row[0]] = None
         return parents
 
     def close(self):
@@ -62,6 +62,8 @@ def _library():
     return HintReader(
         [Item("ITEM0001", 1)],
         targets={1: [target("PDFAAAAA")]},
+        standalone=[("STANDALN", "storage:s.pdf", "application/pdf", DATE, 1)],
+        standalone_targets={"STANDALN": target("STANDALN", stamp="2:200")},
     )
 
 
@@ -102,7 +104,7 @@ def test_a_fresh_index_has_every_hint_and_no_gap(env):  # noqa: F811
     search, _ = env(_library())
 
     hints = _hints(search)
-    assert hints["PDFAAAAA"] == "ITEM0001"
+    assert hints["PDFAAAAA"] == "ITEM0001" and hints["STANDALN"] == ""
     assert {h for i, h in hints.items() if i.startswith("PDFAAAAA#")} == {"ITEM0001"}
     assert "ITEM0001" not in hints, "a bibliographic record has no hint"
     layout = read_index_layout(search.chroma_client.persist_directory, NAME)
@@ -118,7 +120,7 @@ def test_the_layout_counts_the_records_that_lack_a_hint(hintless):
 
     layout = search.chroma_client.index_layout()
 
-    assert layout["attachments_without_parent_hint"] == 1
+    assert layout["attachments_without_parent_hint"] == 2
     assert layout["passages_without_parent_hint"] == len([i for i in stripped if "#" in i])
     assert layout["passages_without_parent_hint"] > 0
 
@@ -132,9 +134,10 @@ def test_an_explicit_update_sets_the_missing_hints_without_embedding(hintless):
     assert reader.extracted == []
     hints = _hints(search)
     assert set(hints) == stripped
-    assert hints["PDFAAAAA"] == "ITEM0001"
+    assert hints["PDFAAAAA"] == "ITEM0001" and hints["STANDALN"] == ""
     assert {h for i, h in hints.items() if i.startswith("PDFAAAAA#")} == {"ITEM0001"}
-    assert stats["parent_hints"] == {"attachments": 1, "records": len(stripped), "unresolved": 0}
+    assert {h for i, h in hints.items() if i.startswith("STANDALN#")} == {""}
+    assert stats["parent_hints"] == {"attachments": 2, "records": len(stripped), "unresolved": 0}
     layout = search.chroma_client.index_layout()
     assert layout["attachments_without_parent_hint"] == 0 and layout["passages_without_parent_hint"] == 0
 

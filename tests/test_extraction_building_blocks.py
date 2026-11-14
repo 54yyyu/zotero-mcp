@@ -1,6 +1,6 @@
 """Extraction primitives for the item-keyed index (#826).
 
-Many attachments per item, per-file failure markers
+Many attachments per item, standalone attachments, per-file failure markers
 and the stamps a re-key leaves. None of this changes what the indexer writes yet.
 """
 
@@ -150,6 +150,33 @@ def test_single_target_still_picks_largest_pdf(lib):
     _add(db, 10, "SMALLAAA", 1, "storage:a.pdf", "application/pdf")
     _add(db, 11, "BIGBBBBB", 1, "storage:b.pdf", "application/pdf")
     assert reader._resolve_extraction_target(1) == (big, "BIGBBBBB")
+
+
+def test_standalone_listing(lib):
+    db, storage, reader = lib
+    _file(storage, "LOOSEPDF", "l.pdf")
+    _file(storage, "CHILDPDF", "c.pdf")
+    _file(storage, "TRASHPDF", "t.pdf")
+    _add(db, 10, "LOOSEPDF", None, "storage:l.pdf", "application/pdf")
+    _add(db, 11, "CHILDPDF", 1, "storage:c.pdf", "application/pdf")
+    _add(db, 12, "TRASHPDF", None, "storage:t.pdf", "application/pdf", trashed=True)
+    _add(db, 13, "OTHERLIB", None, "storage:o.pdf", "application/pdf", lib=2)
+
+    rows = list(reader._iter_standalone_attachments())
+    assert {r[0] for r in rows} == {"LOOSEPDF", "OTHERLIB"}
+    scoped = list(reader._iter_standalone_attachments(library_ids=[1]))
+    assert scoped == [("LOOSEPDF", "storage:l.pdf", "application/pdf", "2024-02-02 00:00:00", 1)]
+
+
+def test_standalone_target_readable_category(lib):
+    db, storage, reader = lib
+    _file(storage, "LOOSEPDF", "l.pdf")
+    _file(storage, "LOOSEEPB", "b.epub")
+    t = reader._resolve_standalone_target("LOOSEPDF", "storage:l.pdf", "application/pdf")
+    assert t is not None and t.key == "LOOSEPDF" and t.category == "pdf"
+    assert t.file_stamp.count(":") == 1
+    assert reader._resolve_standalone_target("LOOSEEPB", "storage:b.epub", "application/epub+zip") is None
+    assert reader._resolve_standalone_target("NOFILE", "storage:n.pdf", "application/pdf") is None
 
 
 # ---------------------------------------------------------------------------
