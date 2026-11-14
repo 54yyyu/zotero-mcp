@@ -2210,6 +2210,95 @@ def update_annotation(
     *,
     ctx: Context
 ) -> str:
+    return change_annotation(
+        annotation_key, text=text, comment=comment, color=color, tags=tags,
+        add_tags=add_tags, remove_tags=remove_tags, ctx=ctx,
+    )
+
+
+def _annotation_type_first(data: dict) -> dict:
+    """``data`` with annotationType ahead of every other annotation* key.
+
+    Zotero refuses an annotation write unless annotationType comes before the
+    other annotation properties, and an item read back from the API gives no
+    such promise, so every update puts the key first.
+    """
+    if "annotationType" not in data:
+        return data
+    ordered, placed = {}, False
+    for key, value in data.items():
+        if key == "annotationType":
+            continue
+        if key.startswith("annotation") and not placed:
+            ordered["annotationType"], placed = data["annotationType"], True
+        ordered[key] = value
+    ordered.setdefault("annotationType", data["annotationType"])
+    return ordered
+
+
+def _move_area_annotation(zot, data: dict, rect, page, ctx) -> tuple[str | None, str | None]:
+    """Point an area annotation's stored position at a new box or page.
+
+    Goes through the same ``_annotation_payload`` that ``create`` uses, so the
+    position, sort index and page label are written exactly as a new box's
+    would be, rotated pages included. Returns ``(change line, error)``.
+    """
+    from zotero_mcp.pdf_utils import open_pdf, union_box, zotero_rects_to_shown
+
+    if data.get("annotationType") != "image":
+        return None, (
+            "Error: only area (image) annotations can be moved or resized; a highlight "
+            "follows its text. Delete it and create it again."
+        )
+    attachment_key = data.get("parentItem")
+    try:
+        stored = json.loads(data.get("annotationPosition") or "{}")
+    except (TypeError, ValueError):
+        stored = {}
+    if not attachment_key or not isinstance(stored.get("pageIndex"), int) or not stored.get("rects"):
+        return None, "Error: this annotation has no stored position to move."
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file_path, _name, _type, error = _fetch_attachment_file(
+            attachment_key, tmpdir, ctx=ctx, meta_client=zot)
+        if error:
+            return None, error
+        with open_pdf(file_path) as doc:
+            target = page if page is not None else stored["pageIndex"] + 1
+            if rect is None:
+                # Page only: the box keeps its place on the page.
+                if stored["pageIndex"] >= len(doc):
+                    return None, "Error: the annotation's page is not in this PDF."
+                rect = union_box(zotero_rects_to_shown(doc[stored["pageIndex"]], stored["rects"]))
+            payload, details = _annotation_payload(
+                doc, "pdf", attachment_key, {"page": target, "rect": rect}, {})
+    if payload is None:
+        return None, details["error"]
+    for key in ("annotationPosition", "annotationSortIndex", "annotationPageLabel"):
+        data[key] = payload[key]
+    x, y, w, h = rect
+    return f"- **position**: page {target}, x={x:.4f}, y={y:.4f}, width={w:.4f}, height={h:.4f}", None
+
+
+def change_annotation(
+    annotation_key: str,
+    text: str | None = None,
+    comment: str | None = None,
+    color: str | None = None,
+    tags: list[str] | str | None = None,
+    add_tags: list[str] | str | None = None,
+    remove_tags: list[str] | str | None = None,
+    rect: list[float] | None = None,
+    page: int | None = None,
+    *,
+    ctx: Context
+) -> str:
+    """Update an annotation; the MCP tool leaves ``rect`` and ``page`` out.
+
+    ``rect`` is ``[x, y, width, height]`` normalized to the page as displayed,
+    the convention ``create`` takes, and ``page`` is 1-indexed. Either moves
+    an area box in place and keeps its key.
+    """
     try:
         if tags is not None and (add_tags is not None or remove_tags is not None):
             return (
@@ -2261,9 +2350,22 @@ def update_annotation(
             if remove_tags is not None:
                 changes.append(f"- **tags**: removed {list(to_remove)}")
 
+        if rect is not None or page is not None:
+            if page is not None and (isinstance(page, bool) or not isinstance(page, int) or page < 1):
+                return "Error: page must be a positive integer"
+            if rect is not None:
+                error = _rect_error(*rect)
+                if error:
+                    return error
+            change, error = _move_area_annotation(zot, data, rect, page, ctx)
+            if error:
+                return error
+            changes.append(change)
+
         if not changes:
             return "No changes to apply."
 
+        item["data"] = _annotation_type_first(data)
         resp = zot.update_item(item)
         if _helpers._handle_write_response(resp, ctx):
             return (

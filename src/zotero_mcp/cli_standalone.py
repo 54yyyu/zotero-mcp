@@ -530,11 +530,13 @@ def cmd_annotations(args):
     elif args.subcommand == "batch":
         _annotations_batch(args, annotations, ctx)
     elif args.subcommand == "update":
-        _out(args, "annotations update", text=annotations.update_annotation(
+        _out(args, "annotations update", text=annotations.change_annotation(
             annotation_key=args.annotation_key, text=getattr(args, "text", None),
             comment=getattr(args, "comment", None), color=getattr(args, "color", None),
             add_tags=_split_tags(getattr(args, "add_tags", None)),
-            remove_tags=_split_tags(getattr(args, "remove_tags", None)), ctx=ctx,
+            remove_tags=_split_tags(getattr(args, "remove_tags", None)),
+            rect=_parse_rect(getattr(args, "rect", None)),
+            page=getattr(args, "page", None), ctx=ctx,
         ))
     elif args.subcommand == "delete":
         _out(args, "annotations delete", text=annotations.delete_annotation(
@@ -1635,6 +1637,10 @@ def build_parser() -> argparse.ArgumentParser:
     au.add_argument("--text")
     au.add_argument("--comment")
     au.add_argument("--color")
+    au.add_argument("--rect", help="Move or resize an area box: x,y,width,height, normalized 0-1 "
+                                   "from the top-left, as in `create`; the key stays the same")
+    au.add_argument("--page", type=int,
+                    help="Move an area box to this page (1-indexed); with no --rect it keeps its place")
     au.add_argument("--add-tags", help=f"Tags to add ({TAG_LIST_HELP})")
     au.add_argument("--remove-tags", help=f"Tags to remove ({TAG_LIST_HELP})")
     ad = a_sub.add_parser("delete", help="Delete an annotation")

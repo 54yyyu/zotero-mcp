@@ -96,6 +96,8 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--text`
  - `--comment`
  - `--color`
+ - `--rect` -- Move or resize an area box: x,y,width,height, normalized 0-1 from the top-left, as in `create`; the key stays the same
+ - `--page` -- Move an area box to this page (1-indexed); with no --rect it keeps its place
  - `--add-tags` -- Tags to add (comma-separated, or a JSON array if a name has a comma)
  - `--remove-tags` -- Tags to remove (comma-separated, or a JSON array if a name has a comma)
 

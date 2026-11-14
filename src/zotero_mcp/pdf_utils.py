@@ -1066,3 +1066,40 @@ def _shown_rect_to_zotero(page, x0: float, y0: float, x1: float, y1: float):
         x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
     bbox = [tuple(round(v, 4) for v in (x0, y0, x1, y1))]
     return _convert_rects_to_zotero(bbox, page)
+
+
+def zotero_rects_to_shown(page, rects: list[list[float]]) -> list[list[float]]:
+    """Stored Zotero rects -> normalized ``[x, y, w, h]`` boxes on the page as displayed.
+
+    The inverse of ``_shown_rect_to_zotero``: native PDF user space (bottom-left
+    origin, MediaBox) back to the top-left origin frame ``create`` and ``batch``
+    take, undoing any /Rotate on the way. A box listed this way can be passed
+    straight back to ``--rect``.
+    """
+    to_page = _pdf_to_page_transform(page)
+    rotate = tuple(page.rotation_matrix) if getattr(page, "rotation", 0) % 360 else None
+    width, height = page.rect.width, page.rect.height
+    boxes = []
+    for x0, y0, x1, y1 in rects:
+        corners = []
+        for x, y in ((x0, y0), (x1, y1)):
+            a, b, c, d, e, f = to_page
+            x, y = a * x + c * y + e, b * x + d * y + f
+            if rotate:
+                a, b, c, d, e, f = rotate
+                x, y = a * x + c * y + e, b * x + d * y + f
+            corners.append((x, y))
+        left, right = sorted(p[0] for p in corners)
+        top, bottom = sorted(p[1] for p in corners)
+        boxes.append([round(v, 4) for v in (
+            left / width, top / height, (right - left) / width, (bottom - top) / height)])
+    return boxes
+
+
+def union_box(boxes: list[list[float]]) -> list[float]:
+    """The ``[x, y, w, h]`` box that covers all of the given ``[x, y, w, h]`` boxes."""
+    left = min(b[0] for b in boxes)
+    top = min(b[1] for b in boxes)
+    right = max(b[0] + b[2] for b in boxes)
+    bottom = max(b[1] + b[3] for b in boxes)
+    return [round(v, 4) for v in (left, top, right - left, bottom - top)]

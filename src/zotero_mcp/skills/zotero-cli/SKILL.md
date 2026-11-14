@@ -186,6 +186,12 @@ To annotate, plan everything, check it, then write it in one run:
 4. Run it again without `--dry-run`. Anything that did not land is listed
    under `data.results` with `ok: false`, and the exit code is 1.
 
+To fix a box that landed in the wrong place, move it where it is:
+`zotero-cli annotations update ANNOTATION_KEY --rect x,y,w,h` (the same
+normalized convention as `create`; `--page N` moves it to another page and
+keeps its place when `--rect` is left out). The key, comment and color stay.
+Only area boxes move; a highlight follows its text, so delete and recreate it.
+
 Colors take Zotero's names: yellow, red, green, blue, purple, magenta,
 orange, gray. Three or four colors with fixed meanings read better than
 eight; say what they mean in a note on the item.
