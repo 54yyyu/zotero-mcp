@@ -272,3 +272,157 @@ class TestListPositions:
         record = listed(store, positions=True)[key]
         assert record["position"]["rect"] is None and record["position"]["rects"]
         assert record["position_note"] == "Error: no file"
+
+
+# ---------------------------------------------------------------------------
+# 3. annotations preview, and batch --dry-run --render
+# ---------------------------------------------------------------------------
+
+SCALE = 1.5
+PAGE_SIZE = {1: (612, 792), 2: (792, 612), 3: (612, 792)}   # as displayed; page 2 is turned
+
+
+def expected_px(page, rect, scale=SCALE):
+    width, height = PAGE_SIZE[page]
+    x, y, w, h = rect
+    return [x * width * scale, y * height * scale, (x + w) * width * scale, (y + h) * height * scale]
+
+
+def preview(store, tmp_path, name, pages=None):
+    images, error = annotations.preview_annotations(
+        ATTACHMENT, pages, str(tmp_path / name), SCALE, ctx=MagicMock())
+    assert error is None, error
+    return {image["page"]: image for image in images}
+
+
+def pixel(path, x, y):
+    return tuple(fitz.Pixmap(path).pixel(int(x), int(y)))[:3]
+
+
+def centre(box):
+    return (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+
+
+class TestPreview:
+    RED, GREEN, BLUE = "#ff0000", "#00aa00", "#0000ff"
+
+    def three_boxes(self, store):
+        return create_boxes(store, [
+            {"page": 1, "rect": [0.10, 0.30, 0.25, 0.15], "comment": "first box", "color": self.RED},
+            {"page": 2, "rect": [0.55, 0.40, 0.30, 0.20], "comment": "rotated box", "color": self.GREEN},
+            {"page": 3, "rect": [0.30, 0.60, 0.25, 0.20], "comment": "offset box", "color": self.BLUE},
+        ])
+
+    def test_boxes_are_drawn_where_they_were_asked_for_on_every_kind_of_page(self, store, tmp_path):
+        self.three_boxes(store)
+        images = preview(store, tmp_path, "a")
+        specs = {1: [0.10, 0.30, 0.25, 0.15], 2: [0.55, 0.40, 0.30, 0.20], 3: [0.30, 0.60, 0.25, 0.20]}
+        for page, rect in specs.items():
+            (drawn,) = images[page]["boxes"]
+            assert drawn == pytest.approx(expected_px(page, rect), abs=2)
+
+    def test_moving_one_box_moves_only_that_box(self, store, tmp_path):
+        keys = self.three_boxes(store)
+        before = preview(store, tmp_path, "before")
+
+        new_rect = [0.50, 0.10, 0.20, 0.10]
+        update(store, keys[1], rect=new_rect)          # the box on the rotated page
+        after = preview(store, tmp_path, "after")
+
+        assert after[1]["boxes"] == before[1]["boxes"]
+        assert after[3]["boxes"] == before[3]["boxes"]
+        assert after[2]["boxes"] != before[2]["boxes"]
+        assert after[2]["boxes"][0] == pytest.approx(expected_px(2, new_rect), abs=2)
+
+        # And in the pixels: the old spot is bare page, the new one is green.
+        old_x, old_y = centre(before[2]["boxes"][0])
+        new_x, new_y = centre(after[2]["boxes"][0])
+        assert pixel(after[2]["path"], old_x, old_y) == (255, 255, 255)
+        red, green, blue = pixel(after[2]["path"], new_x, new_y)
+        assert green > red and green > blue and red < 255
+        # The untouched pages are pixel-identical to before.
+        for page in (1, 3):
+            with open(before[page]["path"], "rb") as a, open(after[page]["path"], "rb") as b:
+                assert a.read() == b.read()
+
+    def test_pages_option_limits_the_output(self, store, tmp_path):
+        self.three_boxes(store)
+        images = preview(store, tmp_path, "some", pages=[2, 3])
+        assert sorted(images) == [2, 3]
+
+    def test_a_page_outside_the_pdf_is_an_error(self, store, tmp_path):
+        self.three_boxes(store)
+        images, error = annotations.preview_annotations(
+            ATTACHMENT, [9], str(tmp_path / "x"), SCALE, ctx=MagicMock())
+        assert images == [] and "out of range" in error
+
+
+class TestDryRunRender:
+    def plan(self, tmp_path, specs):
+        results = annotations.create_annotations(
+            ATTACHMENT, specs, ctx=MagicMock(), dry_run=True, render_dir=str(tmp_path / "plan"))
+        assert all(r["ok"] for r in results), results
+        return results
+
+    def test_the_render_shows_the_planned_rect_when_the_writer_is_right(self, store, tmp_path):
+        planned = [0.55, 0.40, 0.30, 0.20]
+        (result,) = self.plan(tmp_path, [{"page": 2, "rect": planned, "color": "#ff0000"}])
+        box = expected_px(2, planned)
+        x, y = centre(box)
+        assert pixel(result["rendered"], x, y) != (255, 255, 255)
+        assert pixel(result["rendered"], box[0] / 2, box[1] / 2) == (255, 255, 255)
+        assert store.created == []                       # a dry run writes nothing
+
+    def test_a_writer_bug_shows_up_because_the_render_reads_the_stored_form(
+            self, store, tmp_path, monkeypatch):
+        """If the render copied the plan it would look fine whatever the writer
+        did. This writer ignores page rotation, as an old bug did."""
+        from zotero_mcp import pdf_utils
+
+        def ignores_rotation(page, x0, y0, x1, y1):
+            width, height = page.rect.width, page.rect.height
+            return pdf_utils._convert_rects_to_zotero(
+                [tuple(round(v, 4) for v in (x0 * width, y0 * height, x1 * width, y1 * height))], page)
+
+        monkeypatch.setattr(pdf_utils, "_shown_rect_to_zotero", ignores_rotation)
+        planned = [0.55, 0.40, 0.30, 0.20]
+        (result,) = self.plan(tmp_path, [{"page": 2, "rect": planned, "color": "#ff0000"}])
+        x, y = centre(expected_px(2, planned))
+        # Where the plan said the box would be, the render shows bare page.
+        assert pixel(result["rendered"], x, y) == (255, 255, 255)
+
+    def test_highlight_matches_are_drawn_too(self, store, tmp_path, pdf_path):
+        (result,) = self.plan(tmp_path, [{"page": 1, "text": "synthetic paper", "color": "#ffd400"}])
+        with fitz.open(pdf_path) as doc:
+            (found,) = doc[0].search_for("synthetic paper")
+        # Along the matched words most pixels are yellow-tinted; just past them it is bare page.
+        y = (found.y0 + found.y1) / 2 * SCALE
+        inside = [pixel(result["rendered"], x, y) for x in range(int(found.x0 * SCALE) + 1, int(found.x1 * SCALE) - 1)]
+        yellow = [p for p in inside if p[0] > 200 and p[1] > 180 and p[2] < 200]
+        assert len(yellow) > len(inside) / 3
+        assert pixel(result["rendered"], (found.x1 + 20) * SCALE, y) == (255, 255, 255)
+
+
+class TestPreviewCli:
+    def test_render_needs_dry_run(self):
+        import argparse
+
+        from zotero_mcp import cli_standalone
+        from zotero_mcp.cli_json import CliError
+
+        args = argparse.Namespace(verbose=False, json_out=False, subcommand="batch", attachment_key=ATTACHMENT,
+                                  file="-", dry_run=False, render="out")
+        with pytest.raises(CliError, match="--dry-run"):
+            cli_standalone._annotations_batch(args, MagicMock(), MagicMock())
+
+    def test_preview_prints_one_line_per_image(self, store, tmp_path, capsys):
+        import argparse
+
+        from zotero_mcp import cli_standalone
+
+        create_boxes(store, [{"page": 1, "rect": [0.1, 0.3, 0.2, 0.1], "comment": "x"}])
+        args = argparse.Namespace(verbose=False, json_out=False, subcommand="preview",
+                                  attachment_key=ATTACHMENT, pages="all", out=str(tmp_path / "o"), scale=1.5)
+        cli_standalone._annotations_preview(args, annotations, MagicMock())
+        out = capsys.readouterr().out
+        assert "p1:" in out and "1 annotation(s)" in out and (tmp_path / "o" / f"{ATTACHMENT}-p1.png").exists()

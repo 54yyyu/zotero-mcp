@@ -539,6 +539,8 @@ def cmd_annotations(args):
             rect=_parse_rect(getattr(args, "rect", None)),
             page=getattr(args, "page", None), ctx=ctx,
         ))
+    elif args.subcommand == "preview":
+        _annotations_preview(args, annotations, ctx)
     elif args.subcommand == "delete":
         _out(args, "annotations delete", text=annotations.delete_annotation(
             annotation_key=args.annotation_key, ctx=ctx,
@@ -551,6 +553,29 @@ def cmd_annotations(args):
         else:
             print(f"Unknown 'annotations' subcommand: {args.subcommand}", file=sys.stderr)
         sys.exit(1)
+
+
+def _annotations_preview(args, annotations, ctx) -> None:
+    """`annotations preview`: stored annotations drawn on page images."""
+    import os
+    import tempfile
+
+    if not 0.2 <= args.scale <= 6:
+        raise _cli_json.CliError(f"--scale must be between 0.2 and 6, got {args.scale}", code="bad_scale")
+    out_dir = args.out or tempfile.mkdtemp(prefix="zotero_preview_")
+    images, error = annotations.preview_annotations(
+        args.attachment_key, _parse_pages(args.pages), out_dir, args.scale, ctx=ctx)
+    if error:
+        _out(args, "annotations preview", text=error)
+        return
+    if _json_mode(args):
+        _cli_json.emit("annotations preview", {
+            "attachment_key": args.attachment_key, "out": os.path.abspath(out_dir),
+            "images": [{k: v for k, v in image.items() if k != "boxes"} for image in images]})
+        return
+    for image in images:
+        print(f"p{image['page']}: {image['path']} ({image['annotations']} annotation(s), "
+              f"{image['width']}x{image['height']})")
 
 
 def _read_annotation_specs(source: str) -> list[dict]:
@@ -599,6 +624,11 @@ def _annotations_batch(args, annotations, ctx) -> None:
     """
     import time
 
+    render_dir = getattr(args, "render", None)
+    if render_dir and not args.dry_run:
+        raise _cli_json.CliError(
+            "--render draws the planned annotations, so it needs --dry-run; "
+            "to see what is already written, use `annotations preview`", code="bad_render")
     specs = _read_annotation_specs(args.file)
     started = time.monotonic()
 
@@ -618,7 +648,7 @@ def _annotations_batch(args, annotations, ctx) -> None:
     for attachment_key, positions in groups.items():
         outcomes = annotations.create_annotations(
             attachment_key, [specs[p] for p in positions], ctx=ctx,
-            dry_run=args.dry_run, allow_epub=True,
+            dry_run=args.dry_run, allow_epub=True, render_dir=render_dir,
         )
         for position, outcome in zip(positions, outcomes):
             results[position] = {**outcome, "index": position + 1}
@@ -652,6 +682,8 @@ def _annotations_batch(args, annotations, ctx) -> None:
         verb = "Located" if args.dry_run else "Created"
         print(f"\n{verb} {len(results) - len(failed)}/{len(results)} in {seconds}s"
               + (f"; {len(failed)} failed" if failed else ""))
+        for path in sorted({r["rendered"] for r in results if r.get("rendered")}):
+            print(f"rendered: {path}")
 
     if failed:
         sys.exit(1)
@@ -1677,6 +1709,15 @@ def build_parser() -> argparse.ArgumentParser:
     ab.add_argument("--dry-run", action="store_true",
                     help="Locate every highlight and underline and report what it would cover, "
                          "without writing")
+    ab.add_argument("--render", metavar="DIR",
+                    help="With --dry-run: draw the planned boxes and highlight matches on page "
+                         "PNGs in DIR, from the position that would be stored")
+    ap = a_sub.add_parser("preview", help="Draw an attachment's stored annotations on page images")
+    ap.add_argument("--attachment-key", required=True)
+    ap.add_argument("--pages", default="all",
+                    help="Pages to draw: all (default; pages with annotations), 3, 3-6, or 1,4,6-9")
+    ap.add_argument("--out", metavar="DIR", help="Where to write the PNGs (default: a new temp folder)")
+    ap.add_argument("--scale", type=float, default=1.5, help="Pixels per PDF point (default 1.5)")
 
     # layout -- figure/table boxes to aim area annotations at
     ly_p = sub.add_parser("layout", help="Find figure and table boxes on PDF pages")

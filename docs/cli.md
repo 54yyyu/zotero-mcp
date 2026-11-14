@@ -159,7 +159,9 @@ zotero-cli annotations create --attachment-key ATTACH01 --page 3 --rect 0.32,0.0
 zotero-cli --json annotations list --item-key ATTACH01 --positions   # stored page, rects and a rect to pass back to update
 zotero-cli annotations update ANN01 --rect 0.30,0.10,0.36,0.40   # move or resize a box in place (--page N to change page)
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl --dry-run   # where each highlight lands
+zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl --dry-run --render out/   # draw the plan on page PNGs
 zotero-cli annotations batch --attachment-key ATTACH01 --file plan.jsonl             # write them all
+zotero-cli annotations preview --attachment-key ATTACH01 --pages 3-5 --out out/   # draw what is stored
 
 # Attachments, deletion, bibliographies
 zotero-cli attach ABC123 --file /path/to/paper.pdf

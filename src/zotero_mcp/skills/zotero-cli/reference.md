@@ -124,6 +124,14 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--attachment-key` -- **required** -- Attachment for lines that do not name their own
  - `--file` -- default `-` -- JSON Lines (or a JSON array) of {page, text|rect|note, underline, comment, color, tags}; - reads stdin
  - `--dry-run` -- Locate every highlight and underline and report what it would cover, without writing
+ - `--render` -- With --dry-run: draw the planned boxes and highlight matches on page PNGs in DIR, from the position that would be stored
+
+### `annotations preview`
+
+ - `--attachment-key` -- **required**
+ - `--pages` -- default `all` -- Pages to draw: all (default; pages with annotations), 3, 3-6, or 1,4,6-9
+ - `--out` -- Where to write the PNGs (default: a new temp folder)
+ - `--scale` -- default `1.5` -- Pixels per PDF point (default 1.5)
 
 ## `layout`
 

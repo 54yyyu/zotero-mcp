@@ -1646,6 +1646,7 @@ def create_annotations(
     ctx: Context,
     dry_run: bool = False,
     allow_epub: bool = False,
+    render_dir: str | None = None,
 ) -> list[dict]:
     """Create highlights and area boxes on one attachment, written together.
 
@@ -1662,7 +1663,11 @@ def create_annotations(
 
     With ``dry_run`` nothing is written and no write access is needed; each
     placed highlight reports ``matched_text``, the words its rects cover, so a
-    caller can check placement first.
+    caller can check placement first. ``render_dir`` (PDFs only) also draws
+    every placed annotation on its page and writes the PNGs there, each
+    result naming its page's image under ``rendered``. The boxes are drawn
+    from the position that would be stored, read back through the inverse of
+    the writer's transform, never from the coordinates in the spec.
 
     Returns:
         One dict per spec, in order: ``index`` (1-based), ``page``, ``type``,
@@ -1728,6 +1733,8 @@ def create_annotations(
                     result.update(details)
                     if payload is not None:
                         pending.append((result, payload))
+                if render_dir and file_type == "pdf" and pending:
+                    _render_planned(source, pending, attachment_key, render_dir)
             finally:
                 if file_type == "pdf":
                     source.close()
@@ -1759,6 +1766,89 @@ def create_annotations(
             if not result["ok"] and "error" not in result:
                 result["error"] = message
         return results
+
+
+def _render_planned(source, pending: list[tuple[dict, dict]], attachment_key: str,
+                    render_dir: str) -> None:
+    """Draw planned annotations from their would-be stored positions (see create_annotations)."""
+    from zotero_mcp.pdf_render import render_annotated_pages
+
+    items = []
+    for result, payload in pending:
+        position = payload["annotationPosition"]
+        items.append({
+            "page_index": json.loads(position)["pageIndex"],
+            "position": position,
+            "color": payload["annotationColor"],
+            "label": f"#{result['index']} {payload['annotationComment'][:20]}".strip(),
+            "kind": payload["annotationType"],
+            "result": result,
+        })
+    for image in render_annotated_pages(source, items, render_dir, attachment_key):
+        for item in items:
+            if item["page_index"] == image["page"] - 1:
+                item["result"]["rendered"] = image["path"]
+
+
+@with_zotero_api_lock
+def preview_annotations(
+    attachment_key: str,
+    pages: list[int] | None,
+    out_dir: str,
+    scale: float = 1.5,
+    *,
+    ctx: Context,
+) -> tuple[list[dict], str | None]:
+    """Draw an attachment's stored annotations on PNGs of its pages.
+
+    Reads what Zotero holds (the stored ``annotationPosition`` of every area
+    box, highlight, underline and note) and draws it through the inverse of
+    the writer's coordinate transform, so a box written to the wrong place
+    looks wrong here. Each box is labelled with the start of its comment.
+
+    ``pages`` are 1-indexed; None means every page that has an annotation.
+
+    Returns:
+        (images, error): one ``{"page", "path", "annotations", ...}`` per PNG.
+    """
+    from zotero_mcp.pdf_render import render_annotated_pages
+    from zotero_mcp.pdf_utils import open_pdf
+
+    try:
+        stored = _library.get_library_backend().get_children(
+            [attachment_key], item_type="annotation").get(attachment_key, [])
+    except Exception as e:
+        return [], f"Error reading annotations: {_helpers.format_zotero_error(e)}"
+
+    items = []
+    for annotation in stored:
+        data = annotation.get("data", {})
+        try:
+            position = json.loads(data.get("annotationPosition") or "")
+        except ValueError:
+            continue
+        if not isinstance(position, dict) or not isinstance(position.get("pageIndex"), int):
+            continue
+        comment = (data.get("annotationComment") or "").strip()
+        items.append({
+            "page_index": position["pageIndex"],
+            "position": position,
+            "color": data.get("annotationColor"),
+            "label": comment[:24] or annotation.get("key", ""),
+            "kind": data.get("annotationType"),
+        })
+    if not items and pages is None:
+        return [], f"No annotations with a stored position on attachment {attachment_key}."
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        file_path, _name, _type, error = _fetch_attachment_file(attachment_key, tmpdir, ctx=ctx)
+        if error:
+            return [], error
+        with open_pdf(file_path) as doc:
+            if pages and max(pages) > len(doc):
+                return [], f"Error: page {max(pages)} out of range (PDF has {len(doc)} pages)"
+            return render_annotated_pages(doc, items, out_dir, attachment_key,
+                                          pages=pages, scale=scale), None
 
 
 def _annotation_payload(

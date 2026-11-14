@@ -182,9 +182,18 @@ To annotate, plan everything, check it, then write it in one run:
    highlight text exactly from `read`; it is searched for on that page and
    two pages either side.
 3. `zotero-cli annotations batch --attachment-key ATTACHMENT_KEY --file plan.jsonl --dry-run`
-   shows the words each highlight would cover. Fix every miss.
+   shows the words each highlight would cover. Fix every miss. Add
+   `--render DIR` to also draw every planned box and highlight on page PNGs;
+   they are drawn from the position that would be stored, so a coordinate
+   bug shows up in the picture. Look at them.
 4. Run it again without `--dry-run`. Anything that did not land is listed
    under `data.results` with `ok: false`, and the exit code is 1.
+
+After writing, check what Zotero actually holds:
+`zotero-cli annotations preview --attachment-key ATTACHMENT_KEY --pages 3-5 --out DIR`
+draws the stored boxes and highlights on page PNGs (default: every page that
+has one), each labelled with the start of its comment. Look at them; a
+planned-coordinates check cannot catch a write-side shift.
 
 To fix a box that landed in the wrong place, move it where it is:
 `zotero-cli annotations update ANNOTATION_KEY --rect x,y,w,h` (the same
