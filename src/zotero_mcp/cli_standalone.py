@@ -866,20 +866,32 @@ def _collect_collection_specs(args) -> list | None:
 _ADDED_KEY_RE = re.compile(r"Item key: `([^`]+)`")
 
 
-def _attach_to_added(write_mod, added: str, path: str, ctx) -> str:
+def _attachable(path: str) -> str | None:
+    """``path`` made absolute, or None when attach_file would refuse it.
+
+    Checked before the item is added, so a predictable attach failure never
+    leaves an item without its file.
+    """
+    import os
+
+    path = os.path.abspath(os.path.expanduser(path))
+    return None if os.path.islink(path) or not os.path.isfile(path) else path
+
+
+def _attach_to_added(write_mod, added: str, path: str, if_exists: str, ctx) -> str:
     """Attach a local file to the item an `add` just reported, in the same call.
 
     Returns the add's text with the attach result under it. A failure comes
     back starting with "Error", so it is reported as one, even though the item
-    itself was added.
+    itself was added. ``--if-exists skip`` leaves an existing item untouched,
+    its attachments included.
     """
-    import os
-
     match = _ADDED_KEY_RE.search(added)
     if not match:
         return added  # the add failed or named no item; its own message says why
-    attached = write_mod.attach_file(
-        item_key=match.group(1), file_path=os.path.abspath(os.path.expanduser(path)), ctx=ctx)
+    if if_exists == "skip" and added.startswith("Already in library"):
+        return f"{added}\n\nFile not attached (--if-exists skip)."
+    attached = write_mod.attach_file(item_key=match.group(1), file_path=path, ctx=ctx)
     if _reports_failure(attached):
         return f"Error: the item was added ({match.group(1)}) but its file was not attached.\n\n{attached}"
     return f"{added}\n\n{attached}"
@@ -900,9 +912,12 @@ def _add_folder(args, write_mod, collections, tags, if_exists, create_missing, c
 
     rows = []
     for name in files:
-        path = os.path.join(folder, name)
+        path = _attachable(os.path.join(folder, name))
         row = {"file": name, "doi": None, "status": "", "item_key": None}
         rows.append(row)
+        if path is None:
+            row["status"] = "unresolved: not a regular file (symlinks are not followed)"
+            continue
         try:
             row["doi"], found = doi_from_pdf(path)
         except Exception as exc:
@@ -922,6 +937,9 @@ def _add_folder(args, write_mod, collections, tags, if_exists, create_missing, c
                 row["status"] = "failed: " + _cli_vocabulary(added.strip().splitlines()[0])
                 continue
             row["item_key"] = match.group(1)
+            if if_exists == "skip" and added.startswith("Already in library"):
+                row["status"] = f"already in the library, left untouched ({found})"
+                continue
             attached = write_mod.attach_file(item_key=row["item_key"], file_path=path, ctx=ctx)
             if _reports_failure(attached):
                 row["status"] = "added, not attached: " + _cli_vocabulary(attached.strip().splitlines()[0])
@@ -957,6 +975,9 @@ def cmd_add(args):
 
     if args.subcommand == "doi":
         attach_file = getattr(args, "attach_file", None)
+        if attach_file and _attachable(attach_file) is None:
+            raise _cli_json.CliError(f"--attach-file: not a regular file (symlinks are not followed): "
+                                     f"{attach_file}", code="bad_file")
         text = write_mod.add_by_doi(
             doi=args.doi, collections=collections, tags=tags,
             # A file in hand is the attachment; fetching an open-access copy too would make two.
@@ -964,7 +985,7 @@ def cmd_add(args):
             create_missing_collections=create_missing, ctx=ctx,
         )
         if attach_file:
-            text = _attach_to_added(write_mod, text, attach_file, ctx)
+            text = _attach_to_added(write_mod, text, _attachable(attach_file), if_exists, ctx)
         _out(args, "add doi", text=text)
     elif args.subcommand == "folder":
         _add_folder(args, write_mod, collections, tags, if_exists, create_missing, ctx)

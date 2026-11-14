@@ -138,8 +138,30 @@ class TestAttachFile:
         write_mod = MagicMock()
         write_mod.add_by_doi.return_value = "Error: CrossRef has no record of 10.1/x"
         with pytest.raises(SystemExit):
-            run(args_for(doi="10.1/x", attach_file=str(tmp_path / "p.pdf")), write_mod)
+            run(args_for(doi="10.1/x", attach_file=make_pdf(tmp_path / "p.pdf", ["x"])), write_mod)
         write_mod.attach_file.assert_not_called()
+
+    @pytest.mark.parametrize("make", ["missing", "symlink"])
+    def test_a_file_attach_would_refuse_is_caught_before_the_item_is_added(self, tmp_path, make):
+        from zotero_mcp.cli_json import CliError
+
+        path = tmp_path / "p.pdf"
+        if make == "symlink":
+            path.symlink_to(make_pdf(tmp_path / "real.pdf", ["x"]))
+        write_mod = MagicMock()
+        with pytest.raises(CliError, match="not a regular file"):
+            run(args_for(doi="10.1/x", attach_file=str(path)), write_mod)
+        write_mod.add_by_doi.assert_not_called()
+
+    def test_if_exists_skip_attaches_nothing_to_an_existing_item(self, tmp_path, capsys):
+        write_mod = MagicMock()
+        write_mod.add_by_doi.return_value = (
+            "Already in library: **A Paper** (`ABCD1234`, matched by DOI)\n\nItem key: `ABCD1234`\n"
+            "No changes made (if_exists='skip').")
+        run(args_for(doi="10.1/x", attach_file=make_pdf(tmp_path / "p.pdf", ["x"]), if_exists="skip"),
+            write_mod)
+        write_mod.attach_file.assert_not_called()
+        assert "not attached" in capsys.readouterr().out
 
 
 class TestAddFolder:
@@ -167,6 +189,16 @@ class TestAddFolder:
         assert "spread.pdf" in out and "ambiguous" in out
         assert "none.pdf" in out and "no DOI" in out
         assert "notes.txt" not in out and "1/3 resolved" in out
+
+    def test_a_symlinked_pdf_is_listed_not_followed(self, tmp_path, capsys):
+        folder = tmp_path / "in"
+        folder.mkdir()
+        (folder / "link.pdf").symlink_to(make_pdf(tmp_path / "real.pdf", ["10.1016/j.cell.2020.01.001"]))
+        write_mod = MagicMock()
+        with pytest.raises(SystemExit):
+            run(args_for(subcommand="folder", folder=str(folder)), write_mod)
+        write_mod.add_by_doi.assert_not_called()
+        assert "symlinks are not followed" in capsys.readouterr().out
 
     def test_dry_run_writes_nothing(self, tmp_path, capsys):
         write_mod = MagicMock()
