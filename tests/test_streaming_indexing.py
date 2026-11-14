@@ -389,7 +389,11 @@ def test_producer_failure_does_not_hang_the_pipeline(monkeypatch):
 
 
 def test_evicts_the_fulltext_cache_once_per_commit(monkeypatch):
-    """Every committed item key is evicted, and nothing else is."""
+    """Every committed file's key is evicted, and nothing else is.
+
+    Text is cached under the attachment it came from; an item's metadata
+    record has none to evict (#826).
+    """
     evicted = []
 
     def recording_evict(item_keys, config_path=None):
@@ -403,11 +407,14 @@ def test_evicts_the_fulltext_cache_once_per_commit(monkeypatch):
     chroma = FakeStreamingChromaClient(embedder)
     search = _make_search(monkeypatch, chroma)
     items = _items(16)
+    for item in items:
+        item["data"]["fulltext"] = f"Body of {item['key']}."
+        item["data"]["fulltextSource"] = f"web-api:attachment:PDF{item['key'][4:]}"
 
     _run_update(monkeypatch, search, items)
 
     assert len(evicted) == len(chroma.embedding_batches)
-    assert {key for batch in evicted for key in batch} == {i["key"] for i in items}
+    assert {key for batch in evicted for key in batch} == {f"PDF{i['key'][4:]}" for i in items}
 
 
 def test_does_not_evict_when_the_commit_failed(monkeypatch):
@@ -446,26 +453,29 @@ CHUNKING_ON = {
 
 
 def test_chunked_streaming_keeps_accounting_per_item(monkeypatch):
-    """Added/updated counts items, not chunks, and stale chunks are cleared."""
+    """Added/updated counts records, not chunks, and stale chunks are cleared."""
     items = _items(6)
-    # Give one item enough text to chunk into several passages.
-    items[0]["data"]["abstractNote"] = "long body text " * 40
+    # Give one item a file with enough text to chunk into several passages.
+    # Passages belong to the file's own record (#826).
+    items[0]["data"]["fulltext"] = "long body text " * 40
+    items[0]["data"]["fulltextSource"] = "web-api:attachment:ATT00000"
 
     embedder = FakeEmbeddingFunction(max_parallel_requests=3, request_batch_size=4, delay=0)
-    chroma = FakeStreamingChromaClient(embedder, existing_keys={"ITEM0000"})
+    chroma = FakeStreamingChromaClient(embedder, existing_keys={"ATT00000"})
     search = _make_search(monkeypatch, chroma, chunking=CHUNKING_ON)
 
     stats = _run_update(monkeypatch, search, items)
 
     assert chroma.embedding_batches, "streaming path did not run"
     assert stats["updated_items"] == 1
-    assert stats["added_items"] == 5
+    assert stats["added_items"] == 6
     # Stale tail pruned after the write (#610).
-    assert "ITEM0000" in chroma.deleted_item_keys
+    assert "ATT00000" in chroma.deleted_item_keys
 
     committed = committed_ids(chroma)
-    assert len(committed) > len(items), "chunking should emit more ids than items"
-    assert all("#" in doc_id for doc_id in committed)
+    passages = [doc_id for doc_id in committed if "#" in doc_id]
+    assert len(passages) > 1, "chunking should emit several passages"
+    assert all(doc_id.startswith("ATT00000#") for doc_id in passages)
 
 
 def test_an_items_chunks_are_never_split_across_requests(monkeypatch):

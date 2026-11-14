@@ -62,7 +62,10 @@ class RecordingClient(ChromaClient):
 
 
 class FakeZotero:
-    """One library. ``texts`` is what Zotero has extracted per item's PDF."""
+    """One library. ``texts`` is what Zotero has extracted per item's PDF.
+
+    A key in ``changed`` was edited: its dateModified moves on.
+    """
 
     def __init__(self, abstracts):
         self.abstracts = dict(abstracts)
@@ -85,7 +88,9 @@ class FakeZotero:
                 "abstractNote": self.abstracts[key],
                 "creators": [],
                 "dateAdded": "2024-01-01T00:00:00Z",
-                "dateModified": "2024-01-01T00:00:00Z",
+                "dateModified": (
+                    f"2024-02-{self.version:02d}T00:00:00Z" if key in self.changed else "2024-01-01T00:00:00Z"
+                ),
             },
         }
 
@@ -152,7 +157,8 @@ def _park(build, zotero):
     search.update_database()
     collection = search.chroma_client.collection
     stored = collection.get(ids=["AAA"], include=["metadatas"])["metadatas"][0]
-    collection.update(ids=["AAA"], metadatas=[{**stored, "has_fulltext": True}])
+    # A legacy record (it carries the title, #826) built from full text.
+    collection.update(ids=["AAA"], metadatas=[{**stored, "title": "Title AAA", "has_fulltext": True}])
     build(zotero, chunking=True).update_database()
 
 
@@ -249,7 +255,8 @@ def test_a_fetch_error_does_not_park_an_item(build, tmp_path):
     search.update_database()
     collection = search.chroma_client.collection
     stored = collection.get(ids=["AAA"], include=["metadatas"])["metadatas"][0]
-    collection.update(ids=["AAA"], metadatas=[{**stored, "has_fulltext": True}])
+    # A legacy record (it carries the title, #826) built from full text.
+    collection.update(ids=["AAA"], metadatas=[{**stored, "title": "Title AAA", "has_fulltext": True}])
 
     zotero.texts["AAA"] = TEXT
     zotero.fulltext_error = ConnectionError("connection reset")
@@ -351,7 +358,9 @@ def test_another_librarys_waiting_item_stays_due_for_its_own_library(build, tmp_
     search.update_database()
 
     assert zotero_b.text_requests == ["AAA"]
-    assert len(_passage_ids(search)) == 10, "B's item has its passages next to BBB's"
+    # Passages come from files only (#826): B's item's PDF has them, BBB has none.
+    assert {p.split("#")[0] for p in _passage_ids(search)} == {"AAAPDF"}
+    assert len(_passage_ids(search)) == 5
 
 
 @pytest.mark.parametrize(
@@ -460,8 +469,7 @@ def test_a_full_scan_picks_up_text_for_an_item_that_had_none(build, tmp_path):
     zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
     search = build(zotero, chunking=True, fulltext=True)
     search.update_database()
-    stored = search.chroma_client.get_document_metadata("AAA")
-    assert stored["has_fulltext"] == "failed"
+    assert search.chroma_client.get_document_metadata("AAAPDF") is None
     config = tmp_path / "config.json"
     data = json.loads(config.read_text())
     data["semantic_search"].pop("last_sync_version", None)
@@ -475,7 +483,9 @@ def test_a_full_scan_picks_up_text_for_an_item_that_had_none(build, tmp_path):
     embedded = search.chroma_client.embedded
     assert embedded and any("Body sentence" in text for text in embedded)
     assert not any("Title BBB" in text for text in embedded), "BBB is unchanged"
-    assert search.chroma_client.get_document_metadata("AAA")["has_fulltext"] is True
+    assert not any("Title AAA" in text for text in embedded), "AAA's metadata is unchanged"
+    # The text is a record of the PDF it came from (#826).
+    assert search.chroma_client.get_document_metadata("AAAPDF")["file_stamp"]
 
 
 # --- the Batch API path ----------------------------------------------------------
@@ -528,12 +538,12 @@ def test_a_batch_run_whose_items_all_fail_keeps_the_sync_version(build, monkeypa
 def test_a_batch_run_saves_what_it_learned_about_waiting_items(build, tmp_path):
     """update_config is saved on the batch path too, with the waiting list in it."""
     zotero = FakeZotero({"AAA": LONG})
-    search = build(zotero, chunking=True)
+    search = build(zotero, chunking=False)
     search.update_database()
-    search.chroma_client.delete_documents(["AAA"])
-    passages = search.chroma_client.client.get_collection(f"{NAME}_passages")
-    stored = passages.get(ids=["AAA#0"], include=["metadatas"])["metadatas"][0]
-    passages.update(ids=["AAA#0"], metadatas=[{**stored, "has_fulltext": True}])
+    collection = search.chroma_client.collection
+    stored = collection.get(ids=["AAA"], include=["metadatas"])["metadatas"][0]
+    # A legacy record built from full text lacks passages, which need that text.
+    collection.update(ids=["AAA"], metadatas=[{**stored, "title": "Title AAA", "has_fulltext": True}])
     zotero.version = 6
 
     search = _batch(build(zotero, chunking=True))
