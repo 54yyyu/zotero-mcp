@@ -1647,6 +1647,7 @@ def create_annotations(
     dry_run: bool = False,
     allow_epub: bool = False,
     render_dir: str | None = None,
+    existing: Literal["skip", "replace"] | None = None,
 ) -> list[dict]:
     """Create highlights and area boxes on one attachment, written together.
 
@@ -1668,6 +1669,15 @@ def create_annotations(
     result naming its page's image under ``rendered``. The boxes are drawn
     from the position that would be stored, read back through the inverse of
     the writer's transform, never from the coordinates in the spec.
+
+    ``existing`` makes a re-run safe. An entry whose page and first 40
+    characters of comment (of the highlighted text when there is no comment)
+    match an annotation already on the attachment is left alone with
+    ``existing="skip"`` (the result says ``skipped`` and names the key that is
+    there), or with ``"replace"`` is created and the old one permanently
+    deleted (``replaced`` lists the keys). An entry with neither comment nor
+    text cannot be told apart and is always created. A dry run reports
+    what it would do.
 
     Returns:
         One dict per spec, in order: ``index`` (1-based), ``page``, ``type``,
@@ -1698,6 +1708,7 @@ def create_annotations(
             file_path, _filename, file_type, error = _fetch_attachment_file(
                 attachment_key, tmpdir, ctx=ctx, meta_client=write_client,
                 content_types=_PDF_OR_EPUB if allow_epub else _PDF_ONLY,
+                **({"prefer_disk": True} if dry_run else {}),
             )
             if error:
                 return fail_all(error)
@@ -1739,6 +1750,24 @@ def create_annotations(
                 if file_type == "pdf":
                     source.close()
 
+        replaced: dict[int, list[str]] = {}
+        if existing and pending:
+            try:
+                on_file = _existing_annotations(attachment_key)
+            except Exception as e:
+                return fail_all(f"Error: could not read the annotations already on this attachment: "
+                                f"{_helpers.format_zotero_error(e)}")
+            for result, payload in list(pending):
+                keys = on_file.get(_identity(payload))
+                if not keys:
+                    continue
+                if existing == "skip":
+                    result.update(ok=True, skipped=True, annotation_key=keys[0])
+                    pending.remove((result, payload))
+                else:
+                    replaced[id(result)] = keys
+                    result["replaced"] = keys
+
         if dry_run:
             for result, _payload in pending:
                 result["ok"] = True
@@ -1754,6 +1783,12 @@ def create_annotations(
                 key = success.get(str(offset))
                 if key:
                     result.update(ok=True, annotation_key=key)
+                    # The new annotation is in; only now is the old one removed.
+                    for old_key in replaced.get(id(result), []):
+                        try:
+                            write_client.delete_item(write_client.item(old_key))
+                        except Exception as e:
+                            result["warning"] = f"created, but could not delete the old {old_key}: {e}"
                 else:
                     reason = failed.get(str(offset)) or failed or response
                     result["error"] = f"Failed to create annotation: {reason}"
@@ -1766,6 +1801,31 @@ def create_annotations(
             if not result["ok"] and "error" not in result:
                 result["error"] = message
         return results
+
+
+def _identity(data: dict) -> tuple[int, str] | None:
+    """(page index, first 40 characters of comment or text) of an annotation, or None.
+
+    ``data`` is a Zotero annotation's fields or a payload built for one. None
+    means there is nothing to tell it apart by.
+    """
+    try:
+        page_index = json.loads(data.get("annotationPosition") or "")["pageIndex"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    words = " ".join((data.get("annotationComment") or data.get("annotationText") or "").split())
+    return (page_index, words[:40]) if words else None
+
+
+def _existing_annotations(attachment_key: str) -> dict[tuple[int, str], list[str]]:
+    """Annotation keys already on an attachment, by ``_identity``."""
+    found: dict[tuple[int, str], list[str]] = {}
+    children = _library.get_library_backend().get_children([attachment_key], item_type="annotation")
+    for annotation in children.get(attachment_key, []):
+        identity = _identity(annotation.get("data", {}))
+        if identity:
+            found.setdefault(identity, []).append(annotation["key"])
+    return found
 
 
 def _render_planned(source, pending: list[tuple[dict, dict]], attachment_key: str,
@@ -2245,12 +2305,16 @@ def _fetch_attachment_file(
     ctx: Context,
     meta_client=None,
     content_types: dict[str, str] = _PDF_ONLY,
+    prefer_disk: bool = False,
 ) -> tuple[str | None, str, str, str | None]:
     """Resolve a PDF (or EPUB) attachment and put a readable copy in ``tmpdir``.
 
     ``meta_client`` is where the attachment's metadata is read; a writer
     passes its write client, so a hybrid setup checks the library it is about
     to write to. ``content_types`` maps accepted MIME types to file types.
+    ``prefer_disk`` uses the file Zotero already holds on this machine, found
+    through zotero.sqlite, before asking any client; a caller that only reads
+    the file (a dry run) then works with Zotero closed.
 
     Returns:
         (file_path, filename, file_type, error). ``error`` is a user-facing
@@ -2261,6 +2325,15 @@ def _fetch_attachment_file(
     # metadata and where its file is, so the API clients are built only when
     # the file is not on this machine. A writer passes meta_client and keeps
     # the API path.
+    if prefer_disk:
+        try:
+            on_disk = _library.attachment_path_for(attachment_key)
+        except Exception:
+            on_disk = None
+        file_type = {"pdf": "pdf", "epub": "epub"}.get(on_disk.suffix.lower().lstrip(".")) if on_disk else None
+        if file_type in content_types.values() and on_disk.stat().st_size > 0:
+            return str(on_disk), on_disk.name, file_type, None
+
     from_sqlite = meta_client is None and _utils.is_local_mode()
     if not from_sqlite:
         local_client, web_client = _download_clients()

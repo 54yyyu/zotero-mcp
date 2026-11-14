@@ -666,6 +666,7 @@ def _annotations_batch(args, annotations, ctx) -> None:
     import time
 
     render_dir = getattr(args, "render", None)
+    existing = getattr(args, "on_existing", None)
     if render_dir and not args.dry_run:
         raise _cli_json.CliError(
             "--render draws the planned annotations, so it needs --dry-run; "
@@ -690,6 +691,7 @@ def _annotations_batch(args, annotations, ctx) -> None:
         outcomes = annotations.create_annotations(
             attachment_key, [specs[p] for p in positions], ctx=ctx,
             dry_run=args.dry_run, allow_epub=True, render_dir=render_dir,
+            **({"existing": existing} if existing else {}),
         )
         for position, outcome in zip(positions, outcomes):
             results[position] = {**outcome, "index": position + 1}
@@ -697,31 +699,52 @@ def _annotations_batch(args, annotations, ctx) -> None:
                 results[position]["error"] = _cli_vocabulary(outcome["error"].strip())
 
     failed = [r for r in results if not r["ok"]]
+    skipped = [r for r in results if r.get("skipped")]
     seconds = round(time.monotonic() - started, 2)
 
     if _json_mode(args):
         _cli_json.emit("annotations batch", {
             "dry_run": bool(args.dry_run),
             "succeeded": len(results) - len(failed),
+            "skipped": len(skipped),
             "failed": len(failed),
             "seconds": seconds,
             "results": results,
         })
     else:
-        for r in results:
+        # One cause for every row (a PDF that cannot be fetched) is said once.
+        causes = {r["error"] for r in failed}
+        collapsed = len(failed) == len(results) > 1 and len(causes) == 1
+        if collapsed:
+            first = next(iter(causes)).strip().splitlines()[0]
+            print(f"FAIL  all {len(results)} entries: {first}")
+            if "client configured" in first or "Could not download" in first:
+                print("      The PDF could not be fetched. Start Zotero (with 'Allow other applications "
+                      "on this computer to communicate with Zotero' on), or set ZOTERO_LOCAL=true so "
+                      "the file is read from disk.")
+        for r in [] if collapsed else results:
             where = f"#{r['index']} p{r['page']}"
+            if r.get("skipped"):
+                print(f"skip  {where} already there as {r['annotation_key']}")
+                continue
             if not r["ok"]:
                 print(f"FAIL  {where}: {r['error']}")
-            elif args.dry_run and r["type"] in ("highlight", "underline"):
+                continue
+            replaced = f" (replaces {', '.join(r['replaced'])})" if r.get("replaced") else ""
+            if args.dry_run and r["type"] in ("highlight", "underline"):
                 found = r.get("page_found") or r.get("chapter_found")
                 moved = f" (found on p{found})" if found not in (None, r["page"]) else ""
-                print(f"ok    {where}{moved}: {r.get('matched_text', '')[:120]}")
+                print(f"ok    {where}{moved}: {r.get('matched_text', '')[:120]}{replaced}")
             elif args.dry_run:
-                print(f"ok    {where} area{_auto_note(r)}")
+                print(f"ok    {where} area{_auto_note(r)}{replaced}")
             else:
-                print(f"ok    {where} {r['type']} {r['annotation_key']}{_auto_note(r)}")
+                print(f"ok    {where} {r['type']} {r['annotation_key']}{_auto_note(r)}{replaced}")
+            if r.get("warning"):
+                print(f"WARN  {where}: {r['warning']}")
         verb = "Located" if args.dry_run else "Created"
-        print(f"\n{verb} {len(results) - len(failed)}/{len(results)} in {seconds}s"
+        done = len(results) - len(failed) - len(skipped)
+        print(f"\n{verb} {done}/{len(results)} in {seconds}s"
+              + (f"; {len(skipped)} already there" if skipped else "")
               + (f"; {len(failed)} failed" if failed else ""))
         for path in sorted({r["rendered"] for r in results if r.get("rendered")}):
             print(f"rendered: {path}")
@@ -1758,6 +1781,11 @@ def build_parser() -> argparse.ArgumentParser:
     ab.add_argument("--render", metavar="DIR",
                     help="With --dry-run: draw the planned boxes and highlight matches on page "
                          "PNGs in DIR, from the position that would be stored")
+    ab.add_argument("--on-existing", choices=["skip", "replace"],
+                    help="Make a re-run safe. An entry whose page and first 40 characters of comment "
+                         "(or text) match an annotation already on the attachment is left alone "
+                         "(skip), or created fresh with the old one permanently deleted (replace). "
+                         "Without this, every entry is created")
     ap = a_sub.add_parser("preview", help="Draw an attachment's stored annotations on page images")
     ap.add_argument("--attachment-key", required=True)
     ap.add_argument("--pages", default="all",

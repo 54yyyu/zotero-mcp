@@ -200,6 +200,16 @@ To annotate, plan everything, check it, then write it in one run:
 4. Run it again without `--dry-run`. Anything that did not land is listed
    under `data.results` with `ok: false`, and the exit code is 1.
 
+A plain re-run creates every entry again, so a repeated batch duplicates.
+`--on-existing skip` makes a re-run safe: an entry whose page and first 40
+characters of comment (or highlighted text, when it has no comment) match an
+annotation already on the attachment is left alone and reported as skipped.
+`--on-existing replace` creates the new one and permanently deletes the old
+one instead, to redo a batch with corrections. An entry with neither comment
+nor text cannot be matched and is always created. `--dry-run` shows what
+either would do, and it reads the PDF Zotero holds on disk, so it works with
+Zotero closed.
+
 After writing, check what Zotero actually holds:
 `zotero-cli annotations preview --attachment-key ATTACHMENT_KEY --pages 3-5 --out DIR`
 draws the stored boxes and highlights on page PNGs (default: every page that

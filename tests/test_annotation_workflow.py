@@ -590,3 +590,122 @@ class TestAutoBox:
         cli_standalone._annotations_batch(args, annotations, MagicMock())
         out = capsys.readouterr().out
         assert "auto: hint, low" in out and "kept the near hint" in out
+
+
+# ---------------------------------------------------------------------------
+# 5. Batch safety and the offline dry run
+# ---------------------------------------------------------------------------
+
+PLAN = [
+    {"page": 1, "rect": [0.10, 0.30, 0.25, 0.15], "comment": "FIG 1A | first panel of the figure, with a long comment"},
+    {"page": 2, "rect": [0.55, 0.40, 0.30, 0.20], "comment": "FIG 1B | rotated page"},
+    {"page": 1, "text": "synthetic paper", "comment": "PROBLEM. the sentence"},
+    {"page": 3, "rect": [0.30, 0.60, 0.25, 0.20]},                       # nothing to tell it apart by
+]
+
+
+def write(store, specs=PLAN, **kwargs):
+    return annotations.create_annotations(ATTACHMENT, specs, ctx=MagicMock(), **kwargs)
+
+
+class TestIdempotentBatch:
+    def test_rerun_with_skip_creates_nothing_new(self, store):
+        first = write(store, existing="skip")
+        assert all(r["ok"] and not r.get("skipped") for r in first)
+        made = len(store.created)
+
+        second = write(store, existing="skip")
+        assert all(r["ok"] for r in second)
+        assert [bool(r.get("skipped")) for r in second] == [True, True, True, False]
+        # Only the entry with no comment and no text is created again.
+        assert len(store.created) == made + 1
+        assert second[0]["annotation_key"] == first[0]["annotation_key"]
+
+    def test_without_the_option_a_rerun_duplicates(self, store):
+        write(store)
+        write(store)
+        assert len(store.created) == 2 * len(PLAN)
+
+    def test_replace_deletes_the_old_ones_after_creating_the_new(self, store):
+        first = write(store, existing="replace")
+        second = write(store, existing="replace")
+        old = {r["annotation_key"] for r in first[:3]}
+        assert set(store.deleted) == old
+        assert [r.get("replaced") for r in second[:3]] == [[k] for k in (r["annotation_key"] for r in first[:3])]
+        assert not old & set(store.items)
+        assert all(r["ok"] for r in second)
+
+    def test_the_key_is_page_plus_the_first_40_characters_of_comment(self, store):
+        write(store, [{"page": 1, "rect": [0.1, 0.1, 0.1, 0.1], "comment": "x" * 40 + " tail one"}])
+        again = write(store, [
+            {"page": 1, "rect": [0.5, 0.5, 0.1, 0.1], "comment": "x" * 40 + " a different tail"},  # same key
+            {"page": 2, "rect": [0.5, 0.5, 0.1, 0.1], "comment": "x" * 40 + " tail one"},          # other page
+        ], existing="skip")
+        assert [bool(r.get("skipped")) for r in again] == [True, False]
+
+    def test_a_dry_run_reports_what_it_would_do_and_writes_nothing(self, store):
+        write(store, existing="skip")
+        made, gone = len(store.created), len(store.deleted)
+        skip = write(store, dry_run=True, existing="skip")
+        replace = write(store, dry_run=True, existing="replace")
+        assert [bool(r.get("skipped")) for r in skip] == [True, True, True, False]
+        assert [bool(r.get("replaced")) for r in replace] == [True, True, True, False]
+        assert len(store.created) == made and len(store.deleted) == gone
+
+    def test_cli_counts_what_was_skipped(self, store, tmp_path, capsys):
+        import argparse
+
+        from zotero_mcp import cli_standalone
+
+        plan = tmp_path / "plan.jsonl"
+        plan.write_text("\n".join(json.dumps(s) for s in PLAN))
+        args = argparse.Namespace(verbose=False, json_out=True, subcommand="batch", attachment_key=ATTACHMENT,
+                                  file=str(plan), dry_run=False, render=None, on_existing="skip")
+        cli_standalone._annotations_batch(args, annotations, MagicMock())
+        capsys.readouterr()
+        cli_standalone._annotations_batch(args, annotations, MagicMock())
+        data = json.loads(capsys.readouterr().out)["data"]
+        assert (data["skipped"], data["failed"]) == (3, 0)
+
+
+class TestOfflineDryRun:
+    def test_pure_matching_reads_the_file_zotero_holds_and_needs_no_client(self, pdf_path, monkeypatch):
+        from pathlib import Path
+
+        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key: Path(pdf_path))
+        monkeypatch.setattr(annotations, "_download_clients",
+                            lambda: pytest.fail("a dry run must not need a Zotero client"))
+        monkeypatch.setattr(annotations, "_get_note_write_client",
+                            lambda _op: pytest.fail("a dry run must not need write access"))
+        monkeypatch.setattr(annotations._utils, "is_local_mode", lambda: False)
+        results = annotations.create_annotations(ATTACHMENT, [
+            {"page": 1, "text": "synthetic paper"}, {"page": 2, "rect": [0.1, 0.1, 0.2, 0.2]},
+        ], ctx=MagicMock(), dry_run=True)
+        assert all(r["ok"] for r in results), results
+        assert results[0]["matched_text"] == "synthetic paper"
+
+    def test_a_real_write_still_asks_for_a_client(self, pdf_path, monkeypatch):
+        from pathlib import Path
+
+        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key: Path(pdf_path))
+        monkeypatch.setattr(annotations, "_get_note_write_client", lambda _op: (None, "Error: no write access"))
+        (result,) = annotations.create_annotations(ATTACHMENT, [{"page": 1, "text": "synthetic"}], ctx=MagicMock())
+        assert result["error"] == "Error: no write access"
+
+    def test_one_cause_is_said_once_with_its_fix(self, tmp_path, monkeypatch, capsys):
+        import argparse
+
+        from zotero_mcp import cli_standalone
+
+        monkeypatch.setattr(annotations._library, "attachment_path_for", lambda key: None)
+        monkeypatch.setattr(annotations, "_download_clients", lambda: (None, None))
+        monkeypatch.setattr(annotations._utils, "is_local_mode", lambda: False)
+        plan = tmp_path / "plan.jsonl"
+        plan.write_text("\n".join(json.dumps(s) for s in PLAN))
+        args = argparse.Namespace(verbose=False, json_out=False, subcommand="batch", attachment_key=ATTACHMENT,
+                                  file=str(plan), dry_run=True, render=None, on_existing=None)
+        with pytest.raises(SystemExit) as exit_info:
+            cli_standalone._annotations_batch(args, annotations, MagicMock())
+        out = capsys.readouterr().out
+        assert exit_info.value.code == 1
+        assert out.count("FAIL") == 1 and "all 4 entries" in out and "Start Zotero" in out

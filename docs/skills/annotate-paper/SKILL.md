@@ -110,8 +110,9 @@ Write the plan as a JSON Lines file, one annotation per line:
 
 ## Gotchas
 
-- Do not re-run a batch that succeeded: it creates duplicates. To redo, delete the old annotations permanently first
-  (trashed annotations still show in Zotero's reader).
+- A plain re-run of a batch creates duplicates. Re-run with `--on-existing skip` to add only what is missing, or
+  `--on-existing replace` to redo entries (it deletes the old ones permanently; trashed annotations still show in
+  Zotero's reader).
 - `annotations list` fields are `type`, `color_category`, `page`, `text` and `comment`.
 - Highlight text is searched on the given page and two either side, and tolerates hyphenation and curly quotes; copy
   it from `read`.

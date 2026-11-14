@@ -126,6 +126,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--file` -- default `-` -- JSON Lines (or a JSON array) of {page, text|rect|note, underline, comment, color, tags}; "rect": "auto" (with an optional "near": "x,y,w,h") fits a box to the nearest figure or panel; - reads stdin
  - `--dry-run` -- Locate every highlight and underline and report what it would cover, without writing
  - `--render` -- With --dry-run: draw the planned boxes and highlight matches on page PNGs in DIR, from the position that would be stored
+ - `--on-existing` -- one of `skip`, `replace` -- Make a re-run safe. An entry whose page and first 40 characters of comment (or text) match an annotation already on the attachment is left alone (skip), or created fresh with the old one permanently deleted (replace). Without this, every entry is created
 
 ### `annotations preview`
 
