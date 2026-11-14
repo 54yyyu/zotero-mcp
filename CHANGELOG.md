@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Every readable file of an item is indexed, and so are attachments without a parent** (#494, #826). `attachment_priority` still picks the kind of file (PDF first by default), but all files of that kind are indexed, not one per item, and a standalone PDF or HTML file in the library is searchable. Notes and annotations are still not. Search results show the parent item; when the hit was in one of several files, the Location line names the file (`Attachment: ...`). Thanks @mronkko.
+- **Identical files are embedded once** (#495). Each file's content hash is kept, and a file whose bytes match one already indexed (the same PDF under two items, or in two libraries) gets its vectors copied instead of sent to the embedding provider. This works in realtime and Batch API runs; the update summary and `zotero_update_search_database` report how many were reused. A file that is only touched, with the same bytes (a backup restore changes every modification time), is not embedded again either. Thanks @mronkko.
+- **`migrate-index` re-keys old passages under their attachment** (#826). Passages that earlier versions stored under the item's key move to their attachment's key with their vectors, no embedding, and lose their copied title, creators and tags. An explicit `update-db` does the same first. Status commands (`db-status`, `zotero-cli db status`, `zotero_get_search_database_status`) count bibliographic, attachment, passage and legacy records, and `db-inspect` reports record kinds and reads titles and item types from Zotero. Thanks @mronkko.
+
+### Changed
+
+- **Web-mode filtered searches ask the Zotero API once per library instead of filtering after the search** (#826). Attachment records and passages store their parent's key as `parent_hint`, used only to narrow a filter on `item_type`, `tags` or `item_key` to the matching items (one `format=keys` request per library); hits are still resolved and checked against Zotero, so a stale hint can at worst miss a file until it is rewritten. Other filters, and indexes whose records lack the hint, behave as before; an explicit `update-db` and `migrate-index` set the missing hints without embedding. Thanks @mronkko.
+- **The index keys every record by its own Zotero key and stores nothing it can look up** (#826). An item has one record built from its fields; each attachment has its own record and passages (`KEY#n`) built from its file. Parent, title, creators, tags and item type are no longer stored: search resolves each hit to its parent item in Zotero and collapses the results by parent. Moving an attachment to another item, Create Parent Item and metadata edits therefore need no re-index. Thanks @mronkko.
+- **Behaviour change: filters on `item_type`, `item_key`, `title`, `doi`, `citation_key`, `publication`, `tags` and `has_fulltext` now use current Zotero data** (#826). They were compared with copies stored in the index. `tags` now means tag membership: `{"tags": "x"}` matches an item that has tag x among others (it used to compare the stored space-joined tag string). `section`, `page`, `group_id` and the passage fields are still filtered in the index. `item_key` is now the parent item's key. Thanks @mronkko.
+- **Untouched items keep their old records until `update-db --force-rebuild`.** Changed items are rewritten in the new shape. Automatic updates (startup, pre-search) never re-key, and they hold, not embed again, an attachment whose passages the re-key moved and that has no attachment record; an explicit `update-db` writes only that record. An unreachable Zotero makes the re-key and the clean-up skip an item rather than drop its passages; so does an item with neither a readable file nor a `.zotero-ft-cache` for a file the database selects. A file that is merely out of reach (unmounted drive, files kept on demand) is read from its own `.zotero-ft-cache` when it has one; an explicit `update-db` or `migrate-index` does the work. A legacy item with several files of the chosen kind and unchanged attachments is re-keyed to the largest, as earlier versions chose. An explicit `update-db` on an index from before the collection split splits it first. Thanks @mronkko.
+- **`repair-db` accepts an attachment's record beside its passages** (#826). Thanks @mronkko.
+- **Standalone files, and an item's other files, are indexed by the first explicit update, then automatically** (#826). They were not indexed before (one file per item was), so automatic updates leave them until one `update-db` has covered them; until then an automatic update indexes the file earlier versions chose. Thanks @mronkko.
+- **Semantic search needs `chromadb>=1.0.2`** (#826). The item-keyed index clears stale metadata with `None`, which 1.0.0 and 1.0.1 reject. Filters on `date`, `creators` and `url` now raise an error naming the supported fields, since only records from earlier versions carry them. Thanks @mronkko.
+
+### Fixed
+
+- **The local `--fulltext` scan notices metadata edits** (#826). Changing a title or creator re-embeds that item's record, not its files. Thanks @mronkko.
+- **The `.zotero-ft-cache` fallback no longer reads a sibling's cache** (#826). With several attachments, text was taken from the first one that had a cache instead of the one being indexed. Thanks @mronkko.
+
 ## [0.17.1] - 2026-11-12
 
 ### Added

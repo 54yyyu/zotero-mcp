@@ -986,9 +986,10 @@ def cmd_db(args):
         print(f"Document count: {ci.get('count', 0)}")
         print(f"  Article-level records: {ci.get('article_records', 0)}")
         print(f"  Passage-level records: {ci.get('passage_records', 0)}")
-        for label, key in (("Items with article records", "article_items"), ("Items with passages", "passage_items")):
-            if key in ci:
-                print(f"  {label}: {'unknown' if ci[key] is None else ci[key]}")
+        from zotero_mcp.chroma_client import legacy_status_note, level_status_rows
+
+        for label, value in level_status_rows(ci):
+            print(f"  {label}: {value}")
         print(f"Embedding model: {ci.get('embedding_model', 'Unknown')}")
         print(f"Database path: {ci.get('persist_directory', 'Unknown')}")
         if ci.get("migration"):
@@ -997,6 +998,10 @@ def cmd_db(args):
 
             print("\nIndex migration:")
             for line in status_note(ci["migration"], "zotero-cli db update", local_mode=is_local_mode()):
+                print(f"  {line}")
+        if legacy_lines := legacy_status_note(ci):
+            print("\nLegacy records:")
+            for line in legacy_lines:
                 print(f"  {line}")
         print("\nUpdate configuration:")
         print(f"- Auto update: {uc.get('auto_update', False)}")
@@ -1013,74 +1018,15 @@ def cmd_db(args):
             print(f"\nError: {ci['error']}")
 
     elif args.subcommand == "inspect":
-        from collections import Counter
-        search = create_semantic_search(str(config_path))
-        client = search.chroma_client
-        col = client.collection
+        from zotero_mcp.index_inspect import inspect_index
 
-        if args.stats:
-            metas = []
-            for collection in client.collections():
-                metas.extend(collection.get(include=["metadatas"]).get("metadatas", []))
-            info = client.get_collection_info()
-            print("=== Semantic DB Stats ===")
-            print(f"Collection: {info.get('name')} @ {info.get('persist_directory')}")
-            print(f"Count: {info.get('count')}")
-            ct = Counter((m or {}).get("item_type", "") for m in metas)
-            print("Item types:")
-            for t, c in ct.most_common(20):
-                print(f"  {t or '(missing)'}: {c}")
-            coverage: dict = {}
-            for m in metas:
-                m = m or {}
-                t = m.get("item_type", "") or "(missing)"
-                cov = coverage.setdefault(t, {"total": 0, "with_fulltext": 0, "pdf": 0, "html": 0})
-                cov["total"] += 1
-                if m.get("has_fulltext"):
-                    cov["with_fulltext"] += 1
-                    src = (m.get("fulltext_source") or "").lower()
-                    if src == "pdf":
-                        cov["pdf"] += 1
-                    elif src == "html":
-                        cov["html"] += 1
-            print("Fulltext coverage (by type):")
-            for t, cov in coverage.items():
-                print(f"  {t}: {cov['with_fulltext']}/{cov['total']} (pdf:{cov['pdf']}, html:{cov['html']})")
-            titles = [(m or {}).get("title", "") for m in metas]
-            ct_titles = Counter(t for t in titles if t)
-            common = ct_titles.most_common(10)
-            if common:
-                print("Common titles:")
-                for t, c in common:
-                    print(f"  {t[:80]}{'...' if len(t) > 80 else ''}: {c}")
-        else:
-            include = ["metadatas"]
-            if args.show_documents:
-                include.append("documents")
-            data = col.get(limit=args.limit, include=include)
-            print("=== Semantic DB Inspection ===")
-            print(f"Total documents: {client.get_collection_info().get('count', 0)}")
-            print(f"Showing up to: {args.limit}")
-            shown = 0
-            for i, meta in enumerate(data.get("metadatas", [])):
-                meta = meta or {}
-                title = meta.get("title", "")
-                creators = meta.get("creators", "")
-                if args.filter_text:
-                    needle = args.filter_text.lower()
-                    if needle not in (title or "").lower() and needle not in (creators or "").lower():
-                        continue
-                print(f"- {title} | {creators}")
-                if args.show_documents:
-                    doc = (data.get("documents", [""])[i] or "").strip()
-                    snippet = doc[:200].replace("\n", " ") + ("..." if len(doc) > 200 else "")
-                    if snippet:
-                        print(f"  doc: {snippet}")
-                shown += 1
-                if shown >= args.limit:
-                    break
-            if shown == 0:
-                print("No records matched your filter.")
+        inspect_index(
+            create_semantic_search(str(config_path)),
+            stats=args.stats,
+            limit=args.limit,
+            filter_text=args.filter_text,
+            show_documents=args.show_documents,
+        )
     else:
         print(f"Unknown 'db' subcommand: {args.subcommand}", file=sys.stderr)
         sys.exit(1)
