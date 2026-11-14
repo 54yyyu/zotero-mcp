@@ -153,6 +153,5 @@ def test_an_item_whose_passages_were_dropped_is_written_again_by_the_next_update
     assert stats["passages_rekeyed"]["dropped_items"] == 1
     assert not any(i.startswith("ITEM0001#") for i in _all_ids(search))
     assert search.chroma_client.embedded, "the dropped passages are embedded again, not skipped as unchanged"
-    # One file is indexed per item: the largest of the first category (the first of equals).
-    assert "PDFAAAAA" in _ids(search) and "PDFBBBBB" not in _ids(search)
+    assert {"PDFAAAAA", "PDFBBBBB"} <= _ids(search)
     assert "title" not in _meta(search, "ITEM0001"), "the item is written in the new shape"

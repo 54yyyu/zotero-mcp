@@ -280,28 +280,30 @@ def test_get_items_from_api_without_fulltext_leaves_data_untouched(monkeypatch):
         assert "fulltext" not in it["data"]
 
 
-def test_get_items_from_api_with_fulltext_populates_data(monkeypatch):
+def test_get_items_from_api_with_fulltext_reads_each_selected_attachment(monkeypatch):
     zot = FakeZoteroClient()
     zot.load_scenario(
         [_paper("A"), _paper("B")],
         fulltext={"PA": {"content": "Abody"}, "PB": {"content": "Bbody"}},
-        children={"A": [_pdf("PA")], "B": [_pdf("PB")]},
+        children={"A": [_pdf("PA", parent="A")], "B": [_pdf("PB", parent="B")]},
     )
     search = _build_search(monkeypatch, zot, FakeChromaClient())
     items = search._get_items_from_api(include_fulltext=True)
     by_key = {it["key"]: it for it in items}
-    assert by_key["A"]["data"]["fulltext"] == "Abody"
-    assert by_key["A"]["data"]["fulltextSource"] == "web-api:attachment:PA"
-    assert by_key["B"]["data"]["fulltext"] == "Bbody"
+    # The text is the attachment's own unit, not a field of the item (#826).
+    assert "fulltext" not in by_key["A"]["data"]
+    [unit] = by_key["A"]["_api_attachments"]
+    assert (unit["key"], unit["text"], unit["owner_key"]) == ("PA", "Abody", "A")
+    assert by_key["B"]["_api_attachments"][0]["text"] == "Bbody"
 
 
-def test_get_items_from_api_with_fulltext_marks_misses_as_attempted(monkeypatch):
+def test_get_items_from_api_with_fulltext_leaves_an_item_without_text_alone(monkeypatch):
     zot = FakeZoteroClient()
-    zot.load_scenario([_paper("A")], fulltext={})  # no fulltext for A
+    zot.load_scenario([_paper("A")], fulltext={}, children={"A": [_pdf("PA", parent="A")]})
     search = _build_search(monkeypatch, zot, FakeChromaClient())
     items = search._get_items_from_api(include_fulltext=True)
-    assert items[0]["data"].get("fulltext", "") == ""
-    assert items[0]["data"]["fulltext_attempted"] is True
+    assert [c for c in zot.calls if c[0] == "fulltext_item"] == [("fulltext_item", "PA")]
+    assert "_api_attachments" not in items[0]
 
 
 def test_get_items_from_api_filters_out_attachments_notes_and_annotations(monkeypatch):
@@ -604,41 +606,57 @@ class LegacyChroma(FakeChromaClient):
         return None
 
 
-def _planned_bib(monkeypatch, written):
+def _planned_bib(monkeypatch, selected, written):
     search = _build_search(monkeypatch, FakeZoteroClient(), LegacyChroma())
     item = _paper("A")
+    if selected:
+        item["_api_selected"] = selected
     if written:
-        item["data"]["fulltext"] = "text"
-        item["data"]["fulltextSource"] = f"web-api:attachment:{written}"
-        item["data"]["fulltextAttachment"] = {"file_stamp": "api-version:1"}
+        item["_api_attachments"] = [
+            semantic_search._attachment_unit(key, "text", file_stamp="api-version:1") for key in written
+        ]
     units = search._plan_units([item], force_rebuild=False)
     bib = next(u for u in units if u["key"] == "A")
-    return bib, units, search._legacy_settle
+    return bib, search._legacy_settle
 
 
-def test_a_changed_legacy_item_whose_file_gave_text_loses_its_passages_once_it_is_written(monkeypatch):
-    bib, units, settle = _planned_bib(monkeypatch, written="PA")
+def test_a_changed_legacy_item_whose_file_gave_no_text_keeps_its_passages(monkeypatch):
+    bib, settle = _planned_bib(monkeypatch, selected=["PA"], written=[])
 
     assert bib["legacy_rewrite"] is True
-    assert [u["key"] for u in units] == ["A", "PA"]
     assert settle["A"]["wanted"] == ["PA"], "its passages go only once PA's own records are stored"
 
 
-def test_a_changed_legacy_item_without_text_loses_its_passages(monkeypatch):
-    bib, units, settle = _planned_bib(monkeypatch, written=None)
+def test_a_changed_legacy_item_whose_files_are_all_written_loses_its_passages(monkeypatch):
+    bib, settle = _planned_bib(monkeypatch, selected=["PA"], written=["PA"])
 
     assert bib["legacy_rewrite"] is True
-    assert [u["key"] for u in units] == ["A"]
+    assert settle["A"]["wanted"] == ["PA"]
+
+
+def test_a_changed_legacy_item_without_selected_files_loses_its_passages(monkeypatch):
+    _bib, settle = _planned_bib(monkeypatch, selected=[], written=[])
+
     assert settle["A"]["wanted"] == []
+
+
+@pytest.mark.parametrize("flag,automatic,indexed", [(False, True, False), (False, False, True), (True, True, True)])
+def test_the_api_path_indexes_standalone_files_after_one_explicit_run(monkeypatch, flag, automatic, indexed):
+    zot = FakeZoteroClient()
+    zot.load_scenario([_paper("A"), _pdf("SA")], fulltext={"SA": {"content": "Lone body"}})
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    search._automatic_run = automatic
+    search.update_config["standalone_files_indexed"] = flag
+
+    items = search._get_items_from_api(include_fulltext=True)
+
+    assert any(item.get("key") == "SA" for item in items) is indexed
+    assert search._standalone_held == (0 if indexed else 1)
+    assert search._standalone_covered is (not automatic)
 
 
 class PassagesOnlyChroma(FakeChromaClient):
     """PA has both its passages and no attachment record: what the migration leaves."""
-
-    def get_document_metadata(self, doc_id):
-        if doc_id in ("PA", "PA#0"):
-            return {"item_key": "PA", "group_id": 0, "chunk_index": 0, "n_chunks": 2}
-        return None
 
     def get_metadatas(self, ids):
         return {"PA#0": {"item_key": "PA", "group_id": 0, "chunk_index": 0, "n_chunks": 2}} if "PA#0" in ids else {}
@@ -657,12 +675,13 @@ def test_the_api_path_holds_or_fills_the_record_of_migrated_passages(monkeypatch
     search._automatic_run = automatic
     search._scan_gaps = {}
 
-    items = search._get_items_from_api(include_fulltext=True)
-    units = search._plan_units(items, force_rebuild=False)
+    item = _paper("A")
+    search._api_attachment_units([item], force_rebuild=False)
 
     if automatic:
-        assert [u["key"] for u in units] == ["A"], "the passages are paid for: nothing is embedded for them"
+        assert "_api_attachments" not in item, "the passages are paid for: nothing is fetched or embedded"
         assert search._records_held == 1
+        assert [c for c in zot.calls if c[0] == "fulltext_item"] == []
     else:
-        [unit] = [u for u in units if u["key"] == "PA"]
+        [unit] = item["_api_attachments"]
         assert unit["_index_levels"] == {"articles"}, "only the attachment record is written"

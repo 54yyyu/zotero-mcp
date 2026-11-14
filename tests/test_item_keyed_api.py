@@ -1,8 +1,10 @@
 """The API paths write the item-keyed shape (#826).
 
-Over the Zotero API (web, or the local API) the file Zotero has text for (the
-first PDF child that has any, as before #826) becomes an attachment record
-under its own key. Text comes from the attachment's fulltext endpoint.
+Over the Zotero API (web, or the local API) every file the attachment
+priority selects becomes an attachment record under its own key, standalone
+files included, in full scans and in incremental runs. Text comes from the
+attachment's fulltext endpoint, and only for an attachment whose record is not
+already current.
 
 A real ChromaDB index in a temp directory, an embedding function that records
 what it embeds, and a fake Zotero API client that counts its calls. HOME,
@@ -238,7 +240,7 @@ def library(env, *rows, **texts):
 # --- selection ----------------------------------------------------------------
 
 
-def test_only_the_first_pdf_with_text_is_an_attachment_record_and_the_snapshot_is_skipped(env):
+def test_every_selected_pdf_is_an_attachment_record_and_the_snapshot_is_skipped(env):
     library(
         env,
         paper("ITEM0001"),
@@ -252,49 +254,117 @@ def test_only_the_first_pdf_with_text_is_an_attachment_record_and_the_snapshot_i
 
     search, _stats = env.update()
 
-    assert records(search) == {"ITEM0001", "PDFAAAAA"}
-    assert env.zot.fulltext_keys() == ["PDFAAAAA"]
+    assert records(search) == {"ITEM0001", "PDFAAAAA", "PDFBBBBB"}
+    assert sorted(env.zot.fulltext_keys()) == ["PDFAAAAA", "PDFBBBBB"]
     assert meta(search, "PDFAAAAA")["file_stamp"] == "api:md5PDFAAAAA:100"
     assert "file_stamp" not in meta(search, "ITEM0001")
 
 
-def test_a_pdf_without_text_is_passed_over_for_the_next_one(env):
+def test_an_automatic_run_leaves_an_items_other_files_for_the_first_explicit_run(env):
+    """Before #826 one file per item was indexed: the others are new across the library."""
     library(
         env,
         paper("ITEM0001"),
         attachment("PDFAAAAA", "ITEM0001"),
         attachment("PDFBBBBB", "ITEM0001"),
+        PDFAAAAA=TEXT,
         PDFBBBBB=TEXT,
     )
 
-    search, _stats = env.update()
-
-    assert records(search) == {"ITEM0001", "PDFBBBBB"}
-    assert env.zot.fulltext_keys() == ["PDFAAAAA", "PDFBBBBB"]
-
-
-def test_an_item_whose_first_pdf_with_text_changes_keeps_one_attachment_record(env):
-    library(
-        env,
-        paper("ITEM0001"),
-        attachment("PDFAAAAA", "ITEM0001"),
-        attachment("PDFBBBBB", "ITEM0001"),
-        PDFBBBBB=TEXT,
-    )
-    search, _stats = env.update()
-    assert records(search) == {"ITEM0001", "PDFBBBBB"}
-    # Zotero extracts the first file's text: it now outranks the second.
-    env.zot.texts["PDFAAAAA"] = "First file " + TEXT
-    env.zot.put(paper("ITEM0001"), version=6)
-
-    search, stats = env.update()
+    search, stats = env.update(automatic=True)
 
     assert records(search) == {"ITEM0001", "PDFAAAAA"}
-    assert not any(i.startswith("PDFBBBBB") for i in all_ids(search))
-    assert stats.get("deleted_items") == 1
+    assert env.zot.fulltext_keys() == ["PDFAAAAA"]
+    assert stats["extra_files_held"] == 1
+
+    env.forget_sync_version()
+    search, stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA", "PDFBBBBB"}
+    assert env.zot.fulltext_keys() == ["PDFBBBBB"]
+    assert "extra_files_held" not in stats
+
+
+def test_a_snapshot_is_indexed_when_the_priority_prefers_html(env):
+    env.set_priority(["html", "pdf", "other"])
+    library(
+        env,
+        paper("ITEM0001"),
+        attachment("PDFAAAAA", "ITEM0001"),
+        attachment("SNAPSHOT", "ITEM0001", ctype="text/html"),
+        PDFAAAAA=TEXT,
+        SNAPSHOT=TEXT,
+    )
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "SNAPSHOT"}
+
+
+def test_an_attachment_without_text_gets_no_record_and_is_asked_again_by_a_full_scan(env):
+    """Zotero extracts text after the file arrives, with the stamp unchanged: no failure marker."""
+    library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"))
+    search, _stats = env.update()
+    assert env.zot.fulltext_keys() == ["PDFAAAAA"]
+    assert records(search) == {"ITEM0001"}
+    env.zot.texts["PDFAAAAA"] = TEXT
+    env.forget_sync_version()
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA"}
+
+
+# --- standalone attachments -------------------------------------------------------
+
+
+def test_a_standalone_pdf_is_indexed_in_a_full_scan(env):
+    library(env, paper("ITEM0001"), attachment("LONEPDF1"), LONEPDF1=TEXT)
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "LONEPDF1"}
+    assert meta(search, "LONEPDF1")["file_stamp"] == "api:md5LONEPDF1:100"
+
+
+def test_a_standalone_pdf_is_indexed_by_an_incremental_run(env):
+    library(env, paper("ITEM0001"))
+    env.update()
+    env.zot.put(attachment("LONEPDF1"), version=6)
+    env.zot.texts["LONEPDF1"] = TEXT
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "LONEPDF1"}
+    assert env.zot.fulltext_keys() == ["LONEPDF1"]
+
+
+def test_a_full_scan_keeps_standalone_records_and_deletes_a_trashed_one(env):
+    library(env, paper("ITEM0001"), attachment("LONEPDF1"), attachment("LONEPDF2"), LONEPDF1=TEXT, LONEPDF2=TEXT)
+    env.update()
+    env.zot.rows["LONEPDF2"]["data"]["deleted"] = 1
+    env.forget_sync_version()
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "LONEPDF1"}
+    assert not any(i.startswith("LONEPDF2") for i in all_ids(search))
 
 
 # --- incremental runs ---------------------------------------------------------------
+
+
+def test_a_new_pdf_on_an_existing_item_embeds_only_that_file(env):
+    library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
+    env.update()
+    env.zot.put(attachment("PDFBBBBB", "ITEM0001"), version=6)
+    env.zot.put(paper("ITEM0001"), version=6)
+    env.zot.texts["PDFBBBBB"] = TEXT + " extra"
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA", "PDFBBBBB"}
+    assert env.zot.fulltext_keys() == ["PDFBBBBB"]
 
 
 def test_a_replaced_pdf_is_embedded_again(env):
@@ -310,6 +380,21 @@ def test_a_replaced_pdf_is_embedded_again(env):
     assert env.zot.fulltext_keys() == ["PDFAAAAA"]
     stored = search.chroma_client.client.get_collection(NAME).get(ids=["PDFAAAAA"])["documents"][0]
     assert stored.startswith("Replacement text")
+
+
+def test_an_outranking_pdf_removes_the_snapshot_records(env):
+    library(env, paper("ITEM0001"), attachment("SNAPSHOT", "ITEM0001", ctype="text/html"), SNAPSHOT=TEXT)
+    search, _stats = env.update()
+    assert records(search) == {"ITEM0001", "SNAPSHOT"}
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=6)
+    env.zot.texts["PDFAAAAA"] = TEXT
+    env.forget_sync_version()
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA"}
+    assert not any(i.startswith("SNAPSHOT") for i in all_ids(search))
+
 
 
 def test_an_attachment_moved_between_parents_writes_nothing_when_the_selection_holds(env):
@@ -333,13 +418,31 @@ def test_an_attachment_moved_between_parents_writes_nothing_when_the_selection_h
     assert env.zot.fulltext_keys() == []
 
 
+def test_unchanged_files_cost_no_fulltext_requests(env):
+    library(
+        env,
+        paper("ITEM0001"),
+        attachment("PDFAAAAA", "ITEM0001"),
+        attachment("LONEPDF1"),
+        PDFAAAAA=TEXT,
+        LONEPDF1=TEXT,
+    )
+    env.update()
+    env.forget_sync_version()
+
+    search, _stats = env.update()
+
+    assert env.zot.fulltext_keys() == []
+    assert search.chroma_client.embedded == []
+
+
 # --- legacy records ---------------------------------------------------------------------
 
 
-def _legacy_record(search, key, date=DATE, has_fulltext=True):
+def _legacy_record(search, key, date=DATE):
     search.chroma_client.upsert_documents(
         ["Paper with its text"],
-        [{"item_key": key, "title": "Paper", "group_id": 0, "date_modified": date, "has_fulltext": has_fulltext}],
+        [{"item_key": key, "title": "Paper", "group_id": 0, "date_modified": date, "has_fulltext": True}],
         [key],
     )
 
@@ -384,12 +487,70 @@ class LocalFiles:
         pass
 
 
+def test_a_file_on_this_machine_gets_the_local_stamp(env, monkeypatch, tmp_path):
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"pdf bytes")
+    stat = pdf.stat()
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+    monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda *a, **kw: LocalFiles({"PDFAAAAA": pdf}))
+    library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
+
+    search, _stats = env.update()
+
+    stored = meta(search, "PDFAAAAA")
+    assert stored["file_stamp"] == f"{stat.st_mtime_ns}:{stat.st_size}"
+
+
+def test_a_replaced_local_file_is_embedded_again(env, monkeypatch, tmp_path):
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"pdf bytes")
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+    monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda *a, **kw: LocalFiles({"PDFAAAAA": pdf}))
+    library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
+    env.update()
+    pdf.write_bytes(b"replacement pdf bytes, longer")
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=6)
+    env.zot.put(paper("ITEM0001"), version=6)
+
+    search, _stats = env.update()
+
+    assert env.zot.fulltext_keys() == ["PDFAAAAA"]
+    assert meta(search, "PDFAAAAA")["file_stamp"].endswith(f":{pdf.stat().st_size}")
+
+
 def test_web_mode_uses_the_api_stamp(env):
     library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001", md5="abc", mtime="7"), PDFAAAAA=TEXT)
 
     search, _stats = env.update()
 
     assert meta(search, "PDFAAAAA")["file_stamp"] == "api:abc:7"
+
+
+def test_a_stamp_of_the_other_kind_is_not_a_change_by_itself(env, monkeypatch, tmp_path):
+    pdf = tmp_path / "a.pdf"
+    pdf.write_bytes(b"pdf bytes")
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+    monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda *a, **kw: LocalFiles({"PDFAAAAA": pdf}))
+    library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
+    search, _stats = env.update()
+    local_stamp = meta(search, "PDFAAAAA")["file_stamp"]
+    # The same index seen from a machine without the file: an API stamp.
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: False)
+    env.forget_sync_version()
+
+    search, _stats = env.update()
+
+    assert env.zot.fulltext_keys() == []
+    assert meta(search, "PDFAAAAA")["file_stamp"] == local_stamp
+
+    # Its own dateModified moved: now it is a change.
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001", date="2024-05-05T00:00:00Z"), version=6)
+    env.zot.put(paper("ITEM0001"), version=6)
+
+    search, _stats = env.update()
+
+    assert env.zot.fulltext_keys() == ["PDFAAAAA"]
+    assert meta(search, "PDFAAAAA")["file_stamp"] == "api:md5PDFAAAAA:100"
 
 
 def test_unit_currency_across_stamp_kinds():
@@ -424,6 +585,48 @@ def _fail_once_then_recover(env, monkeypatch, name, only=None):
 
     monkeypatch.setattr(env.zot, name, flaky)
     return broken
+
+
+def test_a_failed_fulltext_request_holds_back_the_sync_version_and_is_retried(env, monkeypatch):
+    library(env, paper("ITEM0001"))
+    env.update()
+    assert _watermark(env) == 5
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=4)
+    env.zot.put(paper("ITEM0001"), version=6)
+    env.zot.texts["PDFAAAAA"] = TEXT
+    broken = _fail_once_then_recover(env, monkeypatch, "fulltext_item")
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001"}
+    assert _watermark(env) == 5
+
+    broken["on"] = False
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA"}
+    assert _watermark(env) == 6
+
+
+def test_a_failed_children_request_holds_back_the_sync_version_and_is_retried(env, monkeypatch):
+    library(env, paper("ITEM0001"))
+    env.update()
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001"), version=4)
+    env.zot.put(paper("ITEM0001"), version=6)
+    env.zot.texts["PDFAAAAA"] = TEXT
+    broken = _fail_once_then_recover(env, monkeypatch, "children")
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001"}
+    assert _watermark(env) == 5
+
+    broken["on"] = False
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "PDFAAAAA"}
+    assert _watermark(env) == 6
+
 
 
 def test_zoteros_no_text_answer_does_not_hold_back_the_sync_version(env):

@@ -123,41 +123,22 @@ def test_an_empty_cache_is_no_target(tmp_path):
         reader.close()
 
 
-
-def test_a_text_cache_is_used_only_when_no_file_of_the_item_can_be_read(tmp_path):
+def test_a_standalone_file_missing_on_disk_is_indexed_from_its_cache_but_an_epub_is_not(tmp_path):
     reader, storage = _reader(
         tmp_path,
         [
-            ("PDFMISSG", "storage:gone.pdf", "application/pdf", True),
-            ("PDFSMALL", "storage:small.pdf", "application/pdf", True),
+            ("LONEPDF1", "storage:a.pdf", "application/pdf", False),
+            ("LONEEPUB", "storage:b.epub", "application/epub+zip", False),
         ],
     )
-    _cache(storage, "PDFMISSG", "a long text Zotero extracted " * 100)
-    (storage / "PDFSMALL").mkdir(parents=True)
-    (storage / "PDFSMALL" / "small.pdf").write_bytes(b"tiny")
+    _cache(storage, "LONEPDF1", "lone text")
+    _cache(storage, "LONEEPUB", "book text")
     try:
-        targets = reader._resolve_extraction_targets(1)
+        rows = {row[0]: row for row in reader._iter_standalone_attachments()}
+        pdf = reader._resolve_standalone_target(rows["LONEPDF1"][0], rows["LONEPDF1"][1], rows["LONEPDF1"][2])
+        epub = reader._resolve_standalone_target(rows["LONEEPUB"][0], rows["LONEEPUB"][1], rows["LONEEPUB"][2])
+
+        assert pdf is not None and pdf.ft_cache
+        assert epub is None
     finally:
         reader.close()
-
-    assert [t.key for t in targets] == ["PDFSMALL"]
-    assert not targets[0].ft_cache
-
-
-def test_of_two_files_of_one_size_the_first_in_the_databases_order_is_chosen(tmp_path):
-    reader, storage = _reader(
-        tmp_path,
-        [
-            ("PDFZZZZZ", "storage:z.pdf", "application/pdf", True),
-            ("PDFAAAAA", "storage:a.pdf", "application/pdf", True),
-        ],
-    )
-    for key, name in (("PDFZZZZZ", "z.pdf"), ("PDFAAAAA", "a.pdf")):
-        (storage / key).mkdir(parents=True)
-        (storage / key / name).write_bytes(b"same size")
-    try:
-        targets = reader._resolve_extraction_targets(1)
-    finally:
-        reader.close()
-
-    assert max(targets, key=lambda t: t.size).key == "PDFZZZZZ", "0.17.1 took the first of equals, not the lowest key"

@@ -564,6 +564,25 @@ def test_api_planning_judges_an_item_by_its_bare_record_whatever_the_storage_ord
     assert [u["key"] for u in units if u["key"] == "AAA"] == []
 
 
+def test_an_explicit_batch_run_counts_as_covering_standalone_files(env):
+    """Else automatic runs would hold standalone files for good and repeat the hint (fix round 2)."""
+    search = env.build(FakeZotero({"AAA": LONG}), chunking=True)
+
+    search.update_database()
+
+    saved = json.loads(Path(env.config).read_text())["semantic_search"]["update_config"]
+    assert saved["standalone_files_indexed"] is True
+
+
+def test_an_automatic_batch_run_does_not(env):
+    search = env.build(FakeZotero({"AAA": LONG}), chunking=True)
+
+    search.update_database(automatic=True)
+
+    saved = json.loads(Path(env.config).read_text())["semantic_search"].get("update_config", {})
+    assert not saved.get("standalone_files_indexed")
+
+
 def test_db_status_no_longer_distinguishes_requested_from_effective(env):
     status = env.build(FakeZotero({"AAA": LONG}), chunking=True).get_database_status()
 

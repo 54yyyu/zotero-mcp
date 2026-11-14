@@ -513,9 +513,15 @@ def test_an_automatic_update_of_a_migrated_0160_index_embeds_only_the_missing_ar
     assert StrictEmbedding.seen == [] and library.snapshot() == after
 
 
+#: Every file of the chosen kind is indexed (#494): the smaller PDF that 0.16
+#: never indexed is new content, with its record and its passages.
+EXTRA_FILES = {"ATTTWOA2": {"ATTTWOA2#0", "ATTTWOA2#1"}}
+
+
 @pytest.mark.parametrize("fresh_migration", [True, False], ids=["after-migrate-index", "straight-from-0160"])
 def test_an_explicit_update_writes_only_the_missing_records_not_the_passages(fresh_migration, tmp_path, monkeypatch):
-    """4 article records and the 3 attachment records (one per file): 7 embeddings, no passage again.
+    """4 article records, the 3 attachment records of the files 0.16 indexed, and the
+    new smaller PDF with its passages: 10 embeddings, no old passage again.
 
     Straight from the 0.16 index, the update splits and re-keys first, which embeds nothing.
     """
@@ -529,15 +535,17 @@ def test_an_explicit_update_writes_only_the_missing_records_not_the_passages(fre
     assert stats["errors"] == 0, stats
     after = library.snapshot()
     new = _new_records(before, after)
-    assert new[ARTICLES] == set(fake_zotero.ITEM_KEYS) | set(fake_zotero.LARGEST.values())
+    extra_passages = set().union(*EXTRA_FILES.values())
+    assert new[ARTICLES] == set(fake_zotero.ITEM_KEYS) | set(fake_zotero.LARGEST.values()) | set(EXTRA_FILES)
     if fresh_migration:
-        assert new[PASSAGES] == set() and after[PASSAGES] == before[PASSAGES]
+        assert new[PASSAGES] == extra_passages
+        assert all(after[PASSAGES][k] == v for k, v in before[PASSAGES].items())
     else:
         # moved by the re-key, vectors untouched
-        assert set(after[PASSAGES]) == set(REKEYED.values())
+        assert set(after[PASSAGES]) == set(REKEYED.values()) | extra_passages
         assert all(after[PASSAGES][new_id][1] == before[ARTICLES][old_id][1] for old_id, new_id in REKEYED.items())
-    assert len(StrictEmbedding.seen) == 7  # 4 + 3, never a passage
-    attachments = {k: after[ARTICLES][k][0] for k in fake_zotero.LARGEST.values()}
+    assert len(StrictEmbedding.seen) == 7 + len(EXTRA_FILES) + len(extra_passages)  # never an old passage
+    attachments = {k: after[ARTICLES][k][0] for k in [*fake_zotero.LARGEST.values(), *EXTRA_FILES]}
     assert all(
         set(m) == {"item_key", "group_id", "date_modified", "file_stamp", "parent_hint"} for m in attachments.values()
     )

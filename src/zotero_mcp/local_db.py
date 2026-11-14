@@ -1607,13 +1607,12 @@ class LocalZoteroReader:
         )
 
     def _resolve_extraction_targets(self, item_id: int) -> list[ExtractionTarget]:
-        """The attachments of an item that can be indexed, by configured priority.
+        """Every attachment of an item to index, by configured priority.
 
         All readable, non-trashed files in the first priority category that
-        has any, in the database's order (PDFs first, then by item id; the scan
-        indexes the largest, the first of equals). An attachment whose file cannot be
+        has any, in the database's order (PDFs first, then by item id). An attachment whose file cannot be
         read but has its own ``.zotero-ft-cache`` counts too, with that cache
-        as its text, but only when no file of the item can be read. Same cheap, parent-process-only resolution as
+        as its text. Same cheap, parent-process-only resolution as
         :meth:`_resolve_extraction_target`.
         """
         candidates = []
@@ -1621,15 +1620,55 @@ class LocalZoteroReader:
             target = self._build_target(key, path, ctype, unreadable_ok=True)
             if target is not None:
                 candidates.append((target.category, target.size, target))
-        # A text cache stands in only when no file can be read, as before #826.
-        if any(not c[2].ft_cache for c in candidates):
-            candidates = [c for c in candidates if not c[2].ft_cache]
         # In the order Zotero's database lists them, as before #826: of two
         # files of one size the first is the one ``max`` picks.
         order = {c[2].key: n for n, c in enumerate(candidates)}
         return select_by_priority(
             candidates, self.attachment_priority, sort_key=lambda t: order[t.key]
         )
+
+    def _resolve_standalone_target(
+        self, key: str, path: str | None, ctype: str | None
+    ) -> ExtractionTarget | None:
+        """Target for a standalone attachment, or None when its file is
+        missing or in no readable category."""
+        return self._build_target(key, path, ctype)
+
+    def _iter_standalone_attachments(self, library_ids: list[int] | None = None):
+        """Yield ``(attachment_key, path, content_type, date_modified,
+        library_id)`` for attachments with no parent item.
+
+        Trashed attachments are excluded (the attachment's own deletedItems
+        row, as in :meth:`_iter_parent_attachments`). ``library_ids`` limits
+        the scan to those local libraries; None means all.
+        """
+        conn = self._get_connection()
+        query = (
+            """
+            SELECT att.key as attachmentKey, ia.path as path,
+                   ia.contentType as contentType,
+                   att.dateModified as dateModified,
+                   att.libraryID as libraryID
+            FROM itemAttachments ia
+            JOIN items att ON att.itemID = ia.itemID
+            LEFT JOIN deletedItems d ON d.itemID = ia.itemID
+            WHERE ia.parentItemID IS NULL AND d.itemID IS NULL
+            """
+        )
+        params: list[Any] = []
+        if library_ids is not None:
+            placeholders = ",".join("?" * len(library_ids))
+            query += f" AND att.libraryID IN ({placeholders})"
+            params.extend(library_ids)
+        query += " ORDER BY att.libraryID, att.key"
+        for row in conn.execute(query, params):
+            yield (
+                row["attachmentKey"],
+                row["path"],
+                row["contentType"],
+                row["dateModified"],
+                row["libraryID"],
+            )
 
     def _resolve_extraction_target(self, item_id: int) -> tuple[Path, str] | None:
         """Pick the attachment to extract for an item, by configured priority.

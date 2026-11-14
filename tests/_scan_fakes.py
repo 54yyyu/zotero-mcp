@@ -26,21 +26,25 @@ def target(key: str, stamp: str = "1:100", category: str = "pdf") -> ExtractionT
 
 
 class ScanReader:
-    """Files per item and their text.
+    """Files per item, their text, and standalone files.
 
     ``targets``: item_id -> files the priority selects for it.
     ``texts``: attachment key -> ``(text, source)``, or None for a file
     that yields nothing. A missing key yields ``("extracted text", "pdf")``.
+    ``standalone``: ``(key, path, content_type, date_modified, library_id)``
+    rows, each resolving to ``standalone_targets[key]``.
     """
 
     attachment_priority = DEFAULT_ATTACHMENT_PRIORITY
 
-    def __init__(self, targets=None, texts=None, dates=None, rows=None):
+    def __init__(self, targets=None, texts=None, standalone=(), standalone_targets=None, dates=None, rows=None):
         self.targets = dict(targets or {})
         # item_id -> the item's attachment rows in Zotero's database as [key, path, content type],
         # for files that are not on disk (so have no target); by default the targets'.
         self.rows = dict(rows or {})
         self.texts = dict(texts or {})
+        self.standalone = list(standalone)
+        self.standalone_targets = dict(standalone_targets or {})
         self.dates = dict(dates or {})
         self.extracted: list[str] = []
 
@@ -59,6 +63,12 @@ class ScanReader:
 
     def _resolve_extraction_targets(self, item_id):
         return list(self.targets.get(item_id, []))
+
+    def _iter_standalone_attachments(self, library_ids=None):
+        return iter(self.standalone)
+
+    def _resolve_standalone_target(self, key, path, ctype):
+        return self.standalone_targets.get(key)
 
     def get_collection_item_keys(self, collection_keys):
         return set()

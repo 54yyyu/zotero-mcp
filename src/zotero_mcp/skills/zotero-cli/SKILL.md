@@ -81,7 +81,7 @@ The same section, or a "Legacy records" note, appears when old records still
 store an item's passages under the item's key. They keep working and
 `zotero-mcp migrate-index` re-keys them without embedding anything, but treat
 it the same way: report it once and ask first. Semantic hits are parent items;
-a hit on a file shows `Attachment:` in its Location line. Filters
+a hit on one of several files shows `Attachment:` in its Location line. Filters
 on `title`, `doi`, `tags`, `item_type` and the like read current Zotero data.
 
 Every search covers one library — the active one. When you don't know which
