@@ -1670,14 +1670,14 @@ def create_annotations(
     from the position that would be stored, read back through the inverse of
     the writer's transform, never from the coordinates in the spec.
 
-    ``existing`` makes a re-run safe. An entry whose page and first 40
-    characters of comment (of the highlighted text when there is no comment)
-    match an annotation already on the attachment is left alone with
-    ``existing="skip"`` (the result says ``skipped`` and names the key that is
-    there), or with ``"replace"`` is created and the old one permanently
-    deleted (``replaced`` lists the keys). An entry with neither comment nor
-    text cannot be told apart and is always created. A dry run reports
-    what it would do.
+    ``existing`` makes a re-run safe. An entry whose page, type and first 40
+    characters of comment (of the highlighted text when there is no comment;
+    of its box when there is neither) match an annotation already on the
+    attachment is left alone with ``existing="skip"`` (the result says
+    ``skipped`` and names the key that is there), or with ``"replace"`` is
+    created and only then the old one permanently deleted (``replaced``
+    names it). See ``_match_existing`` for the ambiguous case. A dry run
+    reports what it would do.
 
     Returns:
         One dict per spec, in order: ``index`` (1-based), ``page``, ``type``,
@@ -1744,29 +1744,15 @@ def create_annotations(
                     result.update(details)
                     if payload is not None:
                         pending.append((result, payload))
+                if existing and pending:
+                    error = _match_existing(attachment_key, pending, existing)
+                    if error:
+                        return fail_all(error)
                 if render_dir and file_type == "pdf" and pending:
                     _render_planned(source, pending, attachment_key, render_dir)
             finally:
                 if file_type == "pdf":
                     source.close()
-
-        replaced: dict[int, list[str]] = {}
-        if existing and pending:
-            try:
-                on_file = _existing_annotations(attachment_key)
-            except Exception as e:
-                return fail_all(f"Error: could not read the annotations already on this attachment: "
-                                f"{_helpers.format_zotero_error(e)}")
-            for result, payload in list(pending):
-                keys = on_file.get(_identity(payload))
-                if not keys:
-                    continue
-                if existing == "skip":
-                    result.update(ok=True, skipped=True, annotation_key=keys[0])
-                    pending.remove((result, payload))
-                else:
-                    replaced[id(result)] = keys
-                    result["replaced"] = keys
 
         if dry_run:
             for result, _payload in pending:
@@ -1784,11 +1770,17 @@ def create_annotations(
                 if key:
                     result.update(ok=True, annotation_key=key)
                     # The new annotation is in; only now is the old one removed.
-                    for old_key in replaced.get(id(result), []):
+                    for old_key in result.get("replaced", []):
                         try:
-                            write_client.delete_item(write_client.item(old_key))
+                            old = write_client.item(old_key)
+                            old_data = old.get("data", {})
+                            if (old_data.get("itemType") != "annotation"
+                                    or old_data.get("parentItem") != attachment_key):
+                                raise LookupError("it is no longer an annotation on this attachment")
+                            write_client.delete_item(old)
                         except Exception as e:
-                            result["warning"] = f"created, but could not delete the old {old_key}: {e}"
+                            result["warning"] = (f"created, but the old {old_key} was not deleted ({e}); "
+                                                 "delete it by hand")
                 else:
                     reason = failed.get(str(offset)) or failed or response
                     result["error"] = f"Failed to create annotation: {reason}"
@@ -1803,18 +1795,24 @@ def create_annotations(
         return results
 
 
-def _identity(data: dict) -> tuple[int, str] | None:
-    """(page index, first 40 characters of comment or text) of an annotation, or None.
+def _identity(data: dict) -> tuple | None:
+    """(page index, type, first 40 characters of comment or text) of an annotation.
 
-    ``data`` is a Zotero annotation's fields or a payload built for one. None
-    means there is nothing to tell it apart by.
+    A box or note with neither is told apart by its rects, rounded to whole
+    points. ``data`` is a Zotero annotation's fields or a payload built for
+    one. None means there is nothing to tell it apart by.
     """
     try:
-        page_index = json.loads(data.get("annotationPosition") or "")["pageIndex"]
+        position = json.loads(data.get("annotationPosition") or "")
+        page_index = position["pageIndex"]
     except (ValueError, KeyError, TypeError):
         return None
+    kind = data.get("annotationType")
     words = " ".join((data.get("annotationComment") or data.get("annotationText") or "").split())
-    return (page_index, words[:40]) if words else None
+    if words:
+        return page_index, kind, words[:40]
+    rects = position.get("rects") or []
+    return (page_index, kind, tuple(round(v) for rect in rects for v in rect)) if rects else None
 
 
 def _existing_annotations(attachment_key: str) -> dict[tuple[int, str], list[str]]:
@@ -1826,6 +1824,43 @@ def _existing_annotations(attachment_key: str) -> dict[tuple[int, str], list[str
         if identity:
             found.setdefault(identity, []).append(annotation["key"])
     return found
+
+
+def _match_existing(attachment_key: str, pending: list[tuple[dict, dict]],
+                    existing: str) -> str | None:
+    """Apply ``existing`` (see create_annotations) to ``pending`` in place.
+
+    Each annotation on file is matched to at most one entry. With "replace",
+    an entry whose identity matches more annotations on file than there are
+    entries with it is ambiguous: it fails and nothing is deleted for it.
+    Returns an error when the annotations on file cannot be read.
+    """
+    try:
+        on_file = _existing_annotations(attachment_key)
+    except Exception as e:
+        return ("Error: could not read the annotations already on this attachment, which "
+                f"--on-existing needs (is Zotero running?): {_helpers.format_zotero_error(e)}")
+    wanted: dict = {}
+    for _result, payload in pending:
+        wanted[_identity(payload)] = wanted.get(_identity(payload), 0) + 1
+    for result, payload in list(pending):
+        identity = _identity(payload)
+        keys = on_file.get(identity)
+        if not keys:
+            continue
+        if existing == "replace" and len(keys) > wanted[identity]:
+            pending.remove((result, payload))
+            result["error"] = (f"Error: {len(keys)} annotations on this page match this entry "
+                               f"({', '.join(keys)}), so which to replace is unclear; nothing was "
+                               "written for it. Delete the stale ones by hand, or reword the comment.")
+            continue
+        key = keys.pop(0)
+        if existing == "skip":
+            result.update(ok=True, skipped=True, annotation_key=key)
+            pending.remove((result, payload))
+        else:
+            result["replaced"] = [key]
+    return None
 
 
 def _render_planned(source, pending: list[tuple[dict, dict]], attachment_key: str,
