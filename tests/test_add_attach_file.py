@@ -34,10 +34,19 @@ def make_pdf(path, first_page_lines=(), metadata=None, filler=0):
 
 
 class TestDoiFromPdf:
-    def test_metadata_wins(self, tmp_path):
-        path = make_pdf(tmp_path / "a.pdf", ["see 10.9999/other.article.1 for details"],
-                        metadata={"subject": "doi:10.1016/j.cell.2020.01.001"})
+    def test_metadata_wins_when_page_1_agrees_or_is_silent(self, tmp_path):
+        meta = {"subject": "doi:10.1016/j.cell.2020.01.001"}
+        path = make_pdf(tmp_path / "a.pdf", ["https://doi.org/10.1016/j.cell.2020.01.001",
+                                             "see 10.9999/other.article.1 for details"], metadata=meta)
         assert doi_from_pdf(path) == ("10.1016/j.cell.2020.01.001", "metadata")
+        path = make_pdf(tmp_path / "a2.pdf", ["no identifiers printed"], metadata=meta)
+        assert doi_from_pdf(path) == ("10.1016/j.cell.2020.01.001", "metadata")
+
+    def test_metadata_that_page_1_contradicts_is_ambiguous(self, tmp_path):
+        path = make_pdf(tmp_path / "a3.pdf", ["https://doi.org/10.1016/j.cell.2020.02.002"],
+                        metadata={"subject": "doi:10.1016/j.cell.2020.01.001"})
+        doi, why = doi_from_pdf(path)
+        assert doi is None and why.startswith("ambiguous") and "02.002" in why
 
     def test_the_whole_first_page_is_read_not_its_first_3000_characters(self, tmp_path):
         path = make_pdf(tmp_path / "b.pdf", ["DOI: https://doi.org/10.1038/s41586-021-03819-2"], filler=70)
@@ -51,10 +60,15 @@ class TestDoiFromPdf:
         doi, why = doi_from_pdf(path)
         assert doi is None and why.startswith("ambiguous") and "02.002" in why
 
-    def test_the_article_named_most_often_wins(self, tmp_path):
+    def test_naming_one_article_more_often_is_still_ambiguous(self, tmp_path):
+        """A spread's neighbour can be named twice (header and footer) and this article once."""
         path = make_pdf(tmp_path / "d.pdf", ["10.1016/j.cell.2020.01.001", "10.1016/j.cell.2020.01.001",
                                              "10.1016/j.cell.2020.02.002"])
-        assert doi_from_pdf(path)[0] == "10.1016/j.cell.2020.01.001"
+        assert doi_from_pdf(path)[0] is None
+
+    def test_a_doi_wrapped_at_its_hyphen_is_read_whole(self, tmp_path):
+        path = make_pdf(tmp_path / "w.pdf", ["https://doi.org/10.1038/s41586-", "021-03819-2"])
+        assert doi_from_pdf(path) == ("10.1038/s41586-021-03819-2", "page 1")
 
     def test_no_doi(self, tmp_path):
         doi, why = doi_from_pdf(make_pdf(tmp_path / "e.pdf", ["nothing here"]))

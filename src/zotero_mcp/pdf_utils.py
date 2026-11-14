@@ -1173,19 +1173,19 @@ def doi_from_pdf(pdf) -> tuple[str | None, str]:
     Looks at the document's metadata (including XMP) and at the whole first
     page, not just its first lines: a PDF cut from a journal spread carries the
     neighbouring article's DOI too, so the answer is only given when it is
-    unambiguous. Metadata wins when it names exactly one DOI. Otherwise the
-    first page must name one DOI, or one that appears more often than any
-    other. A tie returns ``(None, "ambiguous: ...")`` rather than a guess.
+    unambiguous. Metadata naming exactly one DOI wins unless page 1 names
+    others and not that one. Otherwise page 1 must name exactly one DOI.
+    Anything else returns ``(None, "ambiguous: ...")`` rather than a guess.
     """
     from zotero_mcp.identifiers import doi_match_key, normalize_doi
 
-    def dois_in(text: str) -> dict[str, list]:
-        found: dict[str, list] = {}
-        for match in _DOI_IN_TEXT_RE.finditer(text or ""):
+    def dois_in(text: str) -> dict[str, str]:
+        # A DOI wrapped at one of its own hyphens is joined back up first.
+        found: dict[str, str] = {}
+        for match in _DOI_IN_TEXT_RE.finditer(re.sub(r"-[ \t]*\n\s*", "-", text or "")):
             doi = normalize_doi(match.group(0))
             if doi:
-                entry = found.setdefault(doi_match_key(doi), [doi, 0])
-                entry[1] += 1
+                found.setdefault(doi_match_key(doi), doi)
         return found
 
     with open_pdf(pdf) as doc:
@@ -1197,14 +1197,15 @@ def doi_from_pdf(pdf) -> tuple[str | None, str]:
         first_page = doc[0].get_text() if len(doc) else ""
 
     from_meta = dois_in(meta)
-    if len(from_meta) == 1:
-        return next(iter(from_meta.values()))[0], "metadata"
     on_page = dois_in(first_page)
+    named = ", ".join(list(on_page.values())[:3])
+    if len(from_meta) == 1:
+        (key, doi), = from_meta.items()
+        if not on_page or key in on_page:
+            return doi, "metadata"
+        return None, f"ambiguous: metadata names {doi}, page 1 names {named}"
+    if len(on_page) == 1:
+        return next(iter(on_page.values())), "page 1"
     if not on_page:
         return None, "no DOI in the metadata or on page 1"
-    ranked = sorted(on_page.values(), key=lambda entry: -entry[1])
-    if len(ranked) == 1:
-        return ranked[0][0], "page 1"
-    if ranked[0][1] > ranked[1][1]:
-        return ranked[0][0], f"page 1 (most often of {len(ranked)})"
-    return None, "ambiguous: " + ", ".join(entry[0] for entry in ranked[:3])
+    return None, f"ambiguous: {named}"
