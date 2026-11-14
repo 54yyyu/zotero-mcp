@@ -89,7 +89,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--pdf-extraction`
  - `--limit` -- default `100`
  - `--format` -- one of `markdown`, `json` -- default `markdown`
- - `--positions` -- Add each annotation's stored position (JSON output): page_index, rects in PDF points, and rect, a box in the x,y,w,h form create and update --rect take
+ - `--positions` -- Add each stored position to the JSON: page_index, rects (PDF points), rect (x,y,w,h, as update --rect takes)
 
 ### `annotations update`
 
@@ -97,8 +97,8 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--text`
  - `--comment`
  - `--color`
- - `--rect` -- Move or resize an area box: x,y,width,height, normalized 0-1 from the top-left, as in `create`; the key stays the same
- - `--page` -- Move an area box to this page (1-indexed); with no --rect it keeps its place
+ - `--rect` -- Move or resize an area box: x,y,width,height, normalized 0-1
+ - `--page` -- Move an area box to this page
  - `--add-tags` -- Tags to add (comma-separated, or a JSON array if a name has a comma)
  - `--remove-tags` -- Tags to remove (comma-separated, or a JSON array if a name has a comma)
 
@@ -112,8 +112,8 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--page` -- **required**
  - `--text` -- Exact text to highlight
  - `--underline` -- Underline --text instead of highlighting it
- - `--rect` -- Area box x,y,width,height, normalized 0-1; `zotero-cli layout` prints boxes for figures and tables. `auto` fits the box to the figure or panel nearest --near
- - `--near` -- With --rect auto: x,y,width,height, roughly where the box goes; kept as given when nothing detected matches it
+ - `--rect` -- Area box x,y,width,height, normalized 0-1; `zotero-cli layout` prints boxes for figures and tables; `auto` fits the figure or panel at --near
+ - `--near` -- With --rect auto: x,y,width,height hint, kept if nothing matches
  - `--note` -- Sticky note centered at x,y, normalized 0-1; its text is --comment
  - `--comment`
  - `--color` -- default `#ffd400` -- Hex, or a Zotero color name: yellow, red, green, blue, purple, magenta, orange, gray
@@ -123,23 +123,23 @@ but not follow a sub-command: `get --json metadata KEY` parses and
 ### `annotations batch`
 
  - `--attachment-key` -- **required** -- Attachment for lines that do not name their own
- - `--file` -- default `-` -- JSON Lines (or a JSON array) of {page, text|rect|note, underline, comment, color, tags}; "rect": "auto" (with an optional "near": "x,y,w,h") fits a box to the nearest figure or panel; - reads stdin
+ - `--file` -- default `-` -- JSON Lines (or a JSON array) of {page, text|rect|note, underline, comment, color, tags}, rect may be auto; - reads stdin
  - `--dry-run` -- Locate every highlight and underline and report what it would cover, without writing
- - `--render` -- With --dry-run: draw the planned boxes and highlight matches on page PNGs in DIR, from the position that would be stored
- - `--on-existing` -- one of `skip`, `replace` -- Make a re-run safe. An entry whose page and first 40 characters of comment (or text) match an annotation already on the attachment is left alone (skip), or created fresh with the old one permanently deleted (replace). Without this, every entry is created
+ - `--render` -- With --dry-run: draw the plan on page PNGs in DIR
+ - `--on-existing` -- one of `skip`, `replace` -- Skip, or replace, entries already there (same page and first 40 characters of comment)
 
 ### `annotations preview`
 
  - `--attachment-key` -- **required**
- - `--pages` -- default `all` -- Pages to draw: all (default; pages with annotations), 3, 3-6, or 1,4,6-9
- - `--out` -- Where to write the PNGs (default: a new temp folder)
- - `--scale` -- default `1.5` -- Pixels per PDF point (default 1.5)
+ - `--pages` -- default `all` -- all (default), 3, 3-6, or 1,4,6-9
+ - `--out` -- Folder for the PNGs (default: a new temp folder)
+ - `--scale` -- default `1.5` -- Pixels per PDF point
 
 ## `layout`
 
  - `<attachment_key>`
  - `--pages` -- default `all` -- Pages to scan: all (default), 3, 3-6, or 1,4,6-9
- - `--panels` -- Also box each figure panel, using the single bold panel letters (A, B, C ...) in the PDF's text; each box carries its letter
+ - `--panels` -- Also box each figure panel, from its panel letter (A, B, C ...)
 
 ## `notes (alias: n)`
 
@@ -177,18 +177,16 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--tags` -- Tags (comma-separated, or a JSON array if a name has a comma)
  - `--if-exists` -- one of `file`, `skip`, `duplicate` -- default `file` -- When the item already exists: 'file' (default) reuses it and adds missing collections/tags; 'skip' leaves it untouched; 'duplicate' creates a new item anyway
  - `--create-collections` -- Create collections that don't exist yet (including parent/child paths)
- - `--attach-mode` -- one of `auto`, `linked_url`, `import_file`, `none`, `required` -- How to attach a PDF found online (default auto; none when --attach-file is given)
- - `--attach-file` -- Attach this local file to the item in the same call, instead of fetching one; an item already in the library gets the file unless it is already attached
+ - `--attach-mode` -- one of `auto`, `linked_url`, `import_file`, `none`, `required` -- default auto; none with --attach-file
+ - `--attach-file` -- Attach this local PDF instead of fetching one
 
 ### `add folder`
 
  - `<folder>`
- - `--collections` -- Comma-separated collection keys, names, or paths
- - `-c, --collection` -- Collection key, name, or parent/child path (repeatable; not comma-split, so names with commas work)
+ - `-c, --collection` -- Collection (repeatable)
  - `--tags` -- Tags (comma-separated, or a JSON array if a name has a comma)
- - `--if-exists` -- one of `file`, `skip`, `duplicate` -- default `file` -- When the item already exists: 'file' (default) reuses it and adds missing collections/tags; 'skip' leaves it untouched; 'duplicate' creates a new item anyway
- - `--create-collections` -- Create collections that don't exist yet (including parent/child paths)
- - `--dry-run` -- Only show the DOI found in each PDF (metadata and the whole first page)
+ - `--if-exists` -- one of `file`, `skip`, `duplicate` -- default `file`
+ - `--dry-run` -- Only show each PDF's DOI
 
 ### `add url`
 
@@ -383,7 +381,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--context` -- default `12` -- With --find: words of context on each side of a match (1-60, default 12)
  - `--format` -- one of `text`, `image` -- default `text` -- image writes PNG page images (up to 10 pages) for math, figures and tables
  - `--rect` -- With --format image: crop the start page to x,y,width,height (normalized 0-1), e.g. from `zotero-cli layout`
- - `--grid` -- With --format image: draw a grid on the image, a line every 0.05 and a label every 0.1, in the page coordinates --rect and annotation boxes use (also on a zoomed --rect, so a box can be read off the picture)
+ - `--grid` -- With --format image: draw a labelled 0.05 grid in page coordinates
  - `--out` -- With --format image: directory for the PNG files (default: a new temporary directory)
 
 ## `attach`

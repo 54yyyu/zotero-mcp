@@ -863,7 +863,7 @@ def _collect_collection_specs(args) -> list | None:
     return specs or None
 
 
-_ITEM_KEY_RE = re.compile(r"Item key: `([^`]+)`")
+_ADDED_KEY_RE = re.compile(r"Item key: `([^`]+)`")
 
 
 def _attach_to_added(write_mod, added: str, path: str, ctx) -> str:
@@ -875,7 +875,7 @@ def _attach_to_added(write_mod, added: str, path: str, ctx) -> str:
     """
     import os
 
-    match = _ITEM_KEY_RE.search(added)
+    match = _ADDED_KEY_RE.search(added)
     if not match:
         return added  # the add failed or named no item; its own message says why
     attached = write_mod.attach_file(
@@ -917,7 +917,7 @@ def _add_folder(args, write_mod, collections, tags, if_exists, create_missing, c
                 doi=row["doi"], collections=collections, tags=tags, attach_mode="none",
                 if_exists=if_exists, create_missing_collections=create_missing,
                 page_check="thin_only", ctx=ctx)
-            match = _ITEM_KEY_RE.search(added)
+            match = _ADDED_KEY_RE.search(added)
             if not match:
                 row["status"] = "failed: " + _cli_vocabulary(added.strip().splitlines()[0])
                 continue
@@ -1824,18 +1824,15 @@ def build_parser() -> argparse.ArgumentParser:
     al.add_argument("--limit", type=int, default=100)
     al.add_argument("--format", choices=["markdown", "json"], default="markdown")
     al.add_argument("--positions", action="store_true",
-                    help="Add each annotation's stored position (JSON output): page_index, rects "
-                         "in PDF points, and rect, a box in the x,y,w,h form create and "
-                         "update --rect take")
+                    help="Add each stored position to the JSON: page_index, rects (PDF points), "
+                         "rect (x,y,w,h, as update --rect takes)")
     au = a_sub.add_parser("update", help="Update an existing annotation")
     au.add_argument("annotation_key")
     au.add_argument("--text")
     au.add_argument("--comment")
     au.add_argument("--color")
-    au.add_argument("--rect", help="Move or resize an area box: x,y,width,height, normalized 0-1 "
-                                   "from the top-left, as in `create`; the key stays the same")
-    au.add_argument("--page", type=int,
-                    help="Move an area box to this page (1-indexed); with no --rect it keeps its place")
+    au.add_argument("--rect", help="Move or resize an area box: x,y,width,height, normalized 0-1")
+    au.add_argument("--page", type=int, help="Move an area box to this page")
     au.add_argument("--add-tags", help=f"Tags to add ({TAG_LIST_HELP})")
     au.add_argument("--remove-tags", help=f"Tags to remove ({TAG_LIST_HELP})")
     ad = a_sub.add_parser("delete", help="Delete an annotation")
@@ -1848,10 +1845,9 @@ def build_parser() -> argparse.ArgumentParser:
     ac.add_argument("--underline", action="store_true",
                     help="Underline --text instead of highlighting it")
     ac.add_argument("--rect", help="Area box x,y,width,height, normalized 0-1; "
-                                   "`zotero-cli layout` prints boxes for figures and tables. "
-                                   "`auto` fits the box to the figure or panel nearest --near")
-    ac.add_argument("--near", help="With --rect auto: x,y,width,height, roughly where the box goes; "
-                                   "kept as given when nothing detected matches it")
+                                   "`zotero-cli layout` prints boxes for figures and tables; "
+                                   "`auto` fits the figure or panel at --near")
+    ac.add_argument("--near", help="With --rect auto: x,y,width,height hint, kept if nothing matches")
     ac.add_argument("--note", help="Sticky note centered at x,y, normalized 0-1; "
                                    "its text is --comment")
     ac.add_argument("--comment")
@@ -1865,26 +1861,21 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Attachment for lines that do not name their own")
     ab.add_argument("--file", default="-",
                     help="JSON Lines (or a JSON array) of {page, text|rect|note, underline, comment, "
-                         "color, tags}; \"rect\": \"auto\" (with an optional \"near\": \"x,y,w,h\") "
-                         "fits a box to the nearest figure or panel; "
+                         "color, tags}, rect may be auto; "
                          "- reads stdin")
     ab.add_argument("--dry-run", action="store_true",
                     help="Locate every highlight and underline and report what it would cover, "
                          "without writing")
     ab.add_argument("--render", metavar="DIR",
-                    help="With --dry-run: draw the planned boxes and highlight matches on page "
-                         "PNGs in DIR, from the position that would be stored")
+                    help="With --dry-run: draw the plan on page PNGs in DIR")
     ab.add_argument("--on-existing", choices=["skip", "replace"],
-                    help="Make a re-run safe. An entry whose page and first 40 characters of comment "
-                         "(or text) match an annotation already on the attachment is left alone "
-                         "(skip), or created fresh with the old one permanently deleted (replace). "
-                         "Without this, every entry is created")
+                    help="Skip, or replace, entries already there (same page and first 40 "
+                         "characters of comment)")
     ap = a_sub.add_parser("preview", help="Draw an attachment's stored annotations on page images")
     ap.add_argument("--attachment-key", required=True)
-    ap.add_argument("--pages", default="all",
-                    help="Pages to draw: all (default; pages with annotations), 3, 3-6, or 1,4,6-9")
-    ap.add_argument("--out", metavar="DIR", help="Where to write the PNGs (default: a new temp folder)")
-    ap.add_argument("--scale", type=float, default=1.5, help="Pixels per PDF point (default 1.5)")
+    ap.add_argument("--pages", default="all", help="all (default), 3, 3-6, or 1,4,6-9")
+    ap.add_argument("--out", metavar="DIR", help="Folder for the PNGs (default: a new temp folder)")
+    ap.add_argument("--scale", type=float, default=1.5, help="Pixels per PDF point")
 
     # layout -- figure/table boxes to aim area annotations at
     ly_p = sub.add_parser("layout", help="Find figure and table boxes on PDF pages")
@@ -1892,8 +1883,7 @@ def build_parser() -> argparse.ArgumentParser:
     ly_p.add_argument("--pages", default="all",
                       help="Pages to scan: all (default), 3, 3-6, or 1,4,6-9")
     ly_p.add_argument("--panels", action="store_true",
-                      help="Also box each figure panel, using the single bold panel letters "
-                           "(A, B, C ...) in the PDF's text; each box carries its letter")
+                      help="Also box each figure panel, from its panel letter (A, B, C ...)")
 
     # notes
     n_p = sub.add_parser("notes", help="Manage notes", aliases=["n"])
@@ -1945,15 +1935,14 @@ def build_parser() -> argparse.ArgumentParser:
     adoi.add_argument("doi")
     _add_common_flags(adoi)
     adoi.add_argument("--attach-mode", choices=["auto", "linked_url", "import_file", "none", "required"],
-                      help="How to attach a PDF found online (default auto; none when --attach-file is given)")
-    adoi.add_argument("--attach-file", metavar="PATH",
-                      help="Attach this local file to the item in the same call, instead of fetching one; "
-                           "an item already in the library gets the file unless it is already attached")
+                      help="default auto; none with --attach-file")
+    adoi.add_argument("--attach-file", metavar="PATH", help="Attach this local PDF instead of fetching one")
     afol = add_sub.add_parser("folder", help="Add every PDF in a folder by its DOI, attaching the file")
     afol.add_argument("folder")
-    _add_common_flags(afol)
-    afol.add_argument("--dry-run", action="store_true",
-                      help="Only show the DOI found in each PDF (metadata and the whole first page)")
+    afol.add_argument("-c", "--collection", action="append", metavar="SPEC", help="Collection (repeatable)")
+    afol.add_argument("--tags", help=f"Tags ({TAG_LIST_HELP})")
+    afol.add_argument("--if-exists", dest="if_exists", choices=["file", "skip", "duplicate"], default="file")
+    afol.add_argument("--dry-run", action="store_true", help="Only show each PDF's DOI")
     aurl = add_sub.add_parser("url", help="Add item by URL")
     aurl.add_argument("url")
     _add_common_flags(aurl)
@@ -2106,9 +2095,7 @@ def build_parser() -> argparse.ArgumentParser:
     rd_p.add_argument("--rect", help="With --format image: crop the start page to x,y,width,height "
                                      "(normalized 0-1), e.g. from `zotero-cli layout`")
     rd_p.add_argument("--grid", action="store_true",
-                      help="With --format image: draw a grid on the image, a line every 0.05 and a "
-                           "label every 0.1, in the page coordinates --rect and annotation boxes use "
-                           "(also on a zoomed --rect, so a box can be read off the picture)")
+                      help="With --format image: draw a labelled 0.05 grid in page coordinates")
     rd_p.add_argument("--out", help="With --format image: directory for the PNG files "
                                     "(default: a new temporary directory)")
 

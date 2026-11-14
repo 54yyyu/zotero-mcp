@@ -141,15 +141,10 @@ edited and written back with `notes update` keeps its citations and images;
 named collection rather than creating a duplicate. Use `--if-exists skip` to
 never touch an existing item.
 
-To file a PDF you already have, in one call: `zotero-cli add doi DOI
---attach-file /path/paper.pdf -c COLLECTION --tags week-3` adds the item by DOI,
-files and tags it, and attaches that file (no second copy is fetched; an item
-already in the library just gets the file, unless it already has it).
-`zotero-cli add folder DIR -c COLLECTION --tags week-3` does that for every PDF
-in a folder, reading each one's DOI from its metadata and its whole first page.
-A PDF cut from a journal spread names two articles; it is listed as ambiguous,
-never guessed, so add those with `add doi ... --attach-file`. `--dry-run` shows
-the DOIs found without writing.
+To file a PDF you have: `add doi DOI --attach-file PATH -c COLL --tags T` adds,
+files and attaches it in one call. `add folder DIR -c COLL` does that per PDF,
+reading the DOI from the metadata and page 1; a missing or ambiguous DOI is
+listed, never guessed.
 
 Before a destructive change (`delete`, `duplicates merge`, a `batch` over
 many items), confirm with the user and show what will be affected. `delete
@@ -177,22 +172,14 @@ For those pages, look at the page itself if you can view images:
 ```bash
 zotero-cli read ITEM_KEY --start-page 4 --format image                         # PNG per page, up to 10
 zotero-cli read ITEM_KEY --start-page 4 --format image --rect 0.35,0.49,0.3,0.05   # zoom into one region
-zotero-cli read ITEM_KEY --start-page 4 --format image --grid                  # with a 0.05 grid, labelled every 0.1
+zotero-cli read ITEM_KEY --start-page 4 --format image --grid                  # labelled 0.05 grid, to read boxes off
 ```
-
-`--grid` draws lines in the same page coordinates that `--rect` and the
-annotation boxes use (also on a zoomed region), so you can read a box's
-numbers straight off the picture instead of writing a script to do it.
 
 To annotate, plan everything, check it, then write it in one run:
 
 1. `zotero-cli --json layout ATTACHMENT_KEY` lists figure, table and
-   equation boxes with their captions and a paste-ready `rect_arg`. Add
-   `--panels` to also get one box per figure panel, found from the single
-   bold panel letters (A, B, C ...) in the PDF text; each carries its letter
-   and a confidence. It needs those letters in the text layer, so it works
-   for most Cell and Nature figures and not for figures drawn as one image
-   with the letters baked in.
+   equation boxes with their captions and a paste-ready `rect_arg`;
+   `--panels` adds a box per panel letter (A, B, C ...) when the text has them.
 2. Write one JSON object per line: `{"page": 4, "text": "exact words",
    "comment": "...", "color": "yellow"}` for a highlight (add
    `"underline": true` to underline instead), or
@@ -200,51 +187,20 @@ To annotate, plan everything, check it, then write it in one run:
    `{"page": 1, "note": "x,y", "comment": "..."}` for a sticky note
    centered on a point (its text is the comment). Copy
    highlight text exactly from `read`; it is searched for on that page and
-   two pages either side, and a minus sign, hyphen, curly quote, ligature,
-   soft hyphen or a word hyphenated across lines does not have to match
-   character for character. When a phrase is not found, the row lists the
-   nearest places (page, similarity, the text there, and its box in
-   `candidates`); copy the exact words from the closest one.
-   Instead of working out a panel's box by hand, give `"rect": "auto"` and
-   a rough `"near": "x,y,w,h"`: the box is fitted to the detected panel or
-   figure that overlaps the hint most. When nothing matches, or the match is
-   low confidence, the hint is kept as given and the output says so, so
-   look at those rows. `annotations create --rect auto --near x,y,w,h` does
-   the same for one box.
+   two pages either side. A miss lists the nearest `candidates`.
+   `"rect": "auto"` with `"near": "x,y,w,h"` fits the nearest panel or figure
+   (a fallback to your hint is printed).
 3. `zotero-cli annotations batch --attachment-key ATTACHMENT_KEY --file plan.jsonl --dry-run`
-   shows the words each highlight would cover. Fix every miss. Add
-   `--render DIR` to also draw every planned box and highlight on page PNGs;
-   they are drawn from the position that would be stored, so a coordinate
-   bug shows up in the picture. Look at them.
+   shows the words each highlight would cover. Fix every miss. `--render DIR`
+   also draws the plan as it would be stored; look at the PNGs.
 4. Run it again without `--dry-run`. Anything that did not land is listed
    under `data.results` with `ok: false`, and the exit code is 1.
 
-A plain re-run creates every entry again, so a repeated batch duplicates.
-`--on-existing skip` makes a re-run safe: an entry whose page and first 40
-characters of comment (or highlighted text, when it has no comment) match an
-annotation already on the attachment is left alone and reported as skipped.
-`--on-existing replace` creates the new one and permanently deletes the old
-one instead, to redo a batch with corrections. An entry with neither comment
-nor text cannot be matched and is always created. `--dry-run` shows what
-either would do, and it reads the PDF Zotero holds on disk, so it works with
-Zotero closed.
-
-After writing, check what Zotero actually holds:
-`zotero-cli annotations preview --attachment-key ATTACHMENT_KEY --pages 3-5 --out DIR`
-draws the stored boxes and highlights on page PNGs (default: every page that
-has one), each labelled with the start of its comment. Look at them; a
-planned-coordinates check cannot catch a write-side shift.
-
-To fix a box that landed in the wrong place, move it where it is:
-`zotero-cli annotations update ANNOTATION_KEY --rect x,y,w,h` (the same
-normalized convention as `create`; `--page N` moves it to another page and
-keeps its place when `--rect` is left out). The key, comment and color stay.
-Only area boxes move; a highlight follows its text, so delete and recreate it.
-`zotero-cli --json annotations list --item-key ATTACHMENT_KEY --positions`
-adds each annotation's stored `position`: `page_index`, `rects` (PDF points,
-bottom-left origin) and `rect`, a box in the same `x,y,w,h` convention that
-`create` and `update --rect` take. Use it to check where boxes really are
-instead of trusting the coordinates you planned.
+A re-run duplicates unless `--on-existing skip|replace` (matches page plus the
+first 40 characters of comment). Check what is stored with `annotations preview
+--attachment-key K --out DIR` (PNGs of the real boxes) and `annotations list
+--positions` (stored `rect`s). Fix an area box in place, same key:
+`annotations update KEY --rect x,y,w,h` (or `--page N`).
 
 Colors take Zotero's names: yellow, red, green, blue, purple, magenta,
 orange, gray. Three or four colors with fixed meanings read better than

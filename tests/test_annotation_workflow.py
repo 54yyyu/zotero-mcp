@@ -575,6 +575,36 @@ class TestAutoBox:
         assert "near hint" in results[2]["error"]
         assert "near" in results[3]["error"]
 
+    def test_create_rect_auto_goes_through_the_same_fit(self, store, tmp_path, monkeypatch, capsys):
+        import argparse
+
+        from zotero_mcp import cli_standalone
+
+        path = panel_pdf(tmp_path)
+        monkeypatch.setattr(annotations, "_fetch_attachment_file",
+                            lambda key, tmp, **kw: (path, "figure.pdf", "pdf", None))
+        args = argparse.Namespace(verbose=False, json_out=False, subcommand="create", attachment_key=ATTACHMENT,
+                                  page=1, rect="auto", near="0.60,0.15,0.30,0.15", text=None, note=None,
+                                  comment="FIG 1B", color="purple", tags=None, open=False)
+        monkeypatch.setattr(cli_standalone, "setup_zotero_environment", lambda: None)
+        cli_standalone.cmd_annotations(args)
+        out = capsys.readouterr().out
+        assert "Successfully created area annotation" in out and "Panel B" in out
+        (created,) = store.created
+        assert created["annotationType"] == "image" and created["annotationComment"] == "FIG 1B"
+
+    def test_near_without_auto_is_a_usage_error(self, monkeypatch):
+        import argparse
+
+        from zotero_mcp import cli_standalone
+        from zotero_mcp.cli_json import CliError
+
+        args = argparse.Namespace(verbose=False, json_out=False, subcommand="create", attachment_key=ATTACHMENT,
+                                  page=1, rect="0.1,0.1,0.2,0.2", near="0.1,0.1,0.2,0.2")
+        monkeypatch.setattr(cli_standalone, "setup_zotero_environment", lambda: None)
+        with pytest.raises(CliError, match="--rect auto"):
+            cli_standalone.cmd_annotations(args)
+
     def test_the_cli_prints_a_fallback_instead_of_hiding_it(self, store, tmp_path, monkeypatch, capsys):
         import argparse
 
