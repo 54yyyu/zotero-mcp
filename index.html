@@ -33,7 +33,7 @@
 <header class="site-header">
   <div class="wrap nav">
     <a class="brand" href="./"><svg class="logo-svg" viewBox="0 0 128 128" aria-hidden="true"><g transform="translate(4 9) scale(.94)" fill="none" stroke-linejoin="round" stroke-linecap="round"><path class="lb" d="M40 12H88a26 26 0 0 1 26 26V78a26 26 0 0 1-26 26H62L38 118V104H40a26 26 0 0 1-26-26V38a26 26 0 0 1 26-26Z" stroke-width="5.5"/><path class="lz" d="M47 39H81L47 77H81" stroke-width="8"/></g></svg>Zotero MCP</a>
-    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.17.1</a>
+    <a class="version" href="https://github.com/54yyyu/zotero-mcp/blob/main/CHANGELOG.md" title="Latest release">v0.17.2</a>
     <nav class="nav-links" aria-label="Main">
       <a href="./" aria-current="page">Overview</a>
       <a href="agent/">Zotero Agent<span class="new" aria-label="new"></span></a>
@@ -140,6 +140,16 @@
 
       <div class="releases">
         <article class="release lead">
+          <div class="release-tag">0.17.2<small>Nov 2026</small></div>
+          <div>
+            <h3>Annotation tools for the CLI, and <span class="hl c-yellow">named chats</span></h3>
+            <p><code>zotero-cli</code> can now move a box in place (<code>annotations update --rect</code>), list where each annotation is stored (<code>list --positions</code>), draw the stored annotations on page images (<code>annotations preview</code>, and <code>batch --dry-run --render</code> for a plan before anything is written), re-run a batch without duplicating it (<code>--on-existing</code>), split a figure into panels, grid a page image, and say which nearby text it found when a highlight&rsquo;s words are not in the PDF. <code>add doi --attach-file</code> adds a paper and attaches your own PDF in one call, and <code>add folder</code> does it for a folder of PDFs.</p>
+            <p>Zotero Agent chats are named, by the agent&rsquo;s own summary, the paper you had open or your first question, and you can rename them. Whether sending a message scrolls to the newest one is a setting now. <code>python -m zotero_mcp</code> starts the CLI without the <code>.exe</code> launcher that Windows Smart App Control can block, and <code>ZOTERO_ONNX_THREADS</code> quiets the thread-pinning errors of the default embedding model in containers.</p>
+            <p class="fine">With fixes from @HelloNVIC (#836, #847), @lots-o (#828) and @fgndh89-commits (#837).</p>
+          </div>
+        </article>
+
+        <article class="release">
           <div class="release-tag">0.17.1<small>Nov 2026</small></div>
           <div>
             <h3>OpenCode in the panel, and <span class="hl c-yellow">Mermaid diagrams</span></h3>
@@ -332,7 +342,7 @@
         <ul class="bars">
           <li class="bar" data-cost="all"><span class="bar-label">MCP, all tools<small>51 tools, every request</small></span><span class="bar-track"><span class="bar-fill mcp" style="--w:100%"></span><span class="bar-val">11,331</span></span></li>
           <li class="bar" data-cost="default"><span class="bar-label">MCP, default tools<small>38 tools, every request</small></span><span class="bar-track"><span class="bar-fill mcp" style="--w:70.9%"></span><span class="bar-val">8,037</span></span></li>
-          <li class="bar" data-cost="skill_body"><span class="bar-label">Skill, instructions loaded<small>only when it&rsquo;s used</small></span><span class="bar-track"><span class="bar-fill skill" style="--w:22.1%"></span><span class="bar-val">2,506</span></span></li>
+          <li class="bar" data-cost="skill_body"><span class="bar-label">Skill, instructions loaded<small>only when it&rsquo;s used</small></span><span class="bar-track"><span class="bar-fill skill" style="--w:24.6%"></span><span class="bar-val">2,787</span></span></li>
           <li class="bar" data-cost="skill_frontmatter"><span class="bar-label">Skill, description only<small>always</small></span><span class="bar-track"><span class="bar-fill skill" style="--w:0.86%"></span><span class="bar-val">98</span></span></li>
         </ul>
         <p class="fine">Tokens (cl100k_base), measured with <code>scripts/measure_context_cost.py</code>. This is only the fixed cost. It doesn&rsquo;t measure whether the task succeeds or how many steps it takes.</p>
@@ -473,7 +483,7 @@
 
 <footer class="site-footer">
   <div class="wrap foot">
-    <span>Zotero MCP v0.17.1 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
+    <span>Zotero MCP v0.17.2 &middot; MIT &middot; by <a href="https://github.com/54yyyu">Steven Yu</a></span>
     <nav aria-label="Footer">
       <a href="https://github.com/54yyyu/zotero-mcp">GitHub</a>
       <a href="https://pypi.org/project/zotero-mcp-server/">PyPI</a>
