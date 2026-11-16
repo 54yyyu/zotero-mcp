@@ -11,10 +11,14 @@ The mapping lives in Zotero's global schema (``/schema``, the same document the
 desktop client uses); pyzotero does not surface the ``baseField`` attribute, so
 we carry a trimmed slice of it:
 
-    {"version": N, "itemTypes": {type: {actualField: baseField, ...}, ...}}
+    {"version": N,
+     "itemTypes": {type: {actualField: baseField, ...}, ...},
+     "creatorTypes": {type: [creatorType, ...], ...},   # primary first
+     "csl": <the schema's own CSL crosswalk: types, fields, names>}
 
 ``itemTypes[type]`` doubles as the type's valid-field set (its keys) and its
-base->actual inverse (invert the mapping).
+base->actual inverse (invert the mapping). ``creatorTypes`` and ``csl`` drive
+the CSL JSON importer (see the CSL crosswalk section below).
 
 Freshness is layered so resolution is always correct offline:
 
@@ -168,6 +172,64 @@ def base_field_of(item_type: str, field: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# CSL crosswalk
+# ---------------------------------------------------------------------------
+#
+# Zotero's schema also carries its own CSL mapping (``csl``): each CSL text
+# variable -> the Zotero base fields it fills, each CSL date variable -> its
+# base field, each Zotero creator type -> its CSL name variable. Combined with
+# the base-field resolution above, a CSL variable lands in whatever field an
+# item type uses for it (``number`` -> ``reportNumber`` for a report, plain
+# ``number`` for a standard; ``authority`` -> ``organization`` for a standard),
+# and a type or field Zotero adds is covered by the next schema refresh instead
+# of a code change.
+
+def _slice(key: str) -> dict:
+    """``key`` from the active table, or from the vendored floor when the
+    active table is an on-disk cache written before that slice existed."""
+    value = get_table().get(key)
+    return value if isinstance(value, dict) and value else _load_vendored().get(key, {})
+
+
+def csl_item_type(csl_type: str) -> str | None:
+    """The Zotero item type Zotero imports CSL type ``csl_type`` as (its first
+    listed one), or None for a CSL type the crosswalk does not know."""
+    types = _slice("csl").get("types", {}).get(csl_type)
+    return types[0] if types else None
+
+
+def csl_text_fields() -> dict[str, list[str]]:
+    """CSL text variable -> the Zotero base fields it maps to, in Zotero's order."""
+    return _slice("csl").get("fields", {}).get("text", {})
+
+
+def csl_date_fields() -> dict[str, str]:
+    """CSL date variable -> its Zotero base field (``accessed`` -> ``accessDate``)."""
+    return _slice("csl").get("fields", {}).get("date", {})
+
+
+def csl_name_variables() -> list[str]:
+    """Every CSL name variable Zotero maps a creator type to."""
+    return list(dict.fromkeys(_slice("csl").get("names", {}).values()))
+
+
+def creator_types(item_type: str) -> list[str]:
+    """``item_type``'s valid creator types, its primary one first."""
+    return _slice("creatorTypes").get(item_type, [])
+
+
+def creator_type_for(item_type: str, csl_name: str) -> str | None:
+    """The creator type ``item_type`` uses for CSL name variable ``csl_name``
+    (``container-author`` -> ``bookAuthor`` for a book section), or None when
+    the type has no creator type that maps to it."""
+    valid = creator_types(item_type)
+    for creator_type, name in _slice("csl").get("names", {}).items():
+        if name == csl_name and creator_type in valid:
+            return creator_type
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Refresh
 # ---------------------------------------------------------------------------
 
@@ -179,7 +241,16 @@ def _build_table(schema_doc: dict) -> dict:
         }
         for it in schema_doc["itemTypes"]
     }
-    return {"version": schema_doc["version"], "itemTypes": item_types}
+    creator_types = {
+        it["itemType"]: [c["creatorType"] for c in it.get("creatorTypes", [])]
+        for it in schema_doc["itemTypes"]
+    }
+    return {
+        "version": schema_doc["version"],
+        "itemTypes": item_types,
+        "creatorTypes": creator_types,
+        "csl": schema_doc.get("csl", {}),
+    }
 
 
 def _http_get(url: str, headers: dict):  # seam for tests

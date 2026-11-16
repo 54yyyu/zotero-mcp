@@ -25,6 +25,8 @@ import bibtexparser
 from bibtexparser.bparser import BibTexParser
 from bibtexparser.customization import convert_to_unicode
 
+from zotero_mcp import schema
+
 # ---------------------------------------------------------------------------
 # Type maps
 # ---------------------------------------------------------------------------
@@ -58,7 +60,7 @@ BIBTEX_TYPE_MAP = {
     "audio": "audioRecording",
     "video": "videoRecording",
     "letter": "letter",
-    "standard": "document",
+    "standard": "standard",
     "periodical": "journalArticle",
     "collection": "book",
 }
@@ -468,10 +470,17 @@ def bibtex_entry_to_zotero(
 
     # Standard fields
     _set_if_in_template(template, "volume", (fields.get("volume") or "").strip())
+    # BibTeX ``number`` is the type's own number where it has one (a report's
+    # reportNumber, a patent's patentNumber, a standard's number: all on the
+    # schema's ``number`` base field) and the issue of a journal otherwise.
+    number = (fields.get("number") or "").strip()
+    if _set_if_in_template(template, schema.resolve_field(zot_type, "number"), number):
+        number = ""
+    _set_if_in_template(template, "issue", (fields.get("issue") or number).strip())
+    # The body that issued it: a standard's organization, a patent's issuing
+    # authority (the schema's ``authority`` base field).
     _set_if_in_template(
-        template,
-        "issue",
-        (fields.get("issue") or fields.get("number") or "").strip(),
+        template, schema.resolve_field(zot_type, "authority"), (fields.get("organization") or "").strip()
     )
     pages = (fields.get("pages") or "").strip().replace("--", "-")
     _set_if_in_template(template, "pages", pages)
@@ -506,9 +515,6 @@ def bibtex_entry_to_zotero(
     _set_if_in_template(template, "institution", (fields.get("institution") or "").strip())
     _set_if_in_template(template, "university", (fields.get("school") or "").strip())
 
-    # Patent fields
-    if zot_type == "patent":
-        _set_if_in_template(template, "patentNumber", (fields.get("number") or "").strip())
 
     # Keywords -> tags
     kw = fields.get("keywords") or fields.get("keyword") or ""
@@ -598,85 +604,80 @@ def _csl_text(value: Any) -> str:
     return "" if value is None else str(value).strip()
 
 
+# Zotero's CSL crosswalk name -> the CSL 1.0.2 names producers (Crossref,
+# citeproc exports) send for the same variable.
+_CSL_SPEC_NAMES = {"journalAbbreviation": ("container-title-short",)}
+
+
 def csl_json_to_zotero(
     csl: dict,
     template_fn: Callable[[str], dict],
 ) -> dict:
-    """Convert one CSL JSON object into a Zotero item dict."""
+    """Convert one CSL JSON object into a Zotero item dict.
+
+    Fields, dates and creators are mapped through Zotero's own CSL crosswalk
+    (``schema.csl_*``) and resolved to the item type's actual field, so a
+    variable lands wherever that type keeps it (``number`` is ``reportNumber``
+    on a report and ``number`` on a standard) and a type or field Zotero adds
+    is covered by the next schema refresh, not a code change. Every variable
+    that is not written to a field is kept in Extra as ``name: value``.
+    """
     csl_type = (csl.get("type") or "").lower()
-    zot_type = CSL_TYPE_MAP.get(csl_type, "document")
+    # The importer's own choices first (they also take Crossref's non-CSL
+    # types), then Zotero's crosswalk, so a CSL type added later still maps.
+    zot_type = CSL_TYPE_MAP.get(csl_type) or schema.csl_item_type(csl_type) or "document"
     template = dict(template_fn(zot_type))
+    consumed = {"type"}  # CSL variables written somewhere; the rest go to Extra
 
-    # Title
-    _set_if_in_template(template, "title", _csl_text(csl.get("title")))
-    _set_if_in_template(template, "shortTitle", _csl_text(csl.get("title-short")))
-
-    # Creators
+    # Creators: each CSL name variable to the creator type this item type
+    # uses for it; author falls back to the type's primary creator type
+    # (a computer program's programmer).
     creators = []
-    creators += _csl_names_to_creators(csl.get("author"), "author")
-    creators += _csl_names_to_creators(csl.get("editor"), "editor")
-    creators += _csl_names_to_creators(csl.get("translator"), "translator")
-    if creators and "creators" in template:
-        template["creators"] = creators
+    if "creators" in template:
+        primary = (schema.creator_types(zot_type) or ["author"])[0]
+        for var in dict.fromkeys(["author", "editor", "translator", *schema.csl_name_variables()]):
+            creator_type = schema.creator_type_for(zot_type, var) or (primary if var == "author" else None)
+            converted = _csl_names_to_creators(csl.get(var), creator_type) if creator_type else []
+            if converted:
+                creators += converted
+                consumed.add(var)
+        if creators:
+            template["creators"] = creators
 
-    # Date
-    date = _format_csl_date(csl.get("issued"))
-    _set_if_in_template(template, "date", date)
-
-    # Container title
+    # Container title: the importer's own per-type choice first; the
+    # crosswalk below fills it for any type the picker does not know.
     container_field = _pick_container_field(zot_type, template)
     container_value = _csl_text(csl.get("container-title"))
     if container_field and container_value:
         template[container_field] = container_value
+        consumed.add("container-title")
 
-    # Series
-    _set_if_in_template(template, "series", _csl_text(csl.get("collection-title")))
-    _set_if_in_template(template, "seriesNumber", _csl_text(csl.get("collection-number")))
-
-    # Common fields
-    _set_if_in_template(template, "volume", _csl_text(csl.get("volume")))
-    _set_if_in_template(template, "issue", _csl_text(csl.get("issue")))
-    _set_if_in_template(template, "pages", _csl_text(csl.get("page")))
-    _set_if_in_template(template, "publisher", _csl_text(csl.get("publisher")))
-    _set_if_in_template(template, "place", _csl_text(csl.get("publisher-place")))
-    _set_if_in_template(template, "edition", _csl_text(csl.get("edition")))
-    _set_if_in_template(template, "ISBN", _csl_text(csl.get("ISBN")))
-    _set_if_in_template(template, "ISSN", _csl_text(csl.get("ISSN")))
-    _set_if_in_template(template, "DOI", _csl_text(csl.get("DOI")))
+    # PubMed ids are not in Zotero's CSL crosswalk.
     for label in ("PMID", "PMCID"):
         val = _csl_text(csl.get(label))
         if val and not _set_if_in_template(template, label, val):
             _append_extra(template, f"{label}: {val}")
-    # Zotero's own CSL mapping; a type without the field keeps it in Extra.
-    mapped = {
-        k for k, field in (("container-title-short", "journalAbbreviation"),
-                           ("source", "libraryCatalog"))
-        if _set_if_in_template(template, field, _csl_text(csl.get(k)))
-    }
-    _set_if_in_template(template, "url", _csl_text(csl.get("URL")))
-    _set_if_in_template(template, "language", _csl_text(csl.get("language")))
-    _set_if_in_template(template, "abstractNote", _csl_text(csl.get("abstract")))
-    _set_if_in_template(template, "numPages", _csl_text(csl.get("number-of-pages")))
+        consumed.add(label)
 
-    # Type-specific number fields
-    number = _csl_text(csl.get("number"))
-    if number:
-        if zot_type == "report":
-            _set_if_in_template(template, "reportNumber", number)
-        elif zot_type == "patent":
-            _set_if_in_template(template, "patentNumber", number)
-        elif zot_type == "bill":
-            _set_if_in_template(template, "billNumber", number)
-        elif zot_type == "case":
-            _set_if_in_template(template, "docketNumber", number)
-        elif zot_type == "statute":
-            _set_if_in_template(template, "publicLawNumber", number)
+    # Text variables, in Zotero's own order of target base fields. A
+    # variable may arrive under its CSL 1.0.2 name, which Zotero's crosswalk
+    # still lists by its older CSL-JSON name.
+    for var, bases in schema.csl_text_fields().items():
+        source = next((k for k in (var, *_CSL_SPEC_NAMES.get(var, ())) if _csl_text(csl.get(k))), var)
+        value = _csl_text(csl.get(source))
+        if source in consumed or var == "note" or not value:
+            continue
+        for base in bases:
+            field = schema.resolve_field(zot_type, base)
+            if field in template and field != "extra" and not template[field]:
+                template[field] = value
+                consumed.add(source)
+                break
 
-    # Thesis genre
-    if zot_type == "thesis" and "thesisType" in template:
-        genre = _csl_text(csl.get("genre"))
-        if genre:
-            template["thesisType"] = genre
+    # Date variables (issued -> date, accessed -> accessDate, ...).
+    for var, base in schema.csl_date_fields().items():
+        if _set_if_in_template(template, schema.resolve_field(zot_type, base), _format_csl_date(csl.get(var))):
+            consumed.add(var)
 
     # Keywords -> tags
     keywords = csl.get("keyword") or csl.get("keywords")
@@ -688,30 +689,24 @@ def csl_json_to_zotero(
         source_tags = []
     if source_tags and "tags" in template:
         template["tags"] = [{"tag": t} for t in source_tags]
+        consumed.update({"keyword", "keywords"})
 
     # Citation key from `id`
     citekey = _csl_text(csl.get("id"))
     if citekey:
         _append_extra(template, f"Citation Key: {citekey}")
+    consumed.add("id")
 
     # Note
     note = _csl_text(csl.get("note"))
     if note:
         _append_extra(template, note)
+    consumed.add("note")
 
-    # Preserve unmapped fields
-    handled = {
-        "type", "id", "title", "title-short",
-        "author", "editor", "translator",
-        "issued", "container-title", "collection-title", "collection-number",
-        "volume", "issue", "page", "publisher", "publisher-place",
-        "edition", "ISBN", "ISSN", "DOI", "URL", "language",
-        "abstract", "number-of-pages", "number",
-        "genre", "keyword", "keywords", "note",
-        "PMID", "PMCID", *mapped,
-    }
+    # Preserve everything not written above, including a known variable this
+    # item type has no field for (a standard's ``volume``), so nothing is lost.
     for k, v in csl.items():
-        if k in handled:
+        if k in consumed:
             continue
         if v is None or v == "" or v == [] or v == {}:
             continue

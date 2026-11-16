@@ -1,4 +1,549 @@
 {
+ "creatorTypes": {
+  "annotation": [],
+  "artwork": [
+   "artist",
+   "contributor"
+  ],
+  "attachment": [],
+  "audioRecording": [
+   "performer",
+   "originalCreator",
+   "composer",
+   "wordsBy",
+   "translator",
+   "contributor"
+  ],
+  "bill": [
+   "sponsor",
+   "cosponsor",
+   "contributor"
+  ],
+  "blogPost": [
+   "author",
+   "translator",
+   "commenter",
+   "contributor"
+  ],
+  "book": [
+   "author",
+   "contributor",
+   "editor",
+   "translator",
+   "seriesEditor"
+  ],
+  "bookSection": [
+   "author",
+   "contributor",
+   "editor",
+   "bookAuthor",
+   "translator",
+   "seriesEditor"
+  ],
+  "case": [
+   "author",
+   "counsel",
+   "contributor"
+  ],
+  "computerProgram": [
+   "programmer",
+   "contributor"
+  ],
+  "conferencePaper": [
+   "author",
+   "contributor",
+   "editor",
+   "translator",
+   "seriesEditor"
+  ],
+  "dataset": [
+   "author",
+   "contributor"
+  ],
+  "dictionaryEntry": [
+   "author",
+   "contributor",
+   "editor",
+   "translator",
+   "seriesEditor"
+  ],
+  "document": [
+   "author",
+   "contributor",
+   "editor",
+   "translator",
+   "reviewedAuthor"
+  ],
+  "email": [
+   "author",
+   "translator",
+   "contributor",
+   "recipient"
+  ],
+  "encyclopediaArticle": [
+   "author",
+   "contributor",
+   "editor",
+   "translator",
+   "seriesEditor"
+  ],
+  "film": [
+   "director",
+   "producer",
+   "scriptwriter",
+   "castMember",
+   "host",
+   "guest",
+   "narrator",
+   "translator",
+   "contributor"
+  ],
+  "forumPost": [
+   "author",
+   "contributor"
+  ],
+  "hearing": [
+   "contributor"
+  ],
+  "instantMessage": [
+   "author",
+   "contributor",
+   "recipient"
+  ],
+  "interview": [
+   "interviewee",
+   "contributor",
+   "interviewer",
+   "translator"
+  ],
+  "journalArticle": [
+   "author",
+   "contributor",
+   "editor",
+   "translator",
+   "reviewedAuthor"
+  ],
+  "letter": [
+   "author",
+   "recipient",
+   "contributor",
+   "translator"
+  ],
+  "magazineArticle": [
+   "author",
+   "contributor",
+   "translator",
+   "reviewedAuthor"
+  ],
+  "manuscript": [
+   "author",
+   "contributor",
+   "translator"
+  ],
+  "map": [
+   "cartographer",
+   "contributor",
+   "seriesEditor"
+  ],
+  "newspaperArticle": [
+   "author",
+   "contributor",
+   "translator",
+   "reviewedAuthor"
+  ],
+  "note": [],
+  "patent": [
+   "inventor",
+   "attorneyAgent",
+   "contributor"
+  ],
+  "podcast": [
+   "podcaster",
+   "guest",
+   "producer",
+   "executiveProducer",
+   "seriesCreator",
+   "director",
+   "scriptwriter",
+   "castMember",
+   "translator",
+   "contributor"
+  ],
+  "preprint": [
+   "author",
+   "contributor",
+   "editor",
+   "translator",
+   "reviewedAuthor"
+  ],
+  "presentation": [
+   "presenter",
+   "chair",
+   "organizer",
+   "contributor",
+   "translator"
+  ],
+  "radioBroadcast": [
+   "creator",
+   "host",
+   "guest",
+   "producer",
+   "executiveProducer",
+   "seriesCreator",
+   "director",
+   "scriptwriter",
+   "castMember",
+   "translator",
+   "contributor"
+  ],
+  "report": [
+   "author",
+   "editor",
+   "contributor",
+   "translator",
+   "seriesEditor"
+  ],
+  "standard": [
+   "author",
+   "editor",
+   "contributor"
+  ],
+  "statute": [
+   "author",
+   "contributor"
+  ],
+  "thesis": [
+   "author",
+   "contributor"
+  ],
+  "tvBroadcast": [
+   "director",
+   "producer",
+   "executiveProducer",
+   "seriesCreator",
+   "scriptwriter",
+   "castMember",
+   "host",
+   "guest",
+   "narrator",
+   "translator",
+   "contributor"
+  ],
+  "videoRecording": [
+   "creator",
+   "director",
+   "producer",
+   "scriptwriter",
+   "executiveProducer",
+   "castMember",
+   "host",
+   "guest",
+   "narrator",
+   "translator",
+   "contributor"
+  ],
+  "webpage": [
+   "author",
+   "contributor",
+   "translator"
+  ]
+ },
+ "csl": {
+  "fields": {
+   "date": {
+    "accessed": "accessDate",
+    "issued": "date",
+    "original-date": "originalDate",
+    "submitted": "filingDate"
+   },
+   "text": {
+    "DOI": [
+     "DOI"
+    ],
+    "ISBN": [
+     "ISBN"
+    ],
+    "ISSN": [
+     "ISSN"
+    ],
+    "PMCID": [
+     "PMCID"
+    ],
+    "PMID": [
+     "PMID"
+    ],
+    "URL": [
+     "url"
+    ],
+    "abstract": [
+     "abstractNote"
+    ],
+    "archive": [
+     "archive"
+    ],
+    "archive_location": [
+     "archiveLocation"
+    ],
+    "authority": [
+     "authority"
+    ],
+    "call-number": [
+     "callNumber",
+     "applicationNumber"
+    ],
+    "chapter-number": [
+     "session"
+    ],
+    "citation-key": [
+     "citationKey"
+    ],
+    "collection-number": [
+     "seriesNumber"
+    ],
+    "collection-title": [
+     "seriesTitle",
+     "series"
+    ],
+    "container-title": [
+     "publicationTitle",
+     "reporter",
+     "code"
+    ],
+    "dimensions": [
+     "artworkSize",
+     "runningTime"
+    ],
+    "edition": [
+     "edition"
+    ],
+    "event-place": [
+     "eventPlace"
+    ],
+    "event-title": [
+     "meetingName",
+     "conferenceName"
+    ],
+    "genre": [
+     "type",
+     "programmingLanguage"
+    ],
+    "issue": [
+     "issue",
+     "priorityNumbers"
+    ],
+    "journalAbbreviation": [
+     "journalAbbreviation"
+    ],
+    "language": [
+     "language"
+    ],
+    "license": [
+     "rights"
+    ],
+    "medium": [
+     "medium",
+     "system"
+    ],
+    "note": [
+     "extra"
+    ],
+    "number": [
+     "number"
+    ],
+    "number-of-pages": [
+     "numPages"
+    ],
+    "number-of-volumes": [
+     "numberOfVolumes"
+    ],
+    "original-publisher": [
+     "originalPublisher"
+    ],
+    "original-publisher-place": [
+     "originalPlace"
+    ],
+    "page": [
+     "pages"
+    ],
+    "part-number": [
+     "partNumber"
+    ],
+    "part-title": [
+     "partTitle"
+    ],
+    "publisher": [
+     "publisher"
+    ],
+    "publisher-place": [
+     "place"
+    ],
+    "references": [
+     "history",
+     "references"
+    ],
+    "scale": [
+     "scale"
+    ],
+    "section": [
+     "section",
+     "committee"
+    ],
+    "shortTitle": [
+     "shortTitle"
+    ],
+    "source": [
+     "libraryCatalog"
+    ],
+    "status": [
+     "status"
+    ],
+    "title": [
+     "title"
+    ],
+    "title-short": [
+     "shortTitle"
+    ],
+    "version": [
+     "versionNumber"
+    ],
+    "volume": [
+     "volume",
+     "codeNumber"
+    ]
+   }
+  },
+  "names": {
+   "author": "author",
+   "bookAuthor": "container-author",
+   "castMember": "performer",
+   "chair": "chair",
+   "composer": "composer",
+   "contributor": "contributor",
+   "creator": "author",
+   "director": "director",
+   "editor": "editor",
+   "executiveProducer": "executive-producer",
+   "guest": "guest",
+   "host": "host",
+   "interviewer": "interviewer",
+   "narrator": "narrator",
+   "organizer": "organizer",
+   "originalCreator": "original-author",
+   "podcaster": "host",
+   "producer": "producer",
+   "recipient": "recipient",
+   "reviewedAuthor": "reviewed-author",
+   "scriptwriter": "script-writer",
+   "seriesCreator": "series-creator",
+   "seriesEditor": "collection-editor",
+   "translator": "translator"
+  },
+  "types": {
+   "article": [
+    "preprint"
+   ],
+   "article-journal": [
+    "journalArticle"
+   ],
+   "article-magazine": [
+    "magazineArticle"
+   ],
+   "article-newspaper": [
+    "newspaperArticle"
+   ],
+   "bill": [
+    "bill"
+   ],
+   "book": [
+    "book"
+   ],
+   "broadcast": [
+    "podcast",
+    "tvBroadcast",
+    "radioBroadcast"
+   ],
+   "chapter": [
+    "bookSection"
+   ],
+   "dataset": [
+    "dataset"
+   ],
+   "document": [
+    "document",
+    "attachment",
+    "note"
+   ],
+   "entry-dictionary": [
+    "dictionaryEntry"
+   ],
+   "entry-encyclopedia": [
+    "encyclopediaArticle"
+   ],
+   "graphic": [
+    "artwork"
+   ],
+   "hearing": [
+    "hearing"
+   ],
+   "interview": [
+    "interview"
+   ],
+   "legal_case": [
+    "case"
+   ],
+   "legislation": [
+    "statute"
+   ],
+   "manuscript": [
+    "manuscript"
+   ],
+   "map": [
+    "map"
+   ],
+   "motion_picture": [
+    "film",
+    "videoRecording"
+   ],
+   "paper-conference": [
+    "conferencePaper"
+   ],
+   "patent": [
+    "patent"
+   ],
+   "personal_communication": [
+    "letter",
+    "email",
+    "instantMessage"
+   ],
+   "post": [
+    "forumPost"
+   ],
+   "post-weblog": [
+    "blogPost"
+   ],
+   "report": [
+    "report"
+   ],
+   "software": [
+    "computerProgram"
+   ],
+   "song": [
+    "audioRecording"
+   ],
+   "speech": [
+    "presentation"
+   ],
+   "standard": [
+    "standard"
+   ],
+   "thesis": [
+    "thesis"
+   ],
+   "webpage": [
+    "webpage"
+   ]
+  }
+ },
  "itemTypes": {
   "annotation": {},
   "artwork": {
