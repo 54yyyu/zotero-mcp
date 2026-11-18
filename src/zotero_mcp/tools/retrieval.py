@@ -73,8 +73,9 @@ def _fulltext_section_heading(
     description=(
         "Metadata for ONE item by its 8-character key (not a DOI or title): "
         "title, creators, date, DOI, tags, abstract, URL, collections (as "
-        "keys). format: 'markdown' (default), 'json' (the raw Zotero record) "
-        "or 'bibtex'. include_abstract=False shortens markdown output. "
+        "keys). format: 'markdown' (default), 'json' (the Zotero record) "
+        "or 'bibtex'. Signed attachment URLs are omitted. "
+        "include_abstract=False shortens markdown output. "
         "Trashed items are returned too, marked In Trash. To read the paper "
         "use zotero_get_item_fulltext; to find items, the search tools."
     )
@@ -94,7 +95,7 @@ def get_item_metadata(
         item_key: Zotero item key/ID
         include_abstract: Whether to include the abstract in the output (markdown format only)
         format: Output format - 'markdown' for a readable summary, 'json' for
-            the complete raw Zotero item, or 'bibtex' for BibTeX citation
+            the Zotero record with signed attachment URLs omitted, or 'bibtex'
         ctx: MCP context
 
     Returns:
@@ -114,6 +115,8 @@ def get_item_metadata(
             return f"No item found with key: {item_key}"
 
         if format == "json":
+            if isinstance(data := item.get("data"), dict):
+                item = {**item, "data": _utils.redact_signed_attachment_url(data)}
             return json.dumps(item, ensure_ascii=False, indent=2, sort_keys=True)
         if format == "bibtex":
             return _client.generate_bibtex(item)

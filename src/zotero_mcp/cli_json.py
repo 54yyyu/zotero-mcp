@@ -105,13 +105,13 @@ def project_item(item: dict, detail: str = "summary") -> dict:
     * ``keys_only`` -- key, type, title, date. Enough to decide what to fetch
       next, and small enough to list a whole library.
     * ``summary`` (default) -- adds creators, DOI, publication, tags.
-    * ``full`` -- adds the abstract and the complete raw ``data`` dict under
-      ``raw``, for callers that need a field this projection doesn't name.
+    * ``full`` -- adds the abstract and the Zotero ``data`` dict under ``raw``,
+      with signed attachment URLs omitted.
 
     Every level carries ``key`` and ``itemType``, so a consumer can always
     identify what it is holding.
     """
-    from zotero_mcp.utils import item_display_title
+    from zotero_mcp.utils import item_display_title, redact_signed_attachment_url
 
     data = item.get("data", {}) or {}
     out: dict[str, Any] = {
@@ -130,11 +130,16 @@ def project_item(item: dict, detail: str = "summary") -> dict:
     if detail == "keys_only":
         return out
 
+    data = redact_signed_attachment_url(data)
     out["creators"] = _creators(data)
     for field, key in (("DOI", "doi"), ("publicationTitle", "publication"),
                        ("url", "url"), ("parentItem", "parentItem")):
         if value := data.get(field):
             out[key] = value
+    if data.get("itemType") == "attachment":
+        for field in ("contentType", "filename"):
+            if value := data.get(field):
+                out[field] = value
     out["tags"] = [
         t.get("tag") for t in data.get("tags", []) or [] if isinstance(t, dict) and t.get("tag")
     ]
