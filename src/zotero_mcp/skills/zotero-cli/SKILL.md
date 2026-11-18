@@ -10,15 +10,24 @@ server when you have shell access: the MCP server's tool schemas cost ~14k
 tokens of context on every request whether or not you use them, while this
 costs only what you actually run.
 
-Check it is set up before the first real call:
+Before the first library operation, inspect the resolved settings and try a
+small read from the active library.
 
 ```bash
-zotero-cli config          # prints the resolved Zotero settings
+zotero-cli config                       # display the resolved settings
+zotero-cli --json get recent --limit 1   # return at most one item
 ```
 
-If that fails, Zotero is not reachable. Local mode needs the Zotero desktop
-app running with its local API enabled; web mode needs `ZOTERO_API_KEY` and
-`ZOTERO_LIBRARY_ID`. Say so rather than guessing at library contents.
+`config` only displays settings. A read response with `ok: true` confirms read
+access even when `data.items` is empty. SQLite-backed reads can succeed with Zotero
+closed. Writes through the local API require Zotero running with its local API
+enabled and write access authorized.
+
+If the read fails, report `error.message`. For local mode, check that the CLI
+can find and read `zotero.sqlite` (set `ZOTERO_DB_PATH` for a custom location).
+If reading through the local API, check that Zotero is running and its local
+API is enabled. For web mode, check `ZOTERO_LIBRARY_ID` and that `ZOTERO_API_KEY`
+has read access to that library.
 
 ## Always pass --json when you will read the output
 
@@ -211,9 +220,9 @@ or newer) or web API credentials. A write refused for that reason says so.
 
 ## When something looks wrong
 
-- Empty search results: check `zotero-cli config` and, for semantic mode,
-  `zotero-cli db status`. Do not report "you have no papers on X" until you
-  know the library is actually reachable and indexed.
+- Empty search results: confirm read access with
+  `zotero-cli --json get recent --limit 1`. For semantic mode, also check the
+  index with `zotero-cli db status`.
 - `ok: false`: read `error.message`. It names the cause.
 - A partial-results note on a search means the scan was cut short, not that
   nothing else matched. Narrow the query and re-run.
