@@ -347,6 +347,7 @@ def list_annotations(
             better_bibtex_annotations = []
             zotero_api_annotations = []
             pdf_annotations = []
+            all_children = None
 
             # Try Better BibTeX method (local Zotero only)
             if os.environ.get("ZOTERO_LOCAL", "").lower() in ["true", "yes", "1"]:
@@ -400,19 +401,27 @@ def list_annotations(
                         # Process annotations if citation key found
                         if citation_key:
                             try:
-                                # Determine library
-                                library = "*"  # Default all libraries
-                                search_results = bibtex._make_request("item.search", [citation_key])
-                                if search_results:
-                                    matched_item = next((item for item in search_results if item.get('citekey') == citation_key), None)
-                                    if matched_item:
-                                        library = matched_item.get('library', "*")
-
-                                # Get attachments
-                                attachments = bibtex.get_attachments(citation_key, library)
+                                group_id = _client.get_active_group_id()
+                                library_prefix = f"groups/{group_id}" if group_id else "library"
+                                attachment_prefix = f"zotero://open-pdf/{library_prefix}/items/"
+                                attachments = bibtex.get_attachments(citation_key, group_id or None)
+                                if attachments and not _is_attachment:
+                                    all_children = backend.get_children([item_key]).get(item_key, [])
+                                attachment_keys = {item_key} if _is_attachment else {
+                                    child["key"] for child in (all_children or [])
+                                    if child.get("data", {}).get("itemType") == "attachment"
+                                }
 
                                 # Process annotations from attachments
                                 for attachment in attachments:
+                                    # Citekeys and item keys can repeat across libraries.
+                                    # The reader link identifies both the library and the attachment.
+                                    reader_link = attachment.get("open")
+                                    if not isinstance(reader_link, str) or not reader_link.startswith(attachment_prefix):
+                                        continue
+                                    attachment_key = reader_link.removeprefix(attachment_prefix)
+                                    if attachment_key not in attachment_keys:
+                                        continue
                                     annotations = bibtex.get_annotations_from_attachment(attachment)
 
                                     for anno in annotations:
@@ -427,11 +436,7 @@ def list_annotations(
                                                     "annotationText": processed.get("annotatedText", ""),
                                                     "annotationComment": processed.get("comment", ""),
                                                     "annotationColor": processed.get("color", ""),
-                                                    "parentItem": (
-                                                        attachment.get("itemKey")
-                                                        or attachment.get("key")
-                                                        or item_key
-                                                    ),
+                                                    "parentItem": attachment_key,
                                                     # Better BibTeX hands tags back as
                                                     # bare strings; normalize to Zotero's
                                                     # {"tag": ...} shape so they render (#377).
@@ -478,7 +483,8 @@ def list_annotations(
                         # attachments (parent -> attachment -> annotation).
                         # Only PDF, EPUB, and snapshot attachments carry annotations.
                         _annotatable = {"application/pdf", "application/epub+zip", "text/html"}
-                        all_children = backend.get_children([item_key]).get(item_key, [])
+                        if all_children is None:
+                            all_children = backend.get_children([item_key]).get(item_key, [])
                         att_keys = [
                             c["key"] for c in all_children
                             if c.get("data", {}).get("itemType") == "attachment"

@@ -208,4 +208,6 @@ Zotero MCP includes advanced PDF annotation extraction capabilities:
 
 For optimal annotation extraction, it is **highly recommended** to install the [Better BibTeX plugin](https://retorque.re/zotero-better-bibtex/installation/) for Zotero. The annotation-related functions have been primarily tested with this plugin and provide enhanced functionality when it's available.
 
+When listing annotations for an item, Zotero MCP accepts Better BibTeX results for that item's attachments in the active library. If Better BibTeX returns no matching annotations, Zotero MCP reads annotations from the configured Zotero backend.
+
 The first time you use PDF annotation features, the necessary tools will be automatically downloaded.
