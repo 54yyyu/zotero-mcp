@@ -571,7 +571,7 @@ def test_an_explicit_batch_run_counts_as_covering_standalone_files(env):
     search.update_database()
 
     saved = json.loads(Path(env.config).read_text())["semantic_search"]["update_config"]
-    assert saved["standalone_files_indexed"] is True
+    assert saved["standalone_files_indexed"] == {"0": True}
 
 
 def test_an_automatic_batch_run_does_not(env):
