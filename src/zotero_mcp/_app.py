@@ -222,7 +222,7 @@ if _serverless.ENABLED:
 else:
     from fastmcp import FastMCP
 
-    from zotero_mcp._tool_schema import advertise
+    from zotero_mcp._tool_schema import advertise, drop_null_defaults
 
     class _ZoteroMCP(FastMCP):
         """FastMCP whose tools get a context they can log to synchronously.
@@ -256,6 +256,20 @@ else:
                 return register(name_or_fn, lambda f: super(_ZoteroMCP, self).tool(f, **kwargs))
             decorator = super().tool(name_or_fn, **kwargs)
             return lambda fn: register(fn, decorator)
+
+        async def list_tools(self, *args, **kwargs):
+            # Every listing, the client's included, comes through here on
+            # FastMCP 3 and 4. The tools are the registered objects, so after
+            # the first listing there is nothing left to drop. Should a
+            # release list them some other way, the schemas are merely as
+            # FastMCP generated them.
+            tools = await super().list_tools(*args, **kwargs)
+            try:
+                for tool in tools:
+                    drop_null_defaults(getattr(tool, "parameters", None))
+            except Exception:  # pragma: no cover - defensive
+                pass
+            return tools
 
         def resource(self, uri, **kwargs):
             # Resources read the active library too, which on HTTP is the
