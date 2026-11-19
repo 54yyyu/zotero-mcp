@@ -2484,7 +2484,9 @@ class ZoteroSemanticSearch:
                 # include rows from a WAL checkpoint that landed mid-scan.
                 self._last_scan_snapshot_keys = reader.get_all_item_keys()
                 try:
-                    self._non_indexed_keys = set(reader.get_non_indexed_item_keys())
+                    self._non_indexed_keys = set(
+                        reader.get_non_indexed_item_keys(group_id=int(self._pinned_group_id()))
+                    )
                 except Exception as e:
                     logger.debug(f"Could not read the note and annotation keys: {e}")
                 # Library attribution (#163): map every item key to its
