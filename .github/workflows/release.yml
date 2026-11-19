@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest]
-        python-version: ["3.10", "3.11", "3.12"]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
         # What a fresh install resolves (the pin is >=2.14,<5).
         fastmcp: [">=4,<5"]
         # PDF text extraction is a compiled dependency shipping per-platform
