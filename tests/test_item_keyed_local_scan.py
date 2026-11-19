@@ -526,6 +526,35 @@ def test_an_unchanged_legacy_item_writes_nothing(env):
     assert "title" in _meta(search, "ITEM0001")
 
 
+def test_a_renamed_or_moved_file_does_not_re_embed_its_legacy_item(env):
+    reader = _library()
+    search, _ = env(reader, update=False)
+    _seed_legacy(search)
+    # The file moved (ZotMoov) and was renamed: same key, same bytes and mtime.
+    original = target("PDFAAAAA")
+    moved = dataclasses.replace(original, path=original.path.parent / "moved" / "renamed.pdf")
+    reader.targets = {1: [moved]}
+
+    search, _ = env(reader, automatic=True)
+
+    assert search.chroma_client.embedded == []
+    assert reader.extracted == []
+    assert _all_ids(search) == {"ITEM0001", "ITEM0001#0", "ITEM0001#1", "ITEM0001#2"}
+    assert "title" in _meta(search, "ITEM0001")
+
+
+def test_a_new_file_still_counts_against_its_legacy_item(env):
+    reader = _library()
+    search, _ = env(reader, update=False)
+    _seed_legacy(search)
+    reader.targets = {1: [target("PDFAAAAA"), target("PDFBBBBB")]}
+    reader.rows = {1: [["PDFAAAAA", "/x/a.pdf", "application/pdf"], ["PDFBBBBB", "/x/b.pdf", "application/pdf"]]}
+
+    search, _ = env(reader, automatic=True)
+
+    assert "title" not in _meta(search, "ITEM0001")
+
+
 def _seed_unmigrated_passages(search, *, split=False):
     """A 0.16 index: passages with copied metadata, no record of the item itself.
 

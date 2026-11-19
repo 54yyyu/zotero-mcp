@@ -878,6 +878,84 @@ def test_a_changed_attachment_counts_as_a_change_of_its_legacy_parent(env):
     assert "title" not in meta(search, "ITEM0001")
 
 
+def _legacy_with_files(search, key="ITEM0001", attachment_keys="PDFAAAAA"):
+    search.chroma_client.upsert_documents(
+        ["Paper with its text"],
+        [
+            {
+                "item_key": key, "title": "Paper", "group_id": 0, "date_modified": DATE,
+                "has_fulltext": True, "attachment_keys": attachment_keys,
+            }
+        ],
+        [key],
+    )
+
+
+def _only_children_changed_since(env, *rows):
+    env.zot.put(paper("ITEM0001"), version=5)
+    env.zot.put(*rows, version=6)
+    config = json.loads(Path(env.config).read_text())
+    config["semantic_search"]["last_sync_version"] = 5
+    Path(env.config).write_text(json.dumps(config))
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        {"filename": "renamed.pdf"},
+        {"title": "A new title for the file"},
+        {"filename": "moved/by/zotmoov.pdf", "date": "2024-06-01T00:00:00Z"},
+    ],
+    ids=["renamed", "retitled", "moved"],
+)
+def test_a_renamed_attachment_does_not_re_embed_its_legacy_parent(env, changed):
+    library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
+    search = env.search()
+    _legacy_with_files(search)
+    # Same md5 and mtime: the file's bytes are the same.
+    row = attachment("PDFAAAAA", "ITEM0001", filename=changed.get("filename"), date=changed.get("date", DATE))
+    if "title" in changed:
+        row["data"]["title"] = changed["title"]
+    _only_children_changed_since(env, row)
+
+    search, _stats = env.update()
+
+    assert search.chroma_client.embedded == []
+    assert records(search) == {"ITEM0001"}
+    assert "title" in meta(search, "ITEM0001")
+
+
+def test_a_new_attachment_still_counts_against_a_legacy_parent_with_known_files(env):
+    library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
+    search = env.search()
+    _legacy_with_files(search)
+    env.zot.texts["PDFBBBBB"] = TEXT + " more"
+    _only_children_changed_since(env, attachment("PDFBBBBB", "ITEM0001"))
+
+    search, _stats = env.update()
+
+    assert records(search) >= {"ITEM0001", "PDFBBBBB"}
+    assert "title" not in meta(search, "ITEM0001")
+
+
+def test_a_trashed_attachment_still_counts_against_a_legacy_parent(env):
+    library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
+    search = env.search()
+    _legacy_with_files(search)
+    env.zot.put(paper("ITEM0001"), version=5)
+    env.zot.rows["PDFAAAAA"]["data"]["deleted"] = 1
+    env.zot.rows["PDFAAAAA"]["version"] = 6
+    env.zot.version = 6
+    env.zot.trashed_in_versions = True
+    config = json.loads(Path(env.config).read_text())
+    config["semantic_search"]["last_sync_version"] = 5
+    Path(env.config).write_text(json.dumps(config))
+
+    search, _stats = env.update()
+
+    assert "title" not in meta(search, "ITEM0001")
+
+
 def test_a_trashed_standalone_attachment_is_removed_by_an_incremental_run(env):
     library(env, paper("ITEM0001"), attachment("LONEPDF1"), LONEPDF1=TEXT)
     search, _stats = env.update()
