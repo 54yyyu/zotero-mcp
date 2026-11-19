@@ -11,6 +11,7 @@ from typing import Literal
 
 from zotero_mcp import client as _client
 from zotero_mcp import library as _library
+from zotero_mcp import _serverless
 from zotero_mcp import search_semantics as _semantics
 from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
@@ -523,6 +524,7 @@ def search_items(
         if tag:
             tag_condition_str = f" with tags: '{', '.join(tag)}'"
 
+        semantic_skipped = False
         ctx.info(f"Searching Zotero for '{query}'{tag_condition_str}")
         backend = _library.get_library_backend()
         # Constructing the client makes no request — only calling it does — so
@@ -631,9 +633,15 @@ def search_items(
                 # Strategy 4: Semantic search (if database exists)
                 if not _check_cascade_timeout() and not items:
                     try:
-                        from zotero_mcp.semantic_search import create_semantic_search
                         config_path = Path.home() / ".config" / "zotero-mcp" / "config.json"
-                        if config_path.exists():
+                        if config_path.exists() and _serverless.ENABLED:
+                            # zotero-cli is a new process for every command, so
+                            # this step would load the embedding model, about
+                            # 11 s, each time a keyword search misses (#796).
+                            # The server pays that once and keeps the model.
+                            semantic_skipped = True
+                        elif config_path.exists():
+                            from zotero_mcp.semantic_search import create_semantic_search
                             ctx.info(f"Retry with semantic search: '{query}'")
                             t0 = _time.monotonic()
                             sem_search = create_semantic_search(str(config_path))
@@ -681,7 +689,12 @@ def search_items(
 
         # --- No results after all strategies ---
         if not items:
-            return f"No items found matching query: '{query}'{tag_condition_str}"
+            hint = (
+                ". Semantic search was not tried; run it with "
+                "`zotero-cli search --mode semantic`."
+                if semantic_skipped else ""
+            )
+            return f"No items found matching query: '{query}'{tag_condition_str}{hint}"
 
         # --- Format results as markdown ---
         output = [f"# Search Results for '{query}'", f"{tag_condition_str}", ""]

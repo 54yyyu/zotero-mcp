@@ -116,3 +116,22 @@ def test_fallback_tag_match_folds_case_and_accents_like_the_text_search():
     kept = search_module._filter_fallback_items(items, None, ["indice"])
     assert [i["key"] for i in kept] == ["AAA00005"]
     assert search_module._filter_fallback_items(items, None, ["-INDICE"]) == []
+
+
+def test_one_shot_cli_skips_the_semantic_step_and_says_so(semantic_only, monkeypatch):
+    """zotero-cli is a new process per command: the semantic step would load
+    the embedding model (about 11 s) on every keyword miss (#796)."""
+    import zotero_mcp.semantic_search as semantic_module
+
+    monkeypatch.setattr(search_module._serverless, "ENABLED", True)
+    result = _search(limit=10)
+
+    semantic_module.create_semantic_search.assert_not_called()
+    assert result.startswith("No items found matching query")
+    assert "`zotero-cli search --mode semantic`" in result
+
+
+def test_server_still_falls_back_to_semantic_search(semantic_only):
+    result = _search(limit=10)
+    assert "Tagged Article" in result
+    assert "zotero-cli" not in result
