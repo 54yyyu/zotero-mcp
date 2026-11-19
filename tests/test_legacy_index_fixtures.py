@@ -619,3 +619,46 @@ def test_turning_chunking_on_writes_only_the_missing_passages(second_run, tmp_pa
     assert again.get("error") is None and again["errors"] == 0, again
     assert StrictEmbedding.seen == []
     assert library.snapshot() == done
+
+
+def test_db_inspect_prints_a_legacy_only_index_exactly_as_0171_did(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from zotero_mcp.index_inspect import inspect_index
+
+    library = Library("v0171", tmp_path, monkeypatch)
+    client = library.search_object().chroma_client
+    search = SimpleNamespace(chroma_client=client, _open_local_reader=lambda: None)
+
+    def run(**kwargs):
+        lines = []
+        args = {"stats": False, "limit": 50, "filter_text": None, "show_documents": False, **kwargs}
+        inspect_index(search, out=lines.append, **args)
+        return lines
+
+    stats = run(stats=True)
+    assert stats[:3] == [
+        "=== Semantic DB Inspection (Stats) ===",
+        f"Collection: zotero_library @ {library.persist_dir}",
+        "Count: 34",
+    ]
+    assert stats[3:] == [
+        "Item types:",
+        "  journalArticle: 34",
+        "Fulltext coverage (by type):",
+        "  journalArticle: 32/34 (pdf:32, html:0)",
+        "Common titles:",
+        "  Glacier retreat in the Alps since 1850: 20",
+        "  Bayesian methods in community ecology: 7",
+        "  Neural networks for soil moisture retrieval: 5",
+        "  A note on lichen taxonomy: 2",
+    ]
+
+    records = run(filter_text="lichen")
+    assert records[:2] == ["=== Semantic DB Inspection ===", "Total documents: 34"]
+    assert records[2:] == [
+        "Showing up to: 50",
+        "- A note on lichen taxonomy | Lindqvist, Sara",
+        "- A note on lichen taxonomy | Lindqvist, Sara",
+    ]
+    assert run(filter_text="no such thing")[-1] == "No records matched your filter."

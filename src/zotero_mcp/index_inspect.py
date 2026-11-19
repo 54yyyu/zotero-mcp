@@ -46,6 +46,14 @@ def record_kind(doc_id: str, meta: dict[str, Any]) -> str:
     return KIND_PASSAGE if "#" in doc_id else KIND_BIBLIOGRAPHIC
 
 
+def _only_legacy(client: Any) -> bool:
+    """True when every record is a 0.17 (or older) one; stops at the first that is not.
+
+    Such an index is printed exactly as 0.17.1 printed it, for the scripts that read it.
+    """
+    return all(record_kind(doc_id, meta) == KIND_LEGACY for doc_id, meta, _ in _iter_records(client, False))
+
+
 def _iter_records(client: Any, include_documents: bool) -> Iterator[tuple[str, dict[str, Any], str | None]]:
     include = ["metadatas", "documents"] if include_documents else ["metadatas"]
     for col in client.collections():
@@ -196,6 +204,21 @@ def _print_stats(client: Any, live: _Live, out: Callable[[str], None]) -> None:
         if meta.get("title"):
             legacy_titles[meta["title"]] += 1
 
+    if not any(kinds[k] for k in _KINDS if k != KIND_LEGACY):
+        # 0.17.1's output, for an index that only has records of that kind.
+        out("Item types:")
+        for t, c in legacy_types.most_common(20):
+            out(f"  {t}: {c}")
+        out("Fulltext coverage (by type):")
+        for t, cov in legacy_coverage.items():
+            out(f"  {t}: {cov['with_fulltext']}/{cov['total']} (pdf:{cov['pdf']}, html:{cov['html']})")
+        common = legacy_titles.most_common(10)
+        if common:
+            out("Common titles:")
+            for t, c in common:
+                out(f"  {t[:80]}{'...' if len(t) > 80 else ''}: {c}")
+        return
+
     out("Record kinds:")
     for kind in _KINDS:
         out(f"  {kind}: {kinds[kind]}")
@@ -241,6 +264,7 @@ def _print_records(
     out(f"Showing up to: {limit}")
 
     needle = filter_text.lower() if filter_text else None
+    legacy_only = _only_legacy(client)
     shown = 0
     unmatchable = 0
     for doc_id, meta, doc, fields in _resolved(client, live, show_documents):
@@ -253,7 +277,7 @@ def _print_records(
         kind = record_kind(doc_id, meta)
         title = fields["title"] if fields else ""
         creators = fields["creators"] if fields else ""
-        out(f"- {title} | {creators} [{kind} {doc_id}]")
+        out(f"- {title} | {creators}" if legacy_only else f"- {title} | {creators} [{kind} {doc_id}]")
         if show_documents:
             full = (doc or "").strip()
             snippet = full[:200].replace("\n", " ")
