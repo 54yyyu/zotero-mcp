@@ -15,7 +15,6 @@ from zotero_mcp.cli_standalone import (
     cmd_edit,
     cmd_notes,
     cmd_search,
-    cmd_tags,
     main,
 )
 
@@ -488,49 +487,35 @@ class TestCmdEdit:
 
 
 # ---------------------------------------------------------------------------
-# cmd_tags
+# CLIContext
 # ---------------------------------------------------------------------------
 
-class TestCmdTags:
-    """Parsed from real argv, with batch_update_tags autospecced, so a flag
-    the parser lacks or a kwarg the tool lacks fails here."""
+def test_the_cli_context_says_the_process_is_one_shot():
+    """A tool can tell a command that runs once from the long-lived server,
+    whose context has no such attribute."""
+    from conftest import DummyContext
 
-    def _run(self, argv):
-        mock_write = MagicMock()
-        mock_write.batch_update_tags = create_autospec(
-            write_tools.batch_update_tags, return_value="ok")
-        args = build_parser().parse_args(["tags", *argv])
-        with patch("zotero_mcp.cli_standalone.setup_zotero_environment"):
-            with patch("zotero_mcp.cli_standalone._import_tools",
-                       return_value=(MagicMock(), MagicMock(), MagicMock(),
-                                     mock_write, MagicMock())):
-                cmd_tags(args)
-        return mock_write.batch_update_tags.call_args.kwargs
+    from zotero_mcp.cli_standalone import CLIContext, _ctx
 
-    def test_warns_on_stderr_that_it_is_deprecated(self, capsys):
-        self._run(["--tag", "a", "--add", "b"])
-        assert "zotero-cli tags is deprecated" in capsys.readouterr().err
+    assert CLIContext().one_shot is True
+    assert _ctx(build_parser().parse_args(["search", "x"])).one_shot is True
+    assert getattr(DummyContext(), "one_shot", False) is False
 
-    def test_comma_separated_flags_still_split(self):
-        kwargs = self._run(["--tag", "a,b", "--add", "x, y", "--remove", "z"])
-        assert kwargs["tag"] == ["a", "b"]
-        assert kwargs["add_tags"] == ["x", "y"]
-        assert kwargs["remove_tags"] == ["z"]
 
-    def test_json_array_addresses_a_tag_containing_a_comma(self):
-        kwargs = self._run([
-            "--tag", '["Barrel organ, Hydraulic"]',
-            "--remove", '["Barrel organ, Hydraulic"]',
-        ])
-        assert kwargs["tag"] == ["Barrel organ, Hydraulic"]
-        assert kwargs["remove_tags"] == ["Barrel organ, Hydraulic"]
+# ---------------------------------------------------------------------------
+# tags (removed)
+# ---------------------------------------------------------------------------
 
-    def test_item_keys_select_a_known_set_of_items(self):
-        kwargs = self._run(["--item-keys", "ABCD1234,EFGH5678", "--remove", "x"])
-        assert kwargs["item_keys"] == ["ABCD1234", "EFGH5678"]
-
-    def test_item_keys_default_to_none(self):
-        assert self._run(["--tag", "x", "--remove", "x"])["item_keys"] is None
+def test_the_tags_command_is_gone(capsys):
+    """Deprecated in 0.15.2 for `batch --add-tags/--remove-tags`, with removal
+    announced for 0.17; `get tags` (listing) is a different command and stays."""
+    parser = build_parser()
+    with pytest.raises(SystemExit) as exc:
+        parser.parse_args(["tags", "--tag", "a", "--add", "b"])
+    assert exc.value.code == 2
+    assert "invalid choice: 'tags'" in capsys.readouterr().err
+    assert parser.parse_args(["get", "tags"]).subcommand == "tags"
+    assert parser.parse_args(["batch", "--tag", "a", "--add-tags", "b"]).add_tags == "b"
 
 
 # ---------------------------------------------------------------------------

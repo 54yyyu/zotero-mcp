@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from unittest.mock import patch
 
@@ -34,6 +35,94 @@ async def test_lifespan_yields_while_update_child_runs():
             assert procs, "the update child was never started"
             assert procs[0].poll() is None
     assert procs[0].wait(timeout=10) is not None
+
+
+# Stands in for ``update-db --fulltext`` with ``extraction.workers`` > 1: a
+# pool whose workers are busy when the server shuts down. A file, not ``-c``,
+# because spawned workers re-import the main module.
+_POOL_CHILD = """
+import os, sys, time
+from concurrent.futures import ProcessPoolExecutor
+
+
+def work(out_dir):
+    with open(os.path.join(out_dir, f"worker-{os.getpid()}.pid"), "w") as f:
+        f.write(str(os.getpid()))
+    time.sleep(120)
+
+
+if __name__ == "__main__":
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(work, sys.argv[1]) for _ in range(2)]
+        print("pool busy", flush=True)
+        for future in futures:
+            future.result()
+"""
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="checks liveness with POSIX signal 0")
+@pytest.mark.timeout(90)
+@pytest.mark.asyncio
+async def test_shutdown_stops_the_update_childs_pool_workers(tmp_path):
+    """Shutting down stops the update's worker processes too, and returns.
+
+    Terminating only the child orphaned its pool workers. They kept the
+    output pipe open, so the thread relaying it never finished and the server
+    could not exit until they were killed by hand.
+    """
+    script = tmp_path / "pool_child.py"
+    script.write_text(_POOL_CHILD)
+    procs = []
+
+    def spawn(cmd):
+        procs.append(_spawn_semantic_update(cmd))
+        return procs[-1]
+
+    worker_pids: list[int] = []
+    try:
+        with patch("zotero_mcp._app._semantic_update_command",
+                   return_value=[sys.executable, str(script), str(tmp_path)]), \
+                patch("zotero_mcp._app._spawn_semantic_update", spawn):
+            async with server_lifespan(None):
+                deadline = time.monotonic() + 60
+                while len(list(tmp_path.glob("worker-*.pid"))) < 2:
+                    assert time.monotonic() < deadline, "the pool never started"
+                    await asyncio.sleep(0.1)
+                # A pid file exists before it is written; read once both are.
+                await asyncio.sleep(0.2)
+                worker_pids = [int(p.read_text()) for p in tmp_path.glob("worker-*.pid")]
+                assert all(_alive(pid) for pid in worker_pids)
+                leaving = time.monotonic()
+        assert time.monotonic() - leaving < 15, "shutdown waited for the workers"
+        assert procs[0].wait(timeout=10) is not None
+
+        deadline = time.monotonic() + 10
+        while any(_alive(pid) for pid in worker_pids) and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert not any(_alive(pid) for pid in worker_pids), "pool workers outlived the server"
+
+        # Nothing holds the pipe any more, so its reader reaches end of file.
+        relay = [t for t in threading.enumerate() if t.name == "zotero-mcp-update-relay"]
+        for thread in relay:
+            thread.join(timeout=10)
+            assert not thread.is_alive(), "the output relay is still blocked on the pipe"
+    finally:
+        for pid in worker_pids:
+            if _alive(pid):
+                os.kill(pid, 9)
+        for proc in procs:
+            if proc.poll() is None:
+                proc.kill()
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,12 @@ permissions:
   contents: read
   packages: write
 
+# A newer push to a pull request replaces the build in progress; a main or tag
+# build, which publishes images, always runs to the end.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   docker:
     runs-on: ubuntu-latest

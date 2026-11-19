@@ -9,6 +9,9 @@ while the function, and so argument validation, is untouched:
 
 * a ``null`` branch is dropped when the default is already ``None``; leaving
   the argument out says the same thing;
+* ``"default": null`` is dropped for the same reason: a parameter that is not
+  required and names no default already reads as "leave it out"
+  (:func:`drop_null_defaults`);
 * ``"additionalProperties": true`` is dropped; it is the JSON Schema default;
 * for list and count parameters named in :data:`LIST_PARAMS` and
   :data:`COUNT_PARAMS`, only the canonical shape (an array of strings, an
@@ -69,6 +72,24 @@ def compact(name: str, schema: dict, default: Any) -> dict:
     if len(branches) == 1:
         return {**rest, **branches[0]}
     return {**rest, "anyOf": branches}
+
+
+def drop_null_defaults(parameters: Any) -> None:
+    """Remove ``"default": null`` from a tool's parameter schemas, in place.
+
+    Pydantic writes the default into the schema after every annotation has had
+    its say, so this cannot be done where :func:`advertise` works; it is
+    applied to the finished schema when the tools are listed. Only the
+    advertised dict changes: the function's own default, and so what a call
+    without the argument or with ``null`` does, is untouched. Any other
+    default (``false``, ``10``, ``"auto"``) says something and stays.
+    """
+    properties = parameters.get("properties") if isinstance(parameters, dict) else None
+    if not isinstance(properties, dict):
+        return
+    for schema in properties.values():
+        if isinstance(schema, dict) and "default" in schema and schema["default"] is None:
+            del schema["default"]
 
 
 def advertise(wrapper, original) -> None:
