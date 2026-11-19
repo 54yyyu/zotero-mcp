@@ -389,6 +389,37 @@ def test_a_legacy_item_lacking_only_passages_gets_them_under_its_attachment(env)
         assert records(again) == {"ITEM0001"}
 
 
+@pytest.mark.parametrize("mark_landed", [True, False], ids=["marked", "run-stopped-before-the-mark"])
+@pytest.mark.parametrize("forget", [False, True], ids=["incremental", "full-scan"])
+@pytest.mark.parametrize("automatic", [False, True], ids=["explicit", "automatic"])
+def test_passages_filled_under_an_attachment_never_cost_an_attachment_record(automatic, forget, mark_landed, env):
+    """The passages-only fill leaves its attachment without a record of its own, as migrate-index does (review of #839, item 3)."""
+    library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
+    search = env.search()
+    _legacy_record(search, "ITEM0001")
+    search._save_update_config(last_sync_version=env.zot.version)
+    search, _stats = env.update()
+    passages = {i for i in all_ids(search) if "#" in i}
+    assert passages and records(search) == {"ITEM0001"}
+    if not mark_landed:
+        # The run died after the passages were stored and before the legacy record was marked.
+        collection = search.chroma_client.client.get_collection(NAME)
+        stored = collection.get(ids=["ITEM0001"], include=["documents", "embeddings", "metadatas"])
+        unmarked = {k: v for k, v in stored["metadatas"][0].items() if k != "rekeyed_to"}
+        collection.upsert(
+            ids=["ITEM0001"], metadatas=[unmarked], documents=stored["documents"], embeddings=stored["embeddings"]
+        )
+    if forget:
+        env.forget_sync_version()
+
+    again, _stats = env.update(automatic=automatic)
+
+    assert again.chroma_client.embedded == []
+    assert {i for i in all_ids(again) if "#" in i} == passages
+    assert records(again) == {"ITEM0001"}
+    assert meta(again, "ITEM0001").get("rekeyed_to") == "PDFAAAAA"
+
+
 def test_a_changed_legacy_item_is_rewritten_in_the_new_shape(env):
     library(env, paper("ITEM0001", date="2024-03-01T00:00:00Z"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
     search = env.search()
