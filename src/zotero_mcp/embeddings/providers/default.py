@@ -2,7 +2,7 @@
 
 import logging
 import os
-from functools import cached_property
+from functools import cached_property, lru_cache
 from typing import Any
 
 from chromadb import Documents, Embeddings
@@ -64,6 +64,14 @@ class ONNXMiniLM(ONNXMiniLM_L6_V2):
         )
 
 
+@lru_cache(maxsize=1)
+def _minilm(threads: int) -> ONNXMiniLM:
+    """One model per process (per thread setting): the ONNX session is built
+    on first use of an instance, and building it cost four fifths of every
+    query when each call made a new one."""
+    return ONNXMiniLM()
+
+
 @register_embedding_function
 class DefaultEmbeddingFunction(ChromaDefaultEmbeddingFunction):
     """ChromaDB's default embedding function, embedding through :class:`ONNXMiniLM`.
@@ -75,7 +83,7 @@ class DefaultEmbeddingFunction(ChromaDefaultEmbeddingFunction):
     """
 
     def __call__(self, input: Documents) -> Embeddings:
-        return ONNXMiniLM()(input)
+        return _minilm(_configured_threads())(input)
 
     @staticmethod
     def build_from_config(config: dict[str, Any]) -> "DefaultEmbeddingFunction":
