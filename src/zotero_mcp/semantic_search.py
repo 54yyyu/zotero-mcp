@@ -3387,7 +3387,26 @@ class ZoteroSemanticSearch:
             if not self._unit_is_current(bib, existing):
                 units.append(bib)
             units.extend(judged(attachments, rewrite=False))
+            # Already in the new shape but with old parent-keyed passages left
+            # beside it (a superseded run, a file that was out of reach): check
+            # again, so this run settles them once the replacements are stored.
+            # Needs an attachment to replace them: with none they are the only copy.
+            if (
+                attachments and existing and "group_id" in existing and "chunk_index" not in existing
+                and bib["key"] in self._legacy_passage_owners()
+            ):
+                self._expect_replacement(
+                    bib["key"], (bib.get("data") or {}).get("group_id"), [a["key"] for a in attachments]
+                )
         return units
+
+    def _legacy_passage_owners(self) -> set[str]:
+        """Keys that still have legacy parent-keyed passages; empty when the index can't say."""
+        lookup = getattr(self.chroma_client, "legacy_passage_keys", None)
+        try:
+            return set(lookup()) if lookup else set()
+        except Exception:
+            return set()
 
     def _unfinished_batch_run(self) -> str | None:
         """Run id of a batch run for this library that has not finished landing.
@@ -6278,8 +6297,10 @@ class ZoteroSemanticSearch:
 
             module.save_manifest(manifest)
 
-            if not superseded_by:
-                self._settle_legacy_passages(manifest.get("legacy_settle") or {})
+            # Settling reads what is stored and only deletes, so it is safe for a
+            # superseded run too: its records may be the ones that landed, and
+            # skipping it would leave the old passages beside them for good.
+            self._settle_legacy_passages(manifest.get("legacy_settle") or {})
 
             if not selected_ids:
                 # Importing the completed batches freed enqueued-token headroom,
