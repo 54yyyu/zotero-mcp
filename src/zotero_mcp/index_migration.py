@@ -212,10 +212,11 @@ class LocalSources:
         with several files the largest of the first category is the source,
         as it was chosen before #826.
 
-        None is a positive finding (the item is gone from Zotero, the choice
-        is ambiguous or has changed): its passages cannot be kept.
-        ``UNKNOWN`` means Zotero could not be asked, which says nothing about
-        the item: its passages must be left as they are.
+        None is a positive finding (the item is gone from Zotero, has no file
+        of the chosen kind, or its attachments or priority have changed): its
+        passages cannot be kept. ``UNKNOWN`` means the answer cannot be had
+        (Zotero could not be asked, or there are several files and no recorded
+        fingerprint), which says nothing about the item: its passages must be left as they are.
         """
         from .semantic_search import _WEB_ATTACHMENT_SOURCE
 
@@ -249,9 +250,14 @@ class LocalSources:
             return UNKNOWN
         if sorted(t.key for t in targets) != selected:
             return UNKNOWN
+        if len(targets) > 1 and stored is None:
+            # Several files and nothing recorded to say the attachments are
+            # the ones the passages were cut from: the update path keeps such
+            # an item as it is, so this cannot tell either.
+            return UNKNOWN
         if len(targets) == 1:
             chosen = targets[0]
-        elif targets and stored is not None:
+        elif len(targets) > 1:
             # Several files, the attachments unchanged since the passages were
             # written: the choice then was the first category's largest file.
             chosen = max(targets, key=lambda t: t.size)

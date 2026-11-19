@@ -356,14 +356,20 @@ def test_a_local_record_without_a_stored_fingerprint_is_rekeyed_when_one_file_is
     assert set(_read(directory, PASSAGES)) == {f"{ATT}#{n}" for n in range(3)}
 
 
-def test_a_local_record_without_a_stored_fingerprint_and_two_files_is_dropped(index):
+def test_a_local_record_without_a_stored_fingerprint_and_two_files_is_left_as_it_is(index):
+    """The update path keeps such an item as legacy; dropping it would cost a paid re-embed."""
     directory, config = index
     _seed_split(directory, att_keys=None)
     reader = MigReader([_item()], targets={1: [target(ATT), target("ATTACH02")]})
+    sources = LocalSources(reader, config)
 
-    report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+    dry = migrate_index(config, dry_run=True, sources=sources, **QUIET)
+    assert (dry.skipped_items, dry.skipped_passages, dry.dropped_items, dry.rekeyed_items) == (1, 3, 0, 0)
 
-    assert (report.rekeyed_items, report.dropped_items) == (0, 1)
+    report = migrate_index(config, sources=sources, **QUIET)
+
+    assert (report.rekeyed_items, report.dropped_items, report.skipped_items) == (0, 0, 1)
+    assert set(_read(directory, PASSAGES)) == {f"{ITEM}#{n}" for n in range(3)}
 
 
 class BrokenReader(MigReader):
