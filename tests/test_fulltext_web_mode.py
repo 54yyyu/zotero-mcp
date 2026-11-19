@@ -647,3 +647,48 @@ def test_a_changed_legacy_item_without_text_loses_its_passages(monkeypatch):
     assert bib["legacy_rewrite"] is True
     assert [u["key"] for u in units] == ["A"]
     assert settle["A"]["wanted"] == []
+
+
+# --------- Old passages left beside a new-shape record are settled by a later run (review of #839, item 7) ----------
+
+
+class NewShapeChroma(FakeChromaClient):
+    """A's bibliographic record is in the new shape; old ``A#n`` passages remain."""
+
+    def __init__(self, leftovers=True):
+        super().__init__()
+        self.leftovers = leftovers
+
+    def get_document_metadata(self, doc_id):
+        if doc_id == "A":
+            return {"item_key": "A", "group_id": 0, "date_modified": "2024-01-01T00:00:00Z"}
+        return None
+
+    def legacy_passage_keys(self):
+        return {"A"} if self.leftovers else set()
+
+
+def _plan_new_shape(monkeypatch, *, leftovers=True, attachment="PA"):
+    search = _build_search(monkeypatch, FakeZoteroClient(), NewShapeChroma(leftovers))
+    item = _paper("A")
+    if attachment:
+        item["data"]["fulltext"] = "text"
+        item["data"]["fulltextSource"] = f"web-api:attachment:{attachment}"
+        item["data"]["fulltextAttachment"] = {"file_stamp": "api-version:1"}
+    search._plan_units([item], force_rebuild=False)
+    return search._legacy_settle
+
+
+def test_a_new_shape_item_with_old_passages_left_is_queued_for_settling(monkeypatch):
+    settle = _plan_new_shape(monkeypatch)
+
+    assert settle["A"]["wanted"] == ["PA"]
+    assert "rekey_to" not in settle["A"], "settling deletes only; it never marks or embeds"
+
+
+def test_a_new_shape_item_without_old_passages_is_not_queued(monkeypatch):
+    assert not _plan_new_shape(monkeypatch, leftovers=False)
+
+
+def test_old_passages_with_no_attachment_to_replace_them_are_left_alone(monkeypatch):
+    assert not _plan_new_shape(monkeypatch, attachment=None)

@@ -914,3 +914,18 @@ def test_an_automatic_update_does_not_submit_the_whole_library_passage_fill(env)
 
     new = [i for job_id in list(env.fake.jobs)[submitted:] for i in env.fake.ids_in(job_id)]
     assert new == ["AAA", "PAAA"] + [f"PAAA#{i}" for i in range(5)], "a changed file gets both levels, PBBB nothing"
+
+
+def test_a_superseded_import_still_settles_the_legacy_passages_it_replaced(env, monkeypatch, tmp_path):
+    """Settling reads what is stored and only deletes: a superseded run's records may be the ones that landed."""
+    _isolate_home(monkeypatch, tmp_path)
+    search = env.build(FakeZotero({"AAA": LONG}), chunking=True)
+    _legacy_item(search)
+    search.update_database()
+    monkeypatch.setattr(search, "_superseded_by", lambda provider, manifest: "newer-run")
+    monkeypatch.setattr(search, "_items_newer_run_covers", lambda provider, manifest: set())
+
+    _land(env, search)
+
+    assert _ids(search) == {"AAA", "PAAA"}
+    assert not {f"AAA#{n}" for n in range(3)} & _all_stored(search), "the old passages are gone"
