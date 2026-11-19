@@ -1020,7 +1020,7 @@ def batch_update_extra(
 
     except Exception as e:
         ctx.error(f"Error in batch extra update: {str(e)}")
-        return f"Error in batch extra update: {str(e)}"
+        return f"Error in batch extra update: {_helpers.format_zotero_error(e)}"
 
 
 @mcp.tool(
@@ -1228,6 +1228,7 @@ def create_collection(
         "collection and its subcollections; items stay in the library."
     )
 )
+@with_zotero_api_lock
 def delete_collection(
     collection_key: str,
     *,
@@ -1668,8 +1669,10 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
     # Date
     date_parts = cr.get("published", cr.get("created", {})).get("date-parts", [[]])
     if date_parts and date_parts[0]:
-        parts = date_parts[0]
-        item_data["date"] = "-".join(str(p) for p in parts)
+        # Month and day zero-padded, as the CSL import writes them and as
+        # Zotero's own Crossref translator does: "2020-1-5" is not ISO.
+        year, *rest = date_parts[0]
+        item_data["date"] = "-".join([str(year), *(str(p).zfill(2) for p in rest)])
 
     # Simple string fields
     field_map = {
@@ -3607,6 +3610,7 @@ def update_item(
         "allow_note=True."
     )
 )
+@with_zotero_api_lock
 def delete_item(
     item_key: str,
     allow_note: bool = False,
@@ -5376,16 +5380,8 @@ def _build_relation_uri(library_type: str, library_id: str, item_key: str) -> st
     return f"http://zotero.org/{kind}/{library_id}/items/{item_key}"
 
 
-def _relation_exists(rel_list: list, library_id: str, item_key: str) -> bool:
-    """Check whether a relation to *item_key* already exists (either URI variant)."""
-    pattern = re.compile(
-        rf"http://zotero\.org/(?:users|groups)/{re.escape(str(library_id))}/items/{re.escape(item_key)}$"
-    )
-    return any(isinstance(uri, str) and pattern.search(uri) for uri in rel_list)
-
-
 def _find_matching_uri(rel_list: list, library_id: str, item_key: str) -> str | None:
-    """Find and return the actual URI string for *item_key* regardless of prefix."""
+    """The URI in *rel_list* naming *item_key*, under either prefix (users/ or groups/)."""
     pattern = re.compile(
         rf"http://zotero\.org/(?:users|groups)/{re.escape(str(library_id))}/items/{re.escape(item_key)}$"
     )
@@ -5395,10 +5391,70 @@ def _find_matching_uri(rel_list: list, library_id: str, item_key: str) -> str | 
     return None
 
 
+def _relation_list(item: dict, relation_type: str) -> list | None:
+    """The item's relations of one type as a list, or None when it has none.
+    The API gives a lone relation as a bare string."""
+    relations = item.get("data", {}).get("relations", {})
+    if not isinstance(relations, dict) or relation_type not in relations:
+        return None
+    rel_list = relations[relation_type]
+    return rel_list if isinstance(rel_list, list) else [rel_list]
+
+
+def _add_relation(item, relation_type, zot, other_key) -> bool:
+    """Add a relation to *other_key* on *item* (in place); False if it is there."""
+    rel_list = _relation_list(item, relation_type) or []
+    if _find_matching_uri(rel_list, zot.library_id, other_key) is not None:
+        return False
+    data = item["data"]
+    relations = data.get("relations", {})
+    if not isinstance(relations, dict):
+        relations = {}
+    relations[relation_type] = rel_list + [
+        _build_relation_uri(zot.library_type, zot.library_id, other_key)]
+    data["relations"] = relations
+    return True
+
+
+def _remove_relation(item, relation_type, zot, other_key) -> bool:
+    """Remove the relation to *other_key* from *item* (in place); False if absent."""
+    rel_list = _relation_list(item, relation_type)
+    matched = _find_matching_uri(rel_list or [], zot.library_id, other_key)
+    if matched is None:
+        return False
+    rel_list.remove(matched)
+    relations = item["data"]["relations"]
+    if rel_list:
+        relations[relation_type] = rel_list
+    else:
+        del relations[relation_type]
+    return True
+
+
+def _write_reverse_relation(write_zot, related_item, edit, ctx) -> None:
+    """Apply *edit* (one of the two above, bound) to the other end and write it.
+
+    The copy read at the start of the call is sent as it is: nothing has
+    written to that item since. It used to be read a second time, with the
+    first item, before every reverse write. Only a version conflict is
+    answered with a fresh read.
+    """
+    def _send(item):
+        if edit(item):
+            _helpers._strip_unwritable_fields(item)
+            write_zot.update_item(item)
+
+    try:
+        _send(related_item)
+    except _helpers.PreConditionFailedError:
+        _send(write_zot.item(related_item["key"]))
+
+
 @mcp.tool(
     name="zotero_add_item_relation",
     description="Add a related item relationship to a Zotero item. Creates a bidirectional link between two items."
 )
+@with_zotero_api_lock
 def add_item_relation(
     item_key: str,
     related_item_key: str,
@@ -5420,7 +5476,7 @@ def add_item_relation(
         Confirmation message
     """
     try:
-        read_zot, write_zot = _helpers._get_write_client(ctx)
+        _read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
         return str(e)
 
@@ -5442,33 +5498,10 @@ def add_item_relation(
         except Exception:
             return f"Error: Related item '{related_item_key}' not found."
 
-        data = item.get("data", {})
-        related_data = related_item.get("data", {})
-
-        # Get current relations or initialize empty dict
-        relations = data.get("relations", {})
-        if not isinstance(relations, dict):
-            relations = {}
-
-        # Build the relation URI using the canonical format for the library type
-        library_type = write_zot.library_type
-        library_id = write_zot.library_id
-        related_uri = _build_relation_uri(library_type, library_id, related_item_key)
-
-        # Add the relation to the primary item
-        if relation_type not in relations:
-            relations[relation_type] = []
-        if not isinstance(relations[relation_type], list):
-            relations[relation_type] = [relations[relation_type]]
-
-        # Check if relation already exists (match both URI prefix variants)
-        if _relation_exists(relations[relation_type], library_id, related_item_key):
+        # Either URI prefix (users/ or groups/) counts as the relation existing.
+        if not _add_relation(item, relation_type, write_zot, related_item_key):
             return f"Relation already exists: '{item_key}' is already related to '{related_item_key}'."
 
-        relations[relation_type].append(related_uri)
-        data["relations"] = relations
-
-        # Update the primary item
         _helpers._strip_unwritable_fields(item)
         resp = write_zot.update_item(item)
         if not _helpers._handle_write_response(resp, ctx):
@@ -5476,31 +5509,14 @@ def add_item_relation(
 
         # Also add reverse relation (bidirectional)
         try:
-            # Re-fetch to get latest version
-            item = write_zot.item(item_key)
-            related_item = write_zot.item(related_item_key)
-            related_data = related_item.get("data", {})
-            reverse_relations = related_data.get("relations", {})
-            if not isinstance(reverse_relations, dict):
-                reverse_relations = {}
-
-            item_uri = _build_relation_uri(library_type, library_id, item_key)
-
-            if relation_type not in reverse_relations:
-                reverse_relations[relation_type] = []
-            if not isinstance(reverse_relations[relation_type], list):
-                reverse_relations[relation_type] = [reverse_relations[relation_type]]
-
-            if not _relation_exists(reverse_relations[relation_type], library_id, item_key):
-                reverse_relations[relation_type].append(item_uri)
-                related_data["relations"] = reverse_relations
-                _helpers._strip_unwritable_fields(related_item)
-                write_zot.update_item(related_item)
+            _write_reverse_relation(
+                write_zot, related_item,
+                lambda it: _add_relation(it, relation_type, write_zot, item_key), ctx)
         except Exception as e:
             ctx.warning(f"Could not add reverse relation: {e}")
 
-        item_title = data.get("title", "Untitled")
-        related_title = related_data.get("title", "Untitled")
+        item_title = item.get("data", {}).get("title", "Untitled")
+        related_title = related_item.get("data", {}).get("title", "Untitled")
 
         return (
             f"Successfully added relation:\n\n"
@@ -5518,6 +5534,7 @@ def add_item_relation(
     name="zotero_remove_item_relation",
     description="Remove a related item relationship from a Zotero item."
 )
+@with_zotero_api_lock
 def remove_item_relation(
     item_key: str,
     related_item_key: str,
@@ -5540,7 +5557,7 @@ def remove_item_relation(
         Confirmation message
     """
     try:
-        read_zot, write_zot = _helpers._get_write_client(ctx)
+        _read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
         return str(e)
 
@@ -5553,37 +5570,16 @@ def remove_item_relation(
         except Exception:
             return f"Error: Item '{item_key}' not found."
 
-        data = item.get("data", {})
-        relations = data.get("relations", {})
-
+        relations = item.get("data", {}).get("relations", {})
         if not isinstance(relations, dict):
             return f"Item '{item_key}' has no relations to remove."
-
         if relation_type not in relations:
             return f"Item '{item_key}' has no relations of type '{relation_type}'."
 
-        # Match any URI variant (users/ or groups/) for this library
-        library_id = write_zot.library_id
-
-        rel_list = relations[relation_type]
-        if not isinstance(rel_list, list):
-            rel_list = [rel_list]
-
-        # Find the matching URI regardless of users/ vs groups/ prefix
-        matched_uri = _find_matching_uri(rel_list, library_id, related_item_key)
-        if matched_uri is None:
+        # Matches the URI under either prefix (users/ or groups/).
+        if not _remove_relation(item, relation_type, write_zot, related_item_key):
             return f"Relation not found: '{item_key}' is not related to '{related_item_key}'."
 
-        # Remove the relation
-        rel_list.remove(matched_uri)
-        if not rel_list:
-            del relations[relation_type]
-        else:
-            relations[relation_type] = rel_list
-
-        data["relations"] = relations
-
-        # Update the item
         _helpers._strip_unwritable_fields(item)
         resp = write_zot.update_item(item)
         if not _helpers._handle_write_response(resp, ctx):
@@ -5592,25 +5588,9 @@ def remove_item_relation(
         # Remove bidirectional relation if requested
         if remove_bidirectional:
             try:
-                related_item = write_zot.item(related_item_key)
-                related_data = related_item.get("data", {})
-                reverse_relations = related_data.get("relations", {})
-
-                if isinstance(reverse_relations, dict) and relation_type in reverse_relations:
-                    reverse_list = reverse_relations[relation_type]
-                    if not isinstance(reverse_list, list):
-                        reverse_list = [reverse_list]
-
-                    matched_reverse = _find_matching_uri(reverse_list, library_id, item_key)
-                    if matched_reverse is not None:
-                        reverse_list.remove(matched_reverse)
-                        if not reverse_list:
-                            del reverse_relations[relation_type]
-                        else:
-                            reverse_relations[relation_type] = reverse_list
-                        related_data["relations"] = reverse_relations
-                        _helpers._strip_unwritable_fields(related_item)
-                        write_zot.update_item(related_item)
+                _write_reverse_relation(
+                    write_zot, write_zot.item(related_item_key),
+                    lambda it: _remove_relation(it, relation_type, write_zot, item_key), ctx)
             except Exception as e:
                 ctx.warning(f"Could not remove reverse relation: {e}")
 

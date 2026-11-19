@@ -586,3 +586,120 @@ def test_if_exists_duplicate_still_creates_a_repeated_doi_twice(monkeypatch):
 
     assert len(zot.created) == 3
     assert "Added 3/3 items." in result
+
+
+# --- the smaller items ---
+
+
+def _lock_probe():
+    """probe(value) returns value and records whether the API lock was held."""
+    import threading
+
+    from zotero_mcp import client
+
+    held = []
+
+    def probe(value=None):
+        def run():
+            free = client._zotero_api_lock.acquire(blocking=False)
+            if free:
+                client._zotero_api_lock.release()
+            held.append(not free)
+
+        t = threading.Thread(target=run)
+        t.start()
+        t.join()
+        return value
+
+    return probe, held
+
+
+def test_relation_and_delete_tools_hold_the_api_lock(monkeypatch):
+    """They made their Zotero calls beside other tools' calls to the
+    single-threaded local API."""
+    from test_item_related import FakeZoteroForRelations, _make_item
+
+    zot = FakeZoteroForRelations([_make_item("AAAA1111"), _make_item("BBBB2222")])
+    zot.client = type("C", (), {"patch": staticmethod(
+        lambda **kw: type("R", (), {"status_code": 204})())})()
+    zot.collection = lambda key: {"key": key, "version": 1, "data": {"name": "C"}}
+    zot.delete_collection = lambda coll: type("R", (), {"status_code": 204})()
+    monkeypatch.setattr(_helpers, "_get_write_client", lambda ctx: (zot, zot))
+    probe, held = _lock_probe()
+    real_item = zot.item
+    zot.item = lambda key: probe(real_item(key))
+    ctx = DummyContext()
+
+    assert "Successfully added" in write.add_item_relation("AAAA1111", "BBBB2222", ctx=ctx)
+    assert "Successfully removed" in write.remove_item_relation("AAAA1111", "BBBB2222", ctx=ctx)
+    assert "Successfully trashed" in write.delete_item("AAAA1111", ctx=ctx)
+    real_collection = zot.collection
+    zot.collection = lambda key: probe(real_collection(key))
+    assert "Deleted collection" in write.delete_collection("COLL0001", ctx=ctx)
+
+    assert held and all(held)
+
+
+def test_adding_a_relation_reads_each_item_once(monkeypatch):
+    """Both items were read a second time before the reverse write, and the
+    first of those reads was never used: six requests for two writes."""
+    from test_item_related import FakeZoteroForRelations, _make_item
+
+    zot = FakeZoteroForRelations([_make_item("AAAA1111"), _make_item("BBBB2222")])
+    monkeypatch.setattr(_helpers, "_get_write_client", lambda ctx: (zot, zot))
+    reads = []
+    real_item = zot.item
+    zot.item = lambda key: (reads.append(key), real_item(key))[1]
+
+    write.add_item_relation("AAAA1111", "BBBB2222", ctx=DummyContext())
+
+    assert reads == ["AAAA1111", "BBBB2222"]
+    assert [it["key"] for it in zot.update_calls] == ["AAAA1111", "BBBB2222"]
+    assert zot._items["BBBB2222"]["data"]["relations"] == {
+        "dc:relation": ["http://zotero.org/users/12345/items/AAAA1111"]}
+
+
+def test_reverse_relation_is_re_read_only_on_a_version_conflict(monkeypatch):
+    from pyzotero.errors import PreConditionFailedError
+    from test_item_related import FakeZoteroForRelations, _make_item
+
+    zot = FakeZoteroForRelations([_make_item("AAAA1111"), _make_item("BBBB2222")])
+    monkeypatch.setattr(_helpers, "_get_write_client", lambda ctx: (zot, zot))
+    reads, refused = [], []
+    real_item, real_update = zot.item, zot.update_item
+    zot.item = lambda key: (reads.append(key), real_item(key))[1]
+
+    def update(item, **kw):
+        if item["key"] == "BBBB2222" and not refused:
+            refused.append(True)
+            raise PreConditionFailedError("412")
+        return real_update(item, **kw)
+
+    zot.update_item = update
+
+    write.add_item_relation("AAAA1111", "BBBB2222", ctx=DummyContext())
+
+    assert reads == ["AAAA1111", "BBBB2222", "BBBB2222"]
+    assert "dc:relation" in zot._items["BBBB2222"]["data"]["relations"]
+
+
+def test_crossref_dates_are_zero_padded():
+    cr = {"type": "journal-article", "title": ["T"], "published": {"date-parts": [[2020, 1, 5]]}}
+    item, _type, _note = write._crossref_to_item_data(cr, "10.1234/x", _template)
+    assert item["date"] == "2020-01-05"
+
+    cr["published"] = {"date-parts": [[2020]]}
+    assert write._crossref_to_item_data(cr, "10.1234/x", _template)[0]["date"] == "2020"
+
+
+def test_batch_extra_errors_are_explained_like_the_other_tools(monkeypatch):
+    def not_running(ctx):
+        raise ConnectionError("connection refused 127.0.0.1:23119")
+
+    monkeypatch.setattr(_helpers, "_get_write_client", not_running)
+    monkeypatch.setattr(_helpers, "format_zotero_error", lambda e, zot=None: "EXPLAINED")
+
+    result = write.batch_update_extra(item_keys=["K0000000"], set_keys={"a": "b"},
+                                      ctx=DummyContext())
+
+    assert result == "Error in batch extra update: EXPLAINED"
