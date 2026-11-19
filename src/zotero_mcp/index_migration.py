@@ -340,13 +340,19 @@ class LocalSources:
         """The metadata text Zotero's current record of ``key`` gives, or None if it was not looked up."""
         return self._prefixes.get(key)
 
-    def remember_hash(self, attachment_key: str) -> None:
-        """Hash the live file and keep the digest in the hash cache, where a later update finds it."""
-        from . import file_hash
+    def remember_stamp(self, attachment_key: str) -> None:
+        """Keep the live file's stamp, where a later update finds it to tell a file changed since the re-key.
+
+        Also hashes the file, so a later run can find its bytes in the hash
+        cache. That cache is no record of the re-key: it is written whenever a
+        file is hashed, so only this stamp says what the passages were cut from.
+        """
+        from . import file_hash, fulltext_cache
 
         target = self._targets.get(attachment_key)
         if target is not None:
             file_hash.get_file_hash(target.key, target.path, target.file_stamp, config_path=self.config_path)
+            fulltext_cache.remember_rekeyed_stamp(target.key, target.file_stamp, config_path=self.config_path)
 
 
 def _live_prefix(item: Any) -> str:
@@ -614,7 +620,7 @@ def _rekey_item(client: Any, sources: LocalSources, item: LegacyItem, attachment
             embeddings=[r["embedding"] for r in written],
         )
         _after_rekey_upsert()
-        sources.remember_hash(attachment)
+        sources.remember_stamp(attachment)
     # The article record says its passages moved, so they are not "missing".
     # The whole metadata goes back: not every ChromaDB version merges.
     # The old passages go only once the mark is read back: without it the

@@ -236,6 +236,38 @@ def test_a_file_changed_since_the_migration_is_a_real_change(world, tmp_path):
     assert len(world.embedded) == 7
 
 
+def test_a_run_stopped_after_hashing_a_changed_migrated_file_does_not_hide_the_change(world, tmp_path):
+    path = tmp_path / "a.pdf"
+    path.write_bytes(b"the file")
+    reader = _reader()
+    reader.targets[1] = [_live(path, "1:8")]
+    world.seed_pre_0_17()
+    world.migrate(reader)
+    before = _passage_vectors(world)
+    path.write_bytes(b"the file, edited")
+    reader.targets[1] = [_live(path, "2:16")]
+
+    # The update hashes the edited file (the hash cache now holds "2:16"), then stops before writing anything.
+    def stop(targets):
+        raise KeyboardInterrupt
+        yield  # pragma: no cover
+
+    real_extract = reader.extract_targets
+    reader.extract_targets = stop
+    search = world.search(reader)
+    with pytest.raises(KeyboardInterrupt):
+        search.update_database(extract_fulltext=True)
+    assert _passage_vectors(world) == before, "the stopped run wrote nothing"
+    reader.extract_targets = real_extract
+
+    world.update(reader)
+
+    after = _passage_vectors(world)
+    assert reader.extracted == [ATT], "the edited file is read again"
+    assert set(after) == {f"{ATT}#{n}" for n in range(5)}
+    assert all(after[f"{ATT}#{n}"] != before[f"{ATT}#{n}"] for n in range(3)), "no passage of the old file remains"
+
+
 def _live(path, stamp):
     return ExtractionTarget(
         key=ATT, path=path, content_type="application/pdf", category="pdf", file_stamp=stamp, size=8
