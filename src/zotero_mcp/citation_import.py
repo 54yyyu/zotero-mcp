@@ -22,8 +22,6 @@ from collections.abc import Callable
 from typing import Any
 
 import bibtexparser
-from bibtexparser.bparser import BibTexParser
-from bibtexparser.customization import convert_to_unicode
 
 # ---------------------------------------------------------------------------
 # Type maps
@@ -314,23 +312,63 @@ def _format_csl_date(issued: Any) -> str:
 # BibTeX parsing
 # ---------------------------------------------------------------------------
 
-def parse_bibtex(text: str) -> list[dict]:
-    """Parse a BibTeX string and return a list of structured entries.
+# Fields whose value is not LaTeX: decoding a URL turns its ``&`` into spaces,
+# and a page range's ``--`` into a dash the converter no longer recognises.
+_BIBTEX_VERBATIM_FIELDS = frozenset({"url", "doi", "file", "eprint", "pages"})
 
-    Each entry: ``{"entry_type": str, "citekey": str, "fields": dict}``.
-    Applies ``convert_to_unicode`` so LaTeX accents become unicode.
-    """
+
+def _parse_bibtex_v1(text: str) -> list[tuple[str, str, dict]]:
+    from bibtexparser.bparser import BibTexParser
+    from bibtexparser.customization import convert_to_unicode
+
     parser = BibTexParser(common_strings=True)
     parser.customization = convert_to_unicode
     parser.ignore_nonstandard_types = False
-    db = bibtexparser.loads(text or "", parser=parser)
-    results = []
-    for e in db.entries:
-        entry_type = (e.get("ENTRYTYPE") or "").lower()
-        citekey = e.get("ID") or ""
-        fields = {k: v for k, v in e.items() if k not in ("ENTRYTYPE", "ID")}
-        results.append({"entry_type": entry_type, "citekey": citekey, "fields": fields})
-    return results
+    db = bibtexparser.loads(text, parser=parser)
+    return [
+        (e.get("ENTRYTYPE") or "", e.get("ID") or "",
+         {k: v for k, v in e.items() if k not in ("ENTRYTYPE", "ID")})
+        for e in db.entries
+    ]
+
+
+def _parse_bibtex_v2(text: str) -> list[tuple[str, str, dict]]:
+    from bibtexparser.model import Entry
+    from pylatexenc.latex2text import LatexNodes2Text
+
+    decode = LatexNodes2Text(math_mode="verbatim").latex_to_text
+    out = []
+    for block in bibtexparser.parse_string(text).blocks:
+        # A repeated citekey or field name is set aside as a failed block that
+        # still carries the parsed entry; 1.x kept those entries, so do we.
+        entry = block if isinstance(block, Entry) else getattr(block, "ignore_error_block", None)
+        if not isinstance(entry, Entry):
+            continue
+        fields = {}
+        for f in entry.fields:
+            key, value = f.key.lower(), f.value
+            if isinstance(value, str) and key not in _BIBTEX_VERBATIM_FIELDS:
+                try:
+                    value = decode(value)
+                except Exception:
+                    pass  # keep the raw text over losing the field
+            fields[key] = value
+        out.append((entry.entry_type, entry.key, fields))
+    return out
+
+
+def parse_bibtex(text: str) -> list[dict]:
+    """Parse a BibTeX string and return a list of structured entries.
+
+    Each entry: ``{"entry_type": str, "citekey": str, "fields": dict}``, with
+    LaTeX accents decoded to unicode. Works on bibtexparser 1.x and 2.x, whose
+    APIs share nothing: pyzotero requires 1.x up to 1.16 and 2.x from 1.17.
+    """
+    parse = _parse_bibtex_v2 if hasattr(bibtexparser, "parse_string") else _parse_bibtex_v1
+    return [
+        {"entry_type": entry_type.lower(), "citekey": citekey, "fields": fields}
+        for entry_type, citekey, fields in parse(text or "")
+    ]
 
 
 # ---------------------------------------------------------------------------

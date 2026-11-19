@@ -59,7 +59,10 @@ dependencies = [
     # fastmcp (which itself replaces it with httpx2 in v4).
     "httpx>=0.27",
     "unidecode>=1.3.0",
-    "bibtexparser>=1.4,<2",
+    # Both majors: pyzotero requires 1.x up to 1.16 and >=2.1 from 1.17, and
+    # the resolver has to be free to follow it (citation_import.parse_bibtex
+    # speaks both APIs).
+    "bibtexparser>=1.4,<3",
     # updater.py reads the uv tool receipt (TOML); tomllib is stdlib from 3.11.
     "tomli>=2.0.1; python_version < '3.11'",
 ]
