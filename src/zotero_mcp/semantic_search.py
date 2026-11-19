@@ -3540,7 +3540,27 @@ class ZoteroSemanticSearch:
         run the user starts covers them; from then on automatic runs keep
         them up to date like any other file.
         """
-        return self._automatic_run and not self.update_config.get("standalone_files_indexed")
+        return self._automatic_run and not self._standalone_files_indexed()
+
+    def _standalone_files_indexed(self) -> bool:
+        """Whether an explicit full run has covered the active library's standalone and extra files.
+
+        Kept per library, keyed like the sync versions (``"0"`` is the
+        personal library): one explicit run of one library says nothing
+        about another's, and a paid embedding API bills for every library's
+        held files. The first version of the flag was a single boolean for
+        all libraries; it cannot say which library the run covered, so it is
+        not trusted: each library has its explicit run once more, which
+        embeds only what is still held (nothing, where it already ran).
+        """
+        flags = self.update_config.get("standalone_files_indexed")
+        return isinstance(flags, dict) and bool(flags.get(self._active_library_key()))
+
+    def _mark_standalone_files_indexed(self) -> None:
+        flags = self.update_config.get("standalone_files_indexed")
+        flags = dict(flags) if isinstance(flags, dict) else {}
+        flags[self._active_library_key()] = True
+        self.update_config["standalone_files_indexed"] = flags
 
     def _held_extra_files(self, files: list[Any], recorded: set[str], key_of: Any, primary: Any) -> list[Any]:
         """The files of one item an automatic run may build; the others wait for an explicit run (#826).
@@ -5665,7 +5685,7 @@ class ZoteroSemanticSearch:
                     # An explicit batch run submitted (or found nothing to embed
                     # for) the standalone files too; the realtime path's flag at
                     # the end of the run is never reached from here.
-                    self.update_config["standalone_files_indexed"] = True
+                    self._mark_standalone_files_indexed()
                 if (
                     stats.get("batch_nothing_to_embed")
                     and target_sync_version is not None
@@ -5949,7 +5969,7 @@ class ZoteroSemanticSearch:
             }
             self.update_config["last_update"] = datetime.now().isoformat()
             if self._standalone_covered and limit is None and not retry_fail and not self._api_fetch_failures:
-                self.update_config["standalone_files_indexed"] = True
+                self._mark_standalone_files_indexed()
             if stats.get("deletion_skipped_reason") or retry_fail or self._api_fetch_failures:
                 self._save_update_config()
             else:

@@ -418,6 +418,31 @@ def test_a_full_scan_keeps_standalone_records_and_deletes_a_trashed_one(env):
     assert not any(i.startswith("LONEPDF2") for i in all_ids(search))
 
 
+def test_one_librarys_explicit_run_does_not_release_anothers_held_files(env, monkeypatch):
+    search = env.search()
+    search._automatic_run = True
+    search.update_config["standalone_files_indexed"] = {"0": True}
+
+    monkeypatch.setattr(search, "_active_library_key", lambda: "0")
+    assert search._standalone_files_wait() is False
+    monkeypatch.setattr(search, "_active_library_key", lambda: "7")
+    assert search._standalone_files_wait() is True
+
+    search._mark_standalone_files_indexed()
+
+    assert search.update_config["standalone_files_indexed"] == {"0": True, "7": True}
+
+
+def test_the_old_single_flag_is_not_trusted_for_any_library(env):
+    search = env.search()
+    search._automatic_run = True
+    search.update_config["standalone_files_indexed"] = True
+
+    assert search._standalone_files_wait() is True
+    search._mark_standalone_files_indexed()
+    assert search.update_config["standalone_files_indexed"] == {"0": True}
+
+
 def test_a_full_scan_keeps_the_records_of_items_its_paging_skipped(env, monkeypatch):
     """An edit during the scan shifts the offsets and a page misses items; item_versions() still lists them (review of #842)."""
     library(

@@ -709,7 +709,7 @@ def test_the_api_path_indexes_standalone_files_after_one_explicit_run(monkeypatc
     zot.load_scenario([_paper("A"), _pdf("SA")], fulltext={"SA": {"content": "Lone body"}})
     search = _build_search(monkeypatch, zot, FakeChromaClient())
     search._automatic_run = automatic
-    search.update_config["standalone_files_indexed"] = flag
+    search.update_config["standalone_files_indexed"] = {"0": flag}
 
     items = search._get_items_from_api(include_fulltext=True)
 

@@ -273,7 +273,7 @@ def test_a_held_standalone_files_existing_records_are_not_deleted(env):
 def test_after_one_explicit_run_automatic_runs_index_new_standalone_files(env, tmp_path):
     reader = _with_standalone()
     env(reader)
-    assert _update_config(tmp_path)["standalone_files_indexed"] is True
+    assert _update_config(tmp_path)["standalone_files_indexed"] == {"0": True}
 
     reader.standalone.append(("LONEPDF2", "storage:y.pdf", "application/pdf", DATE, 1))
     reader.standalone_targets["LONEPDF2"] = target("LONEPDF2", stamp="2:200")
