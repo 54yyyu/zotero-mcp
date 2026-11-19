@@ -487,3 +487,102 @@ def test_auto_merge_reads_each_childrens_listing_once_and_trashes_without_a_re_r
     assert sorted(calls["children"]) == ["DUP1", "KEEP"]   # was each twice
     assert calls["item"] == ["DUP1", "KEEP"]               # no re-read before the trash
     assert len(zot.client.patch_calls) == 1
+
+
+# --- citation import ---
+
+
+def _template(item_type):
+    from conftest import FakeZotero
+
+    return FakeZotero().item_template(item_type)
+
+
+def test_bibtex_and_others_is_not_an_author():
+    from zotero_mcp import citation_import as ci
+
+    entry, = ci.parse_bibtex("@article{k, title={T}, author={Smith, John and others}, year=2020}")
+    item = ci.bibtex_entry_to_zotero(entry, _template)
+
+    assert item["creators"] == [
+        {"creatorType": "author", "firstName": "John", "lastName": "Smith"}]
+
+
+CROSSREF_CSL = {
+    "type": "journal-article", "title": "T", "DOI": "10.1234/x",
+    "id": "https://doi.org/10.1234/x",
+    # Crossref's bookkeeping, as its CSL transform returns it.
+    "indexed": {"date-parts": [[2024, 1, 1]], "timestamp": 1},
+    "reference-count": 55, "is-referenced-by-count": 3, "member": "311",
+    "prefix": "10.1234", "score": 1,
+    "license": [{"URL": "http://example.org/l", "content-version": "vor"}],
+    "content-domain": {"domain": [], "crossmark-restriction": False},
+    "reference": [{"key": f"ref{i}", "unstructured": "A cited work"} for i in range(60)],
+    # Kept: a CSL variable the type has no field for, and a plain custom value.
+    "original-date": {"date-parts": [[1999]]},
+    "custom-field": "custom-value",
+}
+
+
+def test_csl_import_keeps_a_providers_bookkeeping_out_of_extra():
+    """Every unmapped key was dumped into Extra as JSON: with Crossref's CSL
+    that is the whole reference list, 7 KB for a 60-reference article."""
+    from zotero_mcp import citation_import as ci
+
+    item = ci.csl_json_to_zotero(CROSSREF_CSL, _template)
+
+    assert item["extra"].splitlines() == [
+        'original-date: {"date-parts": [[1999]]}',
+        "custom-field: custom-value",
+    ]
+
+
+def test_csl_id_becomes_a_citation_key_only_when_it_looks_like_one():
+    from zotero_mcp import citation_import as ci
+
+    def extra(csl_id):
+        return ci.csl_json_to_zotero({"type": "book", "title": "T", "id": csl_id}, _template)["extra"]
+
+    assert extra("smith2020deep") == "Citation Key: smith2020deep"
+    assert extra("Müller:2020-a") == "Citation Key: Müller:2020-a"
+    for record_id in ("https://doi.org/10.1234/x", "http://zotero.org/users/1/items/ABCD2345",
+                      "10.1234/x", "ITEM-1", "12345", 7, "two words"):
+        assert extra(record_id) == "", record_id
+
+
+TWO_ENTRIES_ONE_DOI = """
+@article{a, title={Same Paper}, doi={10.1234/same}, year={2020}}
+@article{b, title={Same Paper}, doi={https://doi.org/10.1234/SAME}, year={2020}}
+@article{c, title={Another Paper}, doi={10.1234/other}, year={2021}}
+"""
+
+
+def _import_zot(monkeypatch):
+    zot = _library()
+    monkeypatch.setattr(_helpers, "_get_write_client", lambda ctx: (zot, zot))
+    monkeypatch.setattr(_helpers, "_try_attach_oa_pdf", lambda *a, **k: "skipped")
+    return zot
+
+
+def test_a_doi_listed_twice_in_one_import_is_created_once(monkeypatch):
+    """The library lookup runs before anything is created, so the second
+    entry could not see the first and both were created."""
+    zot = _import_zot(monkeypatch)
+
+    result = write.add_by_bibtex(bibtex=TWO_ENTRIES_ONE_DOI, ctx=DummyContext())
+
+    assert [it["title"] for it in zot.created] == ["Same Paper", "Another Paper"]
+    assert "Added 2/3 items. 1 repeated an earlier entry's DOI (added once)." in result
+    assert "2. `KEY0000` — Same Paper (DOI: 10.1234/same) [same DOI as entry 1, added once]" in result
+    # One lookup pair per distinct DOI: the repeat costs no search.
+    assert len(zot.searches) == 4
+
+
+def test_if_exists_duplicate_still_creates_a_repeated_doi_twice(monkeypatch):
+    zot = _import_zot(monkeypatch)
+
+    result = write.add_by_bibtex(bibtex=TWO_ENTRIES_ONE_DOI, if_exists="duplicate",
+                                 ctx=DummyContext())
+
+    assert len(zot.created) == 3
+    assert "Added 3/3 items." in result

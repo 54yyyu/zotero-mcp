@@ -5883,10 +5883,81 @@ def _maybe_reuse_existing(read_zot, write_zot, item_data, coll_keys, tags,
     }
 
 
+def _import_entries(entries, convert, label_of, read_zot, write_zot, coll_keys,
+                    tags, attach_mode, if_exists, ctx) -> list[dict]:
+    """Import parsed citation entries; one result dict per entry, in order.
+
+    Shared by add_by_bibtex and add_by_csl_json. Two passes (#A4): each entry
+    resolves to a final result (conversion error, reused existing item, or a
+    repeat of an earlier entry) or to an item_data ready to create, and the
+    pending ones are created in one batched call rather than a POST each.
+
+    A DOI listed twice in one import is created once. The library lookup
+    runs before anything is created, so it cannot see the item an earlier
+    entry of the same call is about to add, and both used to be created even
+    under if_exists='file'. ``if_exists='duplicate'`` still creates both.
+
+    The API lock is taken per entry, around the template fetch and the
+    lookup; they used to run outside it.
+    """
+    template_fn = functools.partial(_helpers.item_template_for, write_zot)
+    results: list[dict | None] = []
+    pending: list[tuple[int, dict]] = []
+    first_with_doi: dict[str, int] = {}
+    repeats: dict[int, int] = {}
+    for entry in entries:
+        index = len(results)
+        with zotero_api_lock():
+            try:
+                item_data = convert(entry, template_fn)
+            except Exception as e:
+                results.append({
+                    "ok": False, "key": None, "doi": None, "pdf_status": None,
+                    "error": f"conversion failed: {_helpers.format_zotero_error(e)}",
+                    "title": label_of(entry),
+                })
+                continue
+
+            doi_key = doi_match_key(item_data.get("DOI")) if if_exists != "duplicate" else None
+            if doi_key and doi_key in first_with_doi:
+                repeats[index] = first_with_doi[doi_key]
+                results.append(None)
+                continue
+
+            reused = _maybe_reuse_existing(
+                read_zot, write_zot, item_data, coll_keys, tags, if_exists, ctx
+            )
+        if doi_key:
+            first_with_doi[doi_key] = index
+        if reused is not None:
+            results.append(reused)
+            continue
+
+        _apply_caller_tags_and_collections(item_data, tags, coll_keys)
+        pending.append((index, item_data))
+        results.append(None)
+
+    if pending:
+        created = _create_and_attach_batch(
+            write_zot, [d for _, d in pending], attach_mode, ctx
+        )
+        for (idx, _), cr_result in zip(pending, created):
+            results[idx] = cr_result
+
+    for index, first in repeats.items():
+        results[index] = {
+            **results[first], "pdf_status": None, "collections_failed": [],
+            "citation_key": None, "repeat": True,
+            "existed": f"same DOI as entry {first + 1}, added once",
+        }
+    return results
+
+
 def _format_batch_result(header: str, results: list[dict]) -> str:
     """Render a per-entry markdown summary for add_by_bibtex / add_by_csl_json."""
     ok_count = sum(1 for r in results if r["ok"])
-    reused_count = sum(1 for r in results if r["ok"] and r.get("existed"))
+    repeat_count = sum(1 for r in results if r["ok"] and r.get("repeat"))
+    reused_count = sum(1 for r in results if r["ok"] and r.get("existed")) - repeat_count
     lines = [header, ""]
     if len(results) == 1:
         r = results[0]
@@ -5910,9 +5981,11 @@ def _format_batch_result(header: str, results: list[dict]) -> str:
         else:
             lines.append(f"Failed to add **{r['title']}**: {r['error']}")
     else:
-        summary_line = f"Added {ok_count - reused_count}/{len(results)} items."
+        summary_line = f"Added {ok_count - reused_count - repeat_count}/{len(results)} items."
         if reused_count:
             summary_line += f" {reused_count} already existed (reused, not duplicated)."
+        if repeat_count:
+            summary_line += f" {repeat_count} repeated an earlier entry's DOI (added once)."
         lines.append(summary_line)
         lines.append("")
         for i, r in enumerate(results, 1):
@@ -5990,44 +6063,11 @@ def add_by_bibtex(
             return f"Error: {e}"
 
         ctx.info(f"Parsed {len(entries)} BibTeX entries")
-
-        # Two passes (#A4): resolve each entry to either a final result
-        # (conversion error or reused-existing) or a ready-to-create
-        # item_data, then create all pending item_datas via one batched
-        # call instead of one create_items() POST per entry.
-        results: list[dict] = []
-        pending: list[tuple[int, dict]] = []
-        for entry in entries:
-            try:
-                item_data = _citation_import.bibtex_entry_to_zotero(
-                    entry, functools.partial(_helpers.item_template_for, write_zot)
-                )
-            except Exception as e:
-                results.append({
-                    "ok": False, "key": None, "doi": None, "pdf_status": None,
-                    "error": f"conversion failed: {_helpers.format_zotero_error(e)}",
-                    "title": entry.get("citekey") or "(unknown)",
-                })
-                continue
-
-            reused = _maybe_reuse_existing(
-                _read_zot, write_zot, item_data, coll_keys, tags, if_exists, ctx
-            )
-            if reused is not None:
-                results.append(reused)
-                continue
-
-            _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-            pending.append((len(results), item_data))
-            results.append(None)
-
-        if pending:
-            created = _create_and_attach_batch(
-                write_zot, [d for _, d in pending], attach_mode, ctx
-            )
-            for (idx, _), cr_result in zip(pending, created):
-                results[idx] = cr_result
-
+        results = _import_entries(
+            entries, _citation_import.bibtex_entry_to_zotero,
+            lambda entry: entry.get("citekey") or "(unknown)",
+            _read_zot, write_zot, coll_keys, tags, attach_mode, if_exists, ctx,
+        )
         return _format_batch_result("# zotero_add_item (BibTeX)", results)
 
     except Exception as e:
@@ -6131,44 +6171,11 @@ def add_by_csl_json(
             return f"Error: {e}"
 
         ctx.info(f"Processing {len(entries)} CSL JSON entries")
-
-        # Two passes (#A4): resolve each entry to either a final result
-        # (conversion error or reused-existing) or a ready-to-create
-        # item_data, then create all pending item_datas via one batched
-        # call instead of one create_items() POST per entry.
-        results: list[dict] = []
-        pending: list[tuple[int, dict]] = []
-        for entry in entries:
-            try:
-                item_data = _citation_import.csl_json_to_zotero(
-                    entry, functools.partial(_helpers.item_template_for, write_zot)
-                )
-            except Exception as e:
-                results.append({
-                    "ok": False, "key": None, "doi": None, "pdf_status": None,
-                    "error": f"conversion failed: {_helpers.format_zotero_error(e)}",
-                    "title": str(entry.get("id") or entry.get("title") or "(unknown)"),
-                })
-                continue
-
-            reused = _maybe_reuse_existing(
-                _read_zot, write_zot, item_data, coll_keys, tags, if_exists, ctx
-            )
-            if reused is not None:
-                results.append(reused)
-                continue
-
-            _apply_caller_tags_and_collections(item_data, tags, coll_keys)
-            pending.append((len(results), item_data))
-            results.append(None)
-
-        if pending:
-            created = _create_and_attach_batch(
-                write_zot, [d for _, d in pending], attach_mode, ctx
-            )
-            for (idx, _), cr_result in zip(pending, created):
-                results[idx] = cr_result
-
+        results = _import_entries(
+            entries, _citation_import.csl_json_to_zotero,
+            lambda entry: str(entry.get("id") or entry.get("title") or "(unknown)"),
+            _read_zot, write_zot, coll_keys, tags, attach_mode, if_exists, ctx,
+        )
         return _format_batch_result("# zotero_add_item (CSL JSON)", results)
 
     except Exception as e:

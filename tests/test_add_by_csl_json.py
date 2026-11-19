@@ -105,7 +105,7 @@ class TestHappyPath:
         _disable_oa_pdf(monkeypatch)
 
         write.add_item(
-            source=json.dumps([SAMPLE_ARTICLE, SAMPLE_ARTICLE]),
+            source=json.dumps([SAMPLE_ARTICLE, {**SAMPLE_ARTICLE, "DOI": "10.1234/another"}]),
             source_type="csl_json",
             ctx=dummy_ctx,
         )
@@ -265,7 +265,7 @@ class TestFilePath:
         _disable_oa_pdf(monkeypatch)
 
         f = tmp_path / "refs.csljson"
-        f.write_text(json.dumps([SAMPLE_ARTICLE, SAMPLE_ARTICLE]), encoding="utf-8")
+        f.write_text(json.dumps([SAMPLE_ARTICLE, {**SAMPLE_ARTICLE, "DOI": "10.1234/another"}]), encoding="utf-8")
 
         write.add_item(source=str(f), source_type="csl_json", ctx=dummy_ctx)
         assert len(fake.created) == 2
