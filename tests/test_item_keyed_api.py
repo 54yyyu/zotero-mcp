@@ -418,6 +418,32 @@ def test_a_full_scan_keeps_standalone_records_and_deletes_a_trashed_one(env):
     assert not any(i.startswith("LONEPDF2") for i in all_ids(search))
 
 
+def test_a_full_scan_keeps_the_records_of_items_its_paging_skipped(env, monkeypatch):
+    """An edit during the scan shifts the offsets and a page misses items; item_versions() still lists them (review of #842)."""
+    library(
+        env,
+        paper("ITEM0001"),
+        paper("ITEM0002"),
+        attachment("PDFAAAAA", "ITEM0001"),
+        attachment("PDFBBBBB", "ITEM0002"),
+        PDFAAAAA=TEXT,
+        PDFBBBBB=TEXT,
+    )
+    env.update()
+    assert records(env.last) == {"ITEM0001", "ITEM0002", "PDFAAAAA", "PDFBBBBB"}
+    env.forget_sync_version()
+    original = env.zot.items
+    skipped = {"ITEM0002", "PDFBBBBB"}
+    monkeypatch.setattr(
+        env.zot, "items", lambda **kw: [r for r in original(**kw) if r["key"] not in skipped]
+    )
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "ITEM0002", "PDFAAAAA", "PDFBBBBB"}
+    assert any(i.startswith("PDFBBBBB#") for i in all_ids(search))
+
+
 # --- incremental runs ---------------------------------------------------------------
 
 

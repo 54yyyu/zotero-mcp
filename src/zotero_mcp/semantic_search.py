@@ -1648,6 +1648,10 @@ class ZoteroSemanticSearch:
     # Record keys a full local scan wants indexed, for the deletion pass;
     # None when the scan did not produce a complete set.
     _scan_desired_keys: set[str] | None = None
+    # With an API scan: the keys the scan saw and does not want (trashed, outranked, textless).
+    # Only these may be deleted among the keys item_versions() still lists. None: a local scan.
+    _scan_removed_keys: set[str] | None = None
+    _api_textless: set[str] = set()
     # Attachment keys an API run saw but did not select (outranked, trashed or
     # moved out of selection): their records go once the run's changes are in.
     _api_outranked: frozenset[str] | set[str] = frozenset()
@@ -4084,6 +4088,7 @@ class ZoteroSemanticSearch:
                 # An older record of it is stale and goes.
                 if not current:
                     selected.discard(akey)
+                    self._api_textless.add(akey)
                 return None
             # Only the part of the text a record can use is kept in memory.
             text_cap = self._fulltext_char_cap()
@@ -4301,6 +4306,7 @@ class ZoteroSemanticSearch:
         if not callable(list_page):
             list_page = self.zotero_client.items
         attachment_rows: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
 
         while True:
             batch_params = {"start": start, "limit": batch_size}
@@ -4326,6 +4332,7 @@ class ZoteroSemanticSearch:
                     raise Exception(f"Zotero API connection error: {e}") from e
             if not items:
                 break
+            seen_keys.update(item.get("key") for item in items if isinstance(item, dict) and item.get("key"))
 
             # Regular items only; the attachments in the pages are kept
             # aside, for the standalone files and the children (#826).
@@ -4371,6 +4378,13 @@ class ZoteroSemanticSearch:
                 # (trashed, outranked or textless files) goes in the deletion
                 # pass, which item_versions() alone would not remove.
                 self._scan_desired_keys = {item["key"] for item in all_items if not item.get("unit")} | selected
+                # A paged listing can skip an item (an edit during the scan
+                # shifts the offsets), so what it lacks is not gone. Only what
+                # the scan saw and left out may be deleted, with what is
+                # absent from item_versions().
+                self._scan_removed_keys = (
+                    (seen_keys | outranked | self._api_textless) - self._scan_desired_keys
+                )
             self._api_outranked = self._api_outranked | outranked
 
         logger.info(f"Retrieved {len(all_items)} items from API")
@@ -5121,6 +5135,8 @@ class ZoteroSemanticSearch:
             self._standalone_covered = False
             # Set by this run's scan, if it covers the whole library.
             self._scan_desired_keys = None
+            self._scan_removed_keys = None
+            self._api_textless = set()
             self._api_outranked = set()
             self._api_fetch_failures = 0
 
@@ -5476,11 +5492,9 @@ class ZoteroSemanticSearch:
                 # limited run is a test run; everything else reconciles
                 # deletions here too (#457).
                 if not force_full_rebuild and limit is None:
-                    if self._scan_desired_keys is not None:
-                        # Every record key the library should have (#826):
-                        # what the scan left out (trashed, deleted, outranked
-                        # or unreadable files) goes. item_versions() would keep
-                        # an outranked file, which Zotero still has.
+                    if self._scan_desired_keys is not None and self._scan_removed_keys is None:
+                        # A local scan's desired set (#826): what it left out
+                        # (deleted, unreadable files) goes.
                         current_library_keys = self._scan_desired_keys
                     else:
                         try:
@@ -5491,6 +5505,14 @@ class ZoteroSemanticSearch:
                                 current_library_keys = set(
                                     (self.zotero_client.item_versions() or {}).keys()
                                 )
+                            if self._scan_removed_keys is not None:
+                                # An API scan: the keys Zotero lists stay, but
+                                # for those the scan saw and does not want
+                                # (outranked, textless or trashed files, which
+                                # item_versions() would keep).
+                                current_library_keys = (
+                                    current_library_keys - self._scan_removed_keys
+                                ) | self._scan_desired_keys
                         except Exception as e:
                             logger.warning(
                                 f"Failed to fetch current item_versions for deletion check: {e}; "
@@ -5903,6 +5925,8 @@ class ZoteroSemanticSearch:
             self._level_fill_keys = frozenset()
             self._legacy_settle = None
             self._scan_desired_keys = None
+            self._scan_removed_keys = None
+            self._api_textless = set()
             self._api_outranked = frozenset()
             # The server keeps one instance: the next run starts without these.
             self._undropped_passages = frozenset()
