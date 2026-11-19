@@ -158,6 +158,18 @@ def render_annotated_pages(doc, items: list[dict], out_dir: str, stem: str, *,
     by_page: dict[int, list[dict]] = {}
     for item in items:
         by_page.setdefault(item["page_index"], []).append(item)
+        # A highlight that runs over a page break keeps the part on the
+        # following page under nextPageRects.
+        position = item["position"]
+        if isinstance(position, str):
+            try:
+                position = json.loads(position)
+            except ValueError:
+                position = None
+        rest = (position or {}).get("nextPageRects")
+        if rest:
+            by_page.setdefault(item["page_index"] + 1, []).append(
+                {**item, "position": {"rects": rest}, "label": ""})
     wanted = [p - 1 for p in pages] if pages else sorted(by_page)
     os.makedirs(out_dir, exist_ok=True)
 

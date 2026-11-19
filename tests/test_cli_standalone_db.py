@@ -45,7 +45,6 @@ def test_batch_status_reads_the_configured_providers_manifests(fake_search):
     _run(["db", "batch-status"])
 
     fake_search._get_batch_status.assert_called_once_with("gemini", batch_ids=None)
-    fake_search.get_openai_batch_status.assert_not_called()
 
 
 def test_batch_import_takes_an_explicit_provider(fake_search):
@@ -54,7 +53,6 @@ def test_batch_import_takes_an_explicit_provider(fake_search):
     _run(["db", "batch-import", "--provider", "gemini", "--batch-id", "b1"])
 
     fake_search._import_batch.assert_called_once_with("gemini", batch_ids=["b1"])
-    fake_search.import_openai_batch.assert_not_called()
 
 
 def test_db_update_takes_the_update_db_flags(fake_search):

@@ -51,12 +51,6 @@ class CLIContext:
     they print as they happen.
     """
 
-    #: This process runs one command and exits. A tool may read it to skip
-    #: work that only pays off when the process stays up, such as loading the
-    #: embedding model for a fallback (the MCP server's context has no such
-    #: attribute).
-    one_shot = True
-
     def __init__(self, verbose: bool = False):
         self._verbose = verbose
         self._held_errors: list[str] = []

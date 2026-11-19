@@ -490,18 +490,6 @@ class TestCmdEdit:
 # CLIContext
 # ---------------------------------------------------------------------------
 
-def test_the_cli_context_says_the_process_is_one_shot():
-    """A tool can tell a command that runs once from the long-lived server,
-    whose context has no such attribute."""
-    from conftest import DummyContext
-
-    from zotero_mcp.cli_standalone import CLIContext, _ctx
-
-    assert CLIContext().one_shot is True
-    assert _ctx(build_parser().parse_args(["search", "x"])).one_shot is True
-    assert getattr(DummyContext(), "one_shot", False) is False
-
-
 # ---------------------------------------------------------------------------
 # tags (removed)
 # ---------------------------------------------------------------------------
