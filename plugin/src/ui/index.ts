@@ -210,7 +210,7 @@ class Panel {
       v === "history" ? historyView(host, { current: () => this.chat.saved?.id ?? null, back, resume: (s) => void this.openSaved(s), deleted: (id) => { if (this.chat.saved?.id === id) void this.newChat(); }, renamed: (s) => this.chat.adoptRename(s.id, s.title) })
       : v === "welcome" ? welcomeView(host, this.health, { done: () => void this.finishWelcome(), recheck: () => void this.health.refresh(), changed: () => this.onSettings(), openSettings: () => this.show("settings") })
       : v === "status" ? statusView(host, { back, initial: this.health.checks, openSettings: () => this.show("settings"), changed: (c) => this.health.set(c) })
-      : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), look: this.look,
+      : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), cleared: () => this.onCleared(), look: this.look,
         createSkill: () => void this.newChat().then(() => { this.composer.setText("/create-skill "); this.composer.focus(); }) });
     this.activeView = screen;
     this.viewEl.append(screen.el);
@@ -280,6 +280,20 @@ class Panel {
     this.composer.clearDraft();
     this.feed.clear();
     this.show("chat");
+    this.refreshChips();
+    this.render();
+  }
+
+  /**
+   * Clear history deletes the open chat with the rest, as deleting it in the history list does. Left open it would keep
+   * saving: the list would get it back holding only what came after the clear.
+   */
+  private onCleared(): void {
+    if (!this.chat.saved) return;
+    this.chat.forget();
+    void this.chat.reset();
+    this.chips.clearAll();
+    this.feed.clear();
     this.refreshChips();
     this.render();
   }

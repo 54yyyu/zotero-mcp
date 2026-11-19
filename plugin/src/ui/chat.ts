@@ -360,6 +360,13 @@ export class Chat {
     this.d.onChange();
   }
 
+  /** The saved chats were all deleted: this one is no longer one of them, and nothing of it still waiting is written. */
+  forget(): void {
+    this.persister.drop();
+    this.saved = null;
+    this.resume = null;
+  }
+
   /** The chat is being left (a new chat, the panel going away): save it as it stands, and let its session go. */
   private leave(): void {
     this.run = null;

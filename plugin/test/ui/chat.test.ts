@@ -181,3 +181,19 @@ describe("settings changed while the session starts", () => {
     assert.equal(sess.currentModel(), "sonnet");
   });
 });
+
+describe("history cleared with a chat open", () => {
+  it("the chat is no longer saved: nothing waiting is written, and leaving it writes nothing", async () => {
+    const { chat, saved } = rig();
+    const sending = chat.send("SCENARIO:slow", []);
+    await waitFor(() => answer(chat).includes("tick1"), 5000, "the answer to start streaming");
+    const id = chat.saved!.id;
+    const before = saved.get(id)!.length;
+    chat.forget();
+    await chat.reset();
+    await sending;
+    await new Promise((r) => setTimeout(r, 700)); // past the saver's own delay
+    assert.equal(saved.get(id)!.length, before, "nothing is written after the clear");
+    assert.equal(chat.saved, null);
+  });
+});

@@ -960,6 +960,20 @@ await test("settings: Translate's model list shows only the default when no cata
   assert.equal(await model.inputValue(), "haiku");
 });
 
+await test("settings: clear history takes the open chat with it (it is one of the saved chats)", async (p) => {
+  await send(p, "hello");
+  await done(p);
+  await openSettings(p);
+  await p.getByRole("button", { name: "Clear all history" }).click();
+  await p.getByRole("button", { name: "Delete all" }).click();
+  await p.waitForFunction(() => window.__zmc.sim.data.cleared === 1);
+  await p.locator(".vw__head button").first().click();
+  await p.waitForSelector(".chat:not([hidden])");
+  assert.equal(await p.locator(".msg").count(), 0, "the chat that was open is gone, like the rest");
+  await p.getByRole("button", { name: "History" }).click();
+  assert.equal(await p.locator(".hrow").count(), 0, "and it does not come back into the list");
+});
+
 await test("settings: clear history and reset settings ask first, then reach the host", async (p) => {
   await openSettings(p);
   await toggle(p, /Expand tool steps/);
