@@ -42,23 +42,17 @@ def _load_schema(source: str | None) -> dict:
 
 
 def build_map(schema: dict) -> dict:
-    """Reduce the full schema to ``{version, itemTypes: {type: {field: base}}}``.
+    """Reduce the full schema to the table ``zotero_mcp.schema`` resolves from.
 
-    ``base`` defaults to the field's own name when the field is not a rename,
-    so ``itemTypes[type]`` doubles as the type's full valid-field set (its keys)
-    and its base->actual inverse (invert the mapping).
+    It is the same reduction the runtime refresh writes to the on-disk cache
+    (``schema._build_table``), so the vendored floor and a refreshed cache
+    cannot differ in shape: per item type its fields with their base fields and
+    its creator types, plus Zotero's CSL crosswalk.
     """
-    item_types: dict[str, dict[str, str]] = {}
-    for it in schema["itemTypes"]:
-        fields = {
-            f["field"]: f.get("baseField", f["field"])
-            for f in it.get("fields", [])
-        }
-        item_types[it["itemType"]] = fields
-    return {
-        "version": schema["version"],
-        "itemTypes": dict(sorted(item_types.items())),
-    }
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+    from zotero_mcp.schema import _build_table
+
+    return _build_table(schema)
 
 
 def main(argv: list[str]) -> int:
