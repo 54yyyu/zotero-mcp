@@ -34,14 +34,16 @@ _NEEDS_ZOTERO = "cannot be matched without the local Zotero database"
 def record_kind(doc_id: str, meta: dict[str, Any]) -> str:
     """What a record is, from its id and stored fields only.
 
-    A record carrying ``title`` was written by an earlier version, whatever
-    its id; new records never store one.
+    The order is the one ``db-status`` counts by: a bare-id record with a
+    ``file_stamp`` is an attachment even if it still carries a stale
+    ``title`` (a half-rewritten record); otherwise a record carrying
+    ``title`` was written by an earlier version, whatever its id.
     """
+    if "#" not in doc_id and meta.get("file_stamp"):
+        return KIND_ATTACHMENT
     if meta.get("title") is not None:
         return KIND_LEGACY
-    if "#" in doc_id:
-        return KIND_PASSAGE
-    return KIND_ATTACHMENT if meta.get("file_stamp") else KIND_BIBLIOGRAPHIC
+    return KIND_PASSAGE if "#" in doc_id else KIND_BIBLIOGRAPHIC
 
 
 def _iter_records(client: Any, include_documents: bool) -> Iterator[tuple[str, dict[str, Any], str | None]]:

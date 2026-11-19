@@ -148,3 +148,27 @@ def test_without_a_filter_every_record_is_listed_with_its_kind(client):
 
     for expected in ("BIB1", "ATT1", "ATT1#0", "OLD1", "bibliographic", "attachment", "passage", "legacy"):
         assert expected in out
+
+
+def _extra_client(home, records):
+    client = ChromaClient(collection_name=NAME, persist_directory=str(home / "chroma_extra"))
+    rng = np.random.default_rng(2)
+    ids = [i for i, _ in records]
+    client.upsert_embeddings(
+        documents=[f"text of {i}" for i in ids],
+        metadatas=[{"group_id": 0, "item_key": i.split("#")[0], **m} for i, m in records],
+        ids=ids,
+        embeddings=[rng.normal(size=4).astype(float).tolist() for _ in ids],
+    )
+    return client
+
+
+def test_a_half_rewritten_record_is_an_attachment_as_db_status_counts_it(home):
+    # file_stamp wins over a stale title, the rule db-status uses.
+    client = _extra_client(home, [("ATT1", {"title": "Stale", "creators": "Old", "file_stamp": "1:1"})])
+
+    out = _run(client, Reader(), stats=True)
+
+    assert "attachment: 1" in out
+    assert "legacy: 0" in out
+
