@@ -860,6 +860,63 @@ def test_annotation_records_are_purged_even_when_they_are_the_majority(env):
     assert {"OTHER001", "NOGROUP1"} <= kept
 
 
+def test_the_deletion_message_names_what_was_removed(env, capsys):
+    reader = _library()
+    search, _ = env(reader)
+    annotations = _seed_annotations(search, 3)
+    reader.non_indexed = frozenset(annotations)
+    capsys.readouterr()
+
+    env(reader)
+    err = capsys.readouterr().err
+
+    assert "Deleted 3 records of notes and annotations" in err
+    assert "no longer present in Zotero" not in err
+
+
+def test_the_deletion_message_separates_gone_items_from_purged_records(env, capsys):
+    reader = _library()
+    search, _ = env(reader)
+    annotations = _seed_annotations(search, 2)
+    search.chroma_client.upsert_embeddings(
+        documents=["gone"],
+        metadatas=[{"item_key": "GONE0001", "group_id": 0, "date_modified": DATE}],
+        ids=["GONE0001"],
+        embeddings=[[0.0, 1.0]],
+    )
+    reader.non_indexed = frozenset(annotations)
+    capsys.readouterr()
+
+    env(reader)
+    err = capsys.readouterr().err
+
+    assert "Deleted 1 item no longer present in Zotero and 2 records of notes and annotations" in err
+
+
+def test_the_deletion_message_is_singular_for_one_record(env, capsys):
+    reader = _library()
+    search, _ = env(reader)
+    reader.non_indexed = frozenset(_seed_annotations(search, 1))
+    capsys.readouterr()
+
+    env(reader)
+
+    assert "Deleted 1 record of a note or annotation, which is never indexed." in capsys.readouterr().err
+
+
+def test_the_update_report_splits_gone_items_from_purged_records():
+    from zotero_mcp.tools.search import _deleted_summary
+
+    assert _deleted_summary({"deleted_items": 3, "purged_non_indexed": 2}) == (
+        "**Deleted:** 1 (no longer in Zotero); 2 note/annotation records purged"
+    )
+    assert _deleted_summary({"deleted_items": 1, "purged_non_indexed": 1}) == (
+        "**Deleted:** 1 note/annotation record purged"
+    )
+    assert _deleted_summary({"deleted_items": 2}) == "**Deleted:** 2 (no longer in Zotero)"
+    assert _deleted_summary({"deleted_items": 0}) is None
+
+
 def test_the_guard_still_applies_to_ordinary_missing_items_beside_a_purge(env):
     items = [Item(f"ITEM{n:04d}", n) for n in range(30)]
     reader = LibReader(items, targets={n: [target(f"PDF{n:05d}")] for n in range(30)})
