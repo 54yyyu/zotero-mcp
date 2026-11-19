@@ -3,6 +3,8 @@ import type { ContextChip, ZoteroRef } from "../types.ts";
 import { CONTEXT_TAG } from "../agent/index.ts";
 import { repeatLine } from "../ui/economy.ts";
 
+/** The block's own tag, opening or closing, however it is spelled. */
+const TAG = new RegExp(`<\\s*/?\\s*${CONTEXT_TAG}\\b(?:[^>\\n]{0,80}>)?`, "gi");
 const libLabel = (ref: ZoteroRef) => (ref.libraryID === Zotero.Libraries.userLibraryID ? "" : ` · group library ${Zotero.Libraries.get(ref.libraryID).groupID}`);
 const page = (ref: ZoteroRef) => (ref.pageLabel ? `p.${ref.pageLabel}` : ref.pageIndex != null ? `p.${ref.pageIndex + 1}` : "");
 const quote = (s: string) => `"${s.replace(/\s+/g, " ").trim().slice(0, 1500)}"`;
@@ -66,6 +68,9 @@ export function describeContext(chips: ContextChip[]): { text: string; images: {
   if (focus.length) lines.push("You are pointing at:", ...focus);
   const again = repeatLine(chips);
   if (again) lines.push(again);
-  const text = lines.length ? `<${CONTEXT_TAG}>\n${lines.join("\n")}\n</${CONTEXT_TAG}>` : "";
+  // Titles, abstracts, selections and annotations are the documents' words, not ours: one that writes the block's own tag
+  // must not be able to end the block and go on as if it were the user's message.
+  const body = lines.join("\n").replace(TAG, "");
+  const text = lines.length ? `<${CONTEXT_TAG}>\n${body}\n</${CONTEXT_TAG}>` : "";
   return { text, images };
 }
