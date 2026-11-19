@@ -376,3 +376,27 @@ def test_a_batch_that_fails_again_is_retried_one_document_at_a_time(tmp_path, mo
     assert chroma.pruned == []
     assert saved["semantic_search"]["last_sync_version"] == 10
 
+
+def test_a_full_text_scan_lists_the_library_once(tmp_path, monkeypatch):
+    """The snapshot check and the deletion pass each listed every item key."""
+    db = tmp_path / "zotero.sqlite"
+    make_zotero_db(db, ["AAAA1111"])
+    config = tmp_path / "config.json"
+    _write_config(config, last_sync_version=10)
+    zotero = FakeVersionsZotero({"AAAA1111": 5}, library_version=12)
+    listings = []
+    real = zotero.item_versions
+    zotero.item_versions = lambda **kwargs: (listings.append(kwargs), real(**kwargs))[1]
+    s = make_search(db, zotero, config_path=config)
+    seen = []
+    monkeypatch.setattr(s, "_get_items_from_source", lambda **kw: [])
+    monkeypatch.setattr(
+        s, "_run_deletion_pass", lambda stats, keys, allow: seen.append(keys)
+    )
+
+    s.update_database(extract_fulltext=True, include_fulltext=False)
+
+    assert seen == [{"AAAA1111"}]
+    assert len([k for k in listings if "since" not in k]) == 1
+    # The next run lists again: nothing is kept between runs.
+    assert s._library_keys_seen is None

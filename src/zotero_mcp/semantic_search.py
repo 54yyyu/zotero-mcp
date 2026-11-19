@@ -3331,6 +3331,10 @@ class ZoteroSemanticSearch:
             return []
         return [str(key) for key in changed] if isinstance(changed, dict) else []
 
+    # The library's item keys as _verify_local_snapshot_version listed them,
+    # for the deletion pass of the same run. Reset per run by update_database.
+    _library_keys_seen: set[str] | None = None
+
     def _verify_local_snapshot_version(self, target_sync_version: int) -> int | None:
         """Decide whether the local sqlite snapshot supports promoting the
         API-derived sync watermark.
@@ -3349,6 +3353,7 @@ class ZoteroSemanticSearch:
         """
         try:
             api_keys = set((self.zotero_client.item_versions() or {}).keys())
+            self._library_keys_seen = api_keys
 
             # Prefer the key set captured by the scan's own connection: a
             # fresh read here could already see rows from a WAL checkpoint
@@ -3871,6 +3876,7 @@ class ZoteroSemanticSearch:
             # zotero_switch_library cannot re-point half a run at another
             # library.
             self._run_group_id = self._client_group_id()
+            self._library_keys_seen = None
 
             # An index ChromaDB cannot read fails every later step with an
             # error that does not say why (#747). Stop with one that does; a
@@ -4216,9 +4222,13 @@ class ZoteroSemanticSearch:
                 # deletions here too (#457).
                 if not force_full_rebuild and limit is None:
                     try:
-                        current_library_keys = set(
-                            (self.zotero_client.item_versions() or {}).keys()
-                        )
+                        # Listed moments ago to check the local snapshot, in
+                        # a --fulltext run: one listing serves both.
+                        current_library_keys = self._library_keys_seen
+                        if current_library_keys is None:
+                            current_library_keys = set(
+                                (self.zotero_client.item_versions() or {}).keys()
+                            )
                     except Exception as e:
                         logger.warning(
                             f"Failed to fetch current item_versions for deletion check: {e}; "
@@ -4569,6 +4579,7 @@ class ZoteroSemanticSearch:
             return stats
         finally:
             self._run_group_id = None
+            self._library_keys_seen = None
             self._drop_passages_on_write = False
             self._scan_gaps = {}
             self._level_fill_keys = frozenset()
