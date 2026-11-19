@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **CSL JSON imports keep the fields the hand-written mapping lost** (#850). `zotero-cli add csl-json` and `zotero_add_item` with CSL JSON now map text, date and name variables through Zotero's own CSL crosswalk, so each lands in the field the item type uses for it: a standard keeps its `number` and `authority` (as `organization`), software keeps its `version` and its author becomes the programmer, a chapter's `container-author` becomes the book author, `accessed` becomes the access date, and a conference paper keeps its `event-title`. A variable the type has no field for is kept in Extra instead of being dropped. BibTeX `@standard` imports as a standard, and a `@techreport` number lands in the report number. Thanks @Hpartanen.
+- **Local-mode `annotations list --item-key` no longer returns another library's annotations** (#852, #856). With Better BibTeX installed and the same paper in two libraries, the lookup by citation key could pick the other library's copy and hide the active library's annotations. Better BibTeX results are now accepted only for the requested item's own attachments in the active library. Thanks @mirinae3145 for the report and @kskszq for the fix.
+- **Read output omits signed download URLs on attachments** (#854, #857). An attachment saved by the Zotero Connector from a pre-signed storage link (S3, CloudFront, Google Cloud Storage, Azure SAS) keeps that link, credentials included, in its `url` field; `get children`, `get metadata` and the MCP metadata tool no longer echo it. Attachment summaries carry `contentType` and `filename` instead. Other URLs are unchanged. Thanks @mirinae3145 and @kskszq.
+- **BibTeX import and export work with bibtexparser 2 and pyzotero 1.17.** pyzotero 1.17.0 requires bibtexparser 2, whose API is entirely different, so installs were held on pyzotero 1.16 and an environment that upgraded pyzotero by hand failed at import. Both majors are supported now, with the same result from either. On bibtexparser 2 an accent written without braces (`M\"uller`) is also decoded correctly.
+
+### Changed
+
+- **The zotero-cli skill checks read access with a real request** (#853, #855). `zotero-cli config` only prints settings and never contacted Zotero, so the skill no longer treats it as a reachability check; it uses `zotero-cli --json get recent --limit 1`. Thanks @mirinae3145 and @kskszq.
+- **The skill no longer tells agents to assign fixed meanings to annotation colors** or to write a color legend note (#851); that is the library owner's convention. Thanks @mirinae3145.
+
 ## [0.17.2] - 2026-11-14
 
 ### Added
