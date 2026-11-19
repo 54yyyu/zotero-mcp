@@ -2035,16 +2035,23 @@ class LocalZoteroReader:
             abstract_val.value as abstract,
             extra_val.value as extra,
             doi_val.value as doi,
-            GROUP_CONCAT(n.note, ' ') as notes,
-            GROUP_CONCAT(
-                CASE
+            -- Notes and creators are each gathered in their own subquery.
+            -- Joined side by side they multiplied: an item with 3 notes and
+            -- 2 creators listed every creator 3 times and every note twice,
+            -- and that text is what the semantic index embeds.
+            (SELECT GROUP_CONCAT(note, ' ') FROM (
+                SELECT n.note FROM itemNotes n
+                WHERE n.parentItemID = i.itemID ORDER BY n.itemID
+            )) as notes,
+            (SELECT GROUP_CONCAT(name, '; ') FROM (
+                SELECT CASE
                     WHEN c.firstName IS NOT NULL AND c.lastName IS NOT NULL
                     THEN c.lastName || ', ' || c.firstName
-                    WHEN c.lastName IS NOT NULL
-                    THEN c.lastName
-                    ELSE NULL
-                END, '; '
-            ) as creators
+                    ELSE c.lastName
+                END AS name
+                FROM itemCreators ic JOIN creators c ON ic.creatorID = c.creatorID
+                WHERE ic.itemID = i.itemID ORDER BY ic.orderIndex
+            )) as creators
         FROM items i
         JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
         """
@@ -2056,13 +2063,6 @@ class LocalZoteroReader:
             + _plain_field_join("extra", "extra")
             + _plain_field_join("doi", "DOI")
             + """
-        -- Get notes
-        LEFT JOIN itemNotes n ON i.itemID = n.parentItemID OR i.itemID = n.itemID
-
-        -- Get creators
-        LEFT JOIN itemCreators ic ON i.itemID = ic.itemID
-        LEFT JOIN creators c ON ic.creatorID = c.creatorID
-
         WHERE it.typeName NOT IN ('attachment', 'note', 'annotation')
         AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
         """
@@ -2100,12 +2100,7 @@ class LocalZoteroReader:
             query += " AND i.key = ?"
             params.append(key_filter)
 
-        query += """
-        GROUP BY i.itemID, i.key, i.itemTypeID, it.typeName, i.dateAdded, i.dateModified,
-                 title_val.value, abstract_val.value, extra_val.value
-
-        ORDER BY i.dateModified DESC
-        """
+        query += " ORDER BY i.dateModified DESC"
 
         if limit:
             query += " LIMIT ?"

@@ -251,7 +251,7 @@ def _build_multilib_db(db_path):
         );
         CREATE TABLE itemDataValues (valueID INTEGER PRIMARY KEY, value TEXT);
         CREATE TABLE itemNotes (itemID INT, parentItemID INT, note TEXT);
-        CREATE TABLE itemCreators (itemID INT, creatorID INT);
+        CREATE TABLE itemCreators (itemID INT, creatorID INT, orderIndex INT);
         CREATE TABLE creators (creatorID INTEGER PRIMARY KEY, firstName TEXT, lastName TEXT);
         CREATE TABLE deletedItems (itemID INTEGER PRIMARY KEY);
         """
