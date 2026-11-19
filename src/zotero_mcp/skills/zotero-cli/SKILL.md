@@ -203,8 +203,7 @@ first 40 characters of comment). Check what is stored with `annotations preview
 `annotations update KEY --rect x,y,w,h` (or `--page N`).
 
 Colors take Zotero's names: yellow, red, green, blue, purple, magenta,
-orange, gray. Three or four colors with fixed meanings read better than
-eight; say what they mean in a note on the item.
+orange, gray.
 
 Writes in local mode need a one-time `zotero-mcp authorize-local` (Zotero 10
 or newer) or web API credentials. A write refused for that reason says so.
