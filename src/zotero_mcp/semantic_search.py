@@ -1659,6 +1659,10 @@ class ZoteroSemanticSearch:
     # text") while reading files over the API: the sync version stays put so
     # the next run lists those items again.
     _api_fetch_failures: int = 0
+    # Requests that failed in earlier runs, by key (this library), and in this one.
+    _fetch_failure_counts: dict[str, int] = {}
+    _failed_keys_now: set[str] = set()
+    _failure_counts_to_save: dict[str, int] | None = None
     # A gap fill waiting for full text Zotero did not have is asked for it again
     # after this many days, doubling after each answer without text, up to the
     # cap. Zotero indexes PDFs some time after they are added.
@@ -2078,6 +2082,15 @@ class ZoteroSemanticSearch:
             full_config["semantic_search"] = {}
 
         full_config["semantic_search"]["update_config"] = self.update_config
+        if self._failure_counts_to_save is not None:
+            by_library = full_config["semantic_search"].get("fetch_failures")
+            if not isinstance(by_library, dict):
+                by_library = {}
+            if self._failure_counts_to_save:
+                by_library[str(self._run_group_id)] = self._failure_counts_to_save
+            else:
+                by_library.pop(str(self._run_group_id), None)
+            full_config["semantic_search"]["fetch_failures"] = by_library
         if last_sync_version is not None:
             key = str(library_key) if library_key is not None else self._active_library_key()
             versions = full_config["semantic_search"].get("last_sync_versions")
@@ -3842,6 +3855,43 @@ class ZoteroSemanticSearch:
         candidates = [(category, 0, row) for row in rows if (category := self._api_category(row))]
         return select_by_priority(candidates, priority, sort_key=self._row_key)
 
+    # Runs a failing request holds the sync version back before it is given up on.
+    _GIVE_UP_AFTER_RUNS = 3
+
+    def _note_failed_request(self, key: str, what: str) -> None:
+        """A request for ``key`` failed: hold the sync version back, until it has failed in three runs.
+
+        Otherwise one key that always fails (a corrupt item, a file the server
+        cannot read) would pin the version, and every run would fetch the same
+        changes again. The count lives in the config next to the sync version.
+        """
+        self._failed_keys_now.add(key)
+        runs = self._fetch_failure_counts.get(key, 0) + 1
+        if runs >= self._GIVE_UP_AFTER_RUNS:
+            logger.warning(
+                "Giving up on %s: its %s request has failed in %d runs, so the sync version moves on "
+                "without it. It is fetched again when Zotero lists it as changed.",
+                key, what, runs,
+            )
+            return
+        logger.warning(
+            "The %s request for %s failed (run %d of %d); the sync version stays where it was.",
+            what, key, runs, self._GIVE_UP_AFTER_RUNS,
+        )
+        self._api_fetch_failures += 1
+
+    def _load_fetch_failures(self) -> dict[str, int]:
+        """Failure counts by key recorded for the library being updated."""
+        if not self.config_path or not os.path.exists(self.config_path):
+            return {}
+        try:
+            with open(self.config_path) as f:
+                section = json.load(f).get("semantic_search", {}) or {}
+            counts = (section.get("fetch_failures") or {}).get(str(self._run_group_id)) or {}
+            return {str(k): int(v) for k, v in counts.items()}
+        except Exception:
+            return {}
+
     def _api_children(self, item_key: str) -> tuple[list[dict[str, Any]], bool]:
         """``(attachment rows, request failed)`` for the children of one item."""
         try:
@@ -4009,7 +4059,7 @@ class ZoteroSemanticSearch:
                 rows, failed = self._api_children(key)
                 if failed:
                     complete = False
-                    self._api_fetch_failures += 1
+                    self._note_failed_request(key, "children")
                     continue
             listed_rows[key] = rows
             chosen = self._select_api_rows(rows, priority)
@@ -4077,7 +4127,7 @@ class ZoteroSemanticSearch:
             if failed:
                 # What is stored stays. The sync version must not move past
                 # this file, or no later run would list it again.
-                self._api_fetch_failures += 1
+                self._note_failed_request(akey, "fulltext")
                 return None
             if not text.strip():
                 # Zotero has no text for it (yet). Unlike a local file that
@@ -4462,6 +4512,9 @@ class ZoteroSemanticSearch:
 
         changed_items: list[dict[str, Any]] = []
         changed_attachments: list[dict[str, Any]] = []
+        for key in sorted(failed):
+            # Its change would never be listed again once the version moves.
+            self._note_failed_request(key, "item")
         for key in order:
             item = fetched.get(key)
             if not item:
@@ -5139,6 +5192,9 @@ class ZoteroSemanticSearch:
             self._api_textless = set()
             self._api_outranked = set()
             self._api_fetch_failures = 0
+            self._failed_keys_now = set()
+            self._fetch_failure_counts = self._load_fetch_failures()
+            self._failure_counts_to_save = None
 
             # An index ChromaDB cannot read fails every later step with an
             # error that does not say why (#747). Stop with one that does; a
@@ -5432,7 +5488,6 @@ class ZoteroSemanticSearch:
                     # They would not come back in a later item_versions(since=...),
                     # so the sync version stays where it is and the next run asks again.
                     stats["fetch_failed_items"] = fetch_failed
-                    self._api_fetch_failures += fetch_failed
                     _report(
                         f"Could not fetch {fetch_failed} changed item(s) from Zotero; "
                         "the next update tries them again.\n"
@@ -5599,6 +5654,9 @@ class ZoteroSemanticSearch:
                 # changes again. The sync version waits for the import, unless
                 # there is nothing to import: then it moves now, or every later
                 # run would fetch the same changes again.
+                self._failure_counts_to_save = {
+                    key: self._fetch_failure_counts.get(key, 0) + 1 for key in self._failed_keys_now
+                }
                 self.update_config["last_update"] = datetime.now().isoformat()
                 if (
                     self._standalone_covered and limit is None
@@ -5886,6 +5944,9 @@ class ZoteroSemanticSearch:
             # item_versions(since=...) result, so they would stay unindexed.
             # Trade-off: an item that always fails keeps the watermark back
             # on every run. Persisting failed keys instead is a follow-up.
+            self._failure_counts_to_save = {
+                key: self._fetch_failure_counts.get(key, 0) + 1 for key in self._failed_keys_now
+            }
             self.update_config["last_update"] = datetime.now().isoformat()
             if self._standalone_covered and limit is None and not retry_fail and not self._api_fetch_failures:
                 self.update_config["standalone_files_indexed"] = True
@@ -5925,6 +5986,7 @@ class ZoteroSemanticSearch:
             self._level_fill_keys = frozenset()
             self._legacy_settle = None
             self._scan_desired_keys = None
+            self._failure_counts_to_save = None
             self._scan_removed_keys = None
             self._api_textless = set()
             self._api_outranked = frozenset()
