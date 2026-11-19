@@ -293,6 +293,55 @@ def test_article_level_overfetches_so_collapsing_still_fills_limit(monkeypatch, 
     assert s.chroma_client.calls[0]["n_results"] > 3
 
 
+class _FailingBatchZot(FakeZot):
+    """``items(itemKey=...)`` raises ``error`` while the batch is asked for."""
+
+    def __init__(self, items, error):
+        super().__init__(items)
+        self._error = error
+
+    def items(self, itemKey="", **kw):
+        self.batch_calls.append(itemKey.split(","))
+        raise self._error
+
+
+def _lookup(monkeypatch, tmp_path, error, n=50):
+    from zotero_mcp.semantic_search import _fetch_items_via_client
+
+    keys = [f"KEY{i:05d}" for i in range(n)]
+    zot = _FailingBatchZot([_regular(k) for k in keys], error)
+    return zot, _fetch_items_via_client(zot, keys)
+
+
+@pytest.mark.parametrize("make_error", [
+    lambda: ConnectionError("connection dropped"),
+    lambda: TimeoutError("timed out"),
+    lambda: __import__("pyzotero.zotero_errors", fromlist=["x"]).TooManyRequestsError("429"),
+    lambda: __import__("pyzotero.zotero_errors", fromlist=["x"]).TooManyRetriesError("backoff"),
+    lambda: __import__("pyzotero.zotero_errors", fromlist=["x"]).HTTPError("\nCode: 503\nURL: x"),
+])
+def test_a_failed_batch_is_not_fanned_out_into_one_request_per_key(monkeypatch, tmp_path, make_error):
+    zot, (found, failed) = _lookup(monkeypatch, tmp_path, make_error())
+
+    assert zot.single_calls == [], "50 requests were sent after a transport failure"
+    assert len(zot.batch_calls) == 1
+    assert found == {} and len(failed) == 50, "every key must be reported as unresolved"
+
+
+@pytest.mark.parametrize("name,text", [
+    ("UnsupportedParamsError", "\nCode: 400"),
+    ("RequestEntityTooLargeError", "\nCode: 413"),
+    ("HTTPError", "\nCode: 414\nURL: x"),
+])
+def test_a_request_shape_error_falls_back_to_one_request_per_key(monkeypatch, tmp_path, name, text):
+    import pyzotero.zotero_errors as ze
+
+    zot, (found, failed) = _lookup(monkeypatch, tmp_path, getattr(ze, name)(text), n=3)
+
+    assert len(zot.single_calls) == 3
+    assert sorted(found) == [f"KEY{i:05d}" for i in range(3)] and failed == {}
+
+
 def test_legacy_parent_keyed_passages_still_render_as_the_parent(monkeypatch, tmp_path):
     legacy_meta = {
         "item_key": "LEGACY01",
