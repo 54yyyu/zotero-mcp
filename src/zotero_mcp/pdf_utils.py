@@ -524,8 +524,15 @@ def _sliding_window_match(text: str, pattern: str) -> tuple[int, int, float] | N
     because a below-threshold best match still feeds "did you mean" feedback.
 
     A window is fully scored only when ``quick_ratio()``, an upper bound on
-    ``ratio()``, could beat the best so far. That skips most windows without
-    changing which one wins.
+    ``ratio()``, could beat the best so far. Window starts are sampled an
+    eighth of the pattern apart and the neighbourhood of the best one is then
+    scanned at every offset: a window 1.2x the pattern still holds nearly all
+    of a match that begins between two samples, and scoring every offset of a
+    page cost seconds per missed quote.
+
+    The window is wider than the pattern, so the span returned is where the
+    pattern's first and last matched runs fall inside it, not the window's
+    start.
 
     Args:
         text: Normalized text to search in
@@ -540,7 +547,7 @@ def _sliding_window_match(text: str, pattern: str) -> tuple[int, int, float] | N
 
     window_size = int(pattern_len * 1.2)
     matcher = SequenceMatcher(None, pattern)
-    best = [0.0, 0, 0]  # ratio, start, end
+    best = [0.0, 0]  # ratio, window start
 
     def scan(starts) -> None:
         for i in starts:
@@ -549,15 +556,28 @@ def _sliding_window_match(text: str, pattern: str) -> tuple[int, int, float] | N
                 continue
             ratio = matcher.ratio()
             if ratio > best[0]:
-                best[:] = [ratio, i, min(i + pattern_len, len(text))]
+                best[:] = [ratio, i]
 
-    # Use stepping for very long texts, then refine around the best step.
-    step = max(1, len(text) // 5000) if len(text) >= SLIDING_WINDOW_STEP_THRESHOLD else 1
-    scan(range(0, len(text) - pattern_len + 1, step))
+    last = len(text) - pattern_len + 1
+    step = max(1, pattern_len // 8)
+    if len(text) >= SLIDING_WINDOW_STEP_THRESHOLD:
+        step = max(step, len(text) // 5000)
+    scan(range(0, last, step))
     if step > 1 and best[0] > 0:
-        scan(range(max(0, best[1] - step), min(len(text) - pattern_len + 1, best[1] + step)))
+        scan(range(max(0, best[1] - step), min(last, best[1] + step)))
 
-    return best[1], best[2], best[0]
+    ratio, i = best
+    matcher.set_seq2(text[i:i + window_size])
+    # Runs of three or more: a lone matching letter says nothing about where
+    # the pattern sits.
+    runs = [b for b in matcher.get_matching_blocks() if b.size >= 3]
+    if not runs:
+        return i, min(i + pattern_len, len(text)), ratio
+    first, final = runs[0], runs[-1]
+    start = i + max(0, first.b - first.a)
+    unmatched_tail = pattern_len - (final.a + final.size)
+    end = i + min(window_size, final.b + final.size + unmatched_tail)
+    return start, min(end, len(text)), ratio
 
 
 def _get_dynamic_threshold(text_length: int) -> float:
