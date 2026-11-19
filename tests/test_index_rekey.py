@@ -5,7 +5,6 @@ a new embedding fails the test. HOME, Path.home and the config path point into
 tmp_path, and the Zotero side is a fake reader.
 """
 
-import hashlib
 import importlib.util
 import json
 import sys
@@ -216,7 +215,8 @@ def test_a_split_index_is_rekeyed_to_the_attachment_without_touching_a_vector(in
     assert read_index_layout(directory, NAME)["legacy_passages"] == 0
 
 
-def test_rekeying_keeps_the_files_hash_in_the_hash_cache(index, tmp_path):
+def test_rekeying_does_not_hash_the_file(index, tmp_path):
+    """Hashing waits for the first update that needs it; migrate-index reads no file bytes."""
     directory, config = index
     _seed_split(directory)
     path = tmp_path / "file.pdf"
@@ -228,7 +228,7 @@ def test_rekeying_keeps_the_files_hash_in_the_hash_cache(index, tmp_path):
     migrate_index(config, sources=_sources(config, targets=[live]), **QUIET)
 
     path.unlink()
-    assert file_hash.get_file_hash(ATT, path, "1:8", config_path=config) == hashlib.sha256(b"the file").hexdigest()
+    assert file_hash.get_file_hash(ATT, path, "1:8", config_path=config) is None, "nothing was cached, and the file is gone"
 
 
 def test_pre_0_17_chunked_index_is_split_and_rekeyed_in_one_run(index):

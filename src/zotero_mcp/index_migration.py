@@ -312,15 +312,17 @@ class LocalSources:
     def remember_stamp(self, attachment_key: str) -> None:
         """Keep the live file's stamp, where a later update finds it to tell a file changed since the re-key.
 
-        Also hashes the file, so a later run can find its bytes in the hash
-        cache. That cache is no record of the re-key: it is written whenever a
-        file is hashed, so only this stamp says what the passages were cut from.
+        The file is not read: hashing every re-keyed file would read gigabytes
+        on a large library and download files kept on demand in a cloud drive.
+        The first update that needs a hash (to write the attachment record or
+        look for a file to reuse) takes it then. The hash cache is no record of
+        the re-key either: it is written whenever a file is hashed, so only this
+        stamp says what the passages were cut from.
         """
-        from . import file_hash, fulltext_cache
+        from . import fulltext_cache
 
         target = self._targets.get(attachment_key)
         if target is not None:
-            file_hash.get_file_hash(target.key, target.path, target.file_stamp, config_path=self.config_path)
             fulltext_cache.remember_rekeyed_stamp(target.key, target.file_stamp, config_path=self.config_path)
 
 
