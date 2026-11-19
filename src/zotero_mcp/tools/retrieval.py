@@ -392,7 +392,6 @@ def get_collections(
             c["key"] for c in collections
             if c.get("key") and c.get("data", {}).get("deleted")
         }
-        collections = collections[:limit]
 
         # Always return the header, even if empty
         output = ["# Zotero Collections", ""]
@@ -440,9 +439,11 @@ def get_collections(
         # Start with top-level collections (those with None as parent)
         top_level_keys = hierarchy.get(None, [])
 
+        first_line = len(output)
         if not top_level_keys:
             # If no clear hierarchy, just list all collections
             output.append("Collections (flat list):")
+            first_line += 1
             for coll in sorted(collections, key=lambda x: x["data"].get("name", "")):
                 name = coll["data"].get("name", "Unnamed Collection")
                 key = coll["key"]
@@ -452,6 +453,17 @@ def get_collections(
             # Display hierarchical structure
             for key in sorted(top_level_keys):
                 output.extend(format_collection(key))
+
+        # The limit caps the lines shown, not the collections the tree is
+        # built from: cutting the list first dropped every subcollection whose
+        # parent fell past the cut, and nothing said the listing was partial.
+        listed = len(output) - first_line
+        if listed > limit:
+            del output[first_line + limit:]
+            output.append(
+                f"\n*Showing {limit} of {listed} collections. Pass a higher limit "
+                f"(up to 5000), or find one by name with zotero_search_collections.*"
+            )
 
         return "\n".join(output)
 
