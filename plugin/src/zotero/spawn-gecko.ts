@@ -45,6 +45,8 @@ function parseEnv(text: string): Record<string, string> {
 class GeckoProc implements Proc {
   readonly pid: number;
   readonly exited: Promise<number | null>;
+  /** Both pipes read to their end: everything the process wrote has been handed on. */
+  readonly drained: Promise<unknown>;
   private chain: Promise<unknown> = Promise.resolve();
   private lineCb: ((l: string) => void) | null = null;
   private errCb: ((c: string) => void) | null = null;
@@ -58,8 +60,10 @@ class GeckoProc implements Proc {
     this.p = p;
     this.pid = p.pid;
     this.exited = p.wait().then((r: any) => { this.gone = true; return typeof r.exitCode === "number" && r.exitCode >= 0 ? r.exitCode : null; });
-    this.pump(p.stdout, (line) => (this.lineCb ? this.lineCb(line) : this.lines.push(line)), true);
-    this.pump(p.stderr, (chunk) => (this.errCb ? this.errCb(chunk) : this.errs.push(chunk)), false);
+    this.drained = Promise.all([
+      this.pump(p.stdout, (line) => (this.lineCb ? this.lineCb(line) : this.lines.push(line)), true),
+      this.pump(p.stderr, (chunk) => (this.errCb ? this.errCb(chunk) : this.errs.push(chunk)), false),
+    ]);
   }
 
   private async pump(stream: any, emit: (s: string) => void, byLine: boolean) {
@@ -173,7 +177,10 @@ export function createGeckoSpawner(): Spawner {
       const timer = opts.timeoutMs ? setTimeout(() => { void proc.kill(); }, opts.timeoutMs) : null;
       const code = await proc.exited;
       if (timer) clearTimeout(timer);
-      await sleep(30); // let the pumps flush the last chunk
+      // The exit can be seen before the last output is read. Wait for the pipes' end, not for a guessed delay (30 ms
+      // of sleep on each of the ten or so helpers ahead of a session, and still no guarantee); the cap is for a
+      // grandchild that keeps a pipe open after the command is gone.
+      await Promise.race([proc.drained, sleep(250)]);
       return { code, stdout, stderr };
     },
     baseEnv() {
