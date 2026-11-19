@@ -33,6 +33,7 @@ FIXTURES = Path(__file__).parent / "fixtures" / "legacy_indexes"
 sys.path.insert(0, str(FIXTURES))
 
 import fake_zotero  # noqa: E402
+from _fresh_process import as_fresh_process  # noqa: E402
 from fake_embedding import FakeDefaultEmbedding  # noqa: E402
 
 from zotero_mcp import extract, local_db, semantic_search  # noqa: E402
@@ -117,6 +118,7 @@ class Library:
 
     def __init__(self, kind, tmp_path, monkeypatch):
         self.kind = kind
+        self._searches: list = []
         self.home = tmp_path / "home"
         self.config_dir = self.home / ".config" / "zotero-mcp"
         self.config_path = self.config_dir / "config.json"
@@ -155,7 +157,9 @@ class Library:
             spy(local_db.LocalZoteroReader, name)
 
     def search_object(self):
-        return semantic_search.create_semantic_search(str(self.config_path))
+        search = semantic_search.create_semantic_search(str(self.config_path))
+        self._searches.append(search)
+        return search
 
     def query(self, text):
         """Allow exactly this text to be embedded (the query)."""
@@ -166,6 +170,11 @@ class Library:
     def collections(self):
         import chromadb
         from chromadb.config import Settings
+
+        # A raw read of the persisted index: end the update step first, as a process exit would.
+        as_fresh_process(*self._searches)
+        for search in self._searches:  # the test may run the same search object again
+            search.chroma_client = semantic_search.create_chroma_client(str(self.config_path))
 
         # The settings ChromaClient opens with: ChromaDB shares one system per path.
         client = chromadb.PersistentClient(
@@ -577,11 +586,13 @@ def _chunking_was_off(library):
     import chromadb
     from chromadb.config import Settings
 
+    as_fresh_process()
     client = chromadb.PersistentClient(
         str(library.persist_dir), settings=Settings(anonymized_telemetry=False, allow_reset=True)
     )
     client.delete_collection(PASSAGES)
     del client
+    as_fresh_process()
 
 
 @pytest.mark.parametrize("second_run", ["explicit_fulltext", "explicit", "automatic", "automatic_fulltext"])

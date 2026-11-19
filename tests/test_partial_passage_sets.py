@@ -14,6 +14,7 @@ import pytest
 if sys.version_info >= (3, 14):
     pytest.skip("chromadb needs pydantic v1 paths on 3.14+", allow_module_level=True)
 
+from _fresh_process import as_fresh_process  # noqa: E402
 from _scan_fakes import target  # noqa: E402
 from test_item_keyed_local_scan import Item  # noqa: E402
 from test_rekeyed_index_updates import ATT, ITEM, NAME, PASSAGES, Reader, World  # noqa: E402
@@ -38,9 +39,11 @@ def test_a_missing_passage_is_refilled_by_the_next_explicit_update(world):
     world.update(_reader())
     passages = sorted(world.stored(PASSAGES))
     assert len(passages) == 5
+    as_fresh_process()
     ChromaClient(collection_name=NAME, persist_directory=world.directory).client.get_collection(PASSAGES).delete(
         ids=[f"{ATT}#3"]
     )
+    as_fresh_process()
     world.embedded.clear()
 
     world.update(_reader())

@@ -25,6 +25,7 @@ if sys.version_info >= (3, 14):
 if importlib.util.find_spec("chromadb") is None:
     pytest.skip("chromadb not installed", allow_module_level=True)
 
+from _fresh_process import as_fresh_process  # noqa: E402
 from _scan_fakes import target  # noqa: E402
 from chromadb.api.models.CollectionCommon import CollectionCommon  # noqa: E402
 from test_item_keyed_local_scan import DATE, NAME, FakeZotero, Item, LibReader  # noqa: E402
@@ -105,9 +106,14 @@ class World:
             ids=ids,
             embeddings=[[0.5, float(n)] for n, _ in enumerate(ids)],
         )
+        # The seeding client is a separate step, as the release that wrote the index was.
+        client = None
+        as_fresh_process()
 
     def migrate(self, reader):
+        as_fresh_process()
         report = migrate_index(self.config, sources=LocalSources(reader, self.config), **QUIET)
+        as_fresh_process()
         assert report.failed_items == 0, "the migration these tests start from succeeded"
         return report
 
@@ -129,9 +135,11 @@ class World:
         reader.extracted.clear()
         stats = search.update_database(extract_fulltext=True, **kwargs)
         assert stats.get("error") is None, stats
+        as_fresh_process(search)
         return search, stats
 
     def stored(self, name):
+        as_fresh_process()
         client = ChromaClient(collection_name=NAME, persist_directory=self.directory)
         got = client.client.get_collection(name).get(include=["embeddings", "metadatas"])
         return {
