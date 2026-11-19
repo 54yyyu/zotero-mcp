@@ -172,3 +172,22 @@ def test_a_half_rewritten_record_is_an_attachment_as_db_status_counts_it(home):
     assert "attachment: 1" in out
     assert "legacy: 0" in out
 
+
+def test_an_attachment_record_shows_and_filters_on_its_parents_title_and_creators(home):
+    client = _extra_client(
+        home,
+        [
+            ("ATT1", {"file_stamp": "1:1", "parent_hint": "BIB1"}),
+            ("ATT1#0", {"chunk_index": 0, "n_chunks": 1, "parent_hint": "BIB1"}),
+            ("ALONE", {"file_stamp": "1:1", "parent_hint": ""}),
+        ],
+    )
+
+    out = _run(client, Reader(), filter_text="live title")
+    by_author = _run(client, Reader(), filter_text="smith")
+
+    assert "Live title" in out and "[attachment ATT1]" in out
+    assert "[passage ATT1#0]" in out
+    assert "ALONE" not in out
+    assert "[attachment ATT1]" in by_author
+    assert "Smith 2020.pdf" not in out

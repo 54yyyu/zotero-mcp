@@ -83,9 +83,9 @@ class _Live:
             if record_kind(doc_id, meta) == KIND_LEGACY:
                 continue
             group = int(meta.get("group_id") or 0)
-            key = record_key(doc_id)
-            if (group, key) not in self.fields:
-                wanted.setdefault(group, set()).add(key)
+            for key in (record_key(doc_id), meta.get("parent_hint")):
+                if key and (group, key) not in self.fields:
+                    wanted.setdefault(group, set()).add(key)
         for group, keys in wanted.items():
             try:
                 items = self.reader.get_full_items(sorted(keys), group_id=group)
@@ -109,7 +109,14 @@ class _Live:
                 "title": meta.get("title") or "",
                 "creators": meta.get("creators") or "",
             }
-        return self.fields.get((int(meta.get("group_id") or 0), record_key(doc_id)))
+        group = int(meta.get("group_id") or 0)
+        own = self.fields.get((group, record_key(doc_id)))
+        parent = self.fields.get((group, meta.get("parent_hint") or ""))
+        if own is None or parent is None:
+            return own
+        # An attachment's file name and a passage's id say nothing a user searches
+        # for: show and match the paper they belong to, keeping the record's own type.
+        return {"item_type": own["item_type"], "title": parent["title"], "creators": parent["creators"]}
 
 
 def _resolved(
