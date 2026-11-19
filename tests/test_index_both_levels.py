@@ -5,6 +5,7 @@ that records what it was asked to embed, because re-embedding what is already
 stored is the failure that costs users money.
 """
 
+import hashlib
 import importlib.util
 import json
 import sys
@@ -53,12 +54,20 @@ class RecordingClient(ChromaClient):
 
 
 class FakeZotero:
+    """Each item ``KEY`` has one PDF ``PKEY`` whose text Zotero has extracted.
+
+    ``abstracts`` holds each item's file text; passages come from files only
+    (#826). A key in ``changed`` was edited: its dateModified moves on.
+    """
+
     def __init__(self, abstracts):
         self.abstracts = dict(abstracts)
         self.version = 5
         self.changed: set[str] = set()
 
     def item(self, key):
+        if key.startswith("P") and key[1:] in self.abstracts:
+            return self._attachment(key[1:])
         return {
             "key": key,
             "version": self.version,
@@ -66,9 +75,27 @@ class FakeZotero:
                 "key": key,
                 "itemType": "journalArticle",
                 "title": f"Title {key}",
-                "abstractNote": self.abstracts[key],
+                "abstractNote": "An abstract.",
                 "creators": [],
                 "dateAdded": "2024-01-01T00:00:00Z",
+                "dateModified": (
+                    f"2024-02-{self.version:02d}T00:00:00Z" if key in self.changed else "2024-01-01T00:00:00Z"
+                ),
+            },
+        }
+
+    def _attachment(self, parent):
+        text = self.abstracts[parent]
+        return {
+            "key": f"P{parent}",
+            "version": self.version,
+            "data": {
+                "key": f"P{parent}",
+                "itemType": "attachment",
+                "parentItem": parent,
+                "contentType": "application/pdf",
+                "md5": hashlib.md5(text.encode()).hexdigest(),
+                "mtime": 1,
                 "dateModified": "2024-01-01T00:00:00Z",
             },
         }
@@ -77,11 +104,15 @@ class FakeZotero:
         return [] if start else [self.item(k) for k in self.abstracts]
 
     def item_versions(self, since=None, **kwargs):
-        keys = self.changed if since is not None else self.abstracts
-        return {k: self.version for k in keys}
+        if since is not None:
+            return {k: self.version for k in self.changed}
+        return {k: self.version for key in self.abstracts for k in (key, f"P{key}")}
 
-    def children(self, *a, **kw):
-        return []
+    def children(self, key, *a, **kw):
+        return [self._attachment(key)] if key in self.abstracts else []
+
+    def fulltext_item(self, key):
+        return {"content": self.abstracts[key[1:]]}
 
     def last_modified_version(self, **kwargs):
         return self.version
@@ -92,12 +123,12 @@ def build(monkeypatch, tmp_path):
     monkeypatch.setattr(semantic_search, "is_local_mode", lambda: False)
     config_path = tmp_path / "config.json"
 
-    def _build(zotero, *, chunking, batch=False, route=True):
+    def _build(zotero, *, chunking, batch=False, route=True, include_fulltext=True):
         monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: zotero)
         existing = json.loads(config_path.read_text()) if config_path.exists() else {"semantic_search": {}}
         section = existing["semantic_search"]
         section.update(
-            include_fulltext=False,
+            include_fulltext=include_fulltext,
             index_schema_version=semantic_search._INDEX_SCHEMA_VERSION,
             chunking={"enabled": chunking, "chunk_size": 400, "overlap": 50, "max_chunks_per_item": 5},
             openai_batch={"enabled": batch},
@@ -124,10 +155,11 @@ def test_chunking_on_writes_an_article_and_passages(build):
     stats = search.update_database()
 
     assert stats.get("error") is None
-    assert _ids(search) == {"AAA"}
-    assert "AAA#0" in _passage_ids(search)
+    # The item's metadata record, and its file's record and passages (#826).
+    assert _ids(search) == {"AAA", "PAAA"}
+    assert "PAAA#0" in _passage_ids(search)
     assert len(_passage_ids(search)) == 5
-    assert stats["added_items"] == 1
+    assert stats["added_items"] == 2
 
 
 def test_chunking_off_writes_only_an_article(build):
@@ -135,7 +167,7 @@ def test_chunking_off_writes_only_an_article(build):
 
     search.update_database()
 
-    assert _ids(search) == {"AAA"}
+    assert _ids(search) == {"AAA", "PAAA"}
     assert read_index_layout(search.chroma_client.persist_directory, NAME)["passage_records"] == 0
 
 
@@ -148,7 +180,7 @@ def test_enabling_chunking_adds_passages_without_re_embedding_articles(build):
 
     assert stats.get("error") is None
     assert len(search.chroma_client.embedded) == 10, "five passages each, and no article"
-    assert _ids(search) == {"AAA", "BBB"}
+    assert _ids(search) == {"AAA", "BBB", "PAAA", "PBBB"}
     assert len(_passage_ids(search)) == 10
 
 
@@ -205,10 +237,10 @@ def test_a_changed_item_re_embeds_both_levels(build):
     search = build(zotero, chunking=True)
     stats = search.update_database()
 
-    assert stats["updated_items"] == 1
-    assert len(search.chroma_client.embedded) == 2, "one article and one passage"
-    assert _ids(search) == {"AAA", "BBB"}
-    assert {p for p in _passage_ids(search) if p.startswith("AAA")} == {"AAA#0"}, "stale passages pruned"
+    assert stats["updated_items"] == 2, "the item's metadata record and its file's"
+    assert len(search.chroma_client.embedded) == 3, "the metadata, the file's article and one passage"
+    assert _ids(search) == {"AAA", "BBB", "PAAA", "PBBB"}
+    assert {p for p in _passage_ids(search) if p.startswith("PAAA")} == {"PAAA#0"}, "stale passages pruned"
 
 
 def test_changing_an_item_with_chunking_off_drops_its_stale_passages(build):
@@ -218,15 +250,16 @@ def test_changing_an_item_with_chunking_off_drops_its_stale_passages(build):
 
     zotero.version = 6
     zotero.changed = {"AAA"}
+    zotero.abstracts["AAA"] = LONG + " Revised."
     search = build(zotero, chunking=False)
     search.update_database()
 
-    assert not [p for p in _passage_ids(search) if p.startswith("AAA")]
-    assert [p for p in _passage_ids(search) if p.startswith("BBB")]
+    assert not [p for p in _passage_ids(search) if p.startswith("PAAA")]
+    assert [p for p in _passage_ids(search) if p.startswith("PBBB")]
 
     search = build(zotero, chunking=True)
     search.update_database()
-    assert [p for p in _passage_ids(search) if p.startswith("AAA")]
+    assert [p for p in _passage_ids(search) if p.startswith("PAAA")]
 
 
 def test_missing_article_records_are_embedded_alone(build):
@@ -234,13 +267,13 @@ def test_missing_article_records_are_embedded_alone(build):
     zotero = FakeZotero({"AAA": LONG})
     search = build(zotero, chunking=True)
     search.update_database()
-    search.chroma_client.delete_documents(["AAA"])
+    search.chroma_client.delete_documents(["PAAA"])
 
     search = build(zotero, chunking=True)
     search.update_database()
 
     assert len(search.chroma_client.embedded) == 1, "the article, and no passage"
-    assert _ids(search) == {"AAA"}
+    assert _ids(search) == {"AAA", "PAAA"}
     assert len(_passage_ids(search)) == 5
 
 
@@ -251,7 +284,7 @@ def test_a_limited_run_does_not_fill_gaps(build):
     search = build(zotero, chunking=True)
     assert search._find_index_gaps(limit=1, force_rebuild=False) == {}
     assert search._find_index_gaps(limit=None, force_rebuild=True) == {}
-    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
+    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"PAAA": {"passages"}}
 
 
 def test_force_rebuild_replaces_both_levels(build):
@@ -262,8 +295,8 @@ def test_force_rebuild_replaces_both_levels(build):
     search = build(zotero, chunking=True)
     search.update_database(force_full_rebuild=True, allow_mass_deletion=True)
 
-    assert _ids(search) == {"AAA"}
-    assert not [p for p in _passage_ids(search) if p.startswith("BBB")]
+    assert _ids(search) == {"AAA", "PAAA"}
+    assert not [p for p in _passage_ids(search) if p.startswith("PBBB")]
 
 
 def test_unmigrated_index_goes_on_as_it_did(build):
@@ -276,9 +309,11 @@ def test_unmigrated_index_goes_on_as_it_did(build):
     stats = search.update_database()
 
     assert stats.get("error") is None
-    assert not [i for i in _ids(search) if "#" not in i], "no article records on an unmigrated index"
+    # Every record stays in the one collection; article-level records are
+    # written there too, beside the passages (#826).
+    assert {i for i in _ids(search) if "#" not in i} == {"AAA", "BBB", "PAAA", "PBBB"}
     assert read_index_layout(search.chroma_client.persist_directory, NAME)["passage_collection_exists"] is False
-    assert len(search.chroma_client.embedded) == 5
+    assert len(search.chroma_client.embedded) == 1, "only the edited item's metadata record"
 
 
 def test_an_item_missing_a_later_passage_counts_as_a_gap(build):
@@ -286,10 +321,10 @@ def test_an_item_missing_a_later_passage_counts_as_a_gap(build):
     zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
     search = build(zotero, chunking=True)
     search.update_database()
-    search.chroma_client.delete_documents(["AAA#3"])
+    search.chroma_client.delete_documents(["PAAA#3"])
 
     search = build(zotero, chunking=True)
-    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"AAA": {"passages"}}
+    assert search._find_index_gaps(limit=None, force_rebuild=False) == {"PAAA": {"passages"}}
 
     search.update_database()
 
@@ -302,12 +337,12 @@ def test_filling_articles_with_chunking_off_keeps_the_passages(build):
     zotero = FakeZotero({"AAA": LONG, "BBB": LONG})
     search = build(zotero, chunking=True)
     search.update_database()
-    search.chroma_client.delete_documents(["AAA", "BBB"])
+    search.chroma_client.delete_documents(["PAAA", "PBBB"])
 
     search = build(zotero, chunking=False)
     search.update_database()
 
-    assert _ids(search) == {"AAA", "BBB"}
+    assert _ids(search) == {"AAA", "BBB", "PAAA", "PBBB"}
     assert len(_passage_ids(search)) == 10
     assert len(search.chroma_client.embedded) == 2
 
@@ -351,13 +386,14 @@ def test_an_old_unfinished_batch_run_stops_blocking_fills(build, tmp_path):
 def test_a_fill_without_full_text_waits_for_a_run_that_has_it(build, capsys):
     """Closing the gap from metadata would leave passages that cannot match the paper."""
     zotero = FakeZotero({"AAA": LONG})
-    search = build(zotero, chunking=False)
+    search = build(zotero, chunking=False, include_fulltext=False)
     search.update_database()
     collection = search.chroma_client.collection
     stored = collection.get(ids=["AAA"], include=["metadatas"])["metadatas"][0]
-    collection.update(ids=["AAA"], metadatas=[{**stored, "has_fulltext": True}])
+    # A legacy record built from full text, say by a --fulltext run (#826).
+    collection.update(ids=["AAA"], metadatas=[{**stored, "title": "Title AAA", "has_fulltext": True}])
 
-    search = build(zotero, chunking=True)
+    search = build(zotero, chunking=True, include_fulltext=False)
     search.update_database()
 
     assert search.chroma_client.embedded == []
@@ -368,17 +404,17 @@ def test_a_fill_without_full_text_waits_for_a_run_that_has_it(build, capsys):
 def test_a_waiting_fill_is_not_fetched_again_on_every_run(build):
     """On a large --fulltext index this would be one API call per item, per run."""
     zotero = FakeZotero({"AAA": LONG})
-    search = build(zotero, chunking=False)
+    search = build(zotero, chunking=False, include_fulltext=False)
     search.update_database()
     collection = search.chroma_client.collection
     stored = collection.get(ids=["AAA"], include=["metadatas"])["metadatas"][0]
-    collection.update(ids=["AAA"], metadatas=[{**stored, "has_fulltext": True}])
-    build(zotero, chunking=True).update_database()
+    collection.update(ids=["AAA"], metadatas=[{**stored, "title": "Title AAA", "has_fulltext": True}])
+    build(zotero, chunking=True, include_fulltext=False).update_database()
 
     fetched = []
     real_item = zotero.item
     zotero.item = lambda key: fetched.append(key) or real_item(key)
-    stats = build(zotero, chunking=True).update_database()
+    stats = build(zotero, chunking=True, include_fulltext=False).update_database()
 
     assert fetched == []
     assert stats["total_items"] == 0
@@ -425,17 +461,6 @@ def test_a_full_scan_of_a_gapped_index_embeds_only_what_is_missing(build, tmp_pa
     search.update_database()
 
     assert len(search.chroma_client.embedded) == 10, "ten passages, and no article"
-
-
-# --- the local full-text scan -----------------------------------------------------
-
-
-def test_scan_keeps_an_up_to_date_item_that_has_a_gap():
-    decide = semantic_search.ZoteroSemanticSearch._scan_gap_action
-
-    assert decide({"has_fulltext": True}, {"passages"}) == "extract"
-    assert decide({"has_fulltext": "failed"}, {"passages"}) == "metadata_only"
-    assert decide({"has_fulltext": True}, None) is None
 
 
 def test_a_superseded_batch_run_does_not_block_fills(build, tmp_path, monkeypatch):

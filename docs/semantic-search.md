@@ -167,6 +167,10 @@ On Windows the path must be ASCII-only. If your user folder name has other chara
 
 `zotero-mcp setup` keeps this setting. Moving it starts an empty index unless you move the old `chroma_db` folder there too.
 
+### Going back to 0.17
+
+Once 0.18 has written records in the item-keyed shape, do not open that index with 0.17.1 or earlier. They do not recognise the new records (they carry no `has_fulltext`), so the next `update-db` extracts those items' files again and embeds them in the old shape, which you pay for again, and the index ends up mixed. 0.17.1 does not refuse a newer index and does not warn. If you may want to go back, copy the `chroma_db` folder before you first run 0.18 against it and restore the copy when you downgrade; an index that 0.18 has not yet changed (no `update-db` run since upgrading) is still a 0.17 index.
+
 ## Section labels
 
 With [passage chunking](configuration.md#passage-chunking) on, each passage
@@ -176,7 +180,7 @@ Back matter), and search results show it first in the **Location** line. A hit
 in someone's Introduction is a citation of a finding; a hit in their Results is
 the finding.
 
-The label is ordinary chunk metadata, so it can be filtered on:
+The label is stored with the passage, so it can be filtered on (see [Filters](#filters) for the fields that are not):
 
 ```python
 zotero_semantic_search(query="...", filters={"section": {"$ne": "Introduction"}})
@@ -196,6 +200,26 @@ Two consequences:
   and many book PDFs extract without any heading the parser can read.
   Unlabelled passages are still searched; only a `section` filter excludes
   them.
+
+## Filters
+
+`zotero_semantic_search` and `zotero-cli search --mode semantic --filters` take a ChromaDB-style `where` dict. Two kinds of field can appear in it.
+
+Stored in the index and filtered by ChromaDB: `group_id`, `section`, `page`, `chunk_index`, `n_chunks`, `char_start`, `char_end`.
+
+Read from Zotero when the search runs: `item_type`, `item_key`, `title`, `doi`, `citation_key`, `publication`, `tags` and `has_fulltext`. These are evaluated against the current data of the result's parent item (the item itself when it has none), not against anything copied into the index, so an edit in Zotero applies to the next search without re-indexing. `item_key` is the parent's key. `tags` is a membership test: `{"tags": "to-read"}` matches items that have that tag among others, `{"tags": {"$in": ["a", "b"]}}` matches items with either, and `$ne` and `$nin` match items without it. `has_fulltext` is true when a hit came from a file's text; it is judged from the hits of the search, so an item found only through its own record reads as false.
+
+```python
+zotero_semantic_search(query="...", filters={"item_type": "journalArticle", "tags": "to-read"})
+```
+
+Several fields in one dict must all match. A condition that mixes stored and Zotero fields under `$or` is evaluated against Zotero as a whole. Records written by earlier versions still carry copies of some of these fields; they are not consulted.
+
+How a filter on these fields is applied depends on the mode. In local mode zotero.sqlite names the matching items and ChromaDB only returns their records. In web mode, a filter made of `item_type`, `tags` and `item_key` conditions (equal to, or in a list, joined by AND; a tag with a space in it is not sent) is sent to the Zotero API in one keys-only request per library, and ChromaDB returns only records of the matching items or of attachments whose `parent_hint` names one; the hint is the attachment's parent when it was indexed, used only for this, so an attachment moved since then can be missed by a filtered search until its record is next rewritten, but a hit is always resolved and checked against Zotero before it is shown. Up to four libraries are asked at a time. Any other filter, an index with records from before the hint (`update-db` or `migrate-index` sets it without embedding anything), or a failed request searches first and filters the hits after, asking again for more candidates, in three rounds in total (the first search and up to two more).
+
+In local mode this differs from 0.17 in what filters can match, because 0.17 stored the fields it read from zotero.sqlite incompletely. It stored blank `doi`, `publication` and `tags`, so a filter on one of them matched nothing useful; they now work. `has_fulltext: false` matched nothing in 0.17 (the field was set only to `true` or `"failed"`); it now matches items with no indexed text.
+
+Results show the parent item. When the hit was in one of several files, or in a standalone attachment, the Location line starts with `Attachment:` and the file's name.
 
 ## Re-ranking
 

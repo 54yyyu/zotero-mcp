@@ -1,7 +1,9 @@
 """The filters example in zotero_semantic_search's description is copied
-verbatim by models. It must (a) parse as a dict, (b) use only keys the index
-stores, and (c) have exactly one key: chromadb rejects a multi-key ``where``
-without an explicit ``$and`` ("Expected where to have exactly one operator").
+verbatim by models. It must (a) parse as a dict, (b) use a key search knows,
+and (c) have exactly one key, as the description asks.
+
+Keys are split by ``semantic_filters.split_filters`` (#826): stored ones go to
+ChromaDB, bibliographic ones are evaluated against live Zotero data.
 """
 
 import ast
@@ -12,35 +14,9 @@ import pytest
 
 import zotero_mcp.server  # noqa: F401
 from zotero_mcp._app import mcp
+from zotero_mcp.semantic_filters import CHROMA_FIELDS, LIVE_FIELDS, split_filters
 
-# Keys written per document in semantic_search.py (_build_metadata and the
-# chunk path). 'itemType' is accepted as an alias and renamed to 'item_type'.
-STORED_METADATA_KEYS = {
-    "item_key",
-    "item_type",
-    "itemType",
-    "title",
-    "date",
-    "date_added",
-    "date_modified",
-    "creators",
-    "publication",
-    "url",
-    "doi",
-    "tags",
-    "citation_key",
-    "group_id",
-    "has_fulltext",
-    "fulltext_source",
-    "attachment_keys",
-    "attachment_priority",
-    "parent_item_key",
-    "chunk_index",
-    "n_chunks",
-    "char_start",
-    "char_end",
-    "page",
-}
+KNOWN_FILTER_KEYS = CHROMA_FIELDS | LIVE_FIELDS
 
 EXAMPLE_RE = re.compile(r"e\.g\. (\{[^}]*\})")
 
@@ -59,4 +35,19 @@ def test_filters_example_is_a_single_stored_key(semantic_search_description):
     assert isinstance(example, dict)
     assert len(example) == 1, "multi-key filters need $and; the example must show one key"
     (key,) = example
-    assert key in STORED_METADATA_KEYS, f"{key!r} is not a key the index stores"
+    assert key in KNOWN_FILTER_KEYS, f"{key!r} is not a key semantic search filters on"
+
+
+KEYS_RE = re.compile(r"keys (.*?);")
+
+
+def test_description_lists_the_live_and_passage_keys(semantic_search_description):
+    m = KEYS_RE.search(semantic_search_description)
+    assert m, "no 'keys ...;' list found in the description"
+    words = set(re.findall(r"\b[a-z][a-z_]*\b", m.group(1)))
+    assert LIVE_FIELDS | {"section", "page"} <= words
+
+
+def test_example_is_evaluated_live(semantic_search_description):
+    example = ast.literal_eval(EXAMPLE_RE.search(semantic_search_description).group(1))
+    assert split_filters(example) == (None, example)
