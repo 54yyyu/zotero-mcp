@@ -1096,3 +1096,18 @@ def test_zoteros_no_text_answer_does_not_hold_back_the_sync_version(env):
     env.update()
 
     assert _watermark(env) == 6
+
+
+def test_a_full_web_scan_purges_stale_note_and_annotation_records(env):
+    """The deletion pass keeps what item_versions() lists, but notes and annotations are never indexed (#604)."""
+    note = {"key": "NOTE0001", "version": 1, "data": {"key": "NOTE0001", "itemType": "note", "note": "x", "dateModified": DATE}}
+    ann = {"key": "ANNO0001", "version": 1, "data": {"key": "ANNO0001", "itemType": "annotation", "dateModified": DATE}}
+    library(env, paper("ITEM0001"), paper("ITEM0002"), paper("ITEM0003"), note, ann)
+    search = env.search()
+    _legacy_record(search, "NOTE0001")
+    _legacy_record(search, "ANNO0001")
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "ITEM0002", "ITEM0003"}
+    assert not {"NOTE0001", "ANNO0001"} & set(all_ids(search))
