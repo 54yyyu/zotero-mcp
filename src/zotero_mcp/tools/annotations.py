@@ -1579,6 +1579,9 @@ def _create_highlight_annotation(
         response.append(
             f"**Note:** Text was found in chapter {result['chapter_found']} (you specified {page})"
         )
+    if result.get("continues_on_page"):
+        response.append(f"**Note:** The text continues on page {result['continues_on_page']}; "
+                        "the highlight covers both parts")
     response.append(f"**Text:** \"{text[:100]}{'...' if len(text) > 100 else ''}\"")
     if comment:
         response.append(f"**Comment:** {comment}")
@@ -1722,16 +1725,25 @@ def create_annotations(
             # A PDF is opened once and shared by every spec; opening it is
             # also the check that the file is a PDF at all.
             if file_type == "pdf":
-                from zotero_mcp._pymupdf import fitz
+                try:
+                    from zotero_mcp._pymupdf import fitz
+                except ImportError:
+                    return fail_all(f"Error: PDF annotations need PyMuPDF. {_utils.install_hint('pdf')}")
+                from zotero_mcp.pdf_utils import PageCache
+
                 try:
                     source = fitz.open(file_path)
                     valid = bool(source.is_pdf)
                 except Exception:
                     source, valid = None, False
+                # What each page (or, for an EPUB, each chapter) holds is read
+                # once for the whole batch, not once per annotation.
+                cache = PageCache()
             else:
                 from zotero_mcp.epub_utils import verify_epub_attachment
 
                 source, valid = file_path, verify_epub_attachment(file_path)
+                cache = {}
             if not valid:
                 if file_type == "pdf" and source is not None:
                     source.close()
@@ -1744,7 +1756,7 @@ def create_annotations(
                     try:
                         payload, details = _annotation_payload(
                             source, file_type, attachment_key, spec, page_labels,
-                            with_text=dry_run,
+                            with_text=dry_run, cache=cache,
                         )
                     except Exception as e:
                         payload, details = None, {"error": f"Error creating annotation: {e}"}
@@ -1962,10 +1974,13 @@ def _annotation_payload(
     page_labels: dict[int, str],
     *,
     with_text: bool = False,
+    cache=None,
 ) -> tuple[dict | None, dict]:
     """Zotero annotation data for one spec, and what to report about it.
 
-    ``source`` is the open PDF document, or the EPUB's path.
+    ``source`` is the open PDF document, or the EPUB's path. ``cache`` is
+    what the specs of one file share: a ``pdf_utils.PageCache`` for a PDF, a
+    dict for an EPUB.
 
     Returns:
         (payload, details). ``payload`` is None when the spec cannot be
@@ -2033,7 +2048,7 @@ def _annotation_payload(
         error = _rect_error(*box)
         if error:
             return None, {"error": error}
-        position = build_area_position_data(source, page, *box)
+        position = build_area_position_data(source, page, *box, cache=cache)
         if "error" in position:
             return None, {"error": f"Error: {position['error']}"}
         label = label_of(page)
@@ -2056,7 +2071,7 @@ def _annotation_payload(
             )}
         if not spec.get("comment"):
             return None, {"error": "Error: a sticky note needs a comment (its text)"}
-        position = build_note_position_data(source, page, *point)
+        position = build_note_position_data(source, page, *point, cache=cache)
         if "error" in position:
             return None, {"error": f"Error: {position['error']}"}
         label = label_of(page)
@@ -2084,7 +2099,7 @@ def _annotation_payload(
         payload = annotation(
             "underline" if underline else "highlight",
             annotationText=text,
-            annotationSortIndex=f"{chapter:05d}|{char_position:08d}",
+            annotationSortIndex=f"{position['spine_index']:05d}|{position['char_position']:08d}",
             annotationPosition=position["annotation_position"],
         )
         details = {"page_label": "", "chapter_found": chapter}
@@ -2092,7 +2107,7 @@ def _annotation_payload(
             details["matched_text"] = position.get("matched_text", text)
         return payload, details
 
-    position = find_text_position(source, page, text)
+    position = find_text_position(source, page, text, cache=cache)
     if "error" in position:
         return None, {"error": _describe_text_miss(position, text, file_type),
                       "candidates": position.get("candidates") or []}
@@ -2103,12 +2118,19 @@ def _annotation_payload(
         "underline" if underline else "highlight",
         annotationText=text,
         annotationSortIndex=position["sort_index"],
-        annotationPosition=build_annotation_position(position["pageIndex"], position["rects"]),
+        annotationPosition=build_annotation_position(
+            position["pageIndex"], position["rects"], position.get("nextPageRects")),
         annotationPageLabel=label,
     )
     details = {"page_label": label, "page_found": page_found}
+    if position.get("nextPageRects"):
+        # The quote runs across a page break; one annotation holds both parts.
+        details["continues_on_page"] = page_found + 1
     if with_text:
         details["matched_text"] = text_in_rects(source, position["pageIndex"], position["rects"])
+        if position.get("nextPageRects"):
+            details["matched_text"] += " " + text_in_rects(
+                source, position["pageIndex"] + 1, position["nextPageRects"])
     return payload, details
 
 
