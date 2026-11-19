@@ -345,3 +345,34 @@ def test_retry_does_not_prune_item_with_remaining_failure(tmp_path, monkeypatch)
     saved = _retry_run(tmp_path, monkeypatch, chroma, passages=3)
     assert chroma.pruned == []
     assert saved["semantic_search"]["last_sync_version"] == 10
+
+
+class CountingRetryChroma(RecordingChroma):
+    def __init__(self, bad_ids=()):
+        super().__init__(bad_ids)
+        self.upsert_sizes = []
+
+    def upsert_documents(self, documents, metadatas, ids):
+        self.upsert_sizes.append(len(ids))
+        super().upsert_documents(documents, metadatas, ids)
+
+
+def test_retry_writes_failed_documents_a_batch_at_a_time(tmp_path, monkeypatch):
+    """One request per failed document was 120 embedding requests here."""
+    chroma = CountingRetryChroma()
+    saved = _retry_run(tmp_path, monkeypatch, chroma, passages=120)
+    assert chroma.upsert_sizes == [50, 50, 20]
+    assert len(chroma.upserted) == 120
+    assert chroma.pruned == [("AAAA1111", 120)]
+    assert saved["semantic_search"]["last_sync_version"] == 12
+
+
+def test_a_batch_that_fails_again_is_retried_one_document_at_a_time(tmp_path, monkeypatch):
+    chroma = CountingRetryChroma(bad_ids={"AAAA1111#60"})
+    saved = _retry_run(tmp_path, monkeypatch, chroma, passages=120)
+    # The second batch holds the bad document: its other 49 are still written.
+    assert chroma.upsert_sizes == [50, 50, 20] + [1] * 50
+    assert sorted(chroma.upserted) == sorted(f"AAAA1111#{i}" for i in range(120) if i != 60)
+    assert chroma.pruned == []
+    assert saved["semantic_search"]["last_sync_version"] == 10
+

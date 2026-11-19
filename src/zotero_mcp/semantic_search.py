@@ -4465,10 +4465,29 @@ class ZoteroSemanticSearch:
                 # passages are done, then runs once per item, not per passage.
                 retried_metas: dict[str, dict[str, Any]] = {}
                 still_failing: set[str] = set()
-                for doc, meta, doc_id in _failed_docs:
+                # A batch at a time; a batch that fails again is retried one
+                # document at a time, so one bad document holds back only itself.
+                retry_batch = 50
+                retried: set[int] = set()
+                for start in range(0, len(_failed_docs), retry_batch):
+                    part = _failed_docs[start:start + retry_batch]
+                    if len(part) < 2:
+                        continue
+                    try:
+                        self.chroma_client.upsert_documents(
+                            [doc for doc, _meta, _id in part],
+                            [meta for _doc, meta, _id in part],
+                            [doc_id for _doc, _meta, doc_id in part],
+                        )
+                    except Exception as e2:
+                        logger.debug(f"Retry of {len(part)} documents failed, retrying each: {e2}")
+                        continue
+                    retried.update(range(start, start + len(part)))
+                for position, (doc, meta, doc_id) in enumerate(_failed_docs):
                     parent = meta.get("parent_item_key")
                     try:
-                        self.chroma_client.upsert_documents([doc], [meta], [doc_id])
+                        if position not in retried:
+                            self.chroma_client.upsert_documents([doc], [meta], [doc_id])
                         if parent is not None:
                             retried_metas[parent] = meta
                         retry_ok += 1
