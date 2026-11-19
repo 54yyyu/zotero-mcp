@@ -542,6 +542,8 @@ _LEGACY_METADATA_KEYS = (
     "item_type", "title", "date", "date_added", "creators", "publication", "url", "doi",
     "tags", "citation_key", "has_fulltext", "fulltext_source", "attachment_keys",
     "attachment_priority", "parent_item_key",
+    # Set on a legacy record whose item's passages are written under its attachment's key.
+    "rekeyed_to",
 )
 
 
@@ -2689,7 +2691,7 @@ class ZoteroSemanticSearch:
             return rows
 
         def queue_file(target: Any, *, group_id: int | None, owner: str | None, label: str,
-                       date_modified: str | None, rewrite: bool) -> None:
+                       date_modified: str | None, rewrite: bool, levels: set[str] | None = None) -> None:
             nonlocal up_to_date
             unit = _attachment_unit(
                 target.key, "", file_stamp=target.file_stamp, date_modified=date_modified,
@@ -2699,7 +2701,12 @@ class ZoteroSemanticSearch:
             # A legacy item's rewrite writes every file again.
             stored = stored_of(target.key) if check and not rewrite else None
             current = self._unit_is_current(unit, stored)
-            if current:
+            if levels:
+                # Only these levels, whatever the file's own records say.
+                unit["_index_levels"] = levels
+                if current:
+                    current_keys.add(target.key)
+            elif current:
                 if not gap:
                     up_to_date += 1
                     return
@@ -2759,8 +2766,21 @@ class ZoteroSemanticSearch:
                     # Only text has passages: a legacy item indexed without
                     # any (none found, or extraction failed) lacks none.
                     lacks_passages = gap == {SEARCH_PASSAGES} and legacy.get("has_fulltext") is True
-                    if self._legacy_changed(legacy, it, att_keys, priority_tag) or lacks_passages:
+                    if self._legacy_changed(legacy, it, att_keys, priority_tag):
                         bib["legacy_rewrite"] = rewrite = True
+                    elif lacks_passages:
+                        # An untouched legacy item gets its missing passages
+                        # under its file's key and nothing else: its article
+                        # record, which cost money, stays as it is.
+                        if targets:
+                            self._expect_replacement(it.key, group_id, selected, rekey_to=targets[0].key)
+                            if not self._passages_whole([targets[0].key]):
+                                queue_file(
+                                    targets[0], group_id=group_id, owner=it.key, label=display,
+                                    date_modified=dates.get(targets[0].key), rewrite=False,
+                                    levels={SEARCH_PASSAGES},
+                                )
+                        continue
                     elif gap == {SEARCH_ARTICLES}:
                         # Only its article record is missing: write that, and
                         # leave its passages, which cost money, as they are.
@@ -2914,7 +2934,10 @@ class ZoteroSemanticSearch:
         if limit is not None or force_rebuild or not self._separate_passages():
             return {}
         articles, passages = self.chroma_client.item_keys_by_level()
-        missing_articles = passages - articles
+        # Passages written under an attachment's key for a legacy item have no
+        # attachment record, by design (#826): the legacy record is the item's.
+        moved = getattr(self.chroma_client, "rekeyed_targets", None)
+        missing_articles = passages - articles - (moved() if moved else set())
         gaps: dict[str, set[str]] = {key: {SEARCH_ARTICLES} for key in missing_articles}
         # An automatic run (startup, pre-search) leaves passage gaps alone:
         # after chunking is switched on that is the whole library, which a paid
@@ -3339,6 +3362,19 @@ class ZoteroSemanticSearch:
                     bib["legacy_fields"] = self._legacy_fields(legacy)
                     units.append(bib)
                     continue
+                if action == "passages":
+                    # Only the passages it lacks, under the file's key; its
+                    # article record, already paid for, stays as it is.
+                    if attachments:
+                        att = attachments[0]
+                        self._expect_replacement(
+                            bib["key"], (bib.get("data") or {}).get("group_id"),
+                            [a["key"] for a in attachments], rekey_to=att["key"],
+                        )
+                        if not self._passages_whole([att["key"]]):
+                            att["_index_levels"] = {SEARCH_PASSAGES}
+                            units.append(att)
+                    continue
                 bib["legacy_rewrite"] = True
                 # Its passages go once the files its text comes from are
                 # written; with one unread, they are the only copy.
@@ -3485,11 +3521,13 @@ class ZoteroSemanticSearch:
     _BULK_ATTACHMENT_WALK_MIN_ITEMS = 25
 
     def _legacy_action(self, item: dict[str, Any], legacy: dict[str, Any]) -> str:
-        """What an API-fetched item whose records are legacy needs: ``"skip"``, ``"article"`` or ``"rewrite"``.
+        """What an API-fetched item whose records are legacy needs: ``"skip"``, ``"article"``, ``"passages"`` or ``"rewrite"``.
 
         An unchanged legacy item keeps its records until ``--force-rebuild``
-        (#826). It has changed when it has no library attribution, its
-        ``date_modified`` moved, or chunking is on and it was indexed with text but has no passages.
+        (#826). It has changed when it has no library attribution or its
+        ``date_modified`` moved. One indexed with text that only lacks
+        passages (chunking was turned on) gets just those, under its
+        attachment's key (``"passages"``).
         """
         levels = item.get("_index_levels")
         if levels == {SEARCH_ARTICLES}:
@@ -3497,12 +3535,10 @@ class ZoteroSemanticSearch:
             # passages, which cost money, as they are.
             return "article"
         data = item.get("data") or {}
-        if (
-            "group_id" not in legacy
-            or not _same_moment(legacy.get("date_modified"), data.get("dateModified"))
-            or (levels == {SEARCH_PASSAGES} and legacy.get("has_fulltext") is True)
-        ):
+        if "group_id" not in legacy or not _same_moment(legacy.get("date_modified"), data.get("dateModified")):
             return "rewrite"
+        if levels == {SEARCH_PASSAGES} and legacy.get("has_fulltext") is True:
+            return "passages"
         return "skip"
 
     def _delete_records(self, keys: set[str]) -> int:
@@ -5674,16 +5710,44 @@ class ZoteroSemanticSearch:
         for item_key, n_chunks in counts.items():
             self.chroma_client.prune_item_chunks(item_key, n_chunks)
 
-    def _expect_replacement(self, item_key: str, group_id: int | None, wanted: list[str]) -> None:
+    def _expect_replacement(
+        self, item_key: str, group_id: int | None, wanted: list[str], rekey_to: str | None = None
+    ) -> None:
         """Note that ``item_key``'s legacy passages go once ``wanted``'s records are written (#826).
 
         ``wanted`` is every attachment Zotero's database selects for the item,
         whether or not its file is reachable. Settled at the end of the run
         (``_settle_legacy_passages``).
+
+        ``rekey_to`` names an attachment whose passages are being written for an
+        untouched legacy item that had none: nothing of the item is deleted,
+        and its record is marked ``rekeyed_to`` once all of those passages are
+        stored, so that it no longer counts as lacking them.
         """
         if self._legacy_settle is None:
             self._legacy_settle = {}
-        self._legacy_settle[item_key] = {"group_id": group_id, "wanted": sorted(wanted)}
+        entry: dict[str, Any] = {"group_id": group_id, "wanted": sorted(wanted)}
+        if rekey_to:
+            entry["rekey_to"] = rekey_to
+        self._legacy_settle[item_key] = entry
+
+    def _passages_whole(self, attachments: list[str]) -> set[str]:
+        """The attachments among ``attachments`` that have every one of their passages stored.
+
+        The count is the ``n_chunks`` their first passage records, so a set a
+        stopped run left half written is not whole.
+        """
+        if not attachments:
+            return set()
+        first_meta = self.chroma_client.get_metadatas([f"{att}#0" for att in attachments])
+        needed = {}
+        for att in attachments:
+            meta = first_meta.get(f"{att}#0")
+            if meta is not None:
+                n_chunks = meta.get("n_chunks")
+                needed[att] = [f"{att}#{n}" for n in range(n_chunks if isinstance(n_chunks, int) and n_chunks > 0 else 1)]
+        present = self.chroma_client.get_existing_ids([doc_id for ids in needed.values() for doc_id in ids])
+        return {att for att, ids in needed.items() if set(ids) <= present}
 
     def _settled_items(self, settle: dict[str, dict[str, Any]]) -> list[str]:
         """The items of ``settle`` whose replacements for their legacy passages are all stored.
@@ -5704,18 +5768,29 @@ class ZoteroSemanticSearch:
         ]
         if not self._chunking_enabled:
             return candidates
-        firsts = sorted({att for key in candidates for att in settle[key].get("wanted") or []})
-        first_meta = self.chroma_client.get_metadatas([f"{att}#0" for att in firsts])
-        counts = {}
-        for att in firsts:
-            meta = first_meta.get(f"{att}#0")
-            if meta is not None:
-                n_chunks = meta.get("n_chunks")
-                counts[att] = n_chunks if isinstance(n_chunks, int) and n_chunks > 0 else 1
-        needed = {att: [f"{att}#{n}" for n in range(count)] for att, count in counts.items()}
-        present = self.chroma_client.get_existing_ids([doc_id for ids in needed.values() for doc_id in ids])
-        whole = {att for att, ids in needed.items() if set(ids) <= present}
+        whole = self._passages_whole(sorted({att for key in candidates for att in settle[key].get("wanted") or []}))
         return [key for key in candidates if set(settle[key].get("wanted") or []) <= whole]
+
+    def _mark_rekeyed(self, rekeyed: dict[str, dict[str, Any]]) -> None:
+        """Mark the legacy records whose passages are now all stored under their attachment ``rekeyed_to``.
+
+        Nothing is embedded or deleted: the record stays as 0.17 wrote it, and
+        the mark tells the gap check that the passages it lacks under its own
+        key live under the attachment's.
+        """
+        try:
+            whole = self._passages_whole(sorted({entry["rekey_to"] for entry in rekeyed.values()}))
+            stored = self.chroma_client.get_metadatas(sorted(rekeyed))
+            keys, metadatas = [], []
+            for key, entry in rekeyed.items():
+                meta = stored.get(key)
+                if entry["rekey_to"] in whole and _is_legacy_record(meta) and meta.get("rekeyed_to") != entry["rekey_to"]:
+                    keys.append(key)
+                    # The whole metadata goes back: not every ChromaDB version merges.
+                    metadatas.append({**meta, "rekeyed_to": entry["rekey_to"]})
+            self.chroma_client.update_metadatas(keys, metadatas)
+        except Exception as e:
+            logger.debug(f"Could not mark legacy records as re-keyed: {e}")
 
     def _settle_legacy_passages(self, settle: dict[str, dict[str, Any]] | None = None) -> None:
         """Delete the legacy passages of items whose replacements are all written.
@@ -5731,6 +5806,12 @@ class ZoteroSemanticSearch:
         """
         settle = self._legacy_settle if settle is None else settle
         if not settle or not hasattr(self.chroma_client, "delete_item_chunks"):
+            return
+        rekeyed = {key: entry for key, entry in settle.items() if entry.get("rekey_to")}
+        if rekeyed:
+            self._mark_rekeyed(rekeyed)
+            settle = {key: entry for key, entry in settle.items() if key not in rekeyed}
+        if not settle:
             return
         try:
             settled = self._settled_items(settle)

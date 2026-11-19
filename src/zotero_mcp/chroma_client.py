@@ -791,6 +791,10 @@ class ChromaClient:
         """Item keys that still have legacy passages; see :func:`read_index_layout`."""
         return set(read_legacy_passage_ids(self.persist_directory, self.collection_name))
 
+    def rekeyed_targets(self) -> set[str]:
+        """Attachment keys the migration moved legacy passages to; see :func:`read_rekeyed_targets`."""
+        return read_rekeyed_targets(self.persist_directory, self.collection_name)
+
     def item_group_ids(self, item_keys: list[str]) -> dict[str, int]:
         """The library (``group_id``) of each indexed item in ``item_keys`` that has one.
 
@@ -1263,6 +1267,39 @@ def read_legacy_passage_ids(persist_directory: str, collection_name: str) -> dic
     return found
 
 
+def read_rekeyed_targets(persist_directory: str, collection_name: str) -> set[str]:
+    """Attachment keys that legacy records say their passages were moved to, read-only from SQLite.
+
+    A legacy item's article record is marked ``rekeyed_to`` when its passages
+    are written under its attachment's key (a fill of the passages it lacked;
+    the migration does the same when it moves them). Those attachments have
+    passages and, by design (#826, decision 1), no attachment record of their
+    own: that is not a gap to fill.
+    """
+    db = Path(persist_directory) / "chroma.sqlite3"
+    if not db.exists():
+        return set()
+    con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
+    try:
+        return {
+            row[0]
+            for row in con.execute(
+                """
+                SELECT DISTINCT m.string_value
+                FROM embedding_metadata m
+                JOIN embeddings e ON e.id = m.id
+                JOIN segments s ON e.segment_id = s.id
+                JOIN collections c ON s.collection = c.id
+                WHERE m.key = 'rekeyed_to' AND m.string_value IS NOT NULL
+                  AND c.name = ? AND s.scope = 'METADATA'
+                """,
+                (collection_name,),
+            )
+        }
+    finally:
+        con.close()
+
+
 def read_index_layout(persist_directory: str, collection_name: str) -> dict[str, Any]:
     """Count an index's records per level from SQLite, read-only.
 
@@ -1623,7 +1660,9 @@ def read_passage_bearing_keys(persist_directory: str, collection_name: str) -> s
     Passages are cut from a file's text (#826): an attachment record (it has
     ``file_stamp``) has them, and so does a legacy record built with full
     text (``has_fulltext`` true). A bibliographic record never has any, so it
-    is never missing them.
+    is never missing them. A legacy record whose passages the migration moved
+    to its attachment's key (``rekeyed_to``) has none under its own key and
+    is not missing them either.
     """
     db = Path(persist_directory) / "chroma.sqlite3"
     if not db.exists():
@@ -1641,6 +1680,9 @@ def read_passage_bearing_keys(persist_directory: str, collection_name: str) -> s
                 JOIN embedding_metadata m ON m.id = e.id
                 WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id NOT LIKE '%#%'
                   AND (m.key = 'file_stamp' OR (m.key = 'has_fulltext' AND m.bool_value = 1))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM embedding_metadata r WHERE r.id = e.id AND r.key = 'rekeyed_to'
+                  )
                 """,
                 (collection_name,),
             )
