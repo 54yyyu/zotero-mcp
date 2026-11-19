@@ -705,6 +705,26 @@ class ChromaClient:
             logger.debug(f"Error reading item libraries: {e}")
             return {}
 
+    def ids_in_group(self, ids: list[str], group_id: int) -> set[str]:
+        """Those of ``ids`` whose record is attributed to the library ``group_id``.
+
+        Read by id, which costs a seek per record asked about. Listing a
+        library's ids with ``get_all_ids(where={"group_id": ...})`` instead
+        reads a metadata row of every record in the index. A record without
+        a ``group_id`` is never returned. Raises on a ChromaDB error: the
+        deletion pass must not take a failed read for an answer.
+        """
+        wanted = int(group_id)
+        found: set[str] = set()
+        for collection, part in self._group_existing(list(ids)):
+            for start in range(0, len(part), 5000):
+                result = collection.get(ids=part[start:start + 5000], include=["metadatas"])
+                for doc_id, meta in zip(result.get("ids") or [], result.get("metadatas") or []):
+                    stored = (meta or {}).get("group_id")
+                    if stored is not None and not isinstance(stored, bool) and stored == wanted:
+                        found.add(doc_id)
+        return found
+
     def get_all_ids(self, where: dict[str, Any] | None = None) -> set[str]:
         """Return every id currently stored in the collection.
 

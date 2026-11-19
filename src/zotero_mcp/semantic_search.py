@@ -3556,9 +3556,26 @@ class ZoteroSemanticSearch:
         # (``<key>#<n>``) map back to item keys so deletion works
         # identically whether or not chunking is on.
         try:
-            stored_ids = self.chroma_client.get_all_ids(
-                where={"group_id": int(self._run_group_id)}
-            )
+            # Only a record of an item Zotero no longer lists can be deleted,
+            # so only those are asked which library they belong to. Listing
+            # the library's records by a group_id filter reads a metadata row
+            # of every record in the index, on every update.
+            in_group = getattr(self.chroma_client, "ids_in_group", None)
+            narrowed = in_group is not None and bool(current_library_keys)
+            if current_library_keys is None:
+                stored_ids = set()
+            elif narrowed:
+                stored_ids = in_group(
+                    sorted(
+                        i for i in self.chroma_client.get_all_ids()
+                        if i.split("#", 1)[0] not in current_library_keys
+                    ),
+                    int(self._run_group_id),
+                )
+            else:
+                stored_ids = self.chroma_client.get_all_ids(
+                    where={"group_id": int(self._run_group_id)}
+                )
             stored_item_keys = {i.split("#", 1)[0] for i in stored_ids}
             # Which kind of delete a key needs comes from what is stored, not
             # from the chunking setting, which may have changed since.
@@ -3588,17 +3605,32 @@ class ZoteroSemanticSearch:
                 to_delete_keys = sorted(
                     k for k in (stored_item_keys - current_library_keys) if k
                 )
+                indexed_items = len(stored_item_keys)
+                if (
+                    narrowed
+                    and not allow_mass_deletion
+                    and len(to_delete_keys) >= _MASS_DELETION_MIN_DOCS
+                ):
+                    # The guard weighs the deletions against everything
+                    # indexed for the library, which only the full listing
+                    # counts. Rare enough to pay for it here.
+                    indexed_items = len({
+                        i.split("#", 1)[0]
+                        for i in self.chroma_client.get_all_ids(
+                            where={"group_id": int(self._run_group_id)}
+                        )
+                    })
                 if (
                     to_delete_keys
                     and not allow_mass_deletion
                     and len(to_delete_keys) >= _MASS_DELETION_MIN_DOCS
                     and len(to_delete_keys)
-                    >= _MASS_DELETION_MIN_FRACTION * len(stored_item_keys)
+                    >= _MASS_DELETION_MIN_FRACTION * indexed_items
                 ):
                     sample = ", ".join(to_delete_keys[:5])
                     logger.warning(
                         f"Deletion pass wants to remove {len(to_delete_keys)} of "
-                        f"{len(stored_item_keys)} indexed document(s) for library "
+                        f"{indexed_items} indexed document(s) for library "
                         f"{self._active_library_key()} ({sample}, ...). That volume "
                         "usually means a truncated item_versions() response or a "
                         "sync-scoping bug, not a real purge — skipping. If the "

@@ -77,6 +77,48 @@ def _seed(client, n, tagged_group_id=None, prefix="K"):
 
 
 # ---------------------------------------------------------------------------
+# ids_in_group: the deletion pass's by-id answer must equal the filtered listing
+# ---------------------------------------------------------------------------
+
+def test_ids_in_group_agrees_with_the_filtered_listing(client):
+    personal = _seed(client, 6, tagged_group_id=0, prefix="P")
+    group = _seed(client, 5, tagged_group_id=GROUP_ID, prefix="G")
+    untagged = _seed(client, 4, prefix="U")
+    # Passages, in their own collection: two libraries share the item key X.
+    client.upsert_embeddings(
+        documents=["a", "b", "c"],
+        metadatas=[
+            {"item_key": "X", "parent_item_key": "X", "chunk_index": 0, "group_id": 0},
+            {"item_key": "X", "parent_item_key": "X", "chunk_index": 1, "group_id": GROUP_ID},
+            {"item_key": "X", "parent_item_key": "X", "chunk_index": 2},
+        ],
+        ids=["X#0", "X#1", "X#2"],
+        embeddings=[[1.0, 0.0, 0.0, 0.0]] * 3,
+    )
+    everything = [*personal, *group, *untagged, "X#0", "X#1", "X#2", "NOT_STORED"]
+
+    for group_id in (0, GROUP_ID, 424242):
+        assert client.ids_in_group(everything, group_id) == client.get_all_ids(
+            where={"group_id": group_id}
+        )
+    assert client.ids_in_group(everything, 0) == {*personal, "X#0"}
+    assert client.ids_in_group([], 0) == set()
+    # Asked about some records only, it answers about those only.
+    assert client.ids_in_group([personal[0], group[0], "X#1"], 0) == {personal[0]}
+
+
+def test_ids_in_group_raises_on_a_read_error(client, monkeypatch):
+    _seed(client, 2, tagged_group_id=0)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database disk image is malformed")
+
+    monkeypatch.setattr(client.collection, "get", broken)
+    with pytest.raises(RuntimeError):
+        client.ids_in_group(["K00000"], 0)
+
+
+# ---------------------------------------------------------------------------
 # iter_metadatas
 # ---------------------------------------------------------------------------
 
