@@ -67,7 +67,7 @@ def make_zotero_db(path, keys):
     conn.execute(
         "CREATE TABLE itemNotes (itemID INT, parentItemID INT, note TEXT)"
     )
-    conn.execute("CREATE TABLE itemCreators (itemID INT, creatorID INT)")
+    conn.execute("CREATE TABLE itemCreators (itemID INT, creatorID INT, orderIndex INT)")
     conn.execute(
         "CREATE TABLE creators (creatorID INTEGER PRIMARY KEY, "
         "firstName TEXT, lastName TEXT)"

@@ -153,7 +153,8 @@ class TestReportedRepro:
         # The API did the filtering, so one page was enough -- not 50.
         assert len(zot.calls) == 1, f"expected 1 request, made {len(zot.calls)}"
         assert zot.calls[0]["itemType"] == "blogPost"
-        assert "Found 3 items" in result
+        # One page held all ten matches, so the total is known and stated.
+        assert "Found 10 items matching the search criteria; showing 3" in result
 
     def test_early_exit_once_the_limit_is_met(self, patched):
         """With no sort, results are in library order either way, so nothing

@@ -15,7 +15,7 @@ def test_recent_connection_failure_exits_nonzero(monkeypatch, capsys, json_mode)
     def unavailable_items(**kwargs):
         raise ConnectionError("Connection refused (test backend)")
 
-    monkeypatch.setattr(retrieval._client, "get_zotero_client", lambda: SimpleNamespace(items=unavailable_items))
+    monkeypatch.setattr(retrieval._client, "get_zotero_client", lambda: SimpleNamespace(top=unavailable_items))
     monkeypatch.setattr(cli_standalone, "setup_zotero_environment", lambda: None)
     monkeypatch.delenv("ZOTERO_CLI_DEBUG", raising=False)
     args = ["zotero-cli", "get", "recent"]

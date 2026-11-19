@@ -52,6 +52,9 @@ class BigCollectionZotero:
         limit = min(limit or 100, 100)
         return self.items_list[start:start + limit]
 
+    # zotero_get_recent lists top-level items.
+    top = items
+
     def collections(self, **kwargs):
         return []
 
