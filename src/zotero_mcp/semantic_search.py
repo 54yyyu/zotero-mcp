@@ -2840,9 +2840,8 @@ class ZoteroSemanticSearch:
                 # The file earlier versions indexed for this item (the largest,
                 # the first of equals); its others were never indexed.
                 primary = max(targets, key=lambda t: t.size) if targets else None
-                for target in targets:
-                    if target is not primary and self._extra_file_waits(stored_of(target.key) if check else None):
-                        continue
+                recorded = {t.key for t in targets if check and stored_of(t.key)}
+                for target in self._held_extra_files(targets, recorded, lambda t: t.key, primary):
                     queue_file(
                         target, group_id=group_id, owner=it.key, label=display,
                         date_modified=dates.get(target.key), rewrite=rewrite,
@@ -3526,19 +3525,21 @@ class ZoteroSemanticSearch:
         """
         return self._automatic_run and not self.update_config.get("standalone_files_indexed")
 
-    def _extra_file_waits(self, stored: dict[str, Any] | None) -> bool:
-        """Whether an automatic run leaves an item's other file, one with no record, for an explicit run.
+    def _held_extra_files(self, files: list[Any], recorded: set[str], key_of: Any, primary: Any) -> list[Any]:
+        """The files of one item an automatic run may build; the others wait for an explicit run (#826).
 
-        Before #826 one file per item was indexed. After the upgrade every
-        other file of the chosen kind is new across the whole library, as
-        standalone files are, and waits for the same first explicit run
-        (counted in ``_extra_files_held``). A file that has a record is kept
-        up to date as usual.
+        Before #826 one file per item was indexed (``primary``, 0.17's pick).
+        After the upgrade every other file of the chosen kind is new across
+        the whole library, as standalone files are, and waits for the same
+        first explicit run (counted in ``_extra_files_held``). An item with a
+        record for one of its files keeps those files up to date and holds
+        the rest, whichever sorts first; an item with none gets ``primary``.
         """
-        if stored is not None or not self._standalone_files_wait():
-            return False
-        self._extra_files_held += 1
-        return True
+        if not self._standalone_files_wait():
+            return list(files)
+        kept = [f for f in files if key_of(f) in recorded] if recorded else [f for f in files if f is primary]
+        self._extra_files_held += len(files) - len(kept)
+        return kept
 
     def _passages_only_action(
         self, key: str, stored: dict[str, Any] | None, file_stamp: str, stamps: dict[str, str],
@@ -3993,6 +3994,7 @@ class ZoteroSemanticSearch:
         outranked: set[str] = set()
         complete = True
         chosen_by_item: list[tuple[dict[str, Any], list[dict[str, Any]]]] = []
+        listed_rows: dict[str, list[dict[str, Any]]] = {}
         for item in items:
             key = item.get("key", "")
             if not key or item.get("unit") or (item.get("data") or {}).get("itemType") in _NON_INDEXED_ITEM_TYPES:
@@ -4005,6 +4007,7 @@ class ZoteroSemanticSearch:
                     complete = False
                     self._api_fetch_failures += 1
                     continue
+            listed_rows[key] = rows
             chosen = self._select_api_rows(rows, priority)
             chosen_keys = {self._row_key(row) for row in chosen}
             selected |= chosen_keys
@@ -4120,11 +4123,25 @@ class ZoteroSemanticSearch:
                 label = (item.get("data") or {}).get("title", "")
                 # The first selected file stands for the one earlier versions
                 # indexed; the item's others were never indexed.
-                rows = [
-                    row for n, row in enumerate(chosen)
-                    if n == 0 or not self._extra_file_waits(stored_of(self._row_key(row)))
-                ]
-                units = [unit for row in rows if (unit := build(row, key, label, locate))]
+                recorded = {self._row_key(row) for row in chosen if stored_of(self._row_key(row))}
+                if self._standalone_files_wait() and not recorded:
+                    # 0.17 read the first PDF (in listing order) that has text.
+                    order = {self._row_key(r): n for n, r in enumerate(listed_rows.get(key, []))}
+                    pdfs = sorted(
+                        (r for r in chosen if (r.get("data") or {}).get("contentType") == "application/pdf"),
+                        key=lambda r: order.get(self._row_key(r), len(order)),
+                    )
+                    units = []
+                    tried = 0
+                    for row in pdfs:
+                        tried += 1
+                        if unit := build(row, key, label, locate):
+                            units.append(unit)
+                            break
+                    self._extra_files_held += len(chosen) - tried
+                else:
+                    rows = self._held_extra_files(chosen, recorded, self._row_key, None)
+                    units = [unit for row in rows if (unit := build(row, key, label, locate))]
                 if units:
                     item["_api_attachments"] = units
             for row in standalone:
