@@ -150,3 +150,29 @@ def test_resolve_falls_back_to_semantic_search():
 def test_resolve_returns_none_when_unset():
     cfg = ZoteroMcpConfig()
     assert cfg.resolve_zotero_db_path() is None
+
+
+# ---------------------------------------------------------------------------
+# Import cost
+# ---------------------------------------------------------------------------
+
+
+def test_importing_the_module_does_not_import_pydantic():
+    """pydantic is needed to validate a config, not to import this module:
+    every zotero-cli command imports it (through local_db), and about 45 ms
+    of each one went to building an adapter most of them never used."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    code = (
+        "import sys\n"
+        f"sys.path.insert(0, {src!r})\n"
+        "import zotero_mcp.config as config\n"
+        "before = 'pydantic' in sys.modules\n"
+        "config.load_config()\n"
+        "print(before, 'pydantic' in sys.modules)\n"
+    )
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)
+    assert result.stdout.split() == ["False", "True"]
