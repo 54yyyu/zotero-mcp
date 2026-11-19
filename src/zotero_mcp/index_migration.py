@@ -210,13 +210,15 @@ class LocalSources:
         the priority they were chosen under, so the choice is made again and
         trusted only when a recorded fingerprint and priority are unchanged;
         with several files the largest of the first category is the source,
-        as it was chosen before #826.
+        as it was chosen before #826. When 0.17 read Zotero's text cache
+        (``fulltext_source`` is ``zotero-cache``) the source is the
+        attachment whose cache it read, if that is one of the files.
 
         None is a positive finding (the item is gone from Zotero, has no file
         of the chosen kind, or its attachments or priority have changed): its
         passages cannot be kept. ``UNKNOWN`` means the answer cannot be had
-        (Zotero could not be asked, or there are several files and no recorded
-        fingerprint), which says nothing about the item: its passages must be left as they are.
+        (Zotero could not be asked, there are several files and no recorded
+        fingerprint, or the text cache 0.17 read cannot be found again), which says nothing about the item: its passages must be left as they are.
         """
         from .semantic_search import _WEB_ATTACHMENT_SOURCE
 
@@ -255,7 +257,17 @@ class LocalSources:
             # the ones the passages were cut from: the update path keeps such
             # an item as it is, so this cannot tell either.
             return UNKNOWN
-        if len(targets) == 1:
+        if source == "zotero-cache":
+            # 0.17 could not parse the chosen file and read the first
+            # attachment's ``.zotero-ft-cache``, in the order the reader lists
+            # them, which need not be the largest file. Where that cache is of
+            # a file the scan does not index, or is gone, filing the passages
+            # under the largest file would misfile them: left as they are.
+            cached = self._cache_attachment(rows)
+            chosen = next((t for t in targets if t.key == cached), None)
+            if chosen is None:
+                return UNKNOWN
+        elif len(targets) == 1:
             chosen = targets[0]
         elif len(targets) > 1:
             # Several files, the attachments unchanged since the passages were
@@ -266,6 +278,16 @@ class LocalSources:
         self._targets[chosen.key] = chosen
         self._prefixes[item.key] = _live_prefix(local)
         return chosen.key
+
+    def _cache_attachment(self, rows: list[Any]) -> str | None:
+        """The attachment whose ``.zotero-ft-cache`` 0.17.1 read: the first, in listing order, that has text."""
+        for row in rows:
+            try:
+                if self.reader._read_zotero_ft_cache(row[0]):
+                    return str(row[0])
+            except Exception:
+                return None
+        return None
 
     def attachment_parents(self, keys: list[str]) -> dict[str, str | None]:
         """``{attachment key: parent key or None}`` for the ``keys`` Zotero lists; {} when it cannot be asked."""
