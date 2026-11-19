@@ -4876,8 +4876,12 @@ class ZoteroSemanticSearch:
         """
         if not hasattr(self.chroma_client, "prune_item_chunks") or not item_keys:
             return
-        for item_key in item_keys:
-            self.chroma_client.prune_item_chunks(item_key, 0)
+        prune_many = getattr(self.chroma_client, "prune_items_chunks", None)
+        if prune_many is not None:
+            prune_many(dict.fromkeys(item_keys, 0))
+        else:
+            for item_key in item_keys:
+                self.chroma_client.prune_item_chunks(item_key, 0)
         # The delete logs its errors and goes on, so check that it happened.
         try:
             left = {doc_id.split("#", 1)[0] for doc_id in self.chroma_client.get_existing_ids(
@@ -4963,6 +4967,10 @@ class ZoteroSemanticSearch:
             for m in metadatas
             if "parent_item_key" in m and "n_chunks" in m
         }
+        prune_many = getattr(self.chroma_client, "prune_items_chunks", None)
+        if prune_many is not None:
+            prune_many(counts)
+            return
         for item_key, n_chunks in counts.items():
             self.chroma_client.prune_item_chunks(item_key, n_chunks)
 

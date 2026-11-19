@@ -547,6 +547,40 @@ class ChromaClient:
         except Exception as e:
             logger.warning(f"prune_item_chunks({item_key}) failed: {e}")
 
+    def prune_items_chunks(self, keep: dict[str, int]) -> None:
+        """:meth:`prune_item_chunks` for many items: ``{item_key: passages to keep}``.
+
+        One read per collection finds the passages of all of them, and those
+        past an item's count are deleted by id. A filtered delete per item
+        costs about as much as that read, and nearly every item written has
+        nothing to prune: all of a first build, and any item that did not
+        shrink.
+        """
+        if not keep:
+            return
+        keys = list(keep)
+        try:
+            for collection in self.collections():
+                for start in range(0, len(keys), 500):
+                    got = collection.get(
+                        where={"parent_item_key": {"$in": keys[start:start + 500]}},
+                        include=["metadatas"],
+                    )
+                    stale = []
+                    for doc_id, meta in zip(got.get("ids") or [], got.get("metadatas") or []):
+                        index = (meta or {}).get("chunk_index")
+                        limit = keep.get((meta or {}).get("parent_item_key"))
+                        if limit is None or isinstance(index, bool) or not isinstance(index, (int, float)):
+                            continue
+                        if index >= int(limit):
+                            stale.append(doc_id)
+                    if stale:
+                        collection.delete(ids=stale)
+            if not self.separate_passages():
+                self.collection.delete(ids=keys)
+        except Exception as e:
+            logger.warning(f"prune_items_chunks({len(keys)} items) failed: {e}")
+
     def get_collection_info(self) -> dict[str, Any]:
         """Get information about the collection."""
         try:

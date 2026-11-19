@@ -201,6 +201,47 @@ def test_get_documents_metadata_answers_as_the_single_lookup_does(client):
 
 
 # ---------------------------------------------------------------------------
+# prune_items_chunks: prune_item_chunks for a batch, deleting the same records
+# ---------------------------------------------------------------------------
+
+def _prune_scenario(tmp_path, name, *, route_passages=True):
+    client = ChromaClient(
+        collection_name="real_client_test",
+        persist_directory=str(tmp_path / name),
+        embedding_model="default",
+    )
+    client.route_passages = route_passages
+    _seed(client, 3, tagged_group_id=0, prefix="A")   # article records, or bare legacy docs
+    _passages(client, "A00000", range(6), 6)          # shrinks to 2
+    _passages(client, "A00001", range(3), 3)          # same length: nothing to prune
+    _passages(client, "HOLES", [0, 1, 5, 6], 7)       # stale tail does not start at the new count
+    _passages(client, "GROWN", range(2), 2)           # grew: nothing past the new count
+    _passages(client, "UNTOUCHED", range(4), 4)       # not in this write
+    return client
+
+
+PRUNE = {"A00000": 2, "A00001": 3, "HOLES": 3, "GROWN": 5, "NEW_ITEM": 4}
+
+
+@pytest.mark.parametrize("route_passages", [True, False], ids=["separate", "unmigrated"])
+def test_prune_items_chunks_deletes_what_the_per_item_prune_deletes(tmp_path, route_passages):
+    one_by_one = _prune_scenario(tmp_path, "one", route_passages=route_passages)
+    for key, keep in PRUNE.items():
+        one_by_one.prune_item_chunks(key, keep)
+    batched = _prune_scenario(tmp_path, "many", route_passages=route_passages)
+    batched.prune_items_chunks(PRUNE)
+
+    left = batched.get_all_ids()
+    assert left == one_by_one.get_all_ids()
+    assert {"A00000#0", "A00000#1", "HOLES#0", "HOLES#1", "UNTOUCHED#3", "GROWN#1"} <= left
+    assert not {"A00000#2", "A00000#5", "HOLES#5", "HOLES#6"} & left
+    # Where passages share the article collection, the bare record of an item
+    # now stored as passages goes too; in its own collection it is the article.
+    assert ("A00000" in left) is route_passages
+    batched.prune_items_chunks({})
+
+
+# ---------------------------------------------------------------------------
 # iter_metadatas
 # ---------------------------------------------------------------------------
 
