@@ -2497,9 +2497,7 @@ class LocalZoteroReader:
         pending: dict[Any, ExtractionTarget] = {}
         deferred: list[ExtractionTarget] = []
         stranded: list[ExtractionTarget] = []
-        with ProcessPoolExecutor(
-            max_workers=self.extraction_workers, initializer=_init_extraction_worker
-        ) as pool:
+        with _extraction_pool(self.extraction_workers) as pool:
             for target in targets:
                 hit = self._cache_lookup(target.path, target.key)
                 if hit:
