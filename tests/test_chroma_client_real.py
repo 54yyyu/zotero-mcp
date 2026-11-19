@@ -179,6 +179,28 @@ def test_item_keys_by_level_is_reused_until_the_index_changes(client, monkeypatc
 
 
 # ---------------------------------------------------------------------------
+# get_documents_metadata: the single lookup, for many items at once
+# ---------------------------------------------------------------------------
+
+def test_get_documents_metadata_answers_as_the_single_lookup_does(client):
+    articles = _seed(client, 4, tagged_group_id=0, prefix="A")
+    _passages(client, "PASSAGES_ONLY", [0, 1], 2)
+    _passages(client, articles[0], [0, 1], 2)   # an item with both levels
+    _passages(client, "NO_FIRST", [1], 2)        # no article, no first passage
+    keys = [*articles, "PASSAGES_ONLY", "NO_FIRST", "NOT_INDEXED"]
+
+    many = client.get_documents_metadata(keys)
+
+    assert many == {
+        key: meta for key in keys if (meta := client.get_document_metadata(key)) is not None
+    }
+    assert set(many) == {*articles, "PASSAGES_ONLY"}
+    assert "parent_item_key" not in many[articles[0]]  # the item's own record wins
+    assert many["PASSAGES_ONLY"]["chunk_index"] == 0
+    assert client.get_documents_metadata([]) == {}
+
+
+# ---------------------------------------------------------------------------
 # iter_metadatas
 # ---------------------------------------------------------------------------
 

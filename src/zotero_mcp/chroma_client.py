@@ -667,6 +667,28 @@ class ChromaClient:
         except Exception:
             return None
 
+    def get_documents_metadata(self, item_keys: list[str]) -> dict[str, dict[str, Any]]:
+        """:meth:`get_document_metadata` for many items, a few requests for all of them.
+
+        Items that are not indexed are left out, and so is everything that
+        could not be read, as the single lookup answers None for both.
+        """
+        found: dict[str, dict[str, Any]] = {}
+        keys = list(dict.fromkeys(item_keys))
+        try:
+            # The item's own record first; its first passage only where there
+            # is none, so an index with both levels reads the small one.
+            for suffix in ("", "#0"):
+                ids = [f"{key}{suffix}" for key in keys if key not in found]
+                for collection, part in self._group_existing(ids):
+                    for start in range(0, len(part), 5000):
+                        result = collection.get(ids=part[start:start + 5000], include=["metadatas"])
+                        for doc_id, meta in zip(result.get("ids") or [], result.get("metadatas") or []):
+                            found.setdefault(doc_id.split("#", 1)[0], meta)
+        except Exception as e:
+            logger.debug(f"Error reading document metadata: {e}")
+        return found
+
     def get_existing_ids(self, ids: list[str]) -> set[str]:
         """Return the subset of ids that already exist in the collection."""
         if not ids:

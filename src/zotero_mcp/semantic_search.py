@@ -2257,6 +2257,11 @@ class ZoteroSemanticSearch:
                     _prev_level = _extract_logger.level
                     _extract_logger.setLevel(logging.CRITICAL)
 
+                    existing_metadata_of = (
+                        self._existing_metadata_of([it.key for it in local_items], chroma_client)
+                        if chroma_client and not force_rebuild
+                        else None
+                    )
                     for item_idx, it in enumerate(local_items, 1):
                         # Build display string: Author (Year) — Title
                         title = getattr(it, "title", "") or ""
@@ -2326,7 +2331,7 @@ class ZoteroSemanticSearch:
                             # With passage-chunking the stored ids are
                             # "<key>#<n>"; get_document_metadata falls back to
                             # chunk 0 so chunked items are still recognized.
-                            existing_metadata = chroma_client.get_document_metadata(it.key)
+                            existing_metadata = existing_metadata_of(it.key)
                             if existing_metadata and "group_id" not in existing_metadata:
                                 # Indexed before multi-library attribution and
                                 # not (yet) covered by the backfill: re-upsert
@@ -2570,6 +2575,19 @@ class ZoteroSemanticSearch:
             logger.info("Falling back to API...")
             return self._get_items_from_api(limit)
 
+    def _existing_metadata_of(self, item_keys: list[str], chroma_client: Any = None):
+        """A lookup ``key -> indexed metadata or None`` for a pass over many items.
+
+        One read for all of them where the client can do that; a request per
+        item, as before, where it can't (the minimal doubles used in tests).
+        """
+        client = chroma_client or self.chroma_client
+        batch = getattr(client, "get_documents_metadata", None)
+        known = batch(item_keys) if batch is not None and item_keys else None
+        if isinstance(known, dict):
+            return known.get
+        return client.get_document_metadata
+
     @staticmethod
     def _scan_gap_action(existing_metadata: dict[str, Any], gap: set[str] | None) -> str | None:
         """What a scan does with an up-to-date item that lacks a level, or None."""
@@ -2620,6 +2638,9 @@ class ZoteroSemanticSearch:
         skipped = self._still_waiting_for_text(include_fulltext)
         items: list[dict[str, Any]] = []
         wanted: list[str] = []
+        existing_metadata_of = (
+            self._existing_metadata_of(sorted(gaps)) if not include_fulltext else None
+        )
         for key in sorted(gaps):
             if key in already_fetched or key in skipped:
                 continue
@@ -2628,7 +2649,7 @@ class ZoteroSemanticSearch:
                 continue
             if not include_fulltext:
                 # No run without text can fill this; don't fetch the item to find out.
-                existing = self.chroma_client.get_document_metadata(key) or {}
+                existing = existing_metadata_of(key) or {}
                 if existing.get("has_fulltext") and existing.get("has_fulltext") != "failed":
                     waiting.add(key)
                     continue
@@ -2786,9 +2807,10 @@ class ZoteroSemanticSearch:
         unchanged item keeps just its gap, if it has one.
         """
         kept: list[dict[str, Any]] = []
+        existing_metadata_of = self._existing_metadata_of([item.get("key", "") for item in items])
         for item in items:
             data = item.get("data", {})
-            existing = self.chroma_client.get_document_metadata(item.get("key", ""))
+            existing = existing_metadata_of(item.get("key", ""))
             if not existing or not _same_moment(existing.get("date_modified"), data.get("dateModified")):
                 kept.append(item)
                 continue
