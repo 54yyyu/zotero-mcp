@@ -3542,6 +3542,32 @@ class ZoteroSemanticSearch:
         """
         return self._automatic_run and not self._standalone_files_indexed()
 
+    def _record_files_held(self, incremental: bool, limit: int | None) -> None:
+        """Remember how many files this run held back, for ``db-status`` (per library).
+
+        An explicit full run holds none and clears the entry. A full automatic
+        scan counts them all; an incremental one saw only the changed items,
+        so it can only raise the count.
+        """
+        if limit is not None:
+            return
+        held = {"extra": self._extra_files_held, "standalone": self._standalone_held}
+        waiting = self.update_config.get("files_held")
+        waiting = dict(waiting) if isinstance(waiting, dict) else {}
+        key = self._active_library_key()
+        if not self._automatic_run:
+            waiting.pop(key, None)
+        elif incremental:
+            before = waiting.get(key) or {}
+            held = {k: max(v, int(before.get(k, 0))) for k, v in held.items()}
+            if any(held.values()):
+                waiting[key] = held
+        elif any(held.values()):
+            waiting[key] = held
+        else:
+            waiting.pop(key, None)
+        self.update_config["files_held"] = waiting
+
     def _standalone_files_indexed(self) -> bool:
         """Whether an explicit full run has covered the active library's standalone and extra files.
 
@@ -5607,6 +5633,7 @@ class ZoteroSemanticSearch:
                     item for item in all_items if not (item.get("unit") and item.get("key") in outranked)
                 ]
 
+            self._record_files_held(incremental=use_incremental, limit=limit)
             if self._standalone_held:
                 stats["standalone_files_held"] = self._standalone_held
                 logger.info(
