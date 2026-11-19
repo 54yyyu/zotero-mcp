@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -79,10 +80,8 @@ class LibraryBackend(Protocol):
     distinction to report a bad key differently from an empty one.
     """
 
-    def get_related(self, key: str) -> list[dict]: ...
     def find_by_citation_key(self, citekey: str) -> dict | None: ...
     def recent_items(self, *, limit: int = 10, collection_key: str | None = None) -> list[dict]: ...
-    def top_items(self, *, limit: int = 100) -> list[dict]: ...
     def duplicate_scan_items(self, collection_key: str | None = None) -> list[dict] | None:
         """Unbounded local scan, or None to request the caller's bounded API path."""
         ...
@@ -214,9 +213,6 @@ class SqliteBackend:
             list(keys), item_type=item_type, group_id=self._group_id
         )
 
-    def get_related(self, key: str) -> list[dict]:
-        return self._reader.get_related_items(key, group_id=self._group_id)
-
     def find_by_citation_key(self, citekey: str) -> dict | None:
         return self._reader.find_by_citation_key(citekey, group_id=self._group_id)
 
@@ -226,12 +222,6 @@ class SqliteBackend:
         )
         if result is None:
             raise UnsupportedByBackend("that sort order is not available from SQLite")
-        return result
-
-    def top_items(self, *, limit: int = 100) -> list[dict]:
-        result = self._reader.get_recent_items(limit=limit, group_id=self._group_id)
-        if result is None:
-            raise UnsupportedByBackend("top-level listing is not available from SQLite")
         return result
 
     def list_items(
@@ -422,22 +412,8 @@ class ApiBackend:
                 continue
         return result
 
-    def get_related(self, key: str) -> list[dict]:
-        import re
-
-        item = self.get_item(key)
-        if not item:
-            return []
-        related: list[dict] = []
-        seen: set[str] = set()
-        for objects in (item.get("data", {}).get("relations") or {}).values():
-            for uri in objects if isinstance(objects, list) else [objects]:
-                match = re.search(r"/items/([A-Z0-9]{8})$", uri) if isinstance(uri, str) else None
-                if match and match.group(1) not in seen:
-                    seen.add(match.group(1))
-                    if (fetched := self.get_item(match.group(1))) is not None:
-                        related.append(fetched)
-        return related
+    #: Seconds the citation-key scan may spend reading the library.
+    _CITEKEY_SCAN_BUDGET = 20.0
 
     def find_by_citation_key(self, citekey: str) -> dict | None:
         # No indexed field to query server-side. The web API's quick search
@@ -459,8 +435,26 @@ class ApiBackend:
         for item in self._zot.items() or []:
             if matches(item):
                 return item
-        found = _utils._paginate(self._zot.top, keep=matches, max_items=1)
-        return found[0] if found else None
+        # Bounded like the advanced-search walk (#456): a key that is not in
+        # the library used to read all of it, 100 items a request, holding the
+        # API lock the whole way.
+        deadline = time.monotonic() + self._CITEKEY_SCAN_BUDGET
+        start, page_size = 0, 100
+        while True:
+            batch = self._zot.top(start=start, limit=page_size) or []
+            for item in batch:
+                if matches(item):
+                    return item
+            if len(batch) < page_size:
+                return None
+            start += page_size
+            if time.monotonic() > deadline:
+                raise TimeoutError(
+                    f"citation key '{citekey}' was not among the first {start} items "
+                    f"read in {self._CITEKEY_SCAN_BUDGET:.0f}s, and the Zotero API cannot "
+                    "look a citation key up directly. In local mode the SQLite "
+                    "backend finds it at once."
+                )
 
     def recent_items(self, *, limit: int = 10, collection_key: str | None = None) -> list[dict]:
         # Top-level items only, as the SQLite backend answers. The plain
@@ -474,9 +468,6 @@ class ApiBackend:
         return _utils._paginate(
             self._zot.top, sort="dateAdded", direction="desc", max_items=limit
         )[:limit]
-
-    def top_items(self, *, limit: int = 100) -> list[dict]:
-        return _utils._paginate(self._zot.top, max_items=limit)[:limit]
 
     def list_items(
         self,

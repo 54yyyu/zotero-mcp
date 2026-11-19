@@ -37,6 +37,15 @@ class FullDb:
             self._ids[(table, name)] = new_id
         return self._ids[(table, name)]
 
+    def base_field(self, item_type: str, base: str, actual: str) -> None:
+        """Record that `item_type` keeps the base field `base` in `actual`."""
+        self.conn.execute(
+            "INSERT INTO baseFieldMappingsCombined VALUES (?, ?, ?)",
+            (self._id("itemTypes", "itemTypeID", "typeName", item_type),
+             self._id("fields", "fieldID", "fieldName", base),
+             self._id("fields", "fieldID", "fieldName", actual)),
+        )
+
     def collection(self, key: str, name: str | None = None, parent: str | None = None) -> int:
         coll_id = len([k for k in self._ids if k[0] == "collections"]) + 1
         self._ids[("collections", key)] = coll_id

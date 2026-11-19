@@ -473,7 +473,6 @@ def get_collections(
         return f"# Zotero Collections\n\n{error_msg}"
 
 
-@with_zotero_api_lock
 def _build_attachment_extra(info):
     """Build extra_fields dict from attachment_info for format_item_result."""
     if not info:
@@ -605,9 +604,8 @@ def get_collection_items(
                 info = {**info, "has_pdf": True}
 
             if detail == "keys_only":
-                # Standalone attachments have no title — fall back to filename.
-                title = data.get("title") or data.get("filename") or "Untitled"
-                date = data.get("date", "")
+                title = _utils.item_display_title(data)
+                date = _utils.item_display_date(data)
                 flags = []
                 if info.get("has_pdf"):
                     flags.append("PDF")
@@ -659,7 +657,7 @@ def _format_children_detailed(backend, key: str, ctx: Context) -> str:
     # First get the parent item details
     parent = backend.get_item(key)
     parent_title = (
-        parent["data"].get("title", "Untitled Item") if parent else f"Item {key}"
+_utils.item_display_title(parent["data"]) if parent else f"Item {key}"
     )
 
     # Then get the children
@@ -691,7 +689,7 @@ def _format_children_detailed(backend, key: str, ctx: Context) -> str:
         output.append("## Attachments")
         for i, att in enumerate(attachments, 1):
             data = att.get("data", {})
-            title = data.get("title", "Untitled")
+            title = _utils.item_display_title(data)
             att_key = att.get("key", "")
             content_type = data.get("contentType", "Unknown")
             filename = data.get("filename", "")
@@ -730,7 +728,7 @@ def _format_children_detailed(backend, key: str, ctx: Context) -> str:
         output.append("## Other Items")
         for i, other in enumerate(others, 1):
             data = other.get("data", {})
-            title = data.get("title", "Untitled")
+            title = _utils.item_display_title(data)
             other_key = other.get("key", "")
             item_type = data.get("itemType", "unknown")
 
@@ -756,7 +754,7 @@ def _format_children_grouped(backend, keys: list[str], ctx: Context) -> str:
         ctx.warning(f"Batch parent lookup failed: {e}")
         parents = {}
     parent_titles = {
-        k: parents[k].get("data", {}).get("title", "Untitled") if k in parents else f"(key: {k})"
+k: _utils.item_display_title(parents[k].get("data", {})) if k in parents else f"(key: {k})"
         for k in keys
     }
 
@@ -1482,7 +1480,7 @@ def get_item_related(
             return f"Error: Item '{item_key}' not found."
 
         data = item.get("data", {})
-        item_title = data.get("title", "Untitled")
+        item_title = _utils.item_display_title(data)
         relations = data.get("relations", {})
 
         if not isinstance(relations, dict) or not relations:
@@ -1537,9 +1535,9 @@ def get_item_related(
                     if rel_item is None:
                         raise KeyError(f"item {rel_key} is not in this library")
                     rel_data = rel_item.get("data", {})
-                    rel_title = rel_data.get("title", "Untitled")
+                    rel_title = _utils.item_display_title(rel_data)
                     rel_type_name = rel_data.get("itemType", "unknown")
-                    rel_date = rel_data.get("date", "")
+                    rel_date = _utils.item_display_date(rel_data)
                     rel_creator = ""
                     if rel_data.get("creators"):
                         first_creator = rel_data["creators"][0]

@@ -35,7 +35,7 @@ from .extract import (
     normalize_attachment_priority,
     pick_by_priority,
 )
-from .utils import _generate_search_variants, _normalize_for_search, is_local_mode
+from .utils import _generate_search_variants, is_local_mode
 
 logger = logging.getLogger(__name__)
 
@@ -790,8 +790,8 @@ def row_to_api_item(
         "itemType": row["itemType"],
         "title": row["title"] or "",
         "date": row["date"] or "",
-        "dateAdded": row["dateAdded"] or "",
-        "dateModified": row["dateModified"] or "",
+        "dateAdded": _api_timestamp(row["dateAdded"]),
+        "dateModified": _api_timestamp(row["dateModified"]),
         "abstractNote": row["abstractNote"] or "",
         "DOI": row["DOI"] or "",
         "publicationTitle": row["publicationTitle"] or "",
@@ -1108,8 +1108,8 @@ _LINK_MODES = {
     4: "embedded_image",
 }
 
-#: Zotero's numeric annotation types, spelled as the API spells them. Same
-#: mapping `search_annotations_local` already uses.
+#: Zotero's numeric annotation types, spelled as the API spells them; the one
+#: map for every reader here.
 # Zotero.Annotations.ANNOTATION_TYPE_* (chrome/content/zotero/xpcom/
 # annotations.js:31-36), spelled as data/items.js:526-548 names them. Type 6
 # ("text") arrived after this map was written, so it resolved to "" — which
@@ -2338,31 +2338,6 @@ class LocalZoteroReader:
         items = self.get_items_with_text(key_filter=key)
         return items[0] if items else None
 
-    def search_items_by_text(self, query: str, limit: int = 50) -> list[ZoteroItem]:
-        """
-        Simple text search through item content.
-
-        Args:
-            query: Search query string.
-            limit: Maximum number of results.
-
-        Returns:
-            List of matching ZoteroItem objects.
-        """
-        items = self.get_items_with_text()
-        matching_items = []
-
-        query_lower = _normalize_for_search(query).lower()
-
-        for item in items:
-            searchable_text = _normalize_for_search(item.get_searchable_text()).lower()
-            if query_lower in searchable_text:
-                matching_items.append(item)
-                if len(matching_items) >= limit:
-                    break
-
-        return matching_items
-
     def search_notes_local(
         self, query: str, limit: int = 20, group_id: int | None = None
     ) -> list[dict] | None:
@@ -2454,9 +2429,6 @@ class LocalZoteroReader:
             LIMIT ?
         """, (pattern, pattern, *lib_ids, limit))
 
-        # Map integer annotation types to names
-        type_map = {1: "highlight", 2: "note", 3: "image", 4: "ink", 5: "underline"}
-
         results = []
         for row in cursor.fetchall():
             results.append({
@@ -2464,7 +2436,7 @@ class LocalZoteroReader:
                 "key": row[0],
                 "text": row[1] or "",
                 "comment": row[2] or "",
-                "annotation_type": type_map.get(row[3], "unknown"),
+                "annotation_type": _ANNOTATION_TYPES.get(row[3], "unknown"),
                 "color": row[4] or "",
                 "page_label": row[5] or None,
                 "attachment_key": row[6],
@@ -3616,33 +3588,6 @@ class LocalZoteroReader:
         by_id = {row["itemID"]: row for row in rows}
         ordered = [by_id[item_id] for item_id in page if item_id in by_id]
         return self._build_full_items(conn, ordered)
-
-    def get_related_items(
-        self,
-        key: str,
-        *,
-        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
-    ) -> list[dict]:
-        """Items related to `key`, hydrated in one batch.
-
-        Relations are stored as URIs; the related keys are extracted from
-        them here so the caller gets items rather than strings to re-fetch
-        one at a time.
-        """
-        source = self.get_full_items([key], group_id=group_id)
-        item = source.get(key)
-        if item is None:
-            return []
-        related_keys: list[str] = []
-        for objects in item["data"].get("relations", {}).values():
-            for uri in objects if isinstance(objects, list) else [objects]:
-                match = re.search(r"/items/([A-Z0-9]{8})$", uri) if isinstance(uri, str) else None
-                if match and match.group(1) not in related_keys:
-                    related_keys.append(match.group(1))
-        if not related_keys:
-            return []
-        fetched = self.get_full_items(related_keys, group_id=group_id)
-        return [fetched[k] for k in related_keys if k in fetched]
 
     # -- collections and tags ---------------------------------------------
 
