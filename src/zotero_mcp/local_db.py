@@ -6,6 +6,7 @@ when running in local mode.
 """
 
 import atexit
+import contextlib
 import json
 import logging
 import os
@@ -20,6 +21,7 @@ import weakref
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -241,6 +243,46 @@ def _source_for_path(path: Path) -> str:
     if suffix in {".html", ".htm"}:
         return "html"
     return "file"
+
+
+def _pool_context():
+    """Multiprocessing context for the extraction pool.
+
+    Never plain ``fork``: by the time a pool starts, the parent has threads of
+    its own (ChromaDB, the embedding clients), and a child forked while another
+    thread holds a lock (logging's, an allocator's) can wait for it forever. A
+    hung worker then blocks the pool's shutdown, and with it the whole run.
+    ``forkserver`` forks from a clean single-threaded helper; macOS and
+    Windows already spawn. Returns None where the platform has no forkserver.
+    """
+    import multiprocessing
+
+    try:
+        return multiprocessing.get_context("forkserver")
+    except ValueError:
+        return None
+
+
+@contextmanager
+def _extraction_pool(workers: int):
+    """A process pool that cannot outlive an interrupted or failed run.
+
+    A normal exit waits for the workers. On any exception (a timeout, Ctrl-C, a
+    consumer that stops reading) queued work is cancelled and the workers are
+    killed rather than joined, so a stuck worker cannot hang the shutdown.
+    """
+    pool = ProcessPoolExecutor(max_workers=workers, initializer=_init_extraction_worker, mp_context=_pool_context())
+    try:
+        yield pool
+    except BaseException:
+        procs = list((getattr(pool, "_processes", None) or {}).values())
+        pool.shutdown(wait=False, cancel_futures=True)
+        for proc in procs:
+            with contextlib.suppress(Exception):
+                proc.kill()
+        raise
+    else:
+        pool.shutdown(wait=True)
 
 
 def _init_extraction_worker() -> None:
@@ -2176,9 +2218,7 @@ class LocalZoteroReader:
         deferred: list[tuple[int, str | None, tuple[Path, str] | None]] = []
         # Outstanding work at the moment the pool died, to redo in-process.
         stranded: list[tuple[int, str | None]] = []
-        with ProcessPoolExecutor(
-            max_workers=self.extraction_workers, initializer=_init_extraction_worker
-        ) as pool:
+        with _extraction_pool(self.extraction_workers) as pool:
             for item_id, item_key in items:
                 chosen = self._resolve_extraction_target(item_id)
                 if not chosen:
