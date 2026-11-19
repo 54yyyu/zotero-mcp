@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 import uuid
 from typing import Literal
@@ -363,40 +364,22 @@ def list_annotations(
 
                     # Check if Zotero with Better BibTeX is running
                     if bibtex.is_zotero_running():
-                        # Extract citation key
-                        citation_key = None
-
-                        # Try to find citation key in Extra field
-                        try:
-                            extra_field = parent["data"].get("extra", "")
-                            for line in extra_field.split("\n"):
-                                if line.lower().startswith("citation key:"):
-                                    citation_key = line.replace("Citation Key:", "").strip()
-                                    break
-                                elif line.lower().startswith("citationkey:"):
-                                    citation_key = line.replace("citationkey:", "").strip()
-                                    break
-                        except Exception as e:
-                            ctx.warning(f"Error extracting citation key from Extra field: {e}")
-
-                        # Fallback to searching by title if no citation key found
-                        if not citation_key:
-                            title = parent["data"].get("title", "")
+                        # The item's citation key: the native field, else what
+                        # Better BibTeX holds for this item key (it looks a
+                        # bare key up in My Library only), else a line in
+                        # Extra. Searching Better BibTeX by title, as this
+                        # used to, took the first hit's key, whichever paper
+                        # that was.
+                        citation_key = parent["data"].get("citationKey") or None
+                        if not citation_key and not _client.get_active_group_id():
                             try:
-                                if title:
-                                    # Use the search_citekeys method
-                                    search_results = bibtex.search_citekeys(title)
-
-                                    # Find the matching item
-                                    for result in search_results:
-                                        ctx.info(f"Checking result: {result}")
-
-                                        # Try to match with item key if possible
-                                        if result.get('citekey'):
-                                            citation_key = result['citekey']
-                                            break
+                                citation_key = bibtex.citation_key(parent_item_key)
                             except Exception as e:
-                                ctx.warning(f"Error searching for citation key: {e}")
+                                ctx.warning(f"Error asking Better BibTeX for the citation key: {e}")
+                        if not citation_key:
+                            match = re.search(r"^\s*citation ?key\s*:\s*(\S+)",
+                                              parent["data"].get("extra") or "", re.IGNORECASE | re.MULTILINE)
+                            citation_key = match.group(1) if match else None
 
                         # Process annotations if citation key found
                         if citation_key:

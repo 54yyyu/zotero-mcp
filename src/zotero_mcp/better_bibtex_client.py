@@ -212,6 +212,17 @@ class ZoteroBetterBibTexAPI:
 
         return attachment.get('annotations', [])
 
+    def citation_key(self, item_key: str) -> str | None:
+        """
+        The citation key Better BibTeX holds for an item, by its item key.
+
+        A bare item key is looked up in My Library, which is how
+        ``item.citationkey`` reads one; an item of a group library, or one
+        Better BibTeX has no key for, gives None.
+        """
+        mapping = self._make_request("item.citationkey", {"item_keys": [item_key]})
+        return (mapping or {}).get(item_key) or None
+
     def search_citekeys(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """
         Search for items in Zotero by a search query and return their citation keys.
