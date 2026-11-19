@@ -49,6 +49,28 @@ def _conjuncts(where: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _normalise(where: dict[str, Any]) -> dict[str, Any]:
+    """``where`` with every multi-key dict inside ``$or`` rewritten as ``$and`` of its keys.
+
+    ``matches`` ANDs the keys of such a dict, but Chroma rejects it, so both
+    sides must see the explicit form.
+    """
+    out: dict[str, Any] = {}
+    for key, value in where.items():
+        if key in ("$and", "$or") and isinstance(value, list):
+            subs = []
+            for sub in value:
+                if isinstance(sub, dict):
+                    sub = _normalise(sub)
+                    if key == "$or" and len(sub) > 1:
+                        sub = {"$and": [{k: v} for k, v in sub.items()]}
+                subs.append(sub)
+            out[key] = subs
+        else:
+            out[key] = value
+    return out
+
+
 def referenced_fields(where: dict[str, Any] | None) -> set[str]:
     """Every field name ``where`` mentions, at any depth."""
     if not where:
@@ -77,13 +99,23 @@ def split_filters(where: dict[str, Any] | None) -> tuple[dict[str, Any] | None, 
     A clause naming only stored fields goes to Chroma; one naming only live
     fields is evaluated live. A ``$or`` that mixes both cannot be split, so it
     is evaluated live as a whole, with the stored fields read from the hit's
-    metadata. Unknown field names stay on the Chroma side, as before.
+    metadata. A field name outside the supported list raises ValueError. A
+    dict with several keys inside ``$or`` is rewritten as ``$and`` of its keys
+    (what the live evaluator already does), because Chroma rejects it.
     """
     if not where:
         return None, None
-    unsupported = referenced_fields(where) & LEGACY_ONLY_FIELDS
+    where = _normalise(where)
+    referenced = referenced_fields(where)
+    supported = ", ".join(sorted(CHROMA_FIELDS | LIVE_FIELDS))
+    unknown = referenced - CHROMA_FIELDS - LIVE_FIELDS - LEGACY_ONLY_FIELDS
+    if unknown:
+        raise ValueError(
+            f"Cannot filter on {', '.join(sorted(unknown))}: not a filterable field, so the filter would "
+            f"match nothing. Supported fields: {supported}."
+        )
+    unsupported = referenced & LEGACY_ONLY_FIELDS
     if unsupported:
-        supported = ", ".join(sorted(CHROMA_FIELDS | LIVE_FIELDS))
         raise ValueError(
             f"Cannot filter on {', '.join(sorted(unsupported))}: records written by current versions do not "
             f"store it, so the filter would match only records from earlier versions. Supported fields: {supported}."
