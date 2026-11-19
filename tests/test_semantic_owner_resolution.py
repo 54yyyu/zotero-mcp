@@ -342,6 +342,34 @@ def test_a_request_shape_error_falls_back_to_one_request_per_key(monkeypatch, tm
     assert sorted(found) == [f"KEY{i:05d}" for i in range(3)] and failed == {}
 
 
+def _unreachable_search(monkeypatch, tmp_path):
+    hits = [_hit(f"ATT{n}#0", item_key=f"ATT{n}") for n in range(3)]
+    s, _ = _search(monkeypatch, tmp_path, hits, [])
+    s.zotero_client = _FailingBatchZot([], ConnectionError("connection refused"))
+    return s
+
+
+def test_a_live_filtered_search_reports_that_zotero_could_not_be_reached(monkeypatch, tmp_path):
+    s = _unreachable_search(monkeypatch, tmp_path)
+
+    out = s.search("q", limit=2, filters={"tags": "keep"})
+
+    assert out["results"] == []
+    assert out["lookup_error"], "the failure was reported as no matches"
+    assert "connection refused" in out["lookup_error"]
+    assert "could not be looked up" in out["filter_note"]
+    assert "connection refused" in out["filter_note"]
+
+
+def test_an_unfiltered_search_still_reports_the_failure_per_result(monkeypatch, tmp_path):
+    s = _unreachable_search(monkeypatch, tmp_path)
+
+    out = s.search("q", limit=2)
+
+    assert [r.get("error") for r in out["results"]] and all("connection refused" in r["error"] for r in out["results"])
+    assert not out.get("lookup_error")
+
+
 def test_legacy_parent_keyed_passages_still_render_as_the_parent(monkeypatch, tmp_path):
     legacy_meta = {
         "item_key": "LEGACY01",

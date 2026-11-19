@@ -5855,12 +5855,25 @@ class ZoteroSemanticSearch:
                     fetch_limit *= 4
 
             filter_note = None
-            if post_filter and len(enriched_results) < limit:
+            lookup_error = None
+            if live_where and memo["errors"]:
+                # A hit Zotero could not be asked about cannot be shown to match,
+                # so a filtered search leaves it out; saying "no matches" then
+                # would hide that the answer is incomplete (unfiltered searches
+                # show the failure per result).
+                lookup_error = (
+                    f"{len(memo['errors'])} record{'' if len(memo['errors']) == 1 else 's'} could not be "
+                    f"looked up in Zotero, so they could not be checked against the filters: "
+                    f"{next(iter(memo['errors'].values()))}"
+                )
+            if (post_filter and len(enriched_results) < limit) or lookup_error:
                 found = len(enriched_results)
                 filter_note = (
                     f"Only {found} item{'' if found == 1 else 's'} matched the filters among the "
                     f"{candidates} closest records searched."
-                )
+                ) if post_filter and found < limit else None
+                if lookup_error:
+                    filter_note = f"{filter_note} {lookup_error}" if filter_note else lookup_error
 
             return {
                 "query": query,
@@ -5874,6 +5887,7 @@ class ZoteroSemanticSearch:
                 "level_note": level_note,
                 "load_note": load_note,
                 "filter_note": filter_note,
+                "lookup_error": lookup_error,
             }
 
         except Exception as e:
