@@ -75,6 +75,8 @@ class MigrationReport:
     # Left as they are because Zotero could not be asked (unreachable).
     skipped_items: int = 0
     skipped_passages: int = 0
+    # Items whose re-key failed part way (their old passages are still there; a rerun carries on).
+    failed_items: int = 0
     # Attachments whose record or passages had no ``parent_hint`` when the run
     # began, and the records given one (0 in a dry run).
     parent_hints_missing: int = 0
@@ -452,7 +454,15 @@ def rekey_legacy_passages(
             report.rekeyed_items += 1
             report.rekeyed_passages += len(ids)
             if client is not None:
-                _rekey_item(client, sources, item, attachment, ids)
+                try:
+                    _rekey_item(client, sources, item, attachment, ids)
+                except Exception as e:
+                    # Its old passages are still there, so nothing is lost and
+                    # a rerun carries on from this item; the others go on.
+                    report.rekeyed_items -= 1
+                    report.rekeyed_passages -= len(ids)
+                    report.failed_items += 1
+                    logger.error(f"Could not re-key the passages of {item.key} ({e}); they stay as they are")
         if client is not None and number % 200 == 0:
             progress(f"  re-keyed {number}/{len(items)} items")
 
@@ -460,7 +470,7 @@ def rekey_legacy_passages(
 def _rekey_item(client: Any, sources: LocalSources, item: LegacyItem, attachment: str, ids: list[str]) -> None:
     # An attachment record exists only when an update has already written the
     # file in the new shape: its passages are the current ones.
-    if attachment not in client.get_existing_ids([attachment]):
+    if attachment not in client.get_metadatas([attachment]):
         records = client.read_records(ids)
         first = next((r for r in records if r["id"].endswith("#0")), None)
         offset = (
@@ -477,9 +487,14 @@ def _rekey_item(client: Any, sources: LocalSources, item: LegacyItem, attachment
         sources.remember_stamp(attachment)
     # The article record says its passages moved, so they are not "missing".
     # The whole metadata goes back: not every ChromaDB version merges.
+    # The old passages go only once the mark is read back: without it the
+    # item would have none and be embedded again by the next update.
     stored = client.get_metadatas([item.key]).get(item.key)
     if stored is not None and stored.get("rekeyed_to") != attachment:
         client.update_metadatas([item.key], [{**stored, "rekeyed_to": attachment}])
+        landed = client.get_metadatas([item.key]).get(item.key)
+        if landed is None or landed.get("rekeyed_to") != attachment:
+            raise MigrationError(f"the mark that {item.key}'s passages moved to {attachment} did not land")
     client.delete_records(ids)
 
 
