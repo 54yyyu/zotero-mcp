@@ -1,0 +1,24 @@
+# The image is built with `pip install .`, which needs pyproject.toml, the
+# README, the licence files it names and src/. Everything else only makes the
+# build context larger and the copied layer change more often.
+.git
+.github
+**/__pycache__
+**/*.py[cod]
+*.egg-info
+dist
+build
+.venv
+venv
+.env
+tests
+docs
+site
+public
+scripts
+uv.lock
+flake.nix
+flake.lock
+# plugin/LICENSE is one of pyproject.toml's license-files.
+plugin/*
+!plugin/LICENSE
