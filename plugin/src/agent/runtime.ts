@@ -61,6 +61,19 @@ async function lockedEnv(spawner: Spawner, env: Record<string, string>, spec: Ba
   return { PI_ACP_PI_COMMAND: script };
 }
 
+/**
+ * What a chat's own session says its backend offers, so that nothing has to be started just to ask. The lists are the
+ * session's. The agent's own defaults are only what the session shows when nothing was chosen for it: a session started
+ * with a model, mode or effort of the user's (or resumed) keeps what `prev` knew.
+ */
+export function catalogOf(session: AgentSession, o: Pick<StartOpts, "model" | "mode" | "effort" | "resumeSessionId">, prev?: Catalog): Catalog {
+  const fresh = !o.resumeSessionId;
+  const model = session.defaultModel() ?? prev?.model;
+  const mode = fresh && !o.mode ? session.currentMode() : prev?.mode;
+  const effort = fresh && !o.model && !o.effort ? session.currentEffort() : prev?.effort;
+  return { models: session.models(), modes: session.modes(), efforts: session.efforts(), ...(model ? { model } : {}), ...(mode ? { mode } : {}), ...(effort ? { effort } : {}) };
+}
+
 export function createRuntime(opts: RuntimeOpts): AgentRuntime {
   const { spawner, bridgeDir } = opts;
 
@@ -107,6 +120,56 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
     }
   }
 
+  let detecting: Promise<BackendStatus[]> | null = null;
+
+  async function detectAll(): Promise<BackendStatus[]> {
+    const env = await spawner.baseEnv();
+    const node = await resolveNode(env);
+    const nodeEnv = node ? withPathFirst(env, dirnameOf(node)) : env;
+    const npm = node ? await findBinary(spawner, nodeEnv, "npm") : null;
+    const statuses = await Promise.all(
+      BACKEND_IDS.map(async (id): Promise<BackendStatus> => {
+        const spec = BACKENDS[id];
+        const base = { id, label: spec.label };
+        if (isNative(spec)) {
+          // Nothing to install, and no login that says more than "can chat" (probeLogin): found is ready.
+          return (await findCli(spawner, env, spec)) ? { ...base, available: true } : { ...base, available: false, reason: t(spec.cli.hint) };
+        }
+        if (!node) return { ...base, available: false, reason: nodeMissing() };
+        const cli = await findCli(spawner, env, spec);
+        if (spec.cli && !cli) return { ...base, available: false, reason: t(spec.cli.hint) };
+        const installed = await locateBridge(spawner, nodeEnv, node, bridgeDir, spec).catch(() => null);
+        if (!installed && !npm) return { ...base, available: false, reason: t("agent.npmMissing", { agent: spec.label }) };
+        // The Codex chats run is the one asked. That is the user's own when it is at least as new as the bridge's
+        // (systemCodexForChats), else the bundled one, which can be older than the one on PATH: then a config.toml
+        // only the newer one reads is reported here, not as "failed to load workspace requirements" at the first
+        // message (#811). The Codex on PATH answers before the bridge is installed, or when the OS killed the
+        // bundled one; either Codex can be killed while the other works (#797), so a probe that could not tell
+        // never hides a successful one.
+        const found = id === "codex" && installed ? await locateBundledCodex(spawner, nodeEnv, node, installed) : null;
+        const own = found ? await systemCodexForChats(spawner, nodeEnv, cli, found) : null;
+        const bundled = found && !own ? found.entry : null;
+        let login = bundled ? await probeLogin(spawner, nodeEnv, id, node, [bundled]) : {};
+        if (cli && (!bundled || (login.loggedIn !== true && !login.configError && (login.reason || login.loggedIn === undefined)))) {
+          const system = await probeLogin(spawner, env, id, cli);
+          if (!bundled || system.loggedIn === true || !login.reason) login = system;
+        }
+        if (login.loggedIn === false) return { ...base, available: false, reason: login.reason ?? `${t("agent.notSignedIn", { agent: spec.label })} ${spec.cli ? t(spec.cli.hint) : ""}`.trim() };
+        return { ...base, available: true, ...(login.account ? { account: login.account } : {}) };
+      }),
+    );
+    if (opts.customAgent) {
+      try {
+        const config = readCustomAgent(opts.customAgent());
+        await customCommand(config, { ...env, ...config.env }, true);
+        statuses.push({ id: "custom", label: config.label || t("agent.custom.label"), available: true });
+      } catch (e) {
+        statuses.push({ id: "custom", label: t("agent.custom.label"), available: false, reason: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return statuses;
+  }
+
   const runtime: AgentRuntime = {
     catalog(id: BackendId): Promise<Catalog> {
       if (id === "custom") return probeCatalog(id);
@@ -122,52 +185,10 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
       return p;
     },
 
-    async detect(): Promise<BackendStatus[]> {
-      const env = await spawner.baseEnv();
-      const node = await resolveNode(env);
-      const nodeEnv = node ? withPathFirst(env, dirnameOf(node)) : env;
-      const npm = node ? await findBinary(spawner, nodeEnv, "npm") : null;
-      const statuses = await Promise.all(
-        BACKEND_IDS.map(async (id): Promise<BackendStatus> => {
-          const spec = BACKENDS[id];
-          const base = { id, label: spec.label };
-          if (isNative(spec)) {
-            // Nothing to install, and no login that says more than "can chat" (probeLogin): found is ready.
-            return (await findCli(spawner, env, spec)) ? { ...base, available: true } : { ...base, available: false, reason: t(spec.cli.hint) };
-          }
-          if (!node) return { ...base, available: false, reason: nodeMissing() };
-          const cli = await findCli(spawner, env, spec);
-          if (spec.cli && !cli) return { ...base, available: false, reason: t(spec.cli.hint) };
-          const installed = await locateBridge(spawner, nodeEnv, node, bridgeDir, spec).catch(() => null);
-          if (!installed && !npm) return { ...base, available: false, reason: t("agent.npmMissing", { agent: spec.label }) };
-          // The Codex chats run is the one asked. That is the user's own when it is at least as new as the bridge's
-          // (systemCodexForChats), else the bundled one, which can be older than the one on PATH: then a config.toml
-          // only the newer one reads is reported here, not as "failed to load workspace requirements" at the first
-          // message (#811). The Codex on PATH answers before the bridge is installed, or when the OS killed the
-          // bundled one; either Codex can be killed while the other works (#797), so a probe that could not tell
-          // never hides a successful one.
-          const found = id === "codex" && installed ? await locateBundledCodex(spawner, nodeEnv, node, installed) : null;
-          const own = found ? await systemCodexForChats(spawner, nodeEnv, cli, found) : null;
-          const bundled = found && !own ? found.entry : null;
-          let login = bundled ? await probeLogin(spawner, nodeEnv, id, node, [bundled]) : {};
-          if (cli && (!bundled || (login.loggedIn !== true && !login.configError && (login.reason || login.loggedIn === undefined)))) {
-            const system = await probeLogin(spawner, env, id, cli);
-            if (!bundled || system.loggedIn === true || !login.reason) login = system;
-          }
-          if (login.loggedIn === false) return { ...base, available: false, reason: login.reason ?? `${t("agent.notSignedIn", { agent: spec.label })} ${spec.cli ? t(spec.cli.hint) : ""}`.trim() };
-          return { ...base, available: true, ...(login.account ? { account: login.account } : {}) };
-        }),
-      );
-      if (opts.customAgent) {
-        try {
-          const config = readCustomAgent(opts.customAgent());
-          await customCommand(config, { ...env, ...config.env }, true);
-          statuses.push({ id: "custom", label: config.label || t("agent.custom.label"), available: true });
-        } catch (e) {
-          statuses.push({ id: "custom", label: t("agent.custom.label"), available: false, reason: e instanceof Error ? e.message : String(e) });
-        }
-      }
-      return statuses;
+    detect(): Promise<BackendStatus[]> {
+      // One at a time: the setup check and the agent list ask together, and each run starts a dozen or more processes
+      // (among them every agent's own CLI, for its sign-in).
+      return (detecting ??= detectAll().finally(() => { detecting = null; }));
     },
 
     async start(start: StartOpts): Promise<AgentSession> {
