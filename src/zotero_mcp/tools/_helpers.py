@@ -767,12 +767,16 @@ def ensure_collection_membership(write_zot, item_key: str, coll_keys: list[str],
         return list(coll_keys)
     actual = set(item.get("data", {}).get("collections") or [])
     failed: list[str] = []
+    stale = False
     for coll_key in coll_keys:
         if coll_key in actual:
             continue
         try:
+            if stale:  # each add bumps the version the next one must send
+                item = write_zot.item(item_key)
             write_zot.addto_collection(coll_key, item)
             actual.add(coll_key)
+            stale = True
         except Exception as e:
             failed.append(coll_key)
             if ctx is not None:

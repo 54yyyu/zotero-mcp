@@ -733,8 +733,13 @@ def batch_update_tags(
                         needs_update = True
 
             if needs_update:
-                def _set_tags(it, tags=current_tags):
-                    it["data"]["tags"] = tags
+                # Re-applied to the copy being written, not replayed from
+                # this one: in hybrid mode and on a version-conflict retry
+                # that copy can hold tags this one never saw.
+                def _set_tags(it):
+                    it["data"]["tags"] = _helpers._apply_tag_changes(
+                        it["data"].get("tags"),
+                        [{"tag": t} for t in add_tags or [] if t], remove_tags)
 
                 item["data"]["tags"] = current_tags
                 edits.append((item.get("key", "unknown"), item, _set_tags))
@@ -934,8 +939,10 @@ def batch_update_extra(
                 skipped_count += 1
                 continue
 
-            def _set_extra(it, value=new_extra):
-                it["data"]["extra"] = value
+            # Re-applied to the copy being written (see _set_tags).
+            def _set_extra(it):
+                it["data"]["extra"] = _apply_extra_edits(
+                    it["data"].get("extra", "") or "", set_keys, remove_keys, replace)[0]
 
             item["data"]["extra"] = new_extra
             edits.append((item_key, item, _set_extra))
@@ -4875,6 +4882,7 @@ def add_from_file(
             # policy: the PDF in hand is already the thing being filed.
             result_msg = add_by_doi(doi=extracted_doi, collections=coll_keys,
                                     tags=tags, if_exists=if_exists,
+                                    attach_mode="none",
                                     page_check="thin_only", ctx=ctx)
             # Extract item key from result
             key_match = re.search(r'Item key: `([^`]+)`', result_msg)

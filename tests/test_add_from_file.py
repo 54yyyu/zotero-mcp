@@ -209,6 +209,7 @@ class TestDoiFromMetadata:
             doi_called_with["doi"] = doi
             doi_called_with["collections"] = collections
             doi_called_with["tags"] = tags
+            doi_called_with["attach_mode"] = kwargs.get("attach_mode")
             return "Added by DOI: 10.1234/test.2024.001"
 
         monkeypatch.setattr("zotero_mcp.tools.write.add_by_doi", mock_add_by_doi)
@@ -226,6 +227,8 @@ class TestDoiFromMetadata:
         # add_from_file resolves specs itself and delegates resolved KEYS.
         assert doi_called_with["collections"] == ["COL00001"]
         assert doi_called_with["tags"] == ["tag1"]
+        # The file in hand is the attachment: no open-access copy beside it.
+        assert doi_called_with["attach_mode"] == "none"
 
     def test_doi_in_keywords_field(self, monkeypatch, dummy_ctx):
         fake_zot = FakeZoteroForFile()
