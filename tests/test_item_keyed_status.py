@@ -196,6 +196,37 @@ def test_the_clis_show_the_same(index, monkeypatch, capsys, which):
     assert "zotero-mcp migrate-index" in out
 
 
+def test_db_status_says_how_many_files_wait_for_an_explicit_update(index, monkeypatch, capsys):
+    import zotero_mcp.cli as cli
+    import zotero_mcp.semantic_search as semantic_search
+
+    directory, config = index
+    _write(directory, [("BIB1", BIB)])
+    info = ChromaClient(collection_name=NAME, persist_directory=directory).get_collection_info()
+    held = {"0": {"extra": 3, "standalone": 2}, "7": {"extra": 0, "standalone": 0}}
+    search = type(
+        "S",
+        (),
+        {
+            "get_database_status": lambda self: {
+                "collection_info": info,
+                "update_config": {"files_held": held},
+                "openai_batch": {},
+                "chunking": {},
+            }
+        },
+    )()
+    monkeypatch.setattr(cli, "setup_zotero_environment", lambda: None)
+    monkeypatch.setattr(semantic_search, "create_semantic_search", lambda *a, **k: search)
+    monkeypatch.setattr(sys, "argv", ["zotero-mcp", "db-status", "--config-path", config])
+
+    cli.main()
+    out = capsys.readouterr().out
+
+    assert "3 more file(s) of items with several, 2 standalone" in out
+    assert "group library 7" not in out
+
+
 def test_a_legacy_index_without_full_text_shows_its_article_records(index):
     directory, config = index
     meta = {"title": "t", "has_fulltext": False}

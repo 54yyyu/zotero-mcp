@@ -285,6 +285,29 @@ def test_an_automatic_run_leaves_an_items_other_files_for_the_first_explicit_run
     assert "extra_files_held" not in stats
 
 
+def test_the_files_an_automatic_run_holds_are_recorded_for_db_status_until_an_explicit_run(env):
+    library(
+        env,
+        paper("ITEM0001"),
+        attachment("PDFAAAAA", "ITEM0001"),
+        attachment("PDFBBBBB", "ITEM0001"),
+        attachment("LONEPDF1"),
+        PDFAAAAA=TEXT,
+        PDFBBBBB=TEXT,
+        LONEPDF1=TEXT,
+    )
+
+    search, _stats = env.update(automatic=True)
+
+    waiting = json.loads(Path(env.config).read_text())["semantic_search"]["update_config"]["files_held"]
+    assert waiting == {"0": {"extra": 1, "standalone": 1}}
+
+    env.forget_sync_version()
+    env.update()
+
+    assert json.loads(Path(env.config).read_text())["semantic_search"]["update_config"]["files_held"] == {}
+
+
 def test_an_automatic_run_embeds_the_file_017_would_have_read_not_the_first_by_key(env):
     """Zotero lists the main PDF first; the supplement merely sorts first by key."""
     library(

@@ -1504,6 +1504,14 @@ def main():
             update_config = status.get("update_config", {})
             print(f"Last update: {update_config.get('last_update', 'Never')}")
             print(f"Should update: {status.get('should_update', False)}")
+            for library, held in sorted((update_config.get("files_held") or {}).items()):
+                extra, standalone = int(held.get("extra", 0)), int(held.get("standalone", 0))
+                if extra or standalone:
+                    where = "" if library == "0" else f" (group library {library})"
+                    print(
+                        f"Files waiting for an explicit `zotero-mcp update-db`{where}: "
+                        f"{extra} more file(s) of items with several, {standalone} standalone"
+                    )
             print("\nConfiguration:")
             _print_semantic_config(status, config_path, "- ")
 
