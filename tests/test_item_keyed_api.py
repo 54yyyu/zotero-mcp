@@ -804,6 +804,47 @@ def test_a_failed_children_request_holds_back_the_sync_version_and_is_retried(en
 
 
 
+def test_a_failed_item_request_holds_back_the_sync_version_and_is_retried(env, monkeypatch):
+    library(env, paper("ITEM0001"))
+    env.update()
+    env.zot.put(paper("ITEM0002"), version=6)
+    broken = _fail_once_then_recover(env, monkeypatch, "item", only="ITEM0002")
+
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001"}
+    assert _watermark(env) == 5
+
+    broken["on"] = False
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "ITEM0002"}
+    assert _watermark(env) == 6
+    assert "fetch_failures" not in json.loads(Path(env.config).read_text())["semantic_search"] or not json.loads(
+        Path(env.config).read_text()
+    )["semantic_search"]["fetch_failures"]
+
+
+def test_a_request_that_keeps_failing_is_given_up_on_after_three_runs(env, monkeypatch, caplog):
+    library(env, paper("ITEM0001"))
+    env.update()
+    env.zot.put(paper("ITEM0002"), version=6)
+    _fail_once_then_recover(env, monkeypatch, "item", only="ITEM0002")
+
+    with caplog.at_level("WARNING"):
+        env.update()
+        assert _watermark(env) == 5
+        env.update()
+        assert _watermark(env) == 5
+        assert "Giving up" not in caplog.text
+        env.update()
+
+    assert _watermark(env) == 6
+    assert "Giving up on ITEM0002" in caplog.text
+    counts = json.loads(Path(env.config).read_text())["semantic_search"]["fetch_failures"]
+    assert counts == {"0": {"ITEM0002": 3}}
+
+
 def test_zoteros_no_text_answer_does_not_hold_back_the_sync_version(env):
     library(env, paper("ITEM0001"))
     env.update()
