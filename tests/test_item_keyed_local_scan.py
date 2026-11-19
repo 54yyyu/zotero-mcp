@@ -11,6 +11,7 @@ records what it embeds; the Zotero side is a fake reader. HOME, Path.home
 and the config path all point into tmp_path.
 """
 
+import dataclasses
 import importlib.util
 import json
 import sqlite3
@@ -289,6 +290,44 @@ def test_a_limited_explicit_run_does_not_count_as_standalone_coverage(env, tmp_p
     env(reader, limit=1)
 
     assert not _update_config(tmp_path).get("standalone_files_indexed")
+
+
+def _sized(key, size):
+    return dataclasses.replace(target(key), size=size)
+
+
+def test_an_automatic_run_builds_only_the_largest_file_017_chose_before_the_first_explicit_run(env):
+    reader = LibReader(
+        [Item("ITEM0001", 1)], targets={1: [_sized("ASUPPLEM", 10), _sized("ZMAINPDF", 100)]}
+    )
+
+    search, stats = env(reader, automatic=True)
+
+    assert reader.extracted == ["ZMAINPDF"]
+    assert "ZMAINPDF" in _ids(search) and "ASUPPLEM" not in _ids(search)
+    assert stats["extra_files_held"] == 1
+
+    search, stats = env(reader)
+
+    assert reader.extracted == ["ASUPPLEM"]
+    assert "ASUPPLEM" in _ids(search)
+    assert "extra_files_held" not in stats
+
+
+def test_an_automatic_run_holds_a_new_sibling_even_if_it_is_now_the_largest_file(env):
+    reader = LibReader([Item("ITEM0001", 1)], targets={1: [_sized("ASUPPLEM", 10)]})
+    env(reader, automatic=True)
+    reader.targets[1] = [_sized("ASUPPLEM", 10), _sized("ZMAINPDF", 100)]
+
+    search, stats = env(reader, automatic=True)
+
+    assert reader.extracted == []
+    assert "ZMAINPDF" not in _ids(search)
+    assert stats["extra_files_held"] == 1
+
+    search, _ = env(reader)
+
+    assert reader.extracted == ["ZMAINPDF"]
 
 
 # --- change detection -------------------------------------------------------------

@@ -285,6 +285,73 @@ def test_an_automatic_run_leaves_an_items_other_files_for_the_first_explicit_run
     assert "extra_files_held" not in stats
 
 
+def test_an_automatic_run_embeds_the_file_017_would_have_read_not_the_first_by_key(env):
+    """Zotero lists the main PDF first; the supplement merely sorts first by key."""
+    library(
+        env,
+        paper("ITEM0001"),
+        attachment("ZMAINPDF", "ITEM0001"),
+        attachment("ASUPPLEM", "ITEM0001"),
+        ZMAINPDF=TEXT,
+        ASUPPLEM=TEXT,
+    )
+
+    search, stats = env.update(automatic=True)
+
+    assert records(search) == {"ITEM0001", "ZMAINPDF"}
+    assert env.zot.fulltext_keys() == ["ZMAINPDF"]
+    assert stats["extra_files_held"] == 1
+
+    env.forget_sync_version()
+    search, stats = env.update()
+
+    assert records(search) == {"ITEM0001", "ZMAINPDF", "ASUPPLEM"}
+    assert "extra_files_held" not in stats
+
+
+def test_an_automatic_run_holds_a_new_sibling_of_an_indexed_file_whichever_sorts_first(env):
+    library(env, paper("ITEM0001"), attachment("ZMAINPDF", "ITEM0001"), ZMAINPDF=TEXT)
+    env.update(automatic=True)
+    library(env, attachment("AEARLIER", "ITEM0001"), AEARLIER=TEXT)
+    env.forget_sync_version()
+
+    search, stats = env.update(automatic=True)
+
+    assert records(search) == {"ITEM0001", "ZMAINPDF"}
+    assert "AEARLIER" not in env.zot.fulltext_keys()
+    assert stats["extra_files_held"] == 1
+
+    env.forget_sync_version()
+    search, _stats = env.update()
+
+    assert records(search) == {"ITEM0001", "ZMAINPDF", "AEARLIER"}
+
+
+def test_an_automatic_run_does_not_read_a_snapshot_or_text_file_before_the_first_explicit_run(env):
+    """0.17 read only PDFs over the API."""
+    env.set_priority(["html", "pdf", "other"])
+    library(
+        env,
+        paper("ITEM0001"),
+        attachment("SNAPSHOT", "ITEM0001", ctype="text/html"),
+        paper("ITEM0002"),
+        attachment("NOTESTXT", "ITEM0002", ctype="text/plain", filename="notes.txt"),
+        SNAPSHOT=TEXT,
+        NOTESTXT=TEXT,
+    )
+
+    search, stats = env.update(automatic=True)
+
+    assert env.zot.fulltext_keys() == []
+    assert records(search) <= {"ITEM0001", "ITEM0002"}
+    assert stats["extra_files_held"] == 2
+
+    env.forget_sync_version()
+    search, _stats = env.update()
+
+    assert {"SNAPSHOT", "NOTESTXT"} <= records(search)
+
+
 def test_a_snapshot_is_indexed_when_the_priority_prefers_html(env):
     env.set_priority(["html", "pdf", "other"])
     library(
