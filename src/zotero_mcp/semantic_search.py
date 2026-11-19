@@ -2733,10 +2733,10 @@ class ZoteroSemanticSearch:
         stamps_seen: dict[str, str] | None = None
 
         def hashed_stamps() -> dict[str, str]:
-            """The file stamps the hash cache last saw, read when first needed."""
+            """The file stamps the migration re-keyed passages at, read when first needed."""
             nonlocal stamps_seen
             if stamps_seen is None:
-                stamps_seen = file_hash.known_stamps(self.config_path)
+                stamps_seen = fulltext_cache.rekeyed_stamps(self.config_path)
             return stamps_seen
 
         def selected_keys(item: Any) -> list[str]:
@@ -3657,9 +3657,9 @@ class ZoteroSemanticSearch:
         automatic one ``"hold"``s the file. None is the normal path: not a
         passage-only key, passages missing, or a real change. ``stored`` is
         the metadata of the key's record, else its first passage; ``gap`` the
-        levels the index lacks for it. The file has changed when the hash
-        cache saw it (the migration hashes what it re-keys) under another
-        local stamp.
+        levels the index lacks for it. The file has changed when the stamp the
+        migration recorded at the re-key (``stamps``; not the hash cache, which
+        a stopped run may have updated) differs from its live local stamp.
         """
         if not stored or "chunk_index" not in stored:
             return None
@@ -4250,7 +4250,7 @@ class ZoteroSemanticSearch:
         def hashed_stamps() -> dict[str, str]:
             nonlocal stamps_seen
             if stamps_seen is None:
-                stamps_seen = file_hash.known_stamps(self.config_path)
+                stamps_seen = fulltext_cache.rekeyed_stamps(self.config_path)
             return stamps_seen
 
         # The digests of this run's files are written to the cache once.
