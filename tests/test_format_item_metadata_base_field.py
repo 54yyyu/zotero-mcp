@@ -9,40 +9,7 @@ lookup, so every one of these item types rendered as "# Untitled" even
 though the real title was present under its type-specific key.
 """
 
-import importlib.util
-import pathlib
-import sys
-from unittest.mock import MagicMock
-
-_SRC = pathlib.Path(__file__).parent.parent / "src" / "zotero_mcp"
-
-# Stub out heavy optional dependencies so client.py can be imported in
-# isolation; schema is loaded for real below, not stubbed.
-for _mod_name in (
-    "pyzotero",
-    "pyzotero.zotero",
-    "dotenv",
-    "fastmcp",
-    "mcp",
-    "mcp.server",
-    "zotero_mcp",
-    "zotero_mcp.utils",
-    "zotero_mcp._app",
-):
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = MagicMock()
-
-if "zotero_mcp.schema" not in sys.modules:
-    _schema_spec = importlib.util.spec_from_file_location("zotero_mcp.schema", _SRC / "schema.py")
-    _schema_mod = importlib.util.module_from_spec(_schema_spec)
-    sys.modules["zotero_mcp.schema"] = _schema_mod
-    _schema_spec.loader.exec_module(_schema_mod)
-
-_client_spec = importlib.util.spec_from_file_location("zotero_mcp.client", _SRC / "client.py")
-_client_mod = importlib.util.module_from_spec(_client_spec)
-sys.modules["zotero_mcp.client"] = _client_mod
-_client_spec.loader.exec_module(_client_mod)
-format_item_metadata = _client_mod.format_item_metadata
+from zotero_mcp.client import format_item_metadata
 
 
 def _make_item(item_type, title_field, title):

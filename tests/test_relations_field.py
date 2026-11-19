@@ -5,28 +5,7 @@ BibTeX output intentionally omits it — the `related` field is non-standard
 and would pollute citation databases.
 """
 
-import importlib.util
-import pathlib
-import sys
-from unittest.mock import MagicMock
-
-# Stub out heavy optional dependencies so client.py can be imported in isolation
-for _mod_name in (
-    "pyzotero", "pyzotero.zotero",
-    "dotenv", "fastmcp", "mcp", "mcp.server",
-    "zotero_mcp", "zotero_mcp.utils", "zotero_mcp._app",
-):
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = MagicMock()
-
-# Import client directly to avoid heavy optional dependencies (fastmcp etc.)
-_client_path = pathlib.Path(__file__).parent.parent / "src" / "zotero_mcp" / "client.py"
-_spec = importlib.util.spec_from_file_location("zotero_mcp.client", _client_path)
-_client_mod = importlib.util.module_from_spec(_spec)
-sys.modules["zotero_mcp.client"] = _client_mod
-_spec.loader.exec_module(_client_mod)
-format_item_metadata = _client_mod.format_item_metadata
-generate_bibtex = _client_mod.generate_bibtex
+from zotero_mcp.client import format_item_metadata, generate_bibtex
 
 
 def _make_item(relations=None, item_type="journalArticle", extra_data=None):
