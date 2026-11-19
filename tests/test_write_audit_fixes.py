@@ -130,3 +130,126 @@ def test_set_item_collections_skips_the_write_when_nothing_changes(monkeypatch):
 
     assert result.splitlines() == ["K0000000 already in OLDCOLL1", "K0000000 not in NEWCOLL1"]
     assert zot.batches == [] and zot.update_item_calls == []
+
+
+# --- adders act on what happened to the item, not on how the message begins ---
+
+
+def _doi_page_setup(monkeypatch):
+    """A page declaring a DOI CrossRef knows, in an empty library."""
+    from conftest import FakeZotero
+
+    from zotero_mcp.html_metadata import EmbeddedMetadata
+
+    zot = FakeZotero()
+    zot.items = lambda **kw: []
+    monkeypatch.setattr(_helpers, "_get_write_client", lambda ctx: (zot, zot))
+    meta = EmbeddedMetadata()
+    meta.title, meta.doi, meta.publication = "A Paper", "10.1234/abc", "J"
+    meta.authors = [("A", "B")]
+    monkeypatch.setattr(write, "_fetch_embedded_metadata", lambda url, ctx: (meta, ""))
+    monkeypatch.setattr(write, "_fetch_one_doi_metadata", lambda doi, ctx: (
+        "fetched", {"type": "journal-article", "title": ["A Paper"], "DOI": doi}))
+    return zot
+
+
+def test_url_with_a_doi_and_a_required_pdf_creates_one_item(monkeypatch):
+    """add_by_doi answered "Error: item created (key: ...) but attach_mode=
+    'required' found no open-access PDF"; add_by_url read the leading
+    "Error" as "nothing was created" and added the page a second time."""
+    zot = _doi_page_setup(monkeypatch)
+
+    def no_pdf(*args, **kwargs):
+        raise _helpers.OaPdfRequiredError("no open-access PDF found")
+
+    monkeypatch.setattr(_helpers, "_try_attach_oa_pdf", no_pdf)
+
+    result = write.add_by_url(url="https://publisher.example.com/a/1",
+                              attach_mode="required", ctx=DummyContext())
+
+    assert len(zot.created) == 1
+    assert result.startswith("Error: item created (key: KEY0000)")
+    assert (result.key, result.status) == ("KEY0000", "failed")
+
+
+def test_add_results_say_what_became_of_the_item(monkeypatch):
+    zot = _doi_page_setup(monkeypatch)
+    monkeypatch.setattr(_helpers, "_try_attach_oa_pdf", lambda *a, **k: "skipped")
+
+    created = write.add_by_doi(doi="10.1234/abc", ctx=DummyContext())
+    assert (created.key, created.status) == ("KEY0000", "created")
+    assert created.startswith("Successfully added: **A Paper**")
+
+    zot.items = lambda **kw: [{"key": "EXIST001", "version": 1, "data": {
+        "itemType": "journalArticle", "title": "A Paper", "DOI": "10.1234/ABC"}}]
+    reused = write.add_by_doi(doi="10.1234/abc", if_exists="skip", ctx=DummyContext())
+    assert (reused.key, reused.status) == ("EXIST001", "reused")
+
+    monkeypatch.setattr(write, "_fetch_one_doi_metadata", lambda doi, ctx: (
+        "final", f"DOI not found on CrossRef: {doi}"))
+    zot.items = lambda **kw: []
+    missing = write.add_by_doi(doi="10.1234/abc", ctx=DummyContext())
+    assert getattr(missing, "key", None) is None
+
+
+# --- add_from_file ---
+
+
+def _file_setup(monkeypatch, tmp_path, metadata, first_page):
+    from test_add_from_file import FakeFitzDocument, FakeZoteroForFile, _patch_fitz
+
+    zot = FakeZoteroForFile()
+    monkeypatch.setattr(_helpers, "_get_write_client", lambda ctx: (zot, zot))
+    _patch_fitz(monkeypatch, FakeFitzDocument(metadata=metadata, first_page_text=first_page))
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    return zot, str(pdf)
+
+
+def test_add_from_file_does_not_guess_between_two_dois(monkeypatch, tmp_path):
+    """A PDF cut from a journal spread names its neighbour's DOI too; the
+    first one on the page used to be taken as the file's own."""
+    zot, pdf = _file_setup(monkeypatch, tmp_path, {}, (
+        "...end of the previous article. https://doi.org/10.1000/previous\n"
+        "A New Article\nhttps://doi.org/10.1000/this-one\n"))
+    monkeypatch.setattr(write, "add_by_doi", lambda **kw: (_ for _ in ()).throw(
+        AssertionError("looked up a guessed DOI")))
+
+    result = write.add_from_file(file_path=pdf, ctx=DummyContext())
+
+    assert zot.created[0]["title"] == "paper.pdf"
+    assert "DOI not used (ambiguous: 10.1000/previous, 10.1000/this-one)" in result
+    assert "File attached: paper.pdf" in result
+
+
+def test_add_from_file_does_not_hold_the_api_lock_during_the_doi_lookup(monkeypatch, tmp_path):
+    """The lookup asks CrossRef; with the lock held across it every other
+    tool waited on a third party."""
+    import threading
+
+    from zotero_mcp import client
+
+    zot, pdf = _file_setup(monkeypatch, tmp_path, {"subject": "doi:10.1234/abc"}, "")
+    seen = {}
+
+    def add_by_doi(**kwargs):
+        def probe():
+            seen["free"] = client._zotero_api_lock.acquire(blocking=False)
+            if seen["free"]:
+                client._zotero_api_lock.release()
+
+        t = threading.Thread(target=probe)
+        t.start()
+        t.join()
+        seen.update(kwargs)
+        return write._AddResult("Already in library: **T**", "EXIST001", "reused")
+
+    monkeypatch.setattr(write, "add_by_doi", add_by_doi)
+
+    result = write.add_from_file(file_path=pdf, ctx=DummyContext())
+
+    assert seen["free"] is True
+    assert seen["doi"] == "10.1234/abc" and seen["attach_mode"] == "none"
+    # The outcome is read off the result, not parsed back out of its text.
+    assert zot.attachments[0]["parentid"] == "EXIST001"
+    assert result.startswith("Item key: `EXIST001`\nDOI: 10.1234/abc\nFile attached: paper.pdf")

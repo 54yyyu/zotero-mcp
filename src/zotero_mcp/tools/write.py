@@ -182,6 +182,24 @@ def _url_dedup_key(tok: str):
     return (tok or "").strip() or None
 
 
+class _AddResult(str):
+    """An adder's rendered result, which also says what became of the item.
+
+    ``key`` is the item the call left in the library (created or reused), or
+    None when there is none; ``status`` is ``created``, ``reused`` or
+    ``failed``. A caller that has to act on the outcome reads these instead
+    of the wording: ``Error: item created (key: ...) but attach_mode=
+    'required' found no open-access PDF`` begins like a failure, and
+    add_by_url, taking it for one, created the item a second time.
+    """
+
+    def __new__(cls, text, key=None, status="failed"):
+        self = super().__new__(cls, text)
+        self.key = key
+        self.status = status
+        return self
+
+
 def _duplicate_of_message(kind: str, position: int) -> str:
     """Rendered in place of a result for a token repeated within one call."""
     return (f"Same {kind} as entry {position} in this request — "
@@ -325,7 +343,7 @@ def _converge_existing_item(write_zot, item, coll_keys, tags, ctx) -> dict:
 
 
 def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
-                          matched_by, ctx) -> str:
+                          matched_by, ctx) -> _AddResult:
     """Render the if_exists='file'/'skip' outcome for a single-item add tool.
 
     The report keeps the ``Item key: `KEY``` line that callers (and
@@ -372,7 +390,8 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
         header += f"Citation key: `{citation_key}`\n"
 
     if if_exists == "skip":
-        return header + "No changes made (if_exists='skip')." + note
+        return _AddResult(header + "No changes made (if_exists='skip')." + note,
+                          item_key, "reused")
 
     summary = _converge_existing_item(write_zot, item, coll_keys, tags, ctx)
 
@@ -394,7 +413,7 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
     if not lines:
         lines.append("Nothing to change — item already in the requested state.")
 
-    return header + "\n".join(lines) + note
+    return _AddResult(header + "\n".join(lines) + note, item_key, "reused")
 
 
 def _normalize_tag_selector(tag):
@@ -1985,18 +2004,18 @@ def _build_one_doi_item_data(cr: dict, normalized: str, template_fn, tags, coll_
 
 
 def _render_doi_create_result(cr_result: dict, zot_type: str, normalized: str,
-                              coll_keys: list[str], type_note: str = "") -> str:
+                              coll_keys: list[str], type_note: str = "") -> _AddResult:
     """Render one _create_and_attach_batch result as add_by_doi's per-item
     text block — the same shape the old single-item worker produced before
     the metadata-resolution/creation split (#A4)."""
     if not cr_result["ok"]:
         if cr_result["key"] is not None:
             # Item was created; only the PDF requirement failed.
-            return f"Error: {cr_result['error']}"
-        return f"Failed to create item: {cr_result['error']}"
+            return _AddResult(f"Error: {cr_result['error']}", cr_result["key"])
+        return _AddResult(f"Failed to create item: {cr_result['error']}")
 
     collections_status = _collections_status(coll_keys, cr_result["collections_failed"])
-    return (
+    return _AddResult(
         f"Successfully added: **{cr_result['title']}**\n\n"
         f"Item key: `{cr_result['key']}`\n"
         f"Type: {zot_type}\n"
@@ -2005,7 +2024,8 @@ def _render_doi_create_result(cr_result: dict, zot_type: str, normalized: str,
         f"PDF: {cr_result['pdf_status']}\n"
         f"{type_note}\n"
         "_Note: To include this item in semantic search, run "
-        "zotero_update_search_database._"
+        "zotero_update_search_database._",
+        cr_result["key"], "created",
     )
 
 
@@ -2544,7 +2564,10 @@ def add_by_url(
                 supplemental=embedded,
                 ctx=ctx,
             )
-            if not doi_result.startswith(("DOI not found", "Error", "Failed")):
+            # Decided on whether an item now exists, not on how the message
+            # begins: "Error: item created ... found no open-access PDF"
+            # used to fall through here and create the item a second time.
+            if getattr(doi_result, "key", None):
                 return doi_result
             ctx.info(
                 f"DOI route failed ({doi_result.splitlines()[0]}); "
@@ -2618,6 +2641,75 @@ def add_by_url(
         return f"Error adding by URL: {_helpers.format_zotero_error(e)}"
 
 
+def _creator_from_display_name(name: str) -> dict:
+    """An author from a name given as one string ("First Middle Last"): the
+    last word is the surname, and a one-word name stays a single field."""
+    parts = name.rsplit(" ", 1)
+    if len(parts) == 2:
+        return {"creatorType": "author", "firstName": parts[0], "lastName": parts[1]}
+    return {"creatorType": "author", "name": name}
+
+
+def _parse_arxiv_atom(text: str, arxiv_id: str):
+    """``(title, creators, abstract, date)`` from an arXiv API Atom response,
+    or the error message to return when it holds no such paper."""
+    root = ET.fromstring(text)
+    ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
+
+    entries = root.findall("atom:entry", ns)
+    if not entries:
+        return f"No arXiv paper found for ID: {arxiv_id}"
+
+    entry = entries[0]
+
+    # Check for error response
+    id_elem = entry.find("atom:id", ns)
+    if id_elem is not None and "api/errors" in (id_elem.text or ""):
+        return f"arXiv API error for ID: {arxiv_id}"
+
+    title = (entry.findtext("atom:title", "", ns) or "").strip().replace("\n", " ")
+    abstract = (entry.findtext("atom:summary", "", ns) or "").strip()
+    published = (entry.findtext("atom:published", "", ns) or "")[:10]
+
+    authors = []
+    for author_elem in entry.findall("atom:author", ns):
+        name = (author_elem.findtext("atom:name", "", ns) or "").strip()
+        if name:
+            authors.append(_creator_from_display_name(name))
+    return title, authors, abstract, published
+
+
+def _arxiv_metadata_from_doi(arxiv_id: str, ctx):
+    """The same four values from the DataCite record of the arXiv DOI, read
+    as CSL JSON through doi.org, or None when that fails too.
+
+    The fallback used to ask CrossRef, which has never held these: arXiv's
+    DOIs (10.48550/arXiv.<id>) are DataCite's, so it answered "not found"
+    every time arXiv itself was down.
+    """
+    try:
+        resp = requests.get(
+            f"https://doi.org/10.48550/arXiv.{arxiv_id}",
+            headers={"Accept": "application/vnd.citationstyles.csl+json",
+                     "User-Agent": _utils.USER_AGENT},
+            timeout=20,
+        )
+        resp.raise_for_status()
+        csl = resp.json()
+        title = " ".join(str(csl.get("title") or "").split())
+        if not title:
+            return None
+        return (
+            title,
+            _citation_import._csl_names_to_creators(csl.get("author"), "author"),
+            str(csl.get("abstract") or "").strip(),
+            _citation_import._format_csl_date(csl.get("issued")),
+        )
+    except Exception as e:  # noqa: BLE001 - a fallback must not raise
+        ctx.info(f"DataCite fallback failed: {e}")
+        return None
+
+
 def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto",
                   read_zot=None, if_exists="file",
                   create_missing_collections=False):
@@ -2626,11 +2718,10 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
     arXiv (export.arxiv.org) periodically sheds load — rate-limiting (429),
     returning 5xx, or timing out outright. This helper degrades gracefully:
     it retries transient failures with backoff, and if arXiv stays
-    unreachable it falls back to CrossRef via the arXiv DOI
+    unreachable it falls back to the DataCite record of the arXiv DOI
     (10.48550/arXiv.{id}), which serves the same metadata from independent
-    infrastructure. The fallback is best-effort — CrossRef may also lack a
-    very recent preprint — so a clear, actionable message is returned when
-    both routes fail, never a bare timeout.
+    infrastructure. The fallback is best-effort, so a clear, actionable
+    message is returned when both routes fail, never a bare timeout.
 
     NOT decorated with @with_zotero_api_lock: the lock only needs to cover
     the Zotero API calls, taken below in short scoped blocks, so a slow
@@ -2692,78 +2783,30 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
             continue
         break
 
-    # arXiv exhausted its retries — fall back to CrossRef (independent infra).
+    # arXiv exhausted its retries: ask DataCite, which registers arXiv's DOIs
+    # and serves the same record from infrastructure of its own.
     if resp is None or resp.status_code == 429 or resp.status_code >= 500:
         ctx.info(
             f"arXiv unreachable after retries ({last_error}); "
-            f"falling back to CrossRef via the arXiv DOI."
+            "falling back to the arXiv DOI's DataCite record."
         )
-        arxiv_doi = f"10.48550/arXiv.{arxiv_id}"
-        try:
-            result = add_by_doi(
-                doi=arxiv_doi,
-                collections=coll_keys,
-                tags=tags,
-                attach_mode=attach_mode,
-                if_exists=if_exists,
-                ctx=ctx,
+        meta = _arxiv_metadata_from_doi(arxiv_id, ctx)
+        if meta is None:
+            return (
+                f"arXiv is currently unreachable (last error: {last_error}) and the "
+                f"DataCite fallback (DOI 10.48550/arXiv.{arxiv_id}) did not resolve "
+                f"it — this is often a transient arXiv overload. Please retry "
+                f"shortly. (arXiv ID: {arxiv_id})"
             )
-        except Exception as e:  # noqa: BLE001 — fallback must not raise
-            result = None
-            ctx.info(f"CrossRef fallback errored: {e}")
-        # add_by_doi returns a human string; treat "not found"/"Error" as a miss.
-        #
-        # Pre-existing fragility, unrelated to arxiv_doi always being a
-        # single DOI (so add_by_doi's batch path above never triggers here):
-        # this sniffs the *rendered* message rather than a structured
-        # result, so it silently breaks if either prefix's wording ever
-        # changes. The robust fix is the same one noted in add_by_doi's
-        # batch comment — a single-item worker that returns a dict with an
-        # explicit ok/error field, checked here instead of string-matching.
-        if result and not result.startswith(("DOI not found", "Error")):
-            return result
-        return (
-            f"arXiv is currently unreachable (last error: {last_error}) and the "
-            f"CrossRef fallback (DOI {arxiv_doi}) did not resolve it — this is "
-            f"often a transient arXiv overload. Please retry shortly. "
-            f"(arXiv ID: {arxiv_id})"
-        )
-    try:
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        return f"arXiv API error for {arxiv_id}: {e}"
-
-    root = ET.fromstring(resp.text)
-    ns = {"atom": "http://www.w3.org/2005/Atom", "arxiv": "http://arxiv.org/schemas/atom"}
-
-    entries = root.findall("atom:entry", ns)
-    if not entries:
-        return f"No arXiv paper found for ID: {arxiv_id}"
-
-    entry = entries[0]
-
-    # Check for error response
-    id_elem = entry.find("atom:id", ns)
-    if id_elem is not None and "api/errors" in (id_elem.text or ""):
-        return f"arXiv API error for ID: {arxiv_id}"
-
-    title = (entry.findtext("atom:title", "", ns) or "").strip().replace("\n", " ")
-    abstract = (entry.findtext("atom:summary", "", ns) or "").strip()
-    published = (entry.findtext("atom:published", "", ns) or "")[:10]
-
-    authors = []
-    for author_elem in entry.findall("atom:author", ns):
-        name = (author_elem.findtext("atom:name", "", ns) or "").strip()
-        if name:
-            parts = name.rsplit(" ", 1)
-            if len(parts) == 2:
-                authors.append({
-                    "creatorType": "author",
-                    "firstName": parts[0],
-                    "lastName": parts[1],
-                })
-            else:
-                authors.append({"creatorType": "author", "name": name})
+    else:
+        try:
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            return f"arXiv API error for {arxiv_id}: {e}"
+        meta = _parse_arxiv_atom(resp.text, arxiv_id)
+        if isinstance(meta, str):
+            return meta
+    title, authors, abstract, published = meta
 
     # Serialize check-and-create for this arXiv ID (#486) — see add_by_url's
     # note; the metadata fetch above sits between the first check and here.
@@ -2928,15 +2971,7 @@ def _lookup_isbn_openlibrary(isbn, ctx):
             name = (author.get("name") or "").strip()
             if not name:
                 continue
-            parts = name.rsplit(" ", 1)
-            if len(parts) == 2:
-                creators.append({
-                    "creatorType": "author",
-                    "firstName": parts[0],
-                    "lastName": parts[1],
-                })
-            else:
-                creators.append({"creatorType": "author", "name": name})
+            creators.append(_creator_from_display_name(name))
 
         publisher = ""
         publishers = record.get("publishers") or []
@@ -2993,15 +3028,7 @@ def _lookup_isbn_google_books(isbn, ctx):
             name = (name or "").strip()
             if not name:
                 continue
-            parts = name.rsplit(" ", 1)
-            if len(parts) == 2:
-                creators.append({
-                    "creatorType": "author",
-                    "firstName": parts[0],
-                    "lastName": parts[1],
-                })
-            else:
-                creators.append({"creatorType": "author", "name": name})
+            creators.append(_creator_from_display_name(name))
 
         return {
             "source": "Google Books",
@@ -4829,7 +4856,22 @@ def get_pdf_outline(
         return f"Error extracting PDF outline: {_helpers.format_zotero_error(e)}"
 
 
-@with_zotero_api_lock
+def _checked_file_path(file_path: str, *, name_resolved: bool = True) -> str:
+    """The real path of a local file a tool was handed, or ValueError.
+
+    The symlink test runs before resolving, the existence test after, so
+    ``..`` components are followed but a link is never read through.
+    """
+    if os.path.islink(file_path):
+        raise ValueError("Symlinks are not allowed for security reasons.")
+    if not os.path.isabs(file_path):
+        raise ValueError("file_path must be an absolute path.")
+    resolved = os.path.realpath(file_path)
+    if not os.path.isfile(resolved):
+        raise ValueError(f"File not found: {resolved if name_resolved else file_path}")
+    return resolved
+
+
 def add_from_file(
     file_path: str,
     title: str | None = None,
@@ -4841,6 +4883,10 @@ def add_from_file(
     *,
     ctx: Context
 ) -> str:
+    # NOT decorated with @with_zotero_api_lock, for add_by_doi's reason: the
+    # DOI route below asks CrossRef, and holding the lock across that made
+    # every other tool wait on a third party. It is taken around the Zotero
+    # API calls only.
     try:
         read_zot, write_zot = _helpers._get_write_client(ctx)
     except ValueError as e:
@@ -4849,23 +4895,19 @@ def add_from_file(
     try:
         if if_exists not in _IF_EXISTS_VALUES:
             return f"Error: if_exists must be one of {_IF_EXISTS_VALUES}."
-        # Path validation — check symlink BEFORE resolving
-        if os.path.islink(file_path):
-            return "Error: Symlinks are not allowed for security reasons."
-        if not os.path.isabs(file_path):
-            return "Error: file_path must be an absolute path."
-        # Resolve ".." components after symlink check
-        file_path = os.path.realpath(file_path)
-        if not os.path.isfile(file_path):
-            return f"Error: File not found: {file_path}"
-
         try:
-            coll_keys = _resolve_collections_arg(
-                read_zot, collections, ctx,
-                create_missing=create_missing_collections, write_zot=write_zot,
-            )
+            file_path = _checked_file_path(file_path)
         except ValueError as e:
             return f"Error: {e}"
+
+        with zotero_api_lock():
+            try:
+                coll_keys = _resolve_collections_arg(
+                    read_zot, collections, ctx,
+                    create_missing=create_missing_collections, write_zot=write_zot,
+                )
+            except ValueError as e:
+                return f"Error: {e}"
 
         ext = os.path.splitext(file_path)[1].lower()
         allowed_exts = _FILE_IMPORT_EXTS
@@ -4874,39 +4916,26 @@ def add_from_file(
 
         ctx.info(f"Adding file: {file_path}")
 
-        # Try DOI extraction from PDF
+        # The PDF's own DOI, when it names exactly one. A PDF cut from a
+        # journal spread also carries its neighbour's, and taking the first
+        # one on the page filed the file under the wrong paper; doi_from_pdf
+        # answers only when the DOI is unambiguous.
         extracted_doi = None
+        doi_note = ""
         if ext == ".pdf":
             try:
-                from zotero_mcp._pymupdf import fitz
-                doc = fitz.open(file_path)
+                from zotero_mcp.pdf_utils import doi_from_pdf
 
-                # Check metadata
-                meta = doc.metadata or {}
-                for field in ("subject", "keywords", "title"):
-                    candidate = meta.get(field, "")
-                    if candidate:
-                        found_doi = _helpers._normalize_doi(candidate)
-                        if found_doi:
-                            extracted_doi = found_doi
-                            break
-
-                # Scan first page text
-                if not extracted_doi and doc.page_count > 0:
-                    text = doc[0].get_text()[:3000]
-                    m = re.search(r'10\.\d{4,9}/[^\s]+', text)
-                    if m:
-                        found_doi = _helpers._normalize_doi(m.group(0))
-                        if found_doi:
-                            extracted_doi = found_doi
-
-                doc.close()
+                extracted_doi, found = doi_from_pdf(file_path)
+                if not extracted_doi and found.startswith("ambiguous"):
+                    doi_note = f"DOI not used ({found}); metadata was not looked up\n"
             except Exception as e:
                 ctx.info(f"DOI extraction failed (non-fatal): {e}")
 
         # Create the metadata item. With if_exists='file' and a known DOI,
         # add_by_doi reuses the existing item — the attachment below then
         # lands on it instead of on a fresh duplicate.
+        result_msg = None
         if extracted_doi:
             ctx.info(f"Found DOI: {extracted_doi}")
             # Directory imports are loops of this, so it takes the batch
@@ -4915,35 +4944,28 @@ def add_from_file(
                                     tags=tags, if_exists=if_exists,
                                     attach_mode="none",
                                     page_check="thin_only", ctx=ctx)
-            # Extract item key from result
-            key_match = re.search(r'Item key: `([^`]+)`', result_msg)
-            if key_match:
-                parent_key = key_match.group(1)
-            else:
+            parent_key = getattr(result_msg, "key", None)
+            if not parent_key:
                 return f"DOI lookup succeeded but couldn't extract item key.\n\n{result_msg}"
         else:
             # Create a basic item
-            template = _helpers.item_template_for(write_zot, item_type)
-            template["title"] = title or os.path.basename(file_path)
+            with zotero_api_lock():
+                template = _helpers.item_template_for(write_zot, item_type)
+                template["title"] = title or os.path.basename(file_path)
+                _apply_caller_tags_and_collections(template, tags, coll_keys)
 
-            tag_list = _helpers._normalize_str_list_input(tags, "tags")
-            if tag_list:
-                template["tags"] = [{"tag": t} for t in tag_list]
-            if coll_keys:
-                template["collections"] = coll_keys
+                result = write_zot.create_items([template])
+                if isinstance(result, dict) and result.get("success"):
+                    parent_key = next(iter(result["success"].values()))
+                    missing = _helpers.ensure_collection_membership(
+                        write_zot, parent_key, coll_keys, ctx=ctx
+                    )
+                    if missing:
+                        ctx.warning(f"Failed to file {parent_key} in {missing}")
+                else:
+                    return f"Failed to create item: {result}"
 
-            result = write_zot.create_items([template])
-            if isinstance(result, dict) and result.get("success"):
-                parent_key = next(iter(result["success"].values()))
-                missing = _helpers.ensure_collection_membership(
-                    write_zot, parent_key, coll_keys, ctx=ctx
-                )
-                if missing:
-                    ctx.warning(f"Failed to file {parent_key} in {missing}")
-            else:
-                return f"Failed to create item: {result}"
-
-        item_reused = bool(extracted_doi) and result_msg.startswith("Already in library")
+        item_reused = getattr(result_msg, "status", None) == "reused"
         if item_reused and if_exists == "skip":
             return result_msg + "\n\nFile NOT attached (if_exists='skip')."
 
@@ -4952,8 +4974,8 @@ def add_from_file(
         # the command must converge, not accumulate duplicate attachments.
         try:
             display_name = os.path.basename(file_path)
-            if item_reused:
-                if _helpers._attachment_filename_exists(
+            with zotero_api_lock():
+                if item_reused and _helpers._attachment_filename_exists(
                     write_zot, parent_key, display_name
                 ):
                     return (
@@ -4963,17 +4985,7 @@ def add_from_file(
                         "zotero_update_search_database._"
                     )
 
-            webdav_suffix = _helpers._webdav_first_attach(
-                write_zot,
-                display_name,
-                file_path,
-                parent_key,
-                ctx,
-                content_type=_helpers._guess_content_type(display_name),
-            )
-            attach_ok = True
-            if webdav_suffix is None:
-                attach_ok, webdav_suffix, _key = _helpers._attach_and_verify(
+                webdav_suffix = _helpers._webdav_first_attach(
                     write_zot,
                     display_name,
                     file_path,
@@ -4981,22 +4993,36 @@ def add_from_file(
                     ctx,
                     content_type=_helpers._guess_content_type(display_name),
                 )
+                attach_ok = True
+                if webdav_suffix is None:
+                    attach_ok, webdav_suffix, _key = _helpers._attach_and_verify(
+                        write_zot,
+                        display_name,
+                        file_path,
+                        parent_key,
+                        ctx,
+                        content_type=_helpers._guess_content_type(display_name),
+                    )
             attach_info = (
                 f"File attached: {display_name}" + webdav_suffix
                 if attach_ok
                 else f"Item created but file attachment FAILED: {webdav_suffix}"
             )
+        except ZoteroApiBusyError:
+            raise
         except Exception as e:
             attach_info = f"Item created but file attachment failed: {e}"
 
         return (
             f"Item key: `{parent_key}`\n"
-            f"{'DOI: ' + extracted_doi + chr(10) if extracted_doi else ''}"
+            f"{'DOI: ' + extracted_doi + chr(10) if extracted_doi else doi_note}"
             f"{attach_info}\n\n"
             "_Note: To include this item in semantic search, run "
             "zotero_update_search_database._"
         )
 
+    except ZoteroApiBusyError:
+        raise
     except Exception as e:
         ctx.error(f"Error adding from file: {e}")
         return f"Error adding from file: {_helpers.format_zotero_error(e)}"
@@ -5184,14 +5210,10 @@ def attach_file(
             filename = os.path.basename(filename.strip())
 
         if file_path:
-            # Path validation — check symlink BEFORE resolving
-            if os.path.islink(file_path):
-                return "Error: Symlinks are not allowed for security reasons."
-            if not os.path.isabs(file_path):
-                return "Error: file_path must be an absolute path."
-            file_path = os.path.realpath(file_path)
-            if not os.path.isfile(file_path):
-                return f"Error: File not found: {file_path}"
+            try:
+                file_path = _checked_file_path(file_path)
+            except ValueError as e:
+                return f"Error: {e}"
             ext = os.path.splitext(file_path)[1].lower()
             if ext == ".lnk":
                 return "Error: Windows shortcuts (.lnk) cannot be attached."
@@ -5557,13 +5579,7 @@ def _read_citation_file(file_path: str, allowed_exts: set[str]) -> str:
 
     Raises ValueError on any check failure. Returns the file contents.
     """
-    if os.path.islink(file_path):
-        raise ValueError("Symlinks are not allowed for security reasons.")
-    if not os.path.isabs(file_path):
-        raise ValueError("file_path must be an absolute path.")
-    resolved = os.path.realpath(file_path)
-    if not os.path.isfile(resolved):
-        raise ValueError(f"File not found: {file_path}")
+    resolved = _checked_file_path(file_path, name_resolved=False)
 
     ext = os.path.splitext(resolved)[1].lower()
     if ext not in allowed_exts:
