@@ -340,3 +340,17 @@ def test_a_stuck_worker_cannot_hang_the_pool_shutdown(files, monkeypatch):
 
 def test_the_pool_never_forks_a_threaded_parent():
     assert local_db._pool_context() is None or local_db._pool_context().get_start_method() != "fork"
+
+
+def test_the_pool_uses_the_platform_default_without_forkserver(monkeypatch):
+    import multiprocessing
+
+    monkeypatch.setattr(multiprocessing, "get_all_start_methods", lambda: ["spawn"])
+    assert local_db._pool_context() is None
+
+
+def test_the_pool_uses_the_platform_default_when_frozen(monkeypatch):
+    import sys
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert local_db._pool_context() is None
