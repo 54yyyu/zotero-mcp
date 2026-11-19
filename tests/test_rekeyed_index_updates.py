@@ -25,6 +25,7 @@ if sys.version_info >= (3, 14):
 if importlib.util.find_spec("chromadb") is None:
     pytest.skip("chromadb not installed", allow_module_level=True)
 
+from _fresh_process import as_fresh_process  # noqa: E402
 from _scan_fakes import target  # noqa: E402
 from chromadb.api.models.CollectionCommon import CollectionCommon  # noqa: E402
 from test_item_keyed_local_scan import DATE, NAME, FakeZotero, Item, LibReader  # noqa: E402
@@ -107,7 +108,9 @@ class World:
         )
 
     def migrate(self, reader):
-        return migrate_index(self.config, sources=LocalSources(reader, self.config), **QUIET)
+        result = migrate_index(self.config, sources=LocalSources(reader, self.config), **QUIET)
+        as_fresh_process()
+        return result
 
     def search(self, reader, as_migration_source=True):
         self.monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda *a, **kw: reader)
@@ -127,9 +130,11 @@ class World:
         reader.extracted.clear()
         stats = search.update_database(extract_fulltext=True, **kwargs)
         assert stats.get("error") is None, stats
+        as_fresh_process(search)
         return search, stats
 
     def stored(self, name):
+        as_fresh_process()
         client = ChromaClient(collection_name=NAME, persist_directory=self.directory)
         got = client.client.get_collection(name).get(include=["embeddings", "metadatas"])
         return {
