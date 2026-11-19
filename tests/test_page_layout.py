@@ -749,3 +749,103 @@ class TestGetPageLayoutTool:
         assert "Error" not in result
         assert "1 region" in result
         assert "Figure 1" in result
+
+
+# ---------------------------------------------------------------------------
+# Pages with /Rotate
+# ---------------------------------------------------------------------------
+
+class TestRotatedPages:
+    """A box must describe the page as displayed, which is what `rect` takes."""
+
+    IMAGE = (60, 80, 360, 300)       # PyMuPDF page space of the unrotated 600 x 800 page
+    DRAWING = (380, 500, 560, 700)
+
+    def _page(self, tmp_path, rotation):
+        import fitz
+
+        doc = fitz.open()
+        page = doc.new_page(width=600, height=800)
+        page.insert_image(fitz.Rect(*self.IMAGE), stream=_gray_image_bytes(), keep_proportion=False)
+        shape = page.new_shape()
+        shape.draw_rect(fitz.Rect(*self.DRAWING))
+        shape.draw_circle((470, 600), 60)
+        shape.finish(color=(0, 0, 1), fill=(0.8, 0.8, 1))
+        shape.commit()
+        page.insert_text((60, 760), "Body text so that the page is not taken for a scan.", fontsize=10)
+        page.set_rotation(rotation)
+        return _save_pdf(doc, str(tmp_path), f"rotated{rotation}.pdf")
+
+    @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+    def test_a_box_written_from_a_region_lands_on_the_region(self, tmp_path, rotation):
+        import fitz
+
+        from zotero_mcp.pdf_utils import build_area_position_data
+
+        path = self._page(tmp_path, rotation)
+        result = detect_page_regions(path, 1)
+        by_source = {region["source"]: region["bbox"] for region in result["regions"]}
+        assert set(by_source) == {"image", "drawing"}, result
+
+        with fitz.open(path) as doc:
+            for source, (x0, y0, x1, y1) in (("image", self.IMAGE), ("drawing", self.DRAWING)):
+                # the annotation Zotero would store, in PDF points from the bottom-left
+                stored = build_area_position_data(doc, 1, *by_source[source])["rects"][0]
+                assert stored == pytest.approx([x0, 800 - y1, x1, 800 - y0], abs=3), (source, rotation)
+
+    def test_a_ruled_table_on_a_turned_page_is_found(self, tmp_path):
+        """Three rules that are horizontal on the page as displayed are
+        vertical strokes in the page's own frame."""
+        import fitz
+
+        doc = fitz.open()
+        page = doc.new_page(width=600, height=800)
+        # Displayed (X, Y) on the 800 x 600 view is (800 - y, x) of the page's frame.
+        for shown_y in (100, 140, 180):
+            page.draw_line((shown_y, 300), (shown_y, 700), width=0.8)   # displayed X 100..500
+        for shown_y in (120, 160):
+            page.insert_text((shown_y - 3, 600), "ab", fontsize=6)
+            page.insert_text((shown_y - 3, 450), "cd", fontsize=6)
+        page.set_rotation(90)
+        path = _save_pdf(doc, str(tmp_path), "ruled.pdf")
+
+        result = detect_page_regions(path, 1)
+        tables = [r["bbox"] for r in result["regions"] if r["source"] == "table"]
+        assert len(tables) == 1, result
+        assert tables[0] == pytest.approx([100 / 800, 100 / 600, 400 / 800, 80 / 600], abs=0.01)
+
+    def test_rect_auto_considers_figure_regions_on_a_turned_page(self, tmp_path):
+        """They used to be left out there, their boxes being in the wrong frame."""
+        import fitz
+
+        from zotero_mcp.pdf_layout import auto_box
+
+        path = self._page(tmp_path, 90)
+        with fitz.open(path) as doc:
+            regions = {r["source"]: r["bbox"] for r in detect_page_regions(doc, 1)["regions"]}
+            found = auto_box(doc, 1, near=regions["image"])
+        # The figure has no caption, so it is only a low-confidence match,
+        # but it is the match: before, nothing overlapped the hint.
+        assert "image is a low-confidence match" in found["note"]
+
+
+def test_the_drawings_of_a_page_are_read_once(tmp_path, monkeypatch):
+    """Detection read them for the clusters, for the tables and for the panels."""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    for letter, x in (("A", 60), ("B", 320)):
+        page.draw_rect(fitz.Rect(x + 10, 114, x + 210, 250), width=1)
+        page.draw_line((x + 10, 200), (x + 210, 160), width=2)
+        page.insert_text((x, 109), letter, fontsize=9, fontname="hebo")
+    path = _save_pdf(doc, str(tmp_path), "panels.pdf")
+
+    calls = []
+    original = fitz.Page.get_drawings
+    monkeypatch.setattr(fitz.Page, "get_drawings",
+                        lambda self, *args, **kwargs: (calls.append(1), original(self, *args, **kwargs))[1])
+    result = detect_page_regions(path, 1, panels=True)
+    assert [r["caption_label"] for r in result["regions"] if r["source"] == "panel"] == ["Panel A", "Panel B"]
+    # ours, and the one find_tables() makes for itself on some PyMuPDF versions
+    assert len(calls) <= 2
