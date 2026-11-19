@@ -4861,8 +4861,29 @@ class ZoteroSemanticSearch:
                     continue
                 by_key[parent] = owner
                 owners.append(owner)
-            owner["_attachments_changed"] = True
+            if self._changes_selection(row, owner):
+                owner["_attachments_changed"] = True
         return owners, unresolved
+
+    def _changes_selection(self, row: dict[str, Any], owner: dict[str, Any]) -> bool:
+        """Whether a changed attachment changes what its parent's legacy records stand for.
+
+        A legacy record fingerprints the item's files by key
+        (``attachment_keys``). A file that is new, or trashed, differs from
+        it; a rename, a retitle or a move (ZotMoov) of a file already in it
+        does not, and re-embedding the item for that would cost money for the
+        same text, as the local scan's check (``_legacy_changed``) already
+        knows. Without a fingerprint to compare, the file counts.
+        """
+        key = self._row_key(row)
+        if (row.get("data") or {}).get("deleted"):
+            return True
+        stored = self._stored_metadata((owner or {}).get("key") or "")
+        legacy = self._legacy_metadata((owner or {}).get("key") or "", stored) if stored else None
+        known = (legacy or {}).get("attachment_keys")
+        if known is None:
+            return True
+        return key not in {k for k in str(known).split(",") if k}
 
     def _verify_local_snapshot_version(self, target_sync_version: int) -> int | None:
         """Decide whether the local sqlite snapshot supports promoting the
