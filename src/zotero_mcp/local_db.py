@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import fulltext_cache
+from . import schema as _schema
 from . import search_semantics as _semantics
 from .config import load_config
 from .extract import (
@@ -1059,7 +1060,13 @@ def _row_to_full_api_item(
     }
 
     for name, value in fields.items():
-        data[name] = _api_date_field(value) if name == "date" else value
+        # Every field on the `date` base field is stored multipart, not only
+        # the one named "date": a case's dateDecided, a patent's issueDate.
+        if name == "accessDate":
+            value = _api_timestamp(value)
+        elif name == "date" or _schema.base_field_of(item_type, name) == "date":
+            value = _api_date_field(value)
+        data[name] = value
 
     if item_type not in ("attachment", "note", "annotation"):
         data["creators"] = creators
@@ -2762,30 +2769,49 @@ class LocalZoteroReader:
         if variants and not folded:
             return []
         norm = _semantics.SQLITE_NORM_FUNCTION
+        # As in Zotero's quick search, every word must match somewhere
+        # (title, a creator, the year; in 'everything' mode also abstract,
+        # tags and notes) but not all in one field: "Brewer 2011" is a
+        # surname and a year. A double-quoted phrase stays one term. The
+        # variants are alternatives to each other.
         for variant in folded:
-            pattern = f"%{_semantics.escape_like(variant)}%"
-            like_clauses.append(f"{norm}(title_val.value) LIKE ? ESCAPE '\\'")
-            like_params.append(pattern)
-            like_clauses.append("date_val.value LIKE ? ESCAPE '\\'")
-            like_params.append(pattern)
-            like_clauses.append(
-                f"EXISTS (SELECT 1 FROM itemCreators ic JOIN creators c ON ic.creatorID = c.creatorID "
-                f"WHERE ic.itemID = i.itemID AND {norm}({_CREATOR_NAME_EXPR}) LIKE ? ESCAPE '\\')"
-            )
-            like_params.append(pattern)
-            if qmode == "everything":
-                like_clauses.append(f"{norm}(abstract_val.value) LIKE ? ESCAPE '\\'")
+            word_clauses: list[str] = []
+            for phrase, word in re.findall(r'"([^"]+)"|(\S+)', variant):
+                term = phrase.strip() or word.strip(",;:.()[]\"'")
+                if not term:
+                    continue
+                pattern = f"%{_semantics.escape_like(term)}%"
+                fields = [f"{norm}(title_val.value) LIKE ? ESCAPE '\\'"]
                 like_params.append(pattern)
-                like_clauses.append(
-                    "EXISTS (SELECT 1 FROM itemTags itg JOIN tags t ON itg.tagID = t.tagID "
-                    f"WHERE itg.itemID = i.itemID AND {norm}(t.name) LIKE ? ESCAPE '\\')"
+                # Only a year is looked for in the date, and only in its year:
+                # the stored value is "2020-05-00 May 2020", where "may",
+                # "10" or "-00" would otherwise match thousands of items.
+                if re.fullmatch(r"\d{4}", term):
+                    fields.append("SUBSTR(date_val.value, 1, 4) = ?")
+                    like_params.append(term)
+                fields.append(
+                    f"EXISTS (SELECT 1 FROM itemCreators ic JOIN creators c ON ic.creatorID = c.creatorID "
+                    f"WHERE ic.itemID = i.itemID AND {norm}({_CREATOR_NAME_EXPR}) LIKE ? ESCAPE '\\')"
                 )
                 like_params.append(pattern)
-                like_clauses.append(
-                    "EXISTS (SELECT 1 FROM itemNotes n WHERE "
-                    f"(n.parentItemID = i.itemID OR n.itemID = i.itemID) AND {norm}(n.note) LIKE ? ESCAPE '\\')"
-                )
-                like_params.append(pattern)
+                if qmode == "everything":
+                    fields.append(f"{norm}(abstract_val.value) LIKE ? ESCAPE '\\'")
+                    like_params.append(pattern)
+                    fields.append(
+                        "EXISTS (SELECT 1 FROM itemTags itg JOIN tags t ON itg.tagID = t.tagID "
+                        f"WHERE itg.itemID = i.itemID AND {norm}(t.name) LIKE ? ESCAPE '\\')"
+                    )
+                    like_params.append(pattern)
+                    fields.append(
+                        "EXISTS (SELECT 1 FROM itemNotes n WHERE "
+                        f"(n.parentItemID = i.itemID OR n.itemID = i.itemID) AND {norm}(n.note) LIKE ? ESCAPE '\\')"
+                    )
+                    like_params.append(pattern)
+                word_clauses.append(f"({' OR '.join(fields)})")
+            if word_clauses:
+                like_clauses.append(f"({' AND '.join(word_clauses)})")
+        if variants and not like_clauses:
+            return []
 
         like_sql = f" AND ({' OR '.join(like_clauses)})" if like_clauses else ""
         query_sql = (
