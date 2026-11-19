@@ -615,10 +615,23 @@ class _ScopedZot:
         self.library_id = library_id
         self._items = items_by_key
 
+    def items(self, itemKey="", start=0, limit=100, **kw):
+        found = [self._items[k] for k in itemKey.split(",") if k in self._items]
+        return found[start : start + limit]
+
     def item(self, key):
         if key not in self._items:
             raise LookupError(f"404: {key} is not in this library")
         return self._items[key]
+
+
+class _UnreadableZot(_ScopedZot):
+    """A library these credentials are refused (403)."""
+
+    def items(self, **kw):
+        from pyzotero.zotero_errors import UserNotAuthorisedError
+
+        raise UserNotAuthorisedError("\nCode: 403")
 
 
 class _FakeReader:
@@ -760,7 +773,7 @@ def test_foreign_hit_credentials_cannot_see_the_group_names_the_library(monkeypa
     monkeypatch.setenv("ZOTERO_API_KEY", "test-key")
     monkeypatch.setattr(
         semantic_search, "_new_scoped_client",
-        lambda *a: _ScopedZot("group", str(GROUP_ID), {}),  # key not visible
+        lambda *a: _UnreadableZot("group", str(GROUP_ID), {}),  # key not visible
     )
     search = _build_search(
         monkeypatch, _FakeChromaClient(),

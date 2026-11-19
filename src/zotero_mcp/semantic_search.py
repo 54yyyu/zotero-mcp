@@ -21,7 +21,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from pyzotero.zotero_errors import ResourceNotFoundError
+from pyzotero.zotero_errors import (
+    HTTPError,
+    RequestEntityTooLargeError,
+    ResourceNotFoundError,
+    UnsupportedParamsError,
+)
 
 from . import batch_common, chroma_worker, fulltext_cache, gemini_batch, openai_batch
 from .chroma_client import (
@@ -1011,14 +1016,30 @@ def _run_per_client(jobs: list[tuple[Any, Any]]) -> list[Any]:
     return results
 
 
+def _is_request_shape_error(error: Exception) -> bool:
+    """Whether the server refused a request for its shape (400, 413, 414, 431).
+
+    Asking for fewer keys at a time can help then. A dropped connection, a
+    timeout, a 429 or a 5xx says nothing about the request, so asking again
+    once per key would only multiply it.
+    """
+    if isinstance(error, (UnsupportedParamsError, RequestEntityTooLargeError)):
+        return True
+    if isinstance(error, HTTPError):
+        return re.search(r"Code: (?:414|431)\b", str(error)) is not None
+    return False
+
+
 def _fetch_items_via_client(client, keys: list[str]) -> tuple[dict[str, dict], dict[str, Exception]]:
     """Fetch ``keys`` through a pyzotero client: ``(found, failed)``.
 
     Batches of 50 via ``itemKey``. That listing leaves trashed items out, so
     a key absent from a batch's answer is trashed or deleted, and either way
-    not a result. Where the batch call itself fails, keys are asked for one
-    at a time, so that one failure is reported per key and a not-found key
-    is simply missing.
+    not a result. Where the server refuses the batch request for its shape
+    (400, 413, 414), keys are asked for one at a time, so that one failure is
+    reported per key and a not-found key is simply missing. Any other failure
+    (a dropped connection, a timeout, a 429 or a 5xx) is not a reason to send
+    one request per key: the batch's keys are reported as failed.
     """
     found: dict[str, dict] = {}
     failed: dict[str, Exception] = {}
@@ -1034,7 +1055,11 @@ def _fetch_items_via_client(client, keys: list[str]) -> tuple[dict[str, dict], d
                     found[item["key"]] = item
             continue
         except Exception as e:
-            logger.debug(f"Batched item lookup failed, asking per key: {e}")
+            if not _is_request_shape_error(e):
+                logger.warning(f"Batched item lookup failed ({e}); not asking per key")
+                failed.update((key, e) for key in batch)
+                continue
+            logger.debug(f"Batched item lookup refused, asking per key: {e}")
         for key in batch:
             try:
                 found[key] = client.item(key)
