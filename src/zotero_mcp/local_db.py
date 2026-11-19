@@ -3536,7 +3536,9 @@ class LocalZoteroReader:
         sort: str = "dateAdded",
         direction: str = "desc",
     ) -> list[dict] | None:
-        """Most recently added/modified top-level items.
+        """Most recently added/modified top-level items: regular items plus
+        standalone notes and attachments, as the API's ``/items/top`` lists
+        them. Children are left out.
 
         Returns None for a sort field this backend cannot order by, so the
         caller can fall back rather than silently reorder the answer.
@@ -3592,9 +3594,13 @@ class LocalZoteroReader:
                 f"""SELECT i.itemID FROM {items_source}{title_join}
                     WHERE i.libraryID IN ({lib_ph})
                       AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
-                      AND i.itemTypeID NOT IN (
-                          SELECT itemTypeID FROM itemTypes
-                          WHERE typeName IN ('attachment', 'note', 'annotation'))
+                      AND (i.itemTypeID NOT IN (
+                              SELECT itemTypeID FROM itemTypes
+                              WHERE typeName IN ('attachment', 'note', 'annotation'))
+                           OR i.itemID IN (
+                              SELECT itemID FROM itemAttachments WHERE parentItemID IS NULL
+                              UNION ALL
+                              SELECT itemID FROM itemNotes WHERE parentItemID IS NULL))
                       {collection_sql}
                     ORDER BY {sort_column} {direction.upper()}, i.itemID {direction.upper()}
                     LIMIT ?""",

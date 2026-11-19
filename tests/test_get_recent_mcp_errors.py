@@ -34,8 +34,8 @@ class RecentBackend:
         self._check_connection("client")
         return self
 
-    def items(self, start=0, limit=100, **kwargs):
-        self._check_connection("items")
+    def top(self, start=0, limit=100, **kwargs):
+        self._check_connection("top")
         return self.records[start : start + limit]
 
     def collection(self, key):
@@ -44,8 +44,8 @@ class RecentBackend:
             raise self.collection_error
         return self.collection_record
 
-    def collection_items(self, key, start=0, limit=100, **kwargs):
-        self._check_connection("collection_items")
+    def collection_items_top(self, key, start=0, limit=100, **kwargs):
+        self._check_connection("collection_items_top")
         return self.records[start : start + limit]
 
 
@@ -81,9 +81,9 @@ def _text(result):
     "operation,arguments",
     [
         ("client", {}),
-        ("items", {}),
+        ("top", {}),
         ("collection", {"collection_key": COLLECTION_KEY}),
-        ("collection_items", {"collection_key": COLLECTION_KEY}),
+        ("collection_items_top", {"collection_key": COLLECTION_KEY}),
     ],
 )
 def test_connection_failure_is_mcp_error(recent_server, operation, arguments):
@@ -102,8 +102,8 @@ def test_connection_failure_is_mcp_error(recent_server, operation, arguments):
 @pytest.mark.parametrize(
     "method,arguments",
     [
-        ("items", {"limit": 101}),
-        ("collection_items", {"limit": 101, "collection_key": COLLECTION_KEY}),
+        ("top", {"limit": 101}),
+        ("collection_items_top", {"limit": 101, "collection_key": COLLECTION_KEY}),
     ],
 )
 def test_later_page_failure_is_mcp_error(recent_server, monkeypatch, method, arguments):
@@ -217,7 +217,7 @@ def test_connection_recovers_in_same_mcp_session(recent_server):
 
     async def run():
         async with Client(server) as client:
-            backend.fail_at = "items"
+            backend.fail_at = "top"
             failed = await client.call_tool_mcp("zotero_get_recent", {}, timeout=5)
             backend.fail_at = None
             recovered = await client.call_tool_mcp("zotero_get_recent", {}, timeout=5)

@@ -414,13 +414,16 @@ class ApiBackend:
         return found[0] if found else None
 
     def recent_items(self, *, limit: int = 10, collection_key: str | None = None) -> list[dict]:
+        # Top-level items only, as the SQLite backend answers. The plain
+        # /items listing also returns every child attachment and note, so the
+        # ten most recent were mostly the PDFs of the last few papers.
         if collection_key:
             return _utils._paginate(
-                self._zot.collection_items, collection_key,
+                self._zot.collection_items_top, collection_key,
                 sort="dateAdded", direction="desc", max_items=limit,
             )[:limit]
         return _utils._paginate(
-            self._zot.items, sort="dateAdded", direction="desc", max_items=limit
+            self._zot.top, sort="dateAdded", direction="desc", max_items=limit
         )[:limit]
 
     def top_items(self, *, limit: int = 100) -> list[dict]:
