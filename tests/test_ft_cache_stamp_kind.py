@@ -119,7 +119,37 @@ def test_a_truncated_cache_is_flagged_and_counted(world):
     layout = read_index_layout(world.directory, NAME)
     assert layout["truncated_text_records"] == 1
     rows = dict(level_status_rows(layout))
-    assert "update-db --force-rebuild" in rows["Records from a cut-short text cache"]
+    assert "`update-db`" in rows["Records from a cut-short text cache"]
+    assert "force-rebuild" not in rows["Records from a cut-short text cache"]
+
+
+def _truncated_record(world):
+    reader = _reader(_cache(world))
+    reader.truncated = frozenset({ATT})
+    _embeds(world, reader)
+    assert world.stored(NAME)[ATT][0]["text_truncated"] is True
+
+
+def test_an_explicit_update_re_extracts_a_truncated_record_whose_file_is_back(world):
+    _truncated_record(world)
+
+    assert _embeds(world, _reader(_file()), automatic=True) == 0, "an automatic run does nothing"
+    assert world.stored(NAME)[ATT][0]["text_truncated"] is True
+
+    assert _embeds(world, _reader(_file())) > 0
+    stored = world.stored(NAME)[ATT][0]
+    assert stored["file_stamp"] == "111:100"
+    assert not stored.get("text_truncated")
+    assert read_index_layout(world.directory, NAME)["truncated_text_records"] == 0
+
+    assert _embeds(world, _reader(_file())) == 0, "once only"
+
+
+def test_a_truncated_record_whose_file_is_still_missing_is_left_alone(world):
+    _truncated_record(world)
+
+    assert _embeds(world, _reader(_cache(world))) == 0
+    assert world.stored(NAME)[ATT][0]["text_truncated"] is True
 
 
 def test_a_migration_done_while_the_file_was_missing_survives_its_return(world):
