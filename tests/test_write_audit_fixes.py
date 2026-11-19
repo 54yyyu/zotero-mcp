@@ -738,3 +738,25 @@ def test_a_url_batch_counts_outcomes_from_each_results_status(monkeypatch):
         "1 already in library, 1 repeated in this request, 1 failed.",
     ]
     assert len(zot.created) == 2
+
+
+def test_set_item_collections_re_applies_the_change_after_a_version_conflict(monkeypatch):
+    """A 412 means someone else changed the item: the adds and removes are
+    applied to what it holds now, not replayed from the stale read."""
+    zot = _collections_zot(1, monkeypatch, refuse={
+        "K0000000": {"key": "K0000000", "code": 412, "message": "stale"}})
+    real_items = zot.items
+
+    def items_then_someone_files_it(*args, **kwargs):
+        rows = real_items(*args, **kwargs)
+        zot._items["K0000000"]["data"]["collections"] = ["OLDCOLL1", "ELSEWHERE"]
+        return rows
+
+    zot.items = items_then_someone_files_it
+
+    result = write.manage_collections(
+        item_keys=["K0000000"], add_to=["NEWCOLL1"], remove_from=["OLDCOLL1"],
+        ctx=DummyContext())
+
+    assert result.splitlines() == ["Added K0000000 to NEWCOLL1", "Removed K0000000 from OLDCOLL1"]
+    assert zot.update_item_calls[-1]["data"]["collections"] == ["ELSEWHERE", "NEWCOLL1"]
