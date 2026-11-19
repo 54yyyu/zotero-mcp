@@ -247,7 +247,12 @@ export function planSeg(): SegView {
 const RANK: Record<string, number> = { allow_once: 0, allow_always: 1, reject_once: 2, reject_always: 3 };
 /** The bridge's own words in English; in another language ours, by ACP kind (a bridge's wording cannot be translated). */
 const KIND_NAME: Record<string, Key> = { allow_once: "perm.allowOnce", allow_always: "perm.allowAlways", reject_once: "perm.rejectOnce", reject_always: "perm.rejectAlways" };
-const optionName = (o: PermissionOption): string => (language() !== "en" && KIND_NAME[o.kind] ? t(KIND_NAME[o.kind]!) : o.name);
+/**
+ * Two options of one kind differ only in the bridge's words ("don't ask again for this command" / "... for this session",
+ * both allow_always): translated by kind they would be two buttons with one label, so those keep the bridge's own.
+ */
+export const optionName = (o: PermissionOption, all: readonly PermissionOption[] = [o]): string =>
+  language() !== "en" && KIND_NAME[o.kind] && all.filter((x) => x.kind === o.kind).length === 1 ? t(KIND_NAME[o.kind]!) : o.name;
 const optionClass = (o: PermissionOption) =>
   o.kind === "allow_once" ? "btn.btn--solid" : o.kind.startsWith("allow") ? "btn" : "btn.btn--quiet-danger";
 
@@ -273,7 +278,7 @@ export function permSeg(): SegView {
         setKids(el,
           icon(chosen ? (allowed ? "check" : "close") : "info"),
           h("span.perm__what", null, unwrapTicks(b.title)),
-          h("span.perm__res", null, chosen ? optionName(chosen) : t("perm.noAnswer")));
+          h("span.perm__res", null, chosen ? optionName(chosen, b.options) : t("perm.noAnswer")));
         return;
       }
       el.className = "perm";
@@ -287,7 +292,7 @@ export function permSeg(): SegView {
         h("div.perm__q", null, icon("shield"), t("perm.ask"), b.name ? h("span.step__name", null, b.name) : null),
         h("div.perm__what", null, unwrapTicks(b.title)),
         hasInput ? toggle : null, hasInput ? inputBox : null,
-        h("div.perm__opts", null, opts.map((o) => h(`button.${optionClass(o)}.btn--sm`, { type: "button", onclick: () => c.actions.answer(c.msg.id, b.id, o.id) }, optionName(o)))));
+        h("div.perm__opts", null, opts.map((o) => h(`button.${optionClass(o)}.btn--sm`, { type: "button", onclick: () => c.actions.answer(c.msg.id, b.id, o.id) }, optionName(o, b.options)))));
       if (!wasPending) c.announce(t("perm.needed", { title: b.title }));
     },
   };
