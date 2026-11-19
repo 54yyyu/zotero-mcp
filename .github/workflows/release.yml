@@ -13,6 +13,13 @@ on:
   schedule:
     - cron: '0 6 * * 1'
 
+# A newer push to a pull request replaces the run in progress. Every other run
+# gets a group of its own (its run id), so a tag or main run, which publishes,
+# is never cancelled or queued behind another.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     runs-on: ${{ matrix.os }}
@@ -21,7 +28,8 @@ jobs:
       matrix:
         os: [ubuntu-latest]
         python-version: ["3.10", "3.11", "3.12"]
-        fastmcp: ["<4"]
+        # What a fresh install resolves (the pin is >=2.14,<5).
+        fastmcp: [">=4,<5"]
         # PDF text extraction is a compiled dependency shipping per-platform
         # abi3 wheels, so Linux alone cannot tell us the package installs and
         # parses correctly everywhere. One job per other OS is enough to catch
@@ -31,30 +39,34 @@ jobs:
             python-version: "3.12"
           - os: windows-latest
             python-version: "3.12"
-          # A fresh install resolves fastmcp 4 (the pin is >=2.14,<5), so the
-          # newest major gets a job of its own; some tests need its helpers.
+            # About five times slower than Linux; say which tests.
+            pytest-args: "--durations=25"
+          # Existing installs stay on fastmcp 3 until they upgrade.
           - os: ubuntu-latest
             python-version: "3.12"
-            fastmcp: ">=4,<5"
+            fastmcp: "<4"
           # pyzotero 1.17 moved to bibtexparser 2; the oldest Python keeps
           # the last pyzotero on bibtexparser 1 so both parsers stay tested.
           - python-version: "3.10"
             pyzotero: "<1.17"
-    name: test (${{ matrix.os }}, ${{ matrix.python-version }}, fastmcp${{ matrix.fastmcp || '<4' }})
+    name: test (${{ matrix.os }}, ${{ matrix.python-version }}, fastmcp${{ matrix.fastmcp || '>=4,<5' }})
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: pyproject.toml
       - name: Install package and test dependencies
         run: |
           python -m pip install --upgrade pip
-          # The package's own dependencies come from pyproject.toml, so a pin
-          # there holds here too; only test tools and the parts of the extras
-          # the tests need (not sentence-transformers) are named.
-          python -m pip install -e . pytest pytest-timeout "fastmcp${{ matrix.fastmcp || '<4' }}" "pyzotero${{ matrix.pyzotero }}" chromadb tiktoken pymupdf openai
+          # Everything comes from pyproject.toml: the package's dependencies
+          # and the `test` extra (test tools plus the parts of the other
+          # extras the tests need, not sentence-transformers). Only the
+          # versions a matrix leg holds back are named here.
+          python -m pip install -e ".[test]" "fastmcp${{ matrix.fastmcp || '>=4,<5' }}" "pyzotero${{ matrix.pyzotero }}"
       - name: Run tests
-        run: pytest --ignore=tests/test_lifespan.py
+        run: pytest ${{ matrix.pytest-args }}
 
   build:
     needs: test
