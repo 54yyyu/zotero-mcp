@@ -1385,9 +1385,9 @@ def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tup
         row_ids = sorted(key_of_row)
         for start in range(0, len(row_ids), 500):
             part = row_ids[start:start + 500]
+            marks = ",".join("?" * len(part))
             for row_id, n_chunks in con.execute(
-                "SELECT id, int_value FROM embedding_metadata WHERE key = 'n_chunks' AND id IN (%s)"
-                % ",".join("?" * len(part)),
+                f"SELECT id, int_value FROM embedding_metadata WHERE key = 'n_chunks' AND id IN ({marks})",
                 part,
             ):
                 if n_chunks is not None:
