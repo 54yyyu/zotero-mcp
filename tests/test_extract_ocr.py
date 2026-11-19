@@ -265,8 +265,8 @@ def _cost_pdf(tmp_path, pymupdf, mixed):
             page = _review_scan_page(pdf, pymupdf)
             page.insert_textbox(
                 pymupdf.Rect(60, 100, 520, 700),
-                " ".join(f"word{n}" for n in range(80)),
-                fontsize=12,
+                " ".join(f"word{n}" for n in range(180)),
+                fontsize=9,
                 render_mode=3 if short else 0,
             )
             if short:
@@ -282,7 +282,7 @@ def test_rich_document_never_opens_optional_parser(tmp_path, monkeypatch):
     import pdf_inspector
 
     expected = tuple(p.markdown for p in pdf_inspector.extract_pages_markdown(str(path)).pages)
-    assert all(len(text.split()) >= 60 for text in expected)
+    assert all(len(text.split()) >= 150 for text in expected)
     opened = []
     original = pymupdf.open
 
@@ -308,8 +308,8 @@ def test_mixed_document_inspects_images_only_on_short_pages(tmp_path, monkeypatc
 
     monkeypatch.setattr(pymupdf.Page, "get_image_info", counted)
     doc = extract_pdf(path)
-    assert "word79" in doc.pages[0] and "DOWNLOAD STAMP" in doc.pages[0]
-    assert "word79" in doc.pages[1] and "*[Plain text" not in doc.pages[1]
+    assert "word179" in doc.pages[0] and "DOWNLOAD STAMP" in doc.pages[0]
+    assert "word179" in doc.pages[1] and "*[Plain text" not in doc.pages[1]
     assert visited == [0]
 
 
@@ -334,3 +334,48 @@ def test_short_duplicate_layers_never_emit_both_copies(tmp_path, variant):
     assert len(doc.text.split()) <= len(expected.split()) + 12
     if variant == "heading":
         assert doc.pages == (expected,)
+
+
+def _scan_with_layer(path, pymupdf, *, strips=1, visible=""):
+    """One scanned page: its image (whole, or in horizontal strips), an OCR layer, visible text."""
+    with pymupdf.open() as pdf:
+        page = pdf.new_page()
+        image = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 10, 10), False)
+        image.clear_with(245)
+        height = page.rect.height / strips
+        for strip in range(strips):
+            page.insert_image(pymupdf.Rect(0, strip * height, page.rect.width, (strip + 1) * height),
+                              stream=image.tobytes("png"), keep_proportion=False)
+        page.insert_textbox(pymupdf.Rect(60, 150, 520, 700),
+                            "OCR_BODY " + " ".join(f"word{n}" for n in range(300)),
+                            fontsize=9, render_mode=3)
+        page.insert_textbox(pymupdf.Rect(60, 20, 540, 140), visible, fontsize=7)
+        pdf.save(path)
+    return path
+
+
+def test_a_page_image_stored_in_strips_is_still_a_scan(tmp_path):
+    """Scanners write a page as a few bands. No band covers the page, so the
+    page was not taken for a scan and only its stamp came back."""
+    pymupdf = pytest.importorskip("pymupdf")
+    path = _scan_with_layer(tmp_path / "strips.pdf", pymupdf, strips=4,
+                            visible="Downloaded by a library on 1 January 2020")
+    text = extract_pdf(path).text
+    assert "OCR_BODY" in text and "word299" in text
+    assert "Downloaded by a library" in text
+
+
+def test_a_stamp_with_running_head_and_footer_does_not_hide_the_ocr_layer(tmp_path):
+    """Sixty visible words were the limit for looking at a page at all."""
+    pymupdf = pytest.importorskip("pymupdf")
+    visible = ("Downloaded by the University Library at 10:22 on 01 January 2020 from the publisher. "
+               "For personal use only; all use is subject to the terms and conditions of access. "
+               "Journal of Historical Studies, Volume 12, Number 3, Autumn 1982, pages 211 to 219. "
+               "Published by the Society; copyright 1982 the Society and the author, all rights reserved. "
+               "Smith and Jones: The grain trade of the northern provinces in the eighteenth century, "
+               "a reassessment of the customs records and of the port books kept at the two harbours.")
+    assert 60 <= len(visible.split()) < 150
+    path = _scan_with_layer(tmp_path / "stamped.pdf", pymupdf, visible=visible)
+    text = extract_pdf(path).text
+    assert "OCR_BODY" in text and "word299" in text
+    assert "Journal of Historical Studies" in text

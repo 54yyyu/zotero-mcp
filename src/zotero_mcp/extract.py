@@ -229,13 +229,25 @@ def pdf_page_count(file_path: str | Path) -> int:
     return _pdf_inspector().classify_pdf(str(file_path)).page_count
 
 
+#: Visible words on a page above which it is not checked for a hidden OCR layer.
+_OCR_RECOVERY_MAX_WORDS = 150
+
+
 def _recover_ocr_pages(
     path: str,
     page_numbers: tuple[int, ...],
     markdown_pages: list[str],
 ) -> tuple[list[str], set[int]]:
-    """Recover missing OCR text only on scan-like pages with short Markdown."""
-    candidates = [index for index, text in enumerate(markdown_pages) if len(text.split()) < 60]
+    """Recover missing OCR text only on scan-like pages with short Markdown.
+
+    Short means under ``_OCR_RECOVERY_MAX_WORDS``: a scan's visible text is a
+    download stamp, often with a running head and a footer. Scan-like means
+    page images that together cover most of the page; scanners also store a
+    page as a few horizontal strips, none of which is the page by itself.
+    """
+    candidates = [
+        index for index, text in enumerate(markdown_pages) if len(text.split()) < _OCR_RECOVERY_MAX_WORDS
+    ]
     if not candidates:
         return markdown_pages, set()
     try:
@@ -258,10 +270,10 @@ def _recover_ocr_pages(
                 try:
                     page = pdf[number]
                     area = page.rect.get_area()
-                    if not area or not any(
-                        (pymupdf.Rect(image["bbox"]) & page.rect).get_area() >= area * 0.8
+                    if not area or sum(
+                        (pymupdf.Rect(image["bbox"]) & page.rect).get_area()
                         for image in page.get_image_info()
-                    ):
+                    ) < area * 0.8:
                         continue
                     hidden = "".join(
                         chr(char[0]) for span in page.get_texttrace() if span["type"] == 3 for char in span["chars"]
