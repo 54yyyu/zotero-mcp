@@ -92,7 +92,9 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          # A pull request only proves the image builds, and pushes nothing;
+          # the emulated arm64 build is most of the 15-25 minutes it took.
+          platforms: ${{ github.event_name == 'pull_request' && 'linux/amd64' || 'linux/amd64,linux/arm64' }}
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.tags.outputs.value }}
           labels: |
@@ -100,5 +102,5 @@ jobs:
             org.opencontainers.image.variant=${{ matrix.flavor }}
           build-args: |
             INSTALL_EXTRAS=${{ matrix.extras }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ matrix.flavor }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.flavor }}
