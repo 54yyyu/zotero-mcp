@@ -3131,6 +3131,12 @@ class ZoteroSemanticSearch:
         batch_size = 100
         start = 0
         all_items = []
+        # Only top-level items are indexed, and every child item is of a type
+        # filtered out below, so list those: a library's attachments, notes
+        # and annotations are most of its pages otherwise.
+        list_page = getattr(self.zotero_client, "top", None)
+        if not callable(list_page):
+            list_page = self.zotero_client.items
 
         while True:
             batch_params = {"start": start, "limit": batch_size}
@@ -3138,7 +3144,11 @@ class ZoteroSemanticSearch:
                 break
 
             try:
-                items = self.zotero_client.items(**batch_params)
+                items = list_page(**batch_params)
+                if not isinstance(items, list) and list_page is not self.zotero_client.items:
+                    # A client that cannot list top-level items.
+                    list_page = self.zotero_client.items
+                    items = list_page(**batch_params)
             except Exception as e:
                 if "Connection refused" in str(e):
                     error_msg = (
