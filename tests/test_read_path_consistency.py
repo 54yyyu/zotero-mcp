@@ -116,7 +116,8 @@ class _EndlessZot:
 
 def test_api_citation_key_scan_stops_at_its_budget(monkeypatch):
     zot = _EndlessZot()
-    monkeypatch.setattr(ApiBackend, "_CITEKEY_SCAN_BUDGET", 0.0)
+    # Already spent: a coarse clock (Windows) can read the same instant twice.
+    monkeypatch.setattr(ApiBackend, "_CITEKEY_SCAN_BUDGET", -1.0)
     with pytest.raises(TimeoutError, match="first 100 items"):
         ApiBackend(zot).find_by_citation_key("smith2020")
     assert zot.pages == 1
