@@ -119,6 +119,66 @@ def test_ids_in_group_raises_on_a_read_error(client, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# item_keys_by_level: which items have an article record, and all their passages
+# ---------------------------------------------------------------------------
+
+def _passages(client, key, indexes, n_chunks):
+    metadatas = []
+    for index in indexes:
+        meta = {"item_key": key, "parent_item_key": key, "chunk_index": index}
+        if n_chunks is not None:
+            meta["n_chunks"] = n_chunks
+        metadatas.append(meta)
+    client.upsert_embeddings(
+        documents=[f"{key} passage {index}" for index in indexes],
+        metadatas=metadatas,
+        ids=[f"{key}#{index}" for index in indexes],
+        embeddings=[[1.0, 0.0, 0.0, float(index)] for index in indexes],
+    )
+
+
+def test_item_keys_by_level_counts_only_items_with_all_their_passages(client):
+    articles = _seed(client, 3, tagged_group_id=0, prefix="A")
+    _passages(client, "WHOLE", range(12), 12)        # past #9: "#10" sorts before "#2"
+    _passages(client, "SHORT", [0, 1], 3)            # one passage failed to write
+    _passages(client, "HEADLESS", [1, 2], 3)         # its first passage is missing
+    _passages(client, "HEADLESS_WHOLE", [1, 2], 2)   # counted by number, as before
+    _passages(client, "LEGACY", [0, 1], None)        # written before n_chunks existed
+
+    found_articles, found_passages = client.item_keys_by_level()
+
+    assert found_articles == set(articles)
+    assert found_passages == {"WHOLE", "HEADLESS_WHOLE", "LEGACY"}
+
+
+def test_item_keys_by_level_is_reused_until_the_index_changes(client, monkeypatch):
+    from zotero_mcp import chroma_client as chroma_client_module
+
+    _seed(client, 2, tagged_group_id=0, prefix="A")
+    _passages(client, "ONE", [0, 1], 2)
+    first = client.item_keys_by_level()
+
+    opened = []
+    real_connect = chroma_client_module.sqlite3.connect
+
+    def counting_connect(*args, **kwargs):
+        opened.append(args)
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(chroma_client_module.sqlite3, "connect", counting_connect)
+    again = client.item_keys_by_level()
+    assert again == first and opened == []
+    # A caller changing what it was given must not change the next answer.
+    again[0].clear()
+    again[1].clear()
+    assert client.item_keys_by_level() == first
+
+    _passages(client, "TWO", [0], 1)
+    assert client.item_keys_by_level() == (first[0], first[1] | {"TWO"})
+    assert opened
+
+
+# ---------------------------------------------------------------------------
 # iter_metadatas
 # ---------------------------------------------------------------------------
 

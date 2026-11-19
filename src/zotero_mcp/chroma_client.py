@@ -1283,6 +1283,13 @@ def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tup
     db = Path(persist_directory) / "chroma.sqlite3"
     if not db.exists():
         return set(), set()
+    # Every update reads this before it knows whether anything changed, and on
+    # a large index it takes seconds. Reuse it until the file changes.
+    stamp = _file_stamp(db)
+    cache_key = (str(db), collection_name)
+    cached = _level_keys_cache.get(cache_key)
+    if stamp is not None and cached is not None and cached[0] == stamp:
+        return set(cached[1]), set(cached[2])
     con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
     try:
         articles = {
@@ -1299,25 +1306,46 @@ def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tup
             )
         }
         found: dict[str, int] = {}
-        expected: dict[str, int] = {}
-        for doc_id, n_chunks in con.execute(
+        # One record per item says how many passages it should have: its
+        # first passage, or whichever is there. Reading n_chunks of every
+        # passage is a metadata row per record, most of this function's time.
+        counted_on: dict[str, tuple[bool, int]] = {}
+        for row_id, doc_id in con.execute(
             """
-            SELECT e.embedding_id, m.int_value
+            SELECT e.id, e.embedding_id
             FROM embeddings e
             JOIN segments s ON e.segment_id = s.id
             JOIN collections c ON s.collection = c.id
-            LEFT JOIN embedding_metadata m ON m.id = e.id AND m.key = 'n_chunks'
             WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id LIKE '%#%'
             """,
             (passage_collection_name(collection_name),),
         ):
-            key = doc_id.split("#", 1)[0]
+            key, _, index = doc_id.partition("#")
             found[key] = found.get(key, 0) + 1
-            if n_chunks is not None:
-                expected[key] = n_chunks
+            if index == "0" or key not in counted_on:
+                counted_on[key] = (index == "0", row_id)
+        key_of_row = {row_id: key for key, (_first, row_id) in counted_on.items()}
+        expected: dict[str, int] = {}
+        row_ids = sorted(key_of_row)
+        for start in range(0, len(row_ids), 500):
+            part = row_ids[start:start + 500]
+            for row_id, n_chunks in con.execute(
+                "SELECT id, int_value FROM embedding_metadata WHERE key = 'n_chunks' AND id IN (%s)"
+                % ",".join("?" * len(part)),
+                part,
+            ):
+                if n_chunks is not None:
+                    expected[key_of_row[row_id]] = n_chunks
     finally:
         con.close()
-    return articles, {key for key, count in found.items() if count >= expected.get(key, 1)}
+    passages = {key for key, count in found.items() if count >= expected.get(key, 1)}
+    if stamp is not None and stamp == _file_stamp(db):  # not written to while reading
+        _level_keys_cache[cache_key] = (stamp, set(articles), set(passages))
+    return articles, passages
+
+
+# (chroma.sqlite3 path, collection name) -> (file stamp, article keys, passage keys).
+_level_keys_cache: dict[tuple[str, str], tuple[tuple, set[str], set[str]]] = {}
 
 
 def read_collection_status(
