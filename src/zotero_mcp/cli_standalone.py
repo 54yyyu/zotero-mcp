@@ -1752,24 +1752,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the --json envelope contract and exit",
     )
 
-    sub = parser.add_subparsers(dest="command", help="Command to run")
-    # Every subcommand accepts the global flags after its own name too, so
-    # both `zotero-cli --json search x` and `zotero-cli search --json x` work.
-    # SUPPRESS is load-bearing: without it each subparser would write its own
-    # default into the namespace and silently undo a flag given before the
-    # subcommand name.
-    _sub_add_parser = sub.add_parser
+    # Every subcommand, nested ones included, accepts the global flags after
+    # its own name too, so `zotero-cli --json get metadata K`, `get --json
+    # metadata K` and `get metadata K --json` all work. SUPPRESS is
+    # load-bearing: without it each subparser would write its own default
+    # into the namespace and silently undo a flag given before its name.
+    def with_global_flags(subparsers):
+        plain_add_parser = subparsers.add_parser
 
-    def add_parser(*args, **kwargs):
-        p = _sub_add_parser(*args, **kwargs)
-        p.add_argument("-v", "--verbose", action="store_true",
-                       default=argparse.SUPPRESS, help=argparse.SUPPRESS)
-        p.add_argument("--json", action="store_true", dest="json_out",
-                       default=argparse.SUPPRESS,
-                       help="Emit a JSON envelope instead of markdown")
-        return p
+        def add_parser(*args, **kwargs):
+            # A command's own option wins the name: `add csl-json --json TEXT`
+            # is the payload there, and the envelope flag goes before it.
+            kwargs.setdefault("conflict_handler", "resolve")
+            p = plain_add_parser(*args, **kwargs)
+            p.add_argument("-v", "--verbose", action="store_true",
+                           default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+            p.add_argument("--json", action="store_true", dest="json_out",
+                           default=argparse.SUPPRESS,
+                           help="Emit a JSON envelope instead of markdown")
+            return p
 
-    sub.add_parser = add_parser
+        subparsers.add_parser = add_parser
+        return subparsers
+
+    sub = with_global_flags(parser.add_subparsers(dest="command", help="Command to run"))
 
     # config
     cfg_p = sub.add_parser("config", help="Show current Zotero configuration")
@@ -1804,7 +1810,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # get
     g_p = sub.add_parser("get", help="Get items, collections, tags, etc.", aliases=["g"])
-    g_sub = g_p.add_subparsers(dest="subcommand")
+    g_sub = with_global_flags(g_p.add_subparsers(dest="subcommand"))
     gm = g_sub.add_parser("metadata", help="Get item metadata")
     gm.add_argument("item_key")
     gm.add_argument("--no-abstract", action="store_true")
@@ -1838,7 +1844,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # annotations
     a_p = sub.add_parser("annotations", help="Manage annotations", aliases=["ann"])
-    a_sub = a_p.add_subparsers(dest="subcommand")
+    a_sub = with_global_flags(a_p.add_subparsers(dest="subcommand"))
     al = a_sub.add_parser("list", help="Get annotations")
     al.add_argument("--item-key")
     al.add_argument("--pdf-extraction", action="store_true")
@@ -1908,7 +1914,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # notes
     n_p = sub.add_parser("notes", help="Manage notes", aliases=["n"])
-    n_sub = n_p.add_subparsers(dest="subcommand")
+    n_sub = with_global_flags(n_p.add_subparsers(dest="subcommand"))
     nl = n_sub.add_parser("list", help="List notes")
     nl.add_argument("--item-key")
     nl.add_argument("--limit", type=int, default=20)
@@ -1930,7 +1936,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # add
     add_p = sub.add_parser("add", help="Add items to your library")
-    add_sub = add_p.add_subparsers(dest="subcommand")
+    add_sub = with_global_flags(add_p.add_subparsers(dest="subcommand"))
 
     def _add_common_flags(p):
         """Collection/idempotency flags shared by every `add` subcommand."""
@@ -1999,7 +2005,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # collections
     col_p = sub.add_parser("collections", help="Manage collections", aliases=["coll"])
-    col_sub = col_p.add_subparsers(dest="subcommand")
+    col_sub = with_global_flags(col_p.add_subparsers(dest="subcommand"))
     ccs = col_sub.add_parser("create", help="Create a collection")
     ccs.add_argument("name")
     ccs.add_argument("--parent")
@@ -2063,7 +2069,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # duplicates
     d_p = sub.add_parser("duplicates", help="Find or merge duplicate items")
-    d_sub = d_p.add_subparsers(dest="subcommand")
+    d_sub = with_global_flags(d_p.add_subparsers(dest="subcommand"))
     df = d_sub.add_parser("find")
     df.add_argument("--method", choices=["title", "doi", "both"], default="both")
     df.add_argument("--collection")
@@ -2075,7 +2081,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # db
     db_p = sub.add_parser("db", help="Manage the semantic search database")
-    db_sub = db_p.add_subparsers(dest="subcommand")
+    db_sub = with_global_flags(db_p.add_subparsers(dest="subcommand"))
     add_update_db_arguments(db_sub.add_parser("update"))
     add_batch_status_arguments(db_sub.add_parser("batch-status"))
     add_batch_import_arguments(db_sub.add_parser("batch-import"))
@@ -2132,7 +2138,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # delete
     del_p = sub.add_parser("delete", help="Delete an item, collection or annotation")
-    del_sub = del_p.add_subparsers(dest="subcommand")
+    del_sub = with_global_flags(del_p.add_subparsers(dest="subcommand"))
     di = del_sub.add_parser("item")
     di.add_argument("item_key")
     di.add_argument("--allow-note", action="store_true",

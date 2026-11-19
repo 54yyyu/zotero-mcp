@@ -667,3 +667,23 @@ class TestLibraryScope:
         self._run(argv)
 
         assert opened and set(opened) == {("6626192", "group")}
+
+
+@pytest.mark.parametrize("argv", [
+    ["--json", "get", "metadata", "ABCD1234"],
+    ["get", "--json", "metadata", "ABCD1234"],
+    ["get", "metadata", "ABCD1234", "--json"],
+    ["annotations", "list", "--item-key", "ABCD1234", "--json"],
+    ["notes", "list", "--item-key", "ABCD1234", "--json"],
+    ["add", "doi", "10.1/x", "--json"],
+    ["db", "status", "--json"],
+])
+def test_json_flag_is_accepted_anywhere_on_the_line(argv):
+    """Agents put --json last; a nested subcommand used to reject it there."""
+    assert build_parser().parse_args(argv).json_out is True
+
+
+def test_csl_json_keeps_its_own_json_option():
+    args = build_parser().parse_args(["--json", "add", "csl-json", "--json", '{"title": "T"}'])
+    assert args.json_out is True
+    assert args.json == '{"title": "T"}'
