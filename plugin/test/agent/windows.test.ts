@@ -77,6 +77,12 @@ describe("windows: finding binaries", () => {
     assert.equal(withPathFirst({ PATH: "C:\\a;C:\\b" }, "C:\\b")["PATH"], "C:\\b;C:\\a");
     assert.equal(withPathFirst({ PATH: "/a:/b" }, "/c")["PATH"], "/c:/a:/b");
   });
+
+  it("zotero-cli found outside PATH (uv's %USERPROFILE%\\.local\\bin): its folder is what goes first on the agent's PATH", () => {
+    // host.ts cut the path at its last "/": a Windows path has none, so the "folder" was the file's path less a letter.
+    const cli = "C:\\Users\\you\\.local\\bin\\zotero-cli.exe";
+    assert.equal(withPathFirst({ PATH: "C:\\Windows" }, dirnameOf(cli))["PATH"], "C:\\Users\\you\\.local\\bin;C:\\Windows");
+  });
 });
 
 describe("windows: npm .cmd shims", () => {

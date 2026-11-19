@@ -1,6 +1,6 @@
 // PanelHost: what ui/ gets. This is the only place that knows both the UI's needs and Zotero's APIs.
 import type { AgentRuntime, BackendId, Catalog, ContextChip, PanelHost, Spawner } from "../types.ts";
-import { CALLOUT_GUIDE, DRAWING_GUIDE, FORMAT_GUIDE, TOOL_SHEET, buildBrief, createRuntime, prepareWorkspace, resumeCommand } from "../agent/index.ts";
+import { CALLOUT_GUIDE, DRAWING_GUIDE, FORMAT_GUIDE, TOOL_SHEET, buildBrief, createRuntime, dirnameOf, prepareWorkspace, resumeCommand } from "../agent/index.ts";
 import { ContextTracker, stripBidi } from "./context.ts";
 import { describeContext } from "./describe.ts";
 import { dropChips } from "./drop.ts";
@@ -43,7 +43,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     catalog: (b) => base.catalog(b).then((c) => { known.set(b, c); return c; }),
     async start(o) {
       const cli = await findCli(spawner, await spawner.baseEnv());
-      return base.start(cli ? { ...o, path: [cli.slice(0, cli.lastIndexOf("/")), ...(o.path ?? [])] } : o);
+      return base.start(cli ? { ...o, path: [dirnameOf(cli), ...(o.path ?? [])] } : o);
     },
   };
   const doctor = createDoctor({ win, spawner, runtime, settings });
