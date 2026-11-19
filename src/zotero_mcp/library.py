@@ -100,6 +100,13 @@ class LibraryBackend(Protocol):
     def collection_items(
         self, key: str, *, include_subcollections: bool = False
     ) -> list[dict] | None: ...
+    def collection_page(
+        self, key: str, *, limit: int, offset: int = 0, include_subcollections: bool = False
+    ) -> tuple[list[dict], list[dict], int] | None:
+        """One page of a collection's top-level entries (see
+        :func:`is_top_level_item`), the child attachments and notes of those
+        entries, and the number of entries in all. None for an unknown key."""
+        ...
 
     # -- tags -------------------------------------------------------------
     def list_tags(self, *, limit: int | None = None) -> list[str]: ...
@@ -119,6 +126,27 @@ class LibraryBackend(Protocol):
 
     # -- files ------------------------------------------------------------
     def attachment_paths(self, key: str) -> list[dict]: ...
+
+
+def is_standalone_attachment(data: dict) -> bool:
+    """True for a file dragged into Zotero with no parent metadata item.
+
+    Such an attachment is itself a top-level item, not a child (#224).
+    """
+    return data.get("itemType") == "attachment" and not data.get("parentItem")
+
+
+def is_top_level_item(item: dict) -> bool:
+    """Whether an item is listed as a top-level entry of a collection.
+
+    Keeps real parent items and standalone attachments; excludes children
+    that hang off a parent. Standalone notes are excluded too — they carry
+    no useful title and are out of scope for the collection listing.
+    """
+    data = item.get("data", {})
+    if data.get("itemType", "") not in ("attachment", "note", "annotation"):
+        return True
+    return is_standalone_attachment(data)
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +284,27 @@ class SqliteBackend:
                 seen.add(child["key"])
                 items.append(child)
         return items
+
+    def collection_page(
+        self, key: str, *, limit: int, offset: int = 0, include_subcollections: bool = False
+    ) -> tuple[list[dict], list[dict], int] | None:
+        page = self._reader.get_collection_page(
+            key, limit=limit, offset=offset,
+            include_subcollections=include_subcollections, group_id=self._group_id,
+        )
+        if page is None:
+            return None
+        entries, total = page
+        by_parent = self._reader.get_children_of(
+            [entry["key"] for entry in entries], group_id=self._group_id
+        )
+        children = [
+            child
+            for kids in by_parent.values()
+            for child in kids
+            if child.get("data", {}).get("itemType") != "annotation"
+        ]
+        return entries, children, total
 
     # -- tags -------------------------------------------------------------
 
@@ -484,6 +533,22 @@ class ApiBackend:
                     seen.add(item["key"])
                     items.append(item)
         return items
+
+    def collection_page(
+        self, key: str, *, limit: int, offset: int = 0, include_subcollections: bool = False
+    ) -> tuple[list[dict], list[dict], int] | None:
+        # The API has no listing of "top-level entries with their children",
+        # so the whole collection is read and the window cut here.
+        items = self.collection_items(key, include_subcollections=include_subcollections)
+        if items is None:
+            return None
+        entries = [item for item in items if is_top_level_item(item)]
+        page = entries[offset:offset + limit]
+        shown = {entry.get("key") for entry in page}
+        children = [
+            item for item in items if item.get("data", {}).get("parentItem") in shown
+        ]
+        return page, children, len(entries)
 
     # -- tags -------------------------------------------------------------
 

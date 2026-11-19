@@ -473,31 +473,6 @@ def get_collections(
         return f"# Zotero Collections\n\n{error_msg}"
 
 
-# Item types that are normally children of a parent metadata item.
-_CHILD_ITEM_TYPES = {"attachment", "note", "annotation"}
-
-
-def _is_standalone_attachment(data: dict) -> bool:
-    """True for a file dragged into Zotero with no parent metadata item.
-
-    Such an attachment is itself a top-level item, not a child (#224).
-    """
-    return data.get("itemType") == "attachment" and not data.get("parentItem")
-
-
-def _is_top_level_item(item: dict) -> bool:
-    """Whether an item should be listed as a top-level entry in a collection.
-
-    Keeps real parent items and standalone attachments; excludes children
-    that hang off a parent. Standalone notes are excluded too — they carry
-    no useful title and are out of scope for the collection listing.
-    """
-    data = item.get("data", {})
-    if data.get("itemType", "") not in _CHILD_ITEM_TYPES:
-        return True
-    return _is_standalone_attachment(data)
-
-
 @with_zotero_api_lock
 def _build_attachment_extra(info):
     """Build extra_fields dict from attachment_info for format_item_result."""
@@ -574,49 +549,36 @@ def get_collection_items(
         limit = _helpers._normalize_limit(limit, default=50, max_val=1000)
         offset = _helpers._normalize_offset(offset)
 
-        # Fetch all items (includes children mixed in with parents). The
-        # subtree is resolved by the backend, which de-duplicates an item
-        # filed in several of its collections.
-        all_items = backend.collection_items(
-            collection_key, include_subcollections=include_subcollections
-        ) or []
-        if not all_items:
+        # One page of top-level entries, their children, and the count of
+        # entries. The subtree is resolved by the backend, which de-duplicates
+        # an item filed in several of its collections.
+        page = backend.collection_page(
+            collection_key, limit=limit, offset=offset,
+            include_subcollections=include_subcollections,
+        )
+        display_items, children, total_items = page or ([], [], 0)
+        if not total_items:
             scope_note = " or its subcollections" if include_subcollections else ""
             return (
                 f"No items found in collection: {collection_name} "
                 f"(Key: {collection_key}){scope_note}"
             )
 
-        # Build attachment/note summary from already-fetched children (zero extra API calls)
+        # Attachment/note summary per shown entry, from its children.
         attachment_info = {}
-        for item in all_items:
-            data = item.get("data", {})
-            item_type = data.get("itemType", "")
-            parent_key = data.get("parentItem", "")
-            if not parent_key:
-                continue
-            if parent_key not in attachment_info:
-                attachment_info[parent_key] = {
-                    "has_pdf": False, "attachment_count": 0, "has_notes": False
-                }
-            if item_type == "attachment":
-                attachment_info[parent_key]["attachment_count"] += 1
+        for child in children:
+            data = child.get("data", {})
+            info = attachment_info.setdefault(
+                data.get("parentItem", ""),
+                {"has_pdf": False, "attachment_count": 0, "has_notes": False},
+            )
+            if data.get("itemType") == "attachment":
+                info["attachment_count"] += 1
                 if data.get("contentType", "") == "application/pdf":
-                    attachment_info[parent_key]["has_pdf"] = True
-            elif item_type == "note":
-                attachment_info[parent_key]["has_notes"] = True
+                    info["has_pdf"] = True
+            elif data.get("itemType") == "note":
+                info["has_notes"] = True
 
-        # Keep top-level items only. Previously this dropped every attachment,
-        # which made standalone PDFs (no parent metadata item) vanish from the
-        # collection entirely (#224); _is_top_level_item now keeps those.
-        parent_items = [item for item in all_items if _is_top_level_item(item)]
-
-        if not parent_items:
-            return f"No items found in collection: {collection_name} (Key: {collection_key})"
-
-        # Apply the display window after filtering.
-        total_items = len(parent_items)
-        display_items = parent_items[offset:offset + limit] if limit else parent_items[offset:]
         shown_from = offset + 1 if display_items else offset
         shown_to = offset + len(display_items)
         has_more = shown_to < total_items
@@ -637,7 +599,7 @@ def get_collection_items(
             # A standalone attachment is its own PDF — surface the PDF indicator
             # across all detail levels, just like a parent item's child PDF.
             if (
-                _is_standalone_attachment(data)
+                _library.is_standalone_attachment(data)
                 and data.get("contentType") == "application/pdf"
             ):
                 info = {**info, "has_pdf": True}

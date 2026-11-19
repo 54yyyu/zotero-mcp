@@ -3717,13 +3717,7 @@ class LocalZoteroReader:
         can distinguish that from an empty collection.
         """
         conn = self._get_connection()
-        # `_resolve_collection_ids` always walks descendants; the singular
-        # lookup is the one that means "this collection only".
-        if include_subcollections:
-            collection_ids = self._resolve_collection_ids(conn, collection_key)
-        else:
-            own_id = self._resolve_collection_id(conn, collection_key)
-            collection_ids = [own_id] if own_id is not None else []
+        collection_ids = self._collection_scope_ids(conn, collection_key, include_subcollections)
         if not collection_ids:
             return None
         lib_ids = self._resolve_scope_library_ids(group_id)
@@ -3741,6 +3735,64 @@ class LocalZoteroReader:
             list(lib_ids) + list(collection_ids),
         ).fetchall()
         return self._build_full_items(conn, rows)
+
+    def _collection_scope_ids(
+        self, conn: sqlite3.Connection, collection_key: str, include_subcollections: bool
+    ) -> list[int]:
+        # `_resolve_collection_ids` always walks descendants; the singular
+        # lookup is the one that means "this collection only".
+        if include_subcollections:
+            return self._resolve_collection_ids(conn, collection_key)
+        own_id = self._resolve_collection_id(conn, collection_key)
+        return [own_id] if own_id is not None else []
+
+    def get_collection_page(
+        self,
+        collection_key: str,
+        *,
+        limit: int,
+        offset: int = 0,
+        include_subcollections: bool = False,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> tuple[list[dict], int] | None:
+        """One page of a collection's listing, and how many entries it has.
+
+        The entries are what `zotero_get_collection_items` lists: regular
+        items and standalone attachments, in itemID order; a standalone note
+        is not an entry. Only the page is hydrated, where
+        `get_collection_items` hydrates the whole collection. None when the
+        key names no collection.
+        """
+        conn = self._get_connection()
+        collection_ids = self._collection_scope_ids(conn, collection_key, include_subcollections)
+        if not collection_ids:
+            return None
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return [], 0
+        ids = [
+            row[0]
+            for row in conn.execute(
+                f"""SELECT i.itemID FROM items i
+                    WHERE i.libraryID IN ({",".join("?" * len(lib_ids))})
+                    AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+                    AND i.itemID IN (SELECT itemID FROM collectionItems
+                        WHERE collectionID IN ({",".join("?" * len(collection_ids))}))
+                    AND i.itemTypeID NOT IN (SELECT itemTypeID FROM itemTypes
+                        WHERE typeName IN ('note', 'annotation'))
+                    ORDER BY i.itemID""",
+                list(lib_ids) + list(collection_ids),
+            ).fetchall()
+        ]
+        page = ids[offset:offset + limit]
+        if not page:
+            return [], len(ids)
+        rows = conn.execute(
+            self._FULL_ITEM_COLUMNS
+            + f" WHERE i.itemID IN ({','.join('?' * len(page))}) ORDER BY i.itemID",
+            page,
+        ).fetchall()
+        return self._build_full_items(conn, rows), len(ids)
 
     def list_tags(
         self,
