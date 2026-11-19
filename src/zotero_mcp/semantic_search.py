@@ -3225,17 +3225,7 @@ class ZoteroSemanticSearch:
         keys = [key for key in dict.fromkeys(keys) if key]
         for start in range(0, len(keys), self._ITEM_KEY_BATCH):
             chunk = keys[start:start + self._ITEM_KEY_BATCH]
-            wanted = set(chunk)
-            if len(chunk) > 1:
-                try:
-                    rows = self.zotero_client.items(itemKey=",".join(chunk), limit=self._ITEM_KEY_BATCH) or []
-                except Exception as e:
-                    logger.debug(f"items(itemKey=...) failed, asking per item: {e}")
-                    rows = []
-                for row in rows:
-                    key = row.get("key") if isinstance(row, dict) else None
-                    if key in wanted:
-                        found[key] = row
+            found.update(self._items_in_one_request(chunk))
             for key in chunk:
                 if key in found:
                     continue
@@ -3250,6 +3240,28 @@ class ZoteroSemanticSearch:
                 if item:
                     found[key] = item
         return found, failed
+
+    def _items_in_one_request(self, keys: list[str]) -> dict[str, dict[str, Any]]:
+        """Up to 50 items by key from one ``items(itemKey=...)`` request.
+
+        Whatever the request does not return (it failed, or the server does
+        not filter by key) is simply not in the answer.
+        """
+        if len(keys) < 2:
+            return {}
+        wanted = set(keys)
+        try:
+            rows = self.zotero_client.items(itemKey=",".join(keys), limit=self._ITEM_KEY_BATCH)
+        except Exception as e:
+            logger.debug(f"items(itemKey=...) failed, asking per item: {e}")
+            return {}
+        if not isinstance(rows, list):
+            return {}
+        return {
+            row["key"]: row
+            for row in rows
+            if isinstance(row, dict) and row.get("key") in wanted
+        }
 
     def _new_fulltext_keys(self, since_version: int) -> list[str]:
         """Attachments whose extracted text changed since ``since_version``; [] if unknown."""
@@ -5890,11 +5902,24 @@ class ZoteroSemanticSearch:
         already_tried = {r["item_key"] for r in enriched if _is_foreign(r)}
         local_items = self._hydrate_locally(sorted(already_tried))
 
+        # The client's own hits, 50 to a request instead of one each. A hit
+        # the batch does not return is asked for on its own below, as before.
+        own_keys = [
+            r["item_key"] for r in enriched
+            if r["item_key"] not in local_items and not _is_foreign(r)
+        ]
+        own_items: dict[str, dict[str, Any]] = {}
+        for start in range(0, len(own_keys), self._ITEM_KEY_BATCH):
+            own_items.update(self._items_in_one_request(own_keys[start:start + self._ITEM_KEY_BATCH]))
+
         unresolved: list[dict[str, Any]] = []
         for result in enriched:
             item_key = result["item_key"]
             if item_key in local_items:
                 result["zotero_item"] = local_items[item_key]
+                continue
+            if item_key in own_items:
+                result["zotero_item"] = own_items[item_key]
                 continue
             if _is_foreign(result):
                 # Local hydration came up empty for a hit known to be
