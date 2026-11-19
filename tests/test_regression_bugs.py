@@ -17,21 +17,12 @@ from zotero_mcp import server
 # ---------------------------------------------------------------------------
 
 class TestManageCollectionsPayloadShape:
-    """addto_collection receives a dict (not a list)."""
+    """The write receives the item dict (not a list wrapping it)."""
 
-    def test_addto_receives_dict_not_list(self, monkeypatch):
-        received = []
-
+    def test_write_receives_dict_not_list(self, monkeypatch):
         class FakeZotManage(FakeZotero):
             def item(self, key):
                 return {"key": key, "version": 1, "data": {"collections": []}}
-
-            def collection(self, key):
-                return {"key": key, "data": {"name": "Test Collection", "deleted": False}}
-
-            def addto_collection(self, coll_key, payload, **kw):
-                received.append(payload)
-                return _FakeResponse(204)
 
         fake = FakeZotManage()
         fake._collections = [
@@ -44,12 +35,11 @@ class TestManageCollectionsPayloadShape:
             item_keys=["ITEM01"], add_to=["COL00001"], ctx=ctx
         )
 
-        assert len(received) == 1
+        assert len(fake.updated) == 1
         # Must be a dict, NOT a list wrapping a dict
-        assert isinstance(received[0], dict), (
-            f"addto_collection received {type(received[0])}, expected dict"
-        )
-        assert received[0]["key"] == "ITEM01"
+        assert isinstance(fake.updated[0], dict)
+        assert fake.updated[0]["key"] == "ITEM01"
+        assert fake.updated[0]["data"]["collections"] == ["COL00001"]
 
 
 # ---------------------------------------------------------------------------

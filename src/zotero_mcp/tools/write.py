@@ -529,8 +529,11 @@ def _multi_write_failures(write_zot) -> dict:
         return {}
 
 
-def _write_batch_edits(zot, write_zot, edits, ctx) -> tuple[int, int]:
+def _write_batch_edits(zot, write_zot, edits, ctx, failures=None) -> tuple[int, int]:
     """Write edited items back, 50 per request. Returns (updated, failed).
+
+    *failures*, when given, is filled with ``{key: reason}`` for each item
+    that was not written.
 
     *edits* is a list of ``(key, item, mutate)``: *item* is the read-side item
     with the edit already applied, and *mutate* applies the same edit to a
@@ -589,6 +592,8 @@ def _write_batch_edits(zot, write_zot, edits, ctx) -> tuple[int, int]:
                 message = failure.get("message") if isinstance(failure, dict) else failure
                 ctx.error(f"Failed to update item {key}: {message}")
                 failed += 1
+                if failures is not None:
+                    failures[key] = str(message)
 
     for key, item, mutate in one_by_one:
         try:
@@ -601,12 +606,16 @@ def _write_batch_edits(zot, write_zot, edits, ctx) -> tuple[int, int]:
         except Exception as e:
             ctx.error(f"Failed to update item {key}: {e}")
             failed += 1
+            if failures is not None:
+                failures[key] = _helpers.format_zotero_error(e, write_zot)
             continue
         if _helpers._handle_write_response(result, ctx):
             updated += 1
         else:
             ctx.error(f"Update may have failed for item {key}: {result}")
             failed += 1
+            if failures is not None:
+                failures[key] = "the write was refused"
     return updated, failed
 
 
@@ -1412,35 +1421,57 @@ def manage_collections(
         except ValueError as e:
             return f"Error: {e}"
 
+        # One read and one write per 50 items, not a GET and a PATCH per
+        # (item, collection) pair. Fetched from the write client: the version
+        # sent has to be the one the write is checked against.
+        fetched = _fetch_items_by_key(write_zot, keys, ctx)
+
+        def _edit(it):
+            """Apply the adds and removes to *it*; return what each changed."""
+            current = list(it.get("data", {}).get("collections") or [])
+            removed = [c for c in remove_colls if c in current]
+            kept = [c for c in current if c not in remove_colls]
+            added = [c for c in add_colls if c not in kept]
+            it.setdefault("data", {})["collections"] = kept + added
+            return added, removed
+
+        edits = []
+        changed: dict[str, tuple[list, list]] = {}
+        for item_key in dict.fromkeys(keys):
+            item = fetched.get(item_key)
+            if item is None:
+                continue
+            added, removed = _edit(item)
+            changed[item_key] = (added, removed)
+            if added or removed:
+                edits.append((item_key, item, _edit))
+
+        failures: dict[str, str] = {}
+        _write_batch_edits(write_zot, write_zot, edits, ctx, failures)
+
+        # Every item gets its lines, so one bad key no longer costs the report
+        # of what was written for the others.
         results = []
-
-        # Cache item fetches to avoid repeated API calls for the same key
-        item_cache = {}
-        def _get_item(key):
-            if key not in item_cache:
-                item_cache[key] = write_zot.item(key)
-            return item_cache[key]
-
-        for coll_key in add_colls:
-            for item_key in keys:
-                item_dict = _get_item(item_key)
-                resp = write_zot.addto_collection(coll_key, item_dict)
-                if _helpers._handle_write_response(resp, ctx):
+        for item_key in dict.fromkeys(keys):
+            if item_key not in changed:
+                results.append(f"Failed: item {item_key} not found")
+                continue
+            added, removed = changed[item_key]
+            why = failures.get(item_key)
+            for coll_key in add_colls:
+                if coll_key not in added:
+                    results.append(f"{item_key} already in {coll_key}")
+                elif why:
+                    results.append(f"Failed to add {item_key} to {coll_key}: {why}")
+                else:
                     results.append(f"Added {item_key} to {coll_key}")
-                    # Invalidate cache — version changed after addto_collection
-                    item_cache.pop(item_key, None)
+            for coll_key in remove_colls:
+                if coll_key not in removed:
+                    results.append(f"{item_key} not in {coll_key}")
+                elif why:
+                    results.append(f"Failed to remove {item_key} from {coll_key}: {why}")
                 else:
-                    results.append(f"Failed to add {item_key} to {coll_key}")
-
-        for coll_key in remove_colls:
-            for item_key in keys:
-                item_dict = _get_item(item_key)
-                resp = write_zot.deletefrom_collection(coll_key, item_dict)
-                if _helpers._handle_write_response(resp, ctx):
                     results.append(f"Removed {item_key} from {coll_key}")
-                    item_cache.pop(item_key, None)
-                else:
-                    results.append(f"Failed to remove {item_key} from {coll_key}")
 
         return "\n".join(results)
 
