@@ -186,8 +186,8 @@ class _AddResult(str):
     """An adder's rendered result, which also says what became of the item.
 
     ``key`` is the item the call left in the library (created or reused), or
-    None when there is none; ``status`` is ``created``, ``reused`` or
-    ``failed``. A caller that has to act on the outcome reads these instead
+    None when there is none; ``status`` is ``created``, ``reused``,
+    ``failed``, or in a batch ``duplicate`` (a repeat of an earlier token). A caller that has to act on the outcome reads these instead
     of the wording: ``Error: item created (key: ...) but attach_mode=
     'required' found no open-access PDF`` begins like a failure, and
     add_by_url, taking it for one, created the item a second time.
@@ -202,38 +202,44 @@ class _AddResult(str):
 
 def _duplicate_of_message(kind: str, position: int) -> str:
     """Rendered in place of a result for a token repeated within one call."""
-    return (f"Same {kind} as entry {position} in this request — "
-            "added once, not duplicated.")
-
-
-# Prefixes the per-source adders open a successful result block with. Sniffing
-# rendered text is a stopgap: add_by_doi/url/isbn hand back pre-rendered
-# strings, so this is the only success signal the recursive URL/ISBN paths
-# expose. The real fix is the convergence _format_multi_result's docstring
-# describes — structured per-item dicts rendered through
-# _format_batch_result — at which point these go away.
-_CREATED_MARKERS = (
-    "Successfully added",       # add_by_doi, add_by_isbn, embedded metadata
-    "Successfully added arXiv",  # _add_by_arxiv
-    "Created webpage item for:",  # add_by_url's generic-webpage branch
-)
-_REUSED_MARKERS = ("Already in library:",)
+    return _AddResult(f"Same {kind} as entry {position} in this request — "
+                      "added once, not duplicated.", status="duplicate")
 
 
 def _summarize_multi_results(results: list[str]) -> dict[str, int]:
-    """Count outcomes across a batch's per-token rendered results."""
+    """Count outcomes across a batch's per-token results, from the status
+    each carries (see _AddResult); a plain string is an error message."""
     counts = {"created": 0, "reused": 0, "duplicate": 0, "failed": 0}
     for res in results:
-        text = res or ""
-        if "in this request — added once" in text:
-            counts["duplicate"] += 1
-        elif any(m in text for m in _CREATED_MARKERS):
-            counts["created"] += 1
-        elif any(m in text for m in _REUSED_MARKERS):
-            counts["reused"] += 1
-        else:
-            counts["failed"] += 1
+        counts[getattr(res, "status", "failed")] += 1
     return counts
+
+
+def _add_each(kind: str, tokens: list[str], key_fn, add_one) -> str:
+    """Run a single-item adder over a batch of identifiers.
+
+    A token repeating an earlier one is not added again: the adder's library
+    lookup runs before anything is created, so it could not see the item
+    this same call just made.
+    """
+    canonical, duplicate_of = _dedupe_multi_tokens(tokens, key_fn)
+    results: list[str] = [None] * len(tokens)
+    for i in canonical:
+        results[i] = add_one(tokens[i])
+    for i, canon_i in duplicate_of.items():
+        results[i] = _duplicate_of_message(kind, canon_i + 1)
+    return _format_multi_result(kind, tokens, results)
+
+
+def _create_item(write_zot, item_data: dict, coll_keys, ctx):
+    """Create one item and make sure it is filed. Returns ``(key, collections
+    it could not be filed in)``, or ``(None, the API's answer)`` on failure."""
+    result = write_zot.create_items([item_data])
+    if not (isinstance(result, dict) and result.get("success")):
+        return None, result
+    item_key = next(iter(result["success"].values()))
+    return item_key, _helpers.ensure_collection_membership(
+        write_zot, item_key, coll_keys, ctx=ctx)
 
 
 def _format_multi_result(kind: str, tokens: list[str], results: list[str]) -> str:
@@ -245,14 +251,8 @@ def _format_multi_result(kind: str, tokens: list[str], results: list[str]) -> st
 
     Deliberately a second, simpler batch strategy alongside
     ``_format_batch_result`` (used by add_by_bibtex/add_by_csl_json), which
-    aggregates structured per-item dicts instead of pre-rendered strings.
-    Chosen here to keep the diff small and single-item output byte-for-byte
-    unchanged. If a third source ever needs batching, or the two formats
-    need to converge, the natural refactor is to make add_by_doi/url/isbn
-    return the same per-item dict shape (like a hypothetical
-    ``_add_one_by_doi`` helper) and render everything through
-    ``_format_batch_result`` — see the recursive per-token loops below for
-    the redundant-work cost that refactor would also remove.
+    aggregates structured per-item dicts instead of pre-rendered strings:
+    it keeps single-item output byte-for-byte unchanged.
     """
     counts = _summarize_multi_results(results)
     total = len(tokens)
@@ -2443,22 +2443,19 @@ def _add_from_embedded_metadata(
     _apply_caller_tags_and_collections(template, tags, coll_keys)
 
     ctx.info(f"Creating {zot_type} from embedded metadata for: {url}")
-    result = write_zot.create_items([template])
-    if isinstance(result, dict) and result.get("success"):
-        item_key = next(iter(result["success"].values()))
-        missing = _helpers.ensure_collection_membership(
-            write_zot, item_key, coll_keys, ctx=ctx
-        )
-        return (
-            f"Successfully added: **{template.get('title', url)}**\n\n"
-            f"Item key: `{item_key}`\n"
-            f"Type: {zot_type}\n"
-            f"Source: metadata embedded in the page\n"
-            f"Collections: {_collections_status(coll_keys, missing)}\n\n"
-            "_Note: To include this item in semantic search, run "
-            "zotero_update_search_database._"
-        )
-    return f"Failed to create item: {result}"
+    item_key, missing = _create_item(write_zot, template, coll_keys, ctx)
+    if item_key is None:
+        return f"Failed to create item: {missing}"
+    return _AddResult(
+        f"Successfully added: **{template.get('title', url)}**\n\n"
+        f"Item key: `{item_key}`\n"
+        f"Type: {zot_type}\n"
+        f"Source: metadata embedded in the page\n"
+        f"Collections: {_collections_status(coll_keys, missing)}\n\n"
+        "_Note: To include this item in semantic search, run "
+        "zotero_update_search_database._",
+        item_key, "created",
+    )
 
 
 def add_by_url(
@@ -2488,19 +2485,13 @@ def add_by_url(
     except ValueError as e:
         return f"Error adding by URL: {e}"
     if len(tokens) > 1:
-        canonical, duplicate_of = _dedupe_multi_tokens(tokens, _url_dedup_key)
-        results: list[str] = [None] * len(tokens)
-        for i in canonical:
-            # A URL batch is a batch even though it recurses one at a time:
-            # 200 doi.org links must not become 200 publisher requests.
-            results[i] = add_by_url(
-                url=tokens[i], collections=collections, tags=tags,
-                attach_mode=attach_mode, if_exists=if_exists,
-                create_missing_collections=create_missing_collections,
-                page_check="thin_only", ctx=ctx)
-        for i, canon_i in duplicate_of.items():
-            results[i] = _duplicate_of_message("URL", canon_i + 1)
-        return _format_multi_result("URL", tokens, results)
+        # A URL batch is a batch even though it recurses one at a time:
+        # 200 doi.org links must not become 200 publisher requests.
+        return _add_each("URL", tokens, _url_dedup_key, lambda token: add_by_url(
+            url=token, collections=collections, tags=tags,
+            attach_mode=attach_mode, if_exists=if_exists,
+            create_missing_collections=create_missing_collections,
+            page_check="thin_only", ctx=ctx))
     if tokens:
         url = tokens[0]
 
@@ -2615,29 +2606,26 @@ def add_by_url(
 
             _apply_caller_tags_and_collections(template, tags, coll_keys)
 
-            result = write_zot.create_items([template])
-            if isinstance(result, dict) and result.get("success"):
-                item_key = next(iter(result["success"].values()))
-                missing = _helpers.ensure_collection_membership(
-                    write_zot, item_key, coll_keys, ctx=ctx
-                )
-                # This item has a URL and nothing else. Say why, so the caller
-                # can decide whether to fix it rather than discovering a blank
-                # record later.
-                reason = (
-                    f"\nOnly the URL could be recorded: {embed_problem}. "
-                    "Add the item by DOI if you have one, or set the fields with "
-                    "zotero_update_item."
-                    if embed_problem else ""
-                )
-                return (
-                    f"Created webpage item for: {url}\n\nItem key: `{item_key}`\n"
-                    f"Collections: {_collections_status(coll_keys, missing)}\n"
-                    f"{reason}\n"
-                    "_Note: To include this item in semantic search, run "
-                    "zotero_update_search_database._"
-                )
-            return f"Failed to create item: {result}"
+            item_key, missing = _create_item(write_zot, template, coll_keys, ctx)
+            if item_key is None:
+                return f"Failed to create item: {missing}"
+            # This item has a URL and nothing else. Say why, so the caller
+            # can decide whether to fix it rather than discovering a blank
+            # record later.
+            reason = (
+                f"\nOnly the URL could be recorded: {embed_problem}. "
+                "Add the item by DOI if you have one, or set the fields with "
+                "zotero_update_item."
+                if embed_problem else ""
+            )
+            return _AddResult(
+                f"Created webpage item for: {url}\n\nItem key: `{item_key}`\n"
+                f"Collections: {_collections_status(coll_keys, missing)}\n"
+                f"{reason}\n"
+                "_Note: To include this item in semantic search, run "
+                "zotero_update_search_database._",
+                item_key, "created",
+            )
 
     except Exception as e:
         ctx.error(f"Error adding by URL: {e}")
@@ -2835,14 +2823,9 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
 
         _apply_caller_tags_and_collections(template, tags, coll_keys)
 
-        result = write_zot.create_items([template])
-        if not (isinstance(result, dict) and result.get("success")):
-            return f"Failed to create arXiv item: {result}"
-
-        item_key = next(iter(result["success"].values()))
-        missing = _helpers.ensure_collection_membership(
-            write_zot, item_key, coll_keys, ctx=ctx
-        )
+        item_key, missing = _create_item(write_zot, template, coll_keys, ctx)
+        if item_key is None:
+            return f"Failed to create arXiv item: {missing}"
 
     # arXiv always has a free PDF — try to attach it. Outside the lock: the
     # download and upload are outbound network work that has nothing to do
@@ -2913,19 +2896,21 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
             pdf_status = f"no PDF attached ({e})"
 
         if attach_mode == "required" and not attach_ok:
-            return (
+            return _AddResult(
                 f"Error: item created (key: `{item_key}`) but attach_mode='required' "
-                f"found no open-access PDF: {pdf_status}"
+                f"found no open-access PDF: {pdf_status}",
+                item_key,
             )
 
-    return (
+    return _AddResult(
         f"Successfully added arXiv paper: **{title}**\n\n"
         f"Item key: `{item_key}`\n"
         f"arXiv ID: {arxiv_id}\n"
         f"Collections: {_collections_status(coll_keys, missing)}\n"
         f"PDF: {pdf_status}\n\n"
         "_Note: To include this item in semantic search, run "
-        "zotero_update_search_database._"
+        "zotero_update_search_database._",
+        item_key, "created",
     )
 
 
@@ -3059,17 +3044,9 @@ def add_by_isbn(
     except ValueError as e:
         return f"Error adding by ISBN: {e}"
     if len(tokens) > 1:
-        canonical, duplicate_of = _dedupe_multi_tokens(tokens, _isbn_dedup_key)
-        results: list[str] = [None] * len(tokens)
-        for i in canonical:
-            results[i] = add_by_isbn(
-                isbn=tokens[i], collections=collections, tags=tags,
-                if_exists=if_exists,
-                create_missing_collections=create_missing_collections,
-                ctx=ctx)
-        for i, canon_i in duplicate_of.items():
-            results[i] = _duplicate_of_message("ISBN", canon_i + 1)
-        return _format_multi_result("ISBN", tokens, results)
+        return _add_each("ISBN", tokens, _isbn_dedup_key, lambda token: add_by_isbn(
+            isbn=token, collections=collections, tags=tags, if_exists=if_exists,
+            create_missing_collections=create_missing_collections, ctx=ctx))
     if tokens:
         isbn = tokens[0]
 
@@ -3154,28 +3131,23 @@ def add_by_isbn(
             )
             if reused is not None:
                 return reused
-            result = write_zot.create_items([item_data])
-            item_key = None
-            if isinstance(result, dict) and result.get("success"):
-                item_key = next(iter(result["success"].values()))
-                missing = _helpers.ensure_collection_membership(
-                    write_zot, item_key, coll_keys, ctx=ctx
-                )
-        if item_key:
-            return (
-                f"Successfully added: **{item_data.get('title', normalized)}**\n\n"
-                f"Item key: `{item_key}`\n"
-                f"Type: book\n"
-                f"ISBN: {normalized}\n"
-                f"Collections: {_collections_status(coll_keys, missing)}\n"
-                f"Source: {meta['source']}\n\n"
-                "_Note: Open Library and Google Books metadata can be noisy "
-                "(publisher-as-author, concatenated places, off-by-one dates). "
-                "Verify via `zotero_get_item_metadata` after creation. "
-                "Run `zotero_update_search_database` to include this item "
-                "in semantic search._"
-            )
-        return f"Failed to create item: {result}"
+            item_key, missing = _create_item(write_zot, item_data, coll_keys, ctx)
+        if item_key is None:
+            return f"Failed to create item: {missing}"
+        return _AddResult(
+            f"Successfully added: **{item_data.get('title', normalized)}**\n\n"
+            f"Item key: `{item_key}`\n"
+            f"Type: book\n"
+            f"ISBN: {normalized}\n"
+            f"Collections: {_collections_status(coll_keys, missing)}\n"
+            f"Source: {meta['source']}\n\n"
+            "_Note: Open Library and Google Books metadata can be noisy "
+            "(publisher-as-author, concatenated places, off-by-one dates). "
+            "Verify via `zotero_get_item_metadata` after creation. "
+            "Run `zotero_update_search_database` to include this item "
+            "in semantic search._",
+            item_key, "created",
+        )
 
     except Exception as e:
         ctx.error(f"Error adding by ISBN: {e}")
@@ -5017,16 +4989,11 @@ def add_from_file(
                 template["title"] = title or os.path.basename(file_path)
                 _apply_caller_tags_and_collections(template, tags, coll_keys)
 
-                result = write_zot.create_items([template])
-                if isinstance(result, dict) and result.get("success"):
-                    parent_key = next(iter(result["success"].values()))
-                    missing = _helpers.ensure_collection_membership(
-                        write_zot, parent_key, coll_keys, ctx=ctx
-                    )
-                    if missing:
-                        ctx.warning(f"Failed to file {parent_key} in {missing}")
-                else:
-                    return f"Failed to create item: {result}"
+                parent_key, missing = _create_item(write_zot, template, coll_keys, ctx)
+                if parent_key is None:
+                    return f"Failed to create item: {missing}"
+                if missing:
+                    ctx.warning(f"Failed to file {parent_key} in {missing}")
 
         item_reused = getattr(result_msg, "status", None) == "reused"
         if item_reused and if_exists == "skip":

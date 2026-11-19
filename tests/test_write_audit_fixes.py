@@ -703,3 +703,38 @@ def test_batch_extra_errors_are_explained_like_the_other_tools(monkeypatch):
                                       ctx=DummyContext())
 
     assert result == "Error in batch extra update: EXPLAINED"
+
+
+def test_a_url_batch_counts_outcomes_from_each_results_status(monkeypatch):
+    """The header was counted by searching each rendered result for known
+    opening phrases; it is read off the result now."""
+    from zotero_mcp.html_metadata import EmbeddedMetadata
+
+    zot = _library({"itemType": "webpage", "title": "https://old.example.org/p",
+                    "url": "https://old.example.org/p"})
+    monkeypatch.setattr(_helpers, "_get_write_client", lambda ctx: (zot, zot))
+    article = EmbeddedMetadata()
+    article.title, article.publication, article.authors = "An Article", "J", [("A", "B")]
+
+    def page(url, ctx):
+        if "journal" in url:
+            return article, ""
+        if "down" in url:
+            raise RuntimeError("boom")
+        return None, "the page did not respond in time"
+
+    monkeypatch.setattr(write, "_fetch_embedded_metadata", page)
+
+    result = write.add_by_url(url=[
+        "https://journal.example.org/a1",   # created from its meta tags
+        "https://blog.example.org/post",    # created as a bare webpage
+        "https://old.example.org/p",        # already in the library
+        "https://blog.example.org/post",    # repeats entry 2
+        "https://down.example.org/x",       # fails
+    ], ctx=DummyContext())
+
+    assert result.splitlines()[:2] == [
+        "# Added 2 of 5 URLs",
+        "1 already in library, 1 repeated in this request, 1 failed.",
+    ]
+    assert len(zot.created) == 2
