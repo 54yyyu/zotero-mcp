@@ -3966,20 +3966,64 @@ def _describe_keeper(entry: dict) -> str:
     return ", ".join(bits)
 
 
-def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
+# Never copied from a duplicate: citationKey is Better BibTeX's to assign, and
+# two items must not share one while the duplicate sits in the Trash.
+_GAP_FILL_SKIP = frozenset({"citationKey"})
+
+
+def _gap_fill(keeper_data: dict, dup_datas: list[dict]) -> dict:
+    """``{field: value}`` for the keeper's empty fields a duplicate has filled.
+
+    The keeper's own values always win: only a field it leaves empty is
+    taken, from the first duplicate that has it. A field has to be valid for
+    the keeper's item type; a duplicate of another type gives its value
+    through the shared base field (publicationTitle -> proceedingsTitle), as
+    a type change in update_item does. Creators are taken only when the
+    keeper has none and the duplicate is of the same type, since creator
+    roles differ between types.
+    """
+    keeper_type = keeper_data.get("itemType", "")
+    valid = _schema.valid_fields(keeper_type)
+    fill: dict = {}
+    for dup in dup_datas:
+        dup_type = dup.get("itemType", "")
+        for field, value in dup.items():
+            if not isinstance(value, str) or not value.strip():
+                continue
+            target = field
+            if dup_type != keeper_type:
+                target = _schema.resolve_field(
+                    keeper_type, _schema.base_field_of(dup_type, field))
+            ok = target in valid if valid else target in keeper_data
+            if not ok or target in _GAP_FILL_SKIP or target in fill:
+                continue
+            if not str(keeper_data.get(target) or "").strip():
+                fill[target] = value
+        if (dup_type == keeper_type and dup.get("creators")
+                and not keeper_data.get("creators") and "creators" not in fill):
+            fill["creators"] = copy.deepcopy(dup["creators"])
+    return fill
+
+
+def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str],
+                children_by_key: dict | None = None) -> dict:
     """Fetch a keeper and its duplicates and work out what merging would do.
 
     Children are fetched through _paginate: pyzotero's children() returns only
     the first API page, which used to silently drop every child past the 25th
-    into the Trash along with the duplicate (#387).
+    into the Trash along with the duplicate (#387). *children_by_key* holds
+    listings the caller fetched moments ago from the same client (auto mode,
+    choosing the keeper), so they are not fetched a second time.
     """
+    def children_of(key):
+        if children_by_key is not None and key in children_by_key:
+            return children_by_key[key]
+        return _helpers._paginate(write_zot.children, key)
+
     keeper = write_zot.item(keeper_key)
-    keeper_children = _helpers._paginate(write_zot.children, keeper_key)
+    keeper_children = children_of(keeper_key)
     duplicates = [
-        {
-            "item": write_zot.item(dk),
-            "children": _helpers._paginate(write_zot.children, dk),
-        }
+        {"item": write_zot.item(dk), "children": children_of(dk)}
         for dk in dup_keys
     ]
 
@@ -4036,6 +4080,8 @@ def _merge_plan(write_zot, keeper_key: str, dup_keys: list[str]) -> dict:
         "new_tags": all_tags - keeper_tags,
         "dup_tag_objects": dup_tag_objects,
         "new_collections": all_collections - set(keeper_data.get("collections", [])),
+        "fill_fields": _gap_fill(
+            keeper_data, [dup["item"].get("data", {}) for dup in duplicates]),
         "children_to_move": total_children_to_move - skipped_attachment_count,
         "skipped_attachment_count": skipped_attachment_count,
         "keeper_attachment_sigs": keeper_attachment_sigs,
@@ -4059,8 +4105,8 @@ def _trash_item(write_zot, item_key: str) -> tuple[bool, str]:
 def _execute_merge(write_zot, plan: dict, ctx) -> dict:
     """Apply a plan from _merge_plan. Returns a result dict; never raises.
 
-    Order matters: tags, then collections, then children, and the duplicates
-    are trashed only if every child moved. A child left behind on an item
+    Order matters: the keeper's tags, collections and empty fields, then
+    children, and the duplicates are trashed only if every child moved. A child left behind on an item
     that is about to be trashed is the data-loss shape from #387, so a partial
     re-parent aborts before anything reaches the Trash.
     """
@@ -4070,6 +4116,7 @@ def _execute_merge(write_zot, plan: dict, ctx) -> dict:
         "keeper_key": keeper_key,
         "new_tags": plan["new_tags"],
         "new_collections": plan["new_collections"],
+        "filled": sorted(plan["fill_fields"]),
         "moved": [],
         "failed": [],
         "skipped_dupes": [],
@@ -4078,25 +4125,32 @@ def _execute_merge(write_zot, plan: dict, ctx) -> dict:
         "error": None,
     }
 
-    if plan["new_tags"]:
+    # Tags, collections and gap-filled fields go to the keeper in one write.
+    # Collections used to follow in a PATCH and a re-fetch each, and one that
+    # failed only logged a warning while the summary still counted it.
+    if plan["new_tags"] or plan["new_collections"] or plan["fill_fields"]:
         keeper_data = keeper.get("data", {})
         # Keep the keeper's tag dicts verbatim (automatic tags stay type 1).
         keeper_data["tags"] = _helpers._apply_tag_changes(
             keeper_data.get("tags", []),
             [plan["dup_tag_objects"].get(t, {"tag": t}) for t in sorted(plan["new_tags"])],
         )
+        keeper_data["collections"] = (
+            list(keeper_data.get("collections") or []) + sorted(plan["new_collections"])
+        )
+        keeper_data.update(plan["fill_fields"])
         _helpers._strip_unwritable_fields(keeper)
-        resp = write_zot.update_item(keeper)
-        if not _helpers._handle_write_response(resp, ctx):
-            result["error"] = f"Failed to merge tags into keeper {keeper_key}."
+        try:
+            ok = _helpers._handle_write_response(write_zot.update_item(keeper), ctx)
+        except Exception as e:
+            ok = False
+            ctx.warning(f"Could not update keeper {keeper_key}: {e}")
+        if not ok:
+            result["error"] = (
+                f"Failed to merge tags, collections and fields into keeper "
+                f"{keeper_key}. Nothing was moved or trashed."
+            )
             return result
-        keeper = write_zot.item(keeper_key)  # re-fetch for version
-
-    for coll_key in plan["new_collections"]:
-        resp = write_zot.addto_collection(coll_key, keeper)
-        if not _helpers._handle_write_response(resp, ctx):
-            ctx.warning(f"Failed to add keeper to collection {coll_key}")
-        keeper = write_zot.item(keeper_key)  # re-fetch for version
 
     for dup in plan["duplicates"]:
         for child in dup["children"]:
@@ -4130,7 +4184,14 @@ def _execute_merge(write_zot, plan: dict, ctx) -> dict:
 
     for dup in plan["duplicates"]:
         dup_key = dup["item"]["key"]
-        ok, why = _trash_item(write_zot, dup_key)
+        # The plan's copy carries the version to send; moving its children
+        # away does not change it. Only if that is refused is it read again.
+        try:
+            ok, why = _helpers.trash_item(write_zot, dup["item"])
+        except Exception as e:
+            ok, why = False, str(e)
+        if not ok:
+            ok, why = _trash_item(write_zot, dup_key)
         if ok:
             result["trashed"].append(dup_key)
         else:
@@ -4203,6 +4264,10 @@ def _auto_merge_groups(read_zot, write_zot, method, collection_key, max_groups):
 
         keeper_entry = entries[0]
         qualifying.append({
+            "children_by_key": {e["item"].get("key"): e["children"] for e in entries},
+            "fill_fields": sorted(_gap_fill(
+                keeper_entry["item"].get("data", {}),
+                [e["item"].get("data", {}) for e in entries[1:]])),
             "group_key": group_key,
             "keeper_key": keeper_entry["item"].get("key", "?"),
             "keeper_title": keeper_entry["item"].get("data", {}).get("title", "Untitled"),
@@ -4255,6 +4320,8 @@ def _render_auto_plan(qualifying, skipped, clipped, token, method, max_groups) -
         for g in qualifying:
             lines.append(f"### {g['group_key']}")
             lines.append(f"- **KEEP** `{g['keeper_key']}` — {g['keeper_title']}  ({g['keeper_why']})")
+            if g["fill_fields"]:
+                lines.append(f"  - fills its empty {', '.join(g['fill_fields'])} from the duplicate")
             for key, title in g["trash_titles"]:
                 lines.append(f"- trash `{key}` — {title}")
             lines.append("")
@@ -4367,6 +4434,7 @@ def merge_duplicates(
                 "",
                 f"**Tags to add:** {sorted(plan['new_tags']) if plan['new_tags'] else 'none'}",
                 f"**Collections to add:** {sorted(plan['new_collections']) if plan['new_collections'] else 'none'}",
+                f"**Empty fields to fill:** {sorted(plan['fill_fields']) if plan['fill_fields'] else 'none'}",
                 f"**Child items to re-parent:** {plan['children_to_move']}",
                 f"  ({skipped} duplicate attachment(s) will be skipped)" if skipped
                 else "  (notes, PDFs, annotations, highlights, etc.)",
@@ -4390,6 +4458,7 @@ def merge_duplicates(
             f"Merge complete.\n\n"
             f"- Tags merged: {len(result['new_tags'])} new\n"
             f"- Collections added: {len(result['new_collections'])} new\n"
+            f"- Empty fields filled: {', '.join(result['filled']) or 'none'}\n"
             f"- Children re-parented: {len(result['moved'])}{skip_info}\n"
             f"- Duplicates trashed: {', '.join(f'`{k}`' for k in result['trashed'])}\n\n"
             "Trashed items can be restored from Zotero's Trash."
@@ -4451,11 +4520,12 @@ def _merge_duplicates_auto(
 
     ctx.info(f"Auto-merging {len(qualifying)} group(s)")
     merged, failures = [], []
-    total_trashed, total_children = 0, 0
+    total_trashed, total_children, total_filled = 0, 0, 0
 
     for group in qualifying:
         try:
-            plan = _merge_plan(write_zot, group["keeper_key"], group["duplicate_keys"])
+            plan = _merge_plan(write_zot, group["keeper_key"], group["duplicate_keys"],
+                               group["children_by_key"])
             result = _execute_merge(write_zot, plan, ctx)
         except Exception as e:
             failures.append((group["group_key"], str(e)))
@@ -4466,6 +4536,7 @@ def _merge_duplicates_auto(
         merged.append(group)
         total_trashed += len(result["trashed"])
         total_children += len(result["moved"])
+        total_filled += len(result["filled"])
         if result["trash_failures"]:
             failures.append((
                 group["group_key"],
@@ -4478,6 +4549,7 @@ def _merge_duplicates_auto(
         f"- Groups merged: **{len(merged)}** of {len(qualifying)} planned",
         f"- Items trashed: **{total_trashed}**",
         f"- Child items re-parented: {total_children}",
+        f"- Empty fields filled on keepers: {total_filled}",
         f"- Groups skipped as ambiguous: {len(skipped)}",
         f"- Groups that failed: {len(failures)}",
         "",

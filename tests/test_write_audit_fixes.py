@@ -379,3 +379,111 @@ def test_add_by_isbn_holds_the_api_lock_for_its_zotero_calls(monkeypatch):
     assert held == [True, False, True, True]
     # Tags are merged the way every other adder merges them.
     assert zot.created[0]["tags"] == [{"tag": "ML"}]
+
+
+# --- merge_duplicates fills the keeper's empty fields, as its description says ---
+
+
+def _merge_zot(monkeypatch, keeper, dup, children=None):
+    from test_duplicates import FakeZoteroForDuplicates, _make_item
+
+    zot = FakeZoteroForDuplicates()
+    k = _make_item("KEEP", "Same Title", abstract="", version=1)
+    d = _make_item("DUP1", "Same Title", abstract="The only abstract.", doi="10.1234/x", version=2)
+    k["data"].update(keeper)
+    d["data"].update(dup)
+    zot._items = [k, d] + [c for kids in (children or {}).values() for c in kids]
+    zot._children = {"KEEP": [], "DUP1": [], **(children or {})}
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: zot)
+    monkeypatch.setattr(_helpers, "_get_write_client", lambda ctx: (zot, zot))
+    return zot
+
+
+def test_merge_fills_the_keepers_empty_fields_and_keeps_its_own_values(monkeypatch):
+    """The description promised it and nothing did it: the duplicate's
+    abstract and DOI went to the Trash with it."""
+    zot = _merge_zot(
+        monkeypatch,
+        keeper={"date": "2020", "publicationTitle": "", "creators": [], "citationKey": ""},
+        dup={"date": "1999", "publicationTitle": "Nature", "citationKey": "dup2024",
+             "numPages": "300", "extra": "  "},
+    )
+
+    preview = write.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1"],
+                                     ctx=DummyContext())
+    assert ("**Empty fields to fill:** ['DOI', 'abstractNote', 'creators', "
+            "'publicationTitle']") in preview
+    assert zot.update_calls == []  # a dry run writes nothing
+
+    result = write.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1"],
+                                    confirm=True, ctx=DummyContext())
+
+    keeper = zot.item("KEEP")["data"]
+    assert keeper["abstractNote"] == "The only abstract."
+    assert keeper["DOI"] == "10.1234/x"
+    assert keeper["publicationTitle"] == "Nature"
+    assert keeper["creators"] == [
+        {"firstName": "A", "lastName": "Author", "creatorType": "author"}]
+    assert keeper["date"] == "2020"           # its own value wins
+    assert keeper["citationKey"] == ""        # Better BibTeX's, never copied
+    assert "numPages" not in keeper           # not a journalArticle field
+    assert len(zot.update_calls) == 1         # with the tags, in one write
+    assert "- Empty fields filled: DOI, abstractNote, creators, publicationTitle" in result
+
+
+def test_merge_carries_a_field_across_item_types_through_its_base_field(monkeypatch):
+    keeper = {"itemType": "conferencePaper", "title": "T", "proceedingsTitle": "", "creators": []}
+    dup = {"itemType": "journalArticle", "title": "T", "publicationTitle": "Proc. of X",
+           "journalAbbreviation": "PX", "creators": [{"creatorType": "author", "name": "A"}]}
+
+    assert write._gap_fill(keeper, [dup]) == {"proceedingsTitle": "Proc. of X"}
+
+
+def test_merge_with_nothing_to_fill_says_none(monkeypatch):
+    _merge_zot(monkeypatch, keeper={"abstractNote": "Mine.", "DOI": "10.1234/x"}, dup={})
+
+    result = write.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1"],
+                                    confirm=True, ctx=DummyContext())
+
+    assert "- Empty fields filled: none" in result
+
+
+def test_merge_does_not_trash_when_the_keeper_write_fails(monkeypatch):
+    """A collection that could not be added only logged a warning, and the
+    summary still counted it."""
+    zot = _merge_zot(monkeypatch, keeper={}, dup={"collections": ["COLL0001"]})
+
+    def refuse(item, **kwargs):
+        raise RuntimeError("409 collection not found")
+
+    zot.update_item = refuse
+
+    result = write.merge_duplicates(keeper_key="KEEP", duplicate_keys=["DUP1"],
+                                    confirm=True, ctx=DummyContext())
+
+    assert "Nothing was moved or trashed" in result
+    assert zot.client.patch_calls == []
+
+
+def test_auto_merge_reads_each_childrens_listing_once_and_trashes_without_a_re_read(monkeypatch):
+    note = {"key": "NOTE0001", "version": 5,
+            "data": {"itemType": "note", "parentItem": "DUP1", "note": "n"}}
+    zot = _merge_zot(monkeypatch, keeper={"DOI": "10.1234/x", "abstractNote": "Mine."},
+                     dup={"abstractNote": ""}, children={"DUP1": [note]})
+    calls = {"children": [], "item": []}
+    real_children, real_item = zot.children, zot.item
+    zot.children = lambda key, **kw: (calls["children"].append(key), real_children(key, **kw))[1]
+    zot.item = lambda key: (calls["item"].append(key), real_item(key))[1]
+
+    plan = write.merge_duplicates(auto=True, ctx=DummyContext())
+    token = plan.split("plan_token='")[1].split("'")[0]
+    calls["children"].clear()
+    calls["item"].clear()
+    result = write.merge_duplicates(auto=True, confirm=True, plan_token=token,
+                                    ctx=DummyContext())
+
+    assert "Groups merged: **1** of 1 planned" in result
+    # DUP1 has the note, so it is kept and KEEP is trashed.
+    assert sorted(calls["children"]) == ["DUP1", "KEEP"]   # was each twice
+    assert calls["item"] == ["DUP1", "KEEP"]               # no re-read before the trash
+    assert len(zot.client.patch_calls) == 1
