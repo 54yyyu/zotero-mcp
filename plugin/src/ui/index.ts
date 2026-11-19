@@ -76,7 +76,7 @@ class Panel {
       blockReason: () => this.health.blockReason(),
       turnEnded: (stop) => this.feed.announce(stop === "end_turn" ? t("chat.answerFinished") : t("chat.turnEnded")),
       setupFailed: () => void this.health.refresh(),
-      sessionChanged: () => this.syncPickers(),
+      sessionChanged: () => void this.loadCatalog(false), // the pickers; a session that came up has also said what its agent offers
       shownChanged: () => this.refreshChips(),
       expand: (text, cwd) => this.expand(text, cwd),
     });
@@ -399,6 +399,15 @@ class Panel {
     const b = this.host.getSettings().backend;
     if (b === "custom" && !strict) return this.syncPickers();
     if (this.catalogs.has(b) || this.chat.session?.backend === b) return this.syncPickers();
+    // What is already known (read from a session before, kept by the host) costs nothing. Reading one starts an agent, so
+    // that is left to a menu being opened (`strict`), and even then a session already starting is waited for instead.
+    const known = await this.host.runtime.cached?.(b).catch(() => undefined);
+    if (known && !this.catalogs.has(b)) this.catalogs.set(b, known);
+    if (known || !strict) return this.syncPickers();
+    if (this.chat.starting) {
+      await this.chat.starting.catch(() => {});
+      if (this.chat.session?.backend === b) return this.syncPickers();
+    }
     const source = JSON.stringify(this.host.getSettings().customAgent);
     try {
       const catalog = await this.host.runtime.catalog(b);

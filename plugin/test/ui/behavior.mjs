@@ -638,7 +638,10 @@ await test("pickers: effort, model and mode act on the live session and save int
   assert.deepEqual([s.effort.codex, s.effort.pi, s.mode.codex, s.model["claude-code"]], ["", "", "", ""]);
   await openSettings(p);
   await p.locator(".seg__opt", { hasText: /^pi$/ }).first().click();
-  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".radio").length === 0 && window.__zmc.shadow.querySelectorAll(".field").length === 3); // model, translate target — and the title-source dropdown
+  // pi's own card once its options are known (kept from an earlier session, so at once): no permission radios; the fields
+  // are its model and effort, the title-source dropdown, the translate target and the translator's model. (This used to
+  // wait for 3 fields, which was the page while the catalog was still being read.)
+  await p.waitForFunction(() => window.__zmc.shadow.querySelectorAll(".radio").length === 0 && window.__zmc.shadow.querySelectorAll(".field").length === 5);
   await p.keyboard.press("Escape");
   assert.equal(await p.locator(".pick--mode").isVisible(), false, "pi has no permission modes");
   assert.match(await p.locator(".pick--model .pick__e").innerText(), /Off/, "pi's own effort default");
@@ -892,6 +895,28 @@ await test("model dropdown at 300px: one button beside the ring and the mode; th
   const m = await p.evaluate(() => { const r = (s) => window.__zmc.shadow.querySelector(s).getBoundingClientRect(); const d = r(".mdd"), c = r(".composer"), b = r(".pick--model"); return { inside: d.left >= c.left - 1 && d.right <= c.right + 1, above: d.bottom <= b.top + 1 }; });
   assert.deepEqual(m, { inside: true, above: true }, "the dropdown sits above its button, inside the composer");
 }, { width: 300 });
+
+await test("opening the panel starts no agent to read its options; they come from the chat's own session", async (p) => {
+  // Nothing kept from an earlier run (the catalogDelay scenario): the pickers wait, no agent is started to fill them.
+  await p.waitForTimeout(400);
+  assert.equal(await sim(p, () => window.__zmc.sim.catalogReads), 0, "nothing was started to ask");
+  assert.equal(await p.locator(".pick--mode").isVisible(), false, "no permission modes known yet");
+  // The composer takes the focus: the chat's session starts, and says what its agent offers.
+  await p.locator(".cin").click();
+  await p.waitForFunction(() => /Sonnet/.test(window.__zmc.shadow.querySelector(".pick--model").textContent));
+  await p.waitForSelector(".pick--mode:not([hidden])");
+  await p.locator(".pick--model").click();
+  await p.waitForSelector('.mdd [role="menuitemradio"]');
+  assert.equal(await sim(p, () => window.__zmc.sim.catalogReads), 0, "the menu lists the session's models; still nothing was started to ask");
+}, { params: { catalogDelay: 50 } });
+
+await test("a model menu opened before any session reads the options once, on demand", async (p) => {
+  assert.equal(await sim(p, () => window.__zmc.sim.catalogReads), 0);
+  await p.locator(".pick--model").focus(); // not the composer: no session starts
+  await p.keyboard.press("Enter");
+  await p.waitForSelector('.mdd [role="menuitemradio"]');
+  assert.equal(await sim(p, () => window.__zmc.sim.catalogReads), 1);
+}, { params: { catalogDelay: 50 } });
 
 await test("settings: the agent section shows loading, then the catalog; a failing backend shows an error with Try again", async (p) => {
   await p.locator('button[aria-label="Settings"]').click();

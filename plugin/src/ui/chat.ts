@@ -103,17 +103,20 @@ export class Chat {
       await this.closing;
       current();
       const resume = this.resume?.agentSessionId ? this.resume : null;
-      const prep = await host.prepareSession(this.resume?.cwd);
-      current();
-      this.cwd = prep.cwd;
-      const start = (set: PanelSettings, b: BackendId, resumeSessionId?: string) => host.runtime.start({
-        backend: b, cwd: prep.cwd, brief: prep.brief, env: prep.env,
-        ...(set.model[b] ? { model: set.model[b] } : {}),
-        ...(set.mode[b] ? { mode: set.mode[b] } : {}),
-        ...(set.effort[b] ? { effort: set.effort[b] } : {}),
-        ...(!ownProviders(b) ? { auth: set.auth[b] } : {}),
-        ...(resumeSessionId ? { resumeSessionId } : {}),
-      });
+      const folder = this.resume?.cwd;
+      const start = async (set: PanelSettings, b: BackendId, resumeSessionId?: string) => {
+        const prep = await host.prepareSession(folder, b);
+        current();
+        this.cwd = prep.cwd;
+        return host.runtime.start({
+          backend: b, cwd: prep.cwd, brief: prep.brief, env: prep.env,
+          ...(set.model[b] ? { model: set.model[b] } : {}),
+          ...(set.mode[b] ? { mode: set.mode[b] } : {}),
+          ...(set.effort[b] ? { effort: set.effort[b] } : {}),
+          ...(!ownProviders(b) ? { auth: set.auth[b] } : {}),
+          ...(resumeSessionId ? { resumeSessionId } : {}),
+        });
+      };
       let set = host.getSettings();
       let sess: AgentSession;
       let resumed = !!resume;
