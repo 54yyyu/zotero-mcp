@@ -1738,6 +1738,19 @@ def semantic_search(
         return f"Error in semantic search: {str(e)}"
 
 
+def _deleted_summary(stats: dict) -> str | None:
+    """The update report's line on removed records: items gone from Zotero
+    and stale note/annotation records (#604) are counted separately."""
+    purged = stats.get("purged_non_indexed") or 0
+    gone = (stats.get("deleted_items") or 0) - purged
+    parts = []
+    if gone > 0:
+        parts.append(f"{gone} (no longer in Zotero)")
+    if purged:
+        parts.append(f"{purged} note/annotation {'record' if purged == 1 else 'records'} purged")
+    return f"**Deleted:** {'; '.join(parts)}" if parts else None
+
+
 @mcp.tool(
     name="zotero_update_search_database",
     description=(
@@ -1812,8 +1825,9 @@ def update_search_database(
                 output.append(
                     f"**Reused from identical files:** {reused['attachments']} ({reused.get('records', 0)} records)"
                 )
-            if stats.get("deleted_items"):
-                output.append(f"**Deleted:** {stats['deleted_items']} (no longer in Zotero)")
+            deleted_line = _deleted_summary(stats)
+            if deleted_line:
+                output.append(deleted_line)
             if stats.get("deletion_skipped_reason"):
                 output.append(f"**Deletion check skipped:** {stats['deletion_skipped_reason']}")
             output.append(f"**Errors:** {stats.get('errors', 0)}")

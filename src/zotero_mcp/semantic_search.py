@@ -5579,12 +5579,16 @@ class ZoteroSemanticSearch:
                         self.chroma_client.delete_documents(bare_keys)
                     stats["deleted_items"] = len(to_delete_keys)
                     try:
-                        sys.stderr.write(f"\nDeleted {len(to_delete_keys)} items no longer present in Zotero.\n")
-                        if purged:
-                            sys.stderr.write(
-                                f"  {len(purged)} of them were records of notes and annotations, "
-                                "which are never indexed.\n"
+                        gone = len(to_delete_keys) - len(purged)
+                        parts = []
+                        if gone:
+                            parts.append(
+                                f"{gone} {'item' if gone == 1 else 'items'} no longer present in Zotero"
                             )
+                        if purged:
+                            noun = "record of a note or annotation" if len(purged) == 1 else "records of notes and annotations"
+                            parts.append(f"{len(purged)} {noun}, which {'is' if len(purged) == 1 else 'are'} never indexed")
+                        sys.stderr.write(f"\nDeleted {' and '.join(parts)}.\n")
                     except Exception:
                         pass
         except Exception as e:
