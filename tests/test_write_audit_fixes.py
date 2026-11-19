@@ -253,3 +253,129 @@ def test_add_from_file_does_not_hold_the_api_lock_during_the_doi_lookup(monkeypa
     # The outcome is read off the result, not parsed back out of its text.
     assert zot.attachments[0]["parentid"] == "EXIST001"
     assert result.startswith("Item key: `EXIST001`\nDOI: 10.1234/abc\nFile attached: paper.pdf")
+
+
+# --- an ISBN or a URL alone does not identify a work ---
+
+
+def _library(*items):
+    from conftest import FakeZotero
+
+    zot = FakeZotero()
+    zot._items = [{"key": f"ITEM000{i}", "version": 1, "data": d} for i, d in enumerate(items)]
+    zot.searches = []
+    stored = zot._items
+
+    def items(**kwargs):
+        if "q" in kwargs:
+            zot.searches.append((kwargs["q"], kwargs.get("qmode")))
+        return stored
+
+    zot.items = items
+    return zot
+
+
+ISBN13 = "9780199735815"
+
+
+def test_isbn_match_needs_a_book_or_the_same_title():
+    """Every chapter carries the book's ISBN: the second chapter was reported
+    as already in the library, and a library copy skipped it."""
+    chapter = {"itemType": "bookSection", "title": "Chapter One", "ISBN": "978-0-19-973581-5"}
+    zot = _library(chapter)
+    find = _helpers.find_existing_items
+
+    assert find(zot, isbn=ISBN13, title="Chapter Two", item_type="bookSection") == []
+    assert find(zot, isbn=ISBN13, item_type="book") == []  # the book is not there yet
+    assert len(find(zot, isbn=ISBN13, title="chapter one!", item_type="bookSection")) == 1
+
+    book = _library({"itemType": "book", "title": "The Book", "ISBN": ISBN13})
+    assert len(find(book, isbn=ISBN13)) == 1
+    assert len(find(book, isbn=ISBN13, title="Another Title", item_type="book")) == 1
+    assert find(book, isbn=ISBN13, title="Chapter Two", item_type="bookSection") == []
+
+
+def test_url_match_needs_the_same_title_unless_the_stored_item_is_a_bare_page():
+    url = "https://press.example.org/book"
+    find = _helpers.find_existing_items
+    chapter = _library({"itemType": "bookSection", "title": "Chapter One", "url": url})
+
+    assert find(chapter, url=url, title="Chapter Two") == []
+    assert len(find(chapter, url=url, title="Chapter One")) == 1
+    assert len(find(chapter, url=url)) == 1  # nothing to compare: the URL decides, as before
+
+    bare = _library({"itemType": "webpage", "title": url, "url": url})
+    assert len(find(bare, url=url, title="The Page's Real Title")) == 1
+
+
+def test_copying_a_second_chapter_is_not_skipped_as_existing(monkeypatch):
+    target = _library({"itemType": "bookSection", "title": "Chapter One", "ISBN": ISBN13,
+                       "url": "https://press.example.org/book"})
+    source = {"key": "SRC00002", "data": {
+        "itemType": "bookSection", "title": "Chapter Two", "ISBN": ISBN13,
+        "url": "https://press.example.org/book", "creators": [], "tags": []}}
+
+    result = write._copy_one(
+        "SRC00002", source, [], target, write._CopyLibrary("1", "group", 1), (None, None),
+        copy_notes=True, copy_attachments=True, copy_tags=True, if_exists="skip",
+        ctx=DummyContext())
+
+    assert result["status"] == "copied" and result["error"] is None
+    assert target.created[0]["title"] == "Chapter Two"
+
+
+def test_the_recheck_before_a_create_does_not_repeat_the_identifier_search(monkeypatch):
+    """A new DOI cost three searches: the identifier query, then, under the
+    lock, the same identifier query again and the title query."""
+    zot = _library()
+    monkeypatch.setattr(_helpers, "_get_write_client", lambda ctx: (zot, zot))
+    monkeypatch.setattr(write, "_fetch_one_doi_metadata", lambda doi, ctx: (
+        "fetched", {"type": "journal-article", "title": ["A Paper"], "DOI": doi}))
+    monkeypatch.setattr(_helpers, "_try_attach_oa_pdf", lambda *a, **k: "skipped")
+
+    result = write.add_by_doi(doi="10.1234/abc", page_check="thin_only", ctx=DummyContext())
+
+    assert result.status == "created"
+    assert zot.searches == [("10.1234/abc", "everything"), ("A Paper", "titleCreatorYear")]
+
+
+def test_a_recheck_without_a_title_still_asks_by_identifier():
+    zot = _library()
+    _helpers.find_existing_items(zot, doi="10.1234/abc", recheck=True)
+    assert zot.searches == [("10.1234/abc", "everything")]
+
+
+def test_add_by_isbn_holds_the_api_lock_for_its_zotero_calls(monkeypatch):
+    import threading
+
+    from zotero_mcp import client
+
+    zot = _library()
+    held = []
+
+    def probe(result):
+        def run():
+            free = client._zotero_api_lock.acquire(blocking=False)
+            if free:
+                client._zotero_api_lock.release()
+            held.append(not free)
+
+        t = threading.Thread(target=run)
+        t.start()
+        t.join()
+        return result
+
+    real_items, real_create = zot.items, zot.create_items
+    zot.items = lambda **kw: probe(real_items(**kw))
+    zot.create_items = lambda items, **kw: probe(real_create(items, **kw))
+    monkeypatch.setattr(_helpers, "_get_write_client", lambda ctx: (zot, zot))
+    monkeypatch.setattr(write, "_lookup_isbn_openlibrary", lambda isbn, ctx: (
+        probe(None) or {"source": "Open Library", "title": "The Book", "creators": []}))
+
+    result = write.add_by_isbn(isbn=ISBN13, tags=["ML", "ml"], ctx=DummyContext())
+
+    assert result.startswith("Successfully added: **The Book**")
+    # search, lookup (third party: lock released), search, create
+    assert held == [True, False, True, True]
+    # Tags are merged the way every other adder merges them.
+    assert zot.created[0]["tags"] == [{"tag": "ML"}]

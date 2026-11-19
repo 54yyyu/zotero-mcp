@@ -45,6 +45,7 @@ from zotero_mcp.identifiers import (
     normalize_arxiv_id,
     normalize_doi,
     normalize_isbn,
+    normalize_title_for_matching,
 )
 from zotero_mcp.local_db import get_local_zotero_reader, note_local_write
 from zotero_mcp.utils import _paginate
@@ -1422,7 +1423,8 @@ def _sqlite_doi_candidate_keys(doi, ctx=None) -> list[str] | None:
 
 
 def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
-                        title=None, ctx=None) -> list[dict]:
+                        title=None, item_type=None, recheck=False,
+                        ctx=None) -> list[dict]:
     """Find non-attachment items already in the library by a normalized id.
 
     Exactly one of doi / arxiv_id / isbn / url should be given (already
@@ -1457,6 +1459,21 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
     full text, where a paper's own DOI genuinely does appear, and it finds an
     item stored under a title that no longer matches the one just fetched.
     The title query cannot do either.
+
+    **An ISBN or a URL does not identify a work on its own**, as a DOI or an
+    arXiv ID does. Every chapter of a book carries the book's ISBN and often
+    its URL, so matching on either alone called a second chapter "already in
+    the library" (and a library copy skipped it). An ISBN match is therefore
+    the same item only when both are books (``item_type`` is the type about
+    to be created, None meaning a book) or the titles agree; a URL match
+    only when the titles agree, the stored item has no title of its own (a
+    bare webpage item is titled with its URL), or no ``title`` was given.
+
+    ``recheck`` is for a caller repeating, under its identifier lock, a
+    lookup it made moments ago: with a title to search by, the identifier
+    query is not sent again. It "almost never matches" (above) and has just
+    run, so repeating it cost one search per item for nothing; an item a
+    concurrent add created in between is found by its title.
 
     Returns full item dicts (with ``key``/``version``/``data``) so callers
     can update them without re-fetching. Returns [] on search failure —
@@ -1498,13 +1515,24 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
     elif isbn:
         query = isbn
         def _matches(data):
-            return isbn in isbn_match_keys(data.get("ISBN"))
+            if isbn not in isbn_match_keys(data.get("ISBN")):
+                return False
+            both_books = data.get("itemType") == "book" and item_type in (None, "book")
+            return both_books or _same_title(data)
     elif url:
         query = url
         def _matches(data):
-            return (data.get("url") or "").rstrip("/") == url.rstrip("/")
+            if (data.get("url") or "").rstrip("/") != url.rstrip("/"):
+                return False
+            stored = (data.get("title") or "").strip()
+            return not want_title or not stored or stored == data.get("url") or _same_title(data)
     else:
         return []
+
+    want_title = normalize_title_for_matching(title)
+
+    def _same_title(data):
+        return bool(want_title) and normalize_title_for_matching(data.get("title")) == want_title
 
     def _search(q, qmode):
         try:
@@ -1580,11 +1608,12 @@ def find_existing_items(zot, *, doi=None, arxiv_id=None, isbn=None, url=None,
             # are the ones the write path will be checked against.
             return _confirm(_fetch(k) for k in keys)
 
-    matches = _confirm(_search(query, "everything"))
-    if matches:
-        return matches
-
     title_query = _title_search_query(title)
+    if not (recheck and title_query):
+        matches = _confirm(_search(query, "everything"))
+        if matches:
+            return matches
+
     if not title_query:
         return []
 

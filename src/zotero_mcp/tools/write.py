@@ -416,6 +416,25 @@ def _handle_existing_item(write_zot, existing, coll_keys, tags, if_exists,
     return _AddResult(header + "\n".join(lines) + note, item_key, "reused")
 
 
+def _reuse_existing(read_zot, write_zot, coll_keys, tags, if_exists, ctx,
+                    matched_by: str, **lookup) -> _AddResult | None:
+    """The if_exists='file'/'skip' outcome when the item is already in the
+    library, else None (the caller goes on to create it).
+
+    *lookup* is find_existing_items' keywords: the identifier, and where
+    known the title, item type and ``recheck``.
+    """
+    if if_exists == "duplicate":
+        return None
+    existing = _helpers.find_existing_items(read_zot, ctx=ctx, **lookup)
+    if not existing:
+        return None
+    return _handle_existing_item(
+        write_zot, existing, coll_keys, tags, if_exists,
+        matched_by=matched_by, ctx=ctx,
+    )
+
+
 def _normalize_tag_selector(tag):
     """Collapse a tag selector (str, list, or JSON string) to pyzotero's form."""
     if tag is None:
@@ -1854,13 +1873,12 @@ def _dedup_check_one_doi(read_zot, write_zot, doi, coll_keys, tags, if_exists, c
             return ("final", f"Error: '{doi}' does not appear to be a valid DOI.")
 
         with zotero_api_lock():
-            if if_exists != "duplicate":
-                existing = _helpers.find_existing_items(read_zot, doi=normalized, ctx=ctx)
-                if existing:
-                    return ("final", _handle_existing_item(
-                        write_zot, existing, coll_keys, tags, if_exists,
-                        matched_by=f"DOI {normalized}", ctx=ctx,
-                    ))
+            reused = _reuse_existing(
+                read_zot, write_zot, coll_keys, tags, if_exists, ctx,
+                f"DOI {normalized}", doi=normalized,
+            )
+            if reused is not None:
+                return ("final", reused)
 
         return ("needs_fetch", normalized)
 
@@ -2193,17 +2211,15 @@ def add_by_doi(
                 for i, payload in pending:
                     # CrossRef metadata is in hand here, so pass the title: a
                     # DOI is not server-side searchable, and the identifier
-                    # query alone misses items already in the library.
-                    existing = _helpers.find_existing_items(
-                        read_zot, doi=payload["doi"],
-                        title=payload["item_data"].get("title"),
-                        ctx=ctx,
+                    # query alone misses items already in the library. Phase
+                    # 1 sent that query moments ago, so it is not repeated.
+                    reused = _reuse_existing(
+                        read_zot, write_zot, coll_keys, tags, if_exists, ctx,
+                        f"DOI {payload['doi']}", doi=payload["doi"],
+                        title=payload["item_data"].get("title"), recheck=True,
                     )
-                    if existing:
-                        work_results[i] = _handle_existing_item(
-                            write_zot, existing, coll_keys, tags, if_exists,
-                            matched_by=f"DOI {payload['doi']}", ctx=ctx,
-                        )
+                    if reused is not None:
+                        work_results[i] = reused
                     else:
                         still_pending.append((i, payload))
                 pending = still_pending
@@ -2366,38 +2382,32 @@ def _add_from_embedded_metadata(
     create below are atomic (#486, #515). A page that declares a DOI never
     reaches here, it goes through add_by_doi and its DOI check.
     """
-    if if_exists != "duplicate":
-        lookup_zot = read_zot or write_zot
-        # The page's title is in hand, so pass it: neither an ISBN nor a URL
-        # is server-side searchable, and the identifier query alone misses
-        # items already in the library.
-        for token in re.split(r"[,;\s]+", meta.isbn or ""):
-            isbn = _helpers._normalize_isbn(token) if token else None
-            if not isbn:
-                continue
-            existing = _helpers.find_existing_items(
-                lookup_zot, isbn=isbn, title=meta.title, ctx=ctx
-            )
-            if existing:
-                return _handle_existing_item(
-                    write_zot, existing, coll_keys, tags, if_exists,
-                    matched_by=f"ISBN {isbn}", ctx=ctx,
-                )
-        existing = _helpers.find_existing_items(
-            lookup_zot, url=url, title=meta.title, ctx=ctx
-        )
-        if existing:
-            return _handle_existing_item(
-                write_zot, existing, coll_keys, tags, if_exists,
-                matched_by=f"URL {url}", ctx=ctx,
-            )
-
     if meta.looks_like_article():
         zot_type = "journalArticle"
     elif meta.looks_like_chapter():
         zot_type = "bookSection"
     else:
         zot_type = "webpage"
+
+    # The page's title is in hand, so pass it: neither an ISBN nor a URL is
+    # server-side searchable, and the identifier query alone misses items
+    # already in the library. It also decides the match: a chapter's page
+    # declares the ISBN of the whole book.
+    reuse = functools.partial(
+        _reuse_existing, read_zot or write_zot, write_zot, coll_keys, tags,
+        if_exists, ctx, title=meta.title,
+    )
+    for token in re.split(r"[,;\s]+", meta.isbn or ""):
+        isbn = _helpers._normalize_isbn(token) if token else None
+        if not isbn:
+            continue
+        reused = reuse(f"ISBN {isbn}", isbn=isbn, item_type=zot_type)
+        if reused is not None:
+            return reused
+    # The caller checked the URL before it read the page.
+    reused = reuse(f"URL {url}", url=url, recheck=True)
+    if reused is not None:
+        return reused
 
     template = dict(_helpers.item_template_for(write_zot, zot_type))
     _set = _citation_import._set_if_in_template
@@ -2427,11 +2437,7 @@ def _add_from_embedded_metadata(
             for first, last in meta.authors
         ]
 
-    tag_list = _helpers._normalize_str_list_input(tags, "tags")
-    if tag_list:
-        template["tags"] = [{"tag": t} for t in tag_list]
-    if coll_keys:
-        template["collections"] = coll_keys
+    _apply_caller_tags_and_collections(template, tags, coll_keys)
 
     ctx.info(f"Creating {zot_type} from embedded metadata for: {url}")
     result = write_zot.create_items([template])
@@ -2536,13 +2542,12 @@ def add_by_url(
             except ValueError as e:
                 return f"Error: {e}"
 
-            if if_exists != "duplicate":
-                existing = _helpers.find_existing_items(read_zot, url=url, ctx=ctx)
-                if existing:
-                    return _handle_existing_item(
-                        write_zot, existing, coll_keys, tags, if_exists,
-                        matched_by=f"URL {url}", ctx=ctx,
-                    )
+            reused = _reuse_existing(
+                read_zot, write_zot, coll_keys, tags, if_exists, ctx,
+                f"URL {url}", url=url,
+            )
+            if reused is not None:
+                return reused
 
         # Publisher landing pages carry the article's citation in their own
         # <head> (Highwire citation_* / Dublin Core). Zotero's browser
@@ -2592,13 +2597,12 @@ def add_by_url(
         # pair atomic. The identifier lock is always taken *outside* the API
         # lock, so the two are acquired in one consistent order everywhere.
         with _helpers.identifier_lock("url", url), zotero_api_lock():
-            if if_exists != "duplicate":
-                existing = _helpers.find_existing_items(read_zot, url=url, ctx=ctx)
-                if existing:
-                    return _handle_existing_item(
-                        write_zot, existing, coll_keys, tags, if_exists,
-                        matched_by=f"URL {url}", ctx=ctx,
-                    )
+            reused = _reuse_existing(
+                read_zot, write_zot, coll_keys, tags, if_exists, ctx,
+                f"URL {url}", url=url,
+            )
+            if reused is not None:
+                return reused
 
             ctx.info(f"Creating webpage item for: {url}")
             template = _helpers.item_template_for(write_zot, "webpage")
@@ -2606,11 +2610,7 @@ def add_by_url(
             template["title"] = url
             template["accessDate"] = ""
 
-            tag_list = _helpers._normalize_str_list_input(tags, "tags")
-            if tag_list:
-                template["tags"] = [{"tag": t} for t in tag_list]
-            if coll_keys:
-                template["collections"] = coll_keys
+            _apply_caller_tags_and_collections(template, tags, coll_keys)
 
             result = write_zot.create_items([template])
             if isinstance(result, dict) and result.get("success"):
@@ -2737,15 +2737,12 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
         except ValueError as e:
             return f"Error: {e}"
 
-        if if_exists != "duplicate":
-            existing = _helpers.find_existing_items(
-                read_zot or write_zot, arxiv_id=arxiv_id, ctx=ctx
-            )
-            if existing:
-                return _handle_existing_item(
-                    write_zot, existing, coll_keys, tags, if_exists,
-                    matched_by=f"arXiv ID {arxiv_id}", ctx=ctx,
-                )
+        reused = _reuse_existing(
+            read_zot or write_zot, write_zot, coll_keys, tags, if_exists, ctx,
+            f"arXiv ID {arxiv_id}", arxiv_id=arxiv_id,
+        )
+        if reused is not None:
+            return reused
 
     ctx.info(f"Fetching arXiv metadata for: {arxiv_id}")
 
@@ -2811,18 +2808,15 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
     # Serialize check-and-create for this arXiv ID (#486) — see add_by_url's
     # note; the metadata fetch above sits between the first check and here.
     with _helpers.identifier_lock("arxiv", arxiv_id), zotero_api_lock():
-        if if_exists != "duplicate":
-            # The title is known by now (fetched above), so pass it: the arXiv
-            # ID is not server-side searchable, and the identifier query alone
-            # misses items that are already in the library.
-            existing = _helpers.find_existing_items(
-                read_zot or write_zot, arxiv_id=arxiv_id, title=title, ctx=ctx
-            )
-            if existing:
-                return _handle_existing_item(
-                    write_zot, existing, coll_keys, tags, if_exists,
-                    matched_by=f"arXiv ID {arxiv_id}", ctx=ctx,
-                )
+        # The title is known by now (fetched above), so pass it: the arXiv
+        # ID is not server-side searchable, and the identifier query alone
+        # misses items that are already in the library.
+        reused = _reuse_existing(
+            read_zot or write_zot, write_zot, coll_keys, tags, if_exists, ctx,
+            f"arXiv ID {arxiv_id}", arxiv_id=arxiv_id, title=title, recheck=True,
+        )
+        if reused is not None:
+            return reused
 
         template = _helpers.item_template_for(write_zot, "preprint")
         template["title"] = title
@@ -2836,11 +2830,7 @@ def _add_by_arxiv(arxiv_id, collections, tags, write_zot, ctx, attach_mode="auto
         if "extra" in template:
             template["extra"] = f"arXiv:{arxiv_id}"
 
-        tag_list = _helpers._normalize_str_list_input(tags, "tags")
-        if tag_list:
-            template["tags"] = [{"tag": t} for t in tag_list]
-        if coll_keys:
-            template["collections"] = coll_keys
+        _apply_caller_tags_and_collections(template, tags, coll_keys)
 
         result = write_zot.create_items([template])
         if not (isinstance(result, dict) and result.get("success")):
@@ -3095,21 +3085,24 @@ def add_by_isbn(
                 "(checksum failed or wrong length)."
             )
 
-        try:
-            coll_keys = _resolve_collections_arg(
-                read_zot, collections, ctx,
-                create_missing=create_missing_collections, write_zot=write_zot,
-            )
-        except ValueError as e:
-            return f"Error: {e}"
-
-        if if_exists != "duplicate":
-            existing = _helpers.find_existing_items(read_zot, isbn=normalized, ctx=ctx)
-            if existing:
-                return _handle_existing_item(
-                    write_zot, existing, coll_keys, tags, if_exists,
-                    matched_by=f"ISBN {normalized}", ctx=ctx,
+        # The lock covers the Zotero API calls only, as in add_by_doi; this
+        # path used to take it nowhere, so its searches and its create ran
+        # beside other tools' calls to the single-threaded local API.
+        with zotero_api_lock():
+            try:
+                coll_keys = _resolve_collections_arg(
+                    read_zot, collections, ctx,
+                    create_missing=create_missing_collections, write_zot=write_zot,
                 )
+            except ValueError as e:
+                return f"Error: {e}"
+
+            reused = _reuse_existing(
+                read_zot, write_zot, coll_keys, tags, if_exists, ctx,
+                f"ISBN {normalized}", isbn=normalized, item_type="book",
+            )
+            if reused is not None:
+                return reused
 
         ctx.info(f"Resolving ISBN {normalized} via Open Library...")
         meta = _lookup_isbn_openlibrary(normalized, ctx)
@@ -3121,57 +3114,51 @@ def add_by_isbn(
                 f"ISBN not found on Open Library or Google Books: {normalized}"
             )
 
-        # Build Zotero book item
-        template = _helpers.item_template_for(write_zot, "book")
-        item_data = dict(template)
-        if meta.get("title"):
-            item_data["title"] = meta["title"]
-        if meta.get("creators"):
-            item_data["creators"] = meta["creators"]
-        if meta.get("date") and "date" in item_data:
-            item_data["date"] = meta["date"]
-        if meta.get("publisher") and "publisher" in item_data:
-            item_data["publisher"] = meta["publisher"]
-        if meta.get("place") and "place" in item_data:
-            item_data["place"] = meta["place"]
-        if meta.get("num_pages") and "numPages" in item_data:
-            item_data["numPages"] = meta["num_pages"]
-        if meta.get("url") and "url" in item_data:
-            item_data["url"] = meta["url"]
-        if "ISBN" in item_data:
-            item_data["ISBN"] = normalized
-
-        tag_list = _helpers._normalize_str_list_input(tags, "tags")
-        if tag_list:
-            item_data["tags"] = [{"tag": t} for t in tag_list]
-        if coll_keys:
-            item_data["collections"] = coll_keys
-
         # Serialize check-and-create for this ISBN (#486). The dedup check
         # above ran before the Open Library / Google Books lookups, so a
         # parallel add of the same book can have created it in between. The
         # check is repeated here rather than moved because the lookups must
         # stay outside the lock — that is the whole point of the narrowing.
-        with _helpers.identifier_lock("isbn", normalized):
-            if if_exists != "duplicate":
-                # Open Library / Google Books metadata is in hand by now, so
-                # pass the title: an ISBN is not server-side searchable, and
-                # the identifier query alone misses books already shelved.
-                existing = _helpers.find_existing_items(
-                    read_zot, isbn=normalized,
-                    title=item_data.get("title"), ctx=ctx,
-                )
-                if existing:
-                    return _handle_existing_item(
-                        write_zot, existing, coll_keys, tags, if_exists,
-                        matched_by=f"ISBN {normalized}", ctx=ctx,
-                    )
-            result = write_zot.create_items([item_data])
-        if isinstance(result, dict) and result.get("success"):
-            item_key = next(iter(result["success"].values()))
-            missing = _helpers.ensure_collection_membership(
-                write_zot, item_key, coll_keys, ctx=ctx
+        with _helpers.identifier_lock("isbn", normalized), zotero_api_lock():
+            # Build Zotero book item
+            template = _helpers.item_template_for(write_zot, "book")
+            item_data = dict(template)
+            if meta.get("title"):
+                item_data["title"] = meta["title"]
+            if meta.get("creators"):
+                item_data["creators"] = meta["creators"]
+            if meta.get("date") and "date" in item_data:
+                item_data["date"] = meta["date"]
+            if meta.get("publisher") and "publisher" in item_data:
+                item_data["publisher"] = meta["publisher"]
+            if meta.get("place") and "place" in item_data:
+                item_data["place"] = meta["place"]
+            if meta.get("num_pages") and "numPages" in item_data:
+                item_data["numPages"] = meta["num_pages"]
+            if meta.get("url") and "url" in item_data:
+                item_data["url"] = meta["url"]
+            if "ISBN" in item_data:
+                item_data["ISBN"] = normalized
+            _apply_caller_tags_and_collections(item_data, tags, coll_keys)
+
+            # Open Library / Google Books metadata is in hand by now, so
+            # pass the title: an ISBN is not server-side searchable, and
+            # the identifier query alone misses books already shelved.
+            reused = _reuse_existing(
+                read_zot, write_zot, coll_keys, tags, if_exists, ctx,
+                f"ISBN {normalized}", isbn=normalized, item_type="book",
+                title=item_data.get("title"), recheck=True,
             )
+            if reused is not None:
+                return reused
+            result = write_zot.create_items([item_data])
+            item_key = None
+            if isinstance(result, dict) and result.get("success"):
+                item_key = next(iter(result["success"].values()))
+                missing = _helpers.ensure_collection_membership(
+                    write_zot, item_key, coll_keys, ctx=ctx
+                )
+        if item_key:
             return (
                 f"Successfully added: **{item_data.get('title', normalized)}**\n\n"
                 f"Item key: `{item_key}`\n"
@@ -6647,8 +6634,11 @@ def _copy_one(key, source_item, children, target_zot, src, file_clients, *,
             ("isbn", _first_isbn(data.get("ISBN"))),
             ("url", data.get("url")),
         ):
+            # The type and title go along because an ISBN or a URL is shared:
+            # a second chapter of one book was "already there" and skipped.
             if value and (candidates := _helpers.find_existing_items(
-                target_zot, **{field: value}, title=data.get("title"), ctx=ctx
+                target_zot, **{field: value}, title=data.get("title"),
+                item_type=item_type, ctx=ctx
             )):
                 existing = candidates[0]
                 break
