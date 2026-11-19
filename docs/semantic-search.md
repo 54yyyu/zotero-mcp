@@ -167,6 +167,10 @@ On Windows the path must be ASCII-only. If your user folder name has other chara
 
 `zotero-mcp setup` keeps this setting. Moving it starts an empty index unless you move the old `chroma_db` folder there too.
 
+### Going back to 0.17
+
+Once 0.18 has written records in the item-keyed shape, do not open that index with 0.17.1 or earlier. They do not recognise the new records (they carry no `has_fulltext`), so the next `update-db` extracts those items' files again and embeds them in the old shape, which you pay for again, and the index ends up mixed. 0.17.1 does not refuse a newer index and does not warn. If you may want to go back, copy the `chroma_db` folder before you first run 0.18 against it and restore the copy when you downgrade; an index that 0.18 has not yet changed (no `update-db` run since upgrading) is still a 0.17 index.
+
 ## Section labels
 
 With [passage chunking](configuration.md#passage-chunking) on, each passage
