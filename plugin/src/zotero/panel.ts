@@ -17,6 +17,8 @@ export interface Panel {
   bundle: HostBundle;
   host: PanelHost;
   api: ReturnType<typeof mountPanel>;
+  /** The panel was shown or hidden: hidden, it follows nothing in Zotero (no timer, no reaction to item or tab events). */
+  setVisible(on: boolean): void;
   dispose(): void;
 }
 
@@ -26,7 +28,7 @@ export function createPanel(opts: { id: string; version: string; win: any; dataD
   // Focus in the composer: a message is coming, so the open paper's text is prepared now, not when it is sent.
   const focus = (e: Event) => { if ((e.target as Element | null)?.matches?.("textarea.cin")) bundle.prefetchPaper(); };
   opts.shadow.addEventListener("focusin", focus);
-  return { bundle, host: bundle.host, api, dispose() { opts.shadow.removeEventListener("focusin", focus); api.dispose(); bundle.dispose(); } };
+  return { bundle, host: bundle.host, api, setVisible: (on) => bundle.context.setActive(on), dispose() { opts.shadow.removeEventListener("focusin", focus); api.dispose(); bundle.dispose(); } };
 }
 
 /**
