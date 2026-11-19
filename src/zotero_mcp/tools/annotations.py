@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import tempfile
 import uuid
 from typing import Literal
@@ -363,40 +364,22 @@ def list_annotations(
 
                     # Check if Zotero with Better BibTeX is running
                     if bibtex.is_zotero_running():
-                        # Extract citation key
-                        citation_key = None
-
-                        # Try to find citation key in Extra field
-                        try:
-                            extra_field = parent["data"].get("extra", "")
-                            for line in extra_field.split("\n"):
-                                if line.lower().startswith("citation key:"):
-                                    citation_key = line.replace("Citation Key:", "").strip()
-                                    break
-                                elif line.lower().startswith("citationkey:"):
-                                    citation_key = line.replace("citationkey:", "").strip()
-                                    break
-                        except Exception as e:
-                            ctx.warning(f"Error extracting citation key from Extra field: {e}")
-
-                        # Fallback to searching by title if no citation key found
-                        if not citation_key:
-                            title = parent["data"].get("title", "")
+                        # The item's citation key: the native field, else what
+                        # Better BibTeX holds for this item key (it looks a
+                        # bare key up in My Library only), else a line in
+                        # Extra. Searching Better BibTeX by title, as this
+                        # used to, took the first hit's key, whichever paper
+                        # that was.
+                        citation_key = parent["data"].get("citationKey") or None
+                        if not citation_key and not _client.get_active_group_id():
                             try:
-                                if title:
-                                    # Use the search_citekeys method
-                                    search_results = bibtex.search_citekeys(title)
-
-                                    # Find the matching item
-                                    for result in search_results:
-                                        ctx.info(f"Checking result: {result}")
-
-                                        # Try to match with item key if possible
-                                        if result.get('citekey'):
-                                            citation_key = result['citekey']
-                                            break
+                                citation_key = bibtex.citation_key(parent_item_key)
                             except Exception as e:
-                                ctx.warning(f"Error searching for citation key: {e}")
+                                ctx.warning(f"Error asking Better BibTeX for the citation key: {e}")
+                        if not citation_key:
+                            match = re.search(r"^\s*citation ?key\s*:\s*(\S+)",
+                                              parent["data"].get("extra") or "", re.IGNORECASE | re.MULTILINE)
+                            citation_key = match.group(1) if match else None
 
                         # Process annotations if citation key found
                         if citation_key:
@@ -1579,6 +1562,9 @@ def _create_highlight_annotation(
         response.append(
             f"**Note:** Text was found in chapter {result['chapter_found']} (you specified {page})"
         )
+    if result.get("continues_on_page"):
+        response.append(f"**Note:** The text continues on page {result['continues_on_page']}; "
+                        "the highlight covers both parts")
     response.append(f"**Text:** \"{text[:100]}{'...' if len(text) > 100 else ''}\"")
     if comment:
         response.append(f"**Comment:** {comment}")
@@ -1722,16 +1708,25 @@ def create_annotations(
             # A PDF is opened once and shared by every spec; opening it is
             # also the check that the file is a PDF at all.
             if file_type == "pdf":
-                from zotero_mcp._pymupdf import fitz
+                try:
+                    from zotero_mcp._pymupdf import fitz
+                except ImportError:
+                    return fail_all(f"Error: PDF annotations need PyMuPDF. {_utils.install_hint('pdf')}")
+                from zotero_mcp.pdf_utils import PageCache
+
                 try:
                     source = fitz.open(file_path)
                     valid = bool(source.is_pdf)
                 except Exception:
                     source, valid = None, False
+                # What each page (or, for an EPUB, each chapter) holds is read
+                # once for the whole batch, not once per annotation.
+                cache = PageCache()
             else:
                 from zotero_mcp.epub_utils import verify_epub_attachment
 
                 source, valid = file_path, verify_epub_attachment(file_path)
+                cache = {}
             if not valid:
                 if file_type == "pdf" and source is not None:
                     source.close()
@@ -1744,7 +1739,7 @@ def create_annotations(
                     try:
                         payload, details = _annotation_payload(
                             source, file_type, attachment_key, spec, page_labels,
-                            with_text=dry_run,
+                            with_text=dry_run, cache=cache,
                         )
                     except Exception as e:
                         payload, details = None, {"error": f"Error creating annotation: {e}"}
@@ -1962,10 +1957,13 @@ def _annotation_payload(
     page_labels: dict[int, str],
     *,
     with_text: bool = False,
+    cache=None,
 ) -> tuple[dict | None, dict]:
     """Zotero annotation data for one spec, and what to report about it.
 
-    ``source`` is the open PDF document, or the EPUB's path.
+    ``source`` is the open PDF document, or the EPUB's path. ``cache`` is
+    what the specs of one file share: a ``pdf_utils.PageCache`` for a PDF, a
+    dict for an EPUB.
 
     Returns:
         (payload, details). ``payload`` is None when the spec cannot be
@@ -2033,7 +2031,7 @@ def _annotation_payload(
         error = _rect_error(*box)
         if error:
             return None, {"error": error}
-        position = build_area_position_data(source, page, *box)
+        position = build_area_position_data(source, page, *box, cache=cache)
         if "error" in position:
             return None, {"error": f"Error: {position['error']}"}
         label = label_of(page)
@@ -2056,7 +2054,7 @@ def _annotation_payload(
             )}
         if not spec.get("comment"):
             return None, {"error": "Error: a sticky note needs a comment (its text)"}
-        position = build_note_position_data(source, page, *point)
+        position = build_note_position_data(source, page, *point, cache=cache)
         if "error" in position:
             return None, {"error": f"Error: {position['error']}"}
         label = label_of(page)
@@ -2074,17 +2072,17 @@ def _annotation_payload(
     if file_type == "epub":
         from zotero_mcp.epub_utils import find_text_in_epub
 
-        position = find_text_in_epub(source, page, text)
+        position = find_text_in_epub(source, page, text, cache=cache)
         if "error" in position:
             return None, {"error": _describe_text_miss(position, text, file_type)}
-        chapter = position.get("chapter_found", page)
-        char_position = position.get("char_position", chapter * 1000)
-        # EPUB sort index is "spine index|character offset"; Zotero's own
-        # EPUB annotations leave pageLabel empty, and navigation needs that.
+        chapter = position["chapter_found"]
+        # The sort index Zotero's reader writes: the 0-based spine position,
+        # then the characters of that chapter before the highlight. Zotero's
+        # own EPUB annotations leave pageLabel empty, and navigation needs that.
         payload = annotation(
             "underline" if underline else "highlight",
             annotationText=text,
-            annotationSortIndex=f"{chapter:05d}|{char_position:08d}",
+            annotationSortIndex=f"{position['spine_index']:05d}|{position['char_position']:08d}",
             annotationPosition=position["annotation_position"],
         )
         details = {"page_label": "", "chapter_found": chapter}
@@ -2092,7 +2090,7 @@ def _annotation_payload(
             details["matched_text"] = position.get("matched_text", text)
         return payload, details
 
-    position = find_text_position(source, page, text)
+    position = find_text_position(source, page, text, cache=cache)
     if "error" in position:
         return None, {"error": _describe_text_miss(position, text, file_type),
                       "candidates": position.get("candidates") or []}
@@ -2103,12 +2101,19 @@ def _annotation_payload(
         "underline" if underline else "highlight",
         annotationText=text,
         annotationSortIndex=position["sort_index"],
-        annotationPosition=build_annotation_position(position["pageIndex"], position["rects"]),
+        annotationPosition=build_annotation_position(
+            position["pageIndex"], position["rects"], position.get("nextPageRects")),
         annotationPageLabel=label,
     )
     details = {"page_label": label, "page_found": page_found}
+    if position.get("nextPageRects"):
+        # The quote runs across a page break; one annotation holds both parts.
+        details["continues_on_page"] = page_found + 1
     if with_text:
         details["matched_text"] = text_in_rects(source, position["pageIndex"], position["rects"])
+        if position.get("nextPageRects"):
+            details["matched_text"] += " " + text_in_rects(
+                source, position["pageIndex"] + 1, position["nextPageRects"])
     return payload, details
 
 

@@ -466,6 +466,66 @@ def test_get_annotations_better_bibtex_path_carries_tags(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("data", "bbt_key", "expected"),
+    [
+        # no key on the item: Better BibTeX is asked by item key
+        ({}, "smith2020", "better_bibtex"),
+        # the native field needs no request at all
+        ({"citationKey": "smith2020"}, None, "better_bibtex"),
+        # a line in Extra, however it is capitalised, when Better BibTeX has no answer
+        ({"extra": "tex.ids: x\ncitation key: smith2020"}, None, "better_bibtex"),
+        # Better BibTeX's own key wins over a stale line in Extra
+        ({"extra": "Citation Key: oldkey1999"}, "smith2020", "better_bibtex"),
+        # nothing anywhere: the Zotero annotations are used
+        ({}, None, "zotero"),
+    ],
+)
+def test_better_bibtex_citation_key_comes_from_the_item_not_a_title_search(monkeypatch, data, bbt_key, expected):
+    """The key used to be the first hit of a Better BibTeX search for the
+    item's title, which is some paper with those words, not this one."""
+    from zotero_mcp.better_bibtex_client import ZoteroBetterBibTexAPI
+
+    calls = []
+
+    def request(_self, method, params):
+        calls.append(method)
+        if method == "item.citationkey":
+            assert params == {"item_keys": ["PAPER001"]}
+            return {"PAPER001": bbt_key}
+        if method == "item.search":
+            return [{"citekey": "other2001", "title": "A Paper"}]
+        assert method == "item.attachments"
+        if params[0] != "smith2020":
+            return []
+        return [{
+            "open": "zotero://open-pdf/library/items/ATTACH01",
+            "annotations": [{"key": "ANNO0002", "annotationType": "highlight",
+                             "annotationText": "Better BibTeX highlight"}],
+        }]
+
+    paper = {"key": "PAPER001", "data": {"title": "A Paper", "itemType": "journalArticle", **data}}
+    attachment = {"key": "ATTACH01", "data": {"title": "Full Text PDF", "itemType": "attachment",
+                                              "contentType": "application/pdf", "parentItem": "PAPER001"}}
+    fake = FakeZoteroForAnnotations(
+        {"PAPER001": paper, "ATTACH01": attachment},
+        {"PAPER001": [attachment], "ATTACH01": [_annotation("ANNO0001", "ATTACH01", "Zotero highlight")]},
+    )
+    monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
+    monkeypatch.setattr(ZoteroBetterBibTexAPI, "is_zotero_running", lambda _self: True)
+    monkeypatch.setattr(ZoteroBetterBibTexAPI, "_make_request", request)
+    monkeypatch.setenv("ZOTERO_LOCAL", "true")
+    monkeypatch.setenv("ZOTERO_BACKEND", "api")
+    monkeypatch.setenv("ZOTERO_LIBRARY_TYPE", "user")
+
+    records = json.loads(server.get_annotations(item_key="PAPER001", format="json", ctx=DummyContext()))
+
+    assert [record["source"] for record in records] == [expected]
+    assert "item.search" not in calls
+    if "citationKey" in data:
+        assert "item.citationkey" not in calls
+
+
+@pytest.mark.parametrize(
     ("bbt_link", "has_zotero_annotations", "expected_source"),
     [
         ("zotero://open-pdf/groups/27/items/ATTACH01", True, "better_bibtex"),

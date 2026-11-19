@@ -629,8 +629,17 @@ def _page_regions(doc, page_num: int, panels: bool = False) -> dict:
     if page_width <= 0 or page_height <= 0:
         return {"error": f"Page {page_num} has invalid dimensions"}
 
-    def normalize_bbox(x0: float, y0: float, x1: float, y1: float) -> list[float]:
-        """Convert page coordinates to clamped normalized [x, y, w, h]."""
+    def normalize_bbox(x0: float, y0: float, x1: float, y1: float, shown: bool = False) -> list[float]:
+        """Convert page coordinates to clamped normalized [x, y, w, h].
+
+        PyMuPDF reports text, images and drawings in the page's unrotated
+        frame, and those are turned to the page as displayed first. Without
+        that a box on a page with /Rotate was measured against the wrong
+        sides and described a different part of the page. ``shown`` is for
+        the one source already in the displayed frame, find_tables().
+        """
+        if not shown:
+            x0, y0, x1, y1 = _shown_points(page, (x0, y0, x1, y1))
         x = min(max(x0 / page_width, 0.0), 1.0)
         y = min(max(y0 / page_height, 0.0), 1.0)
         w = min(max((x1 - x0) / page_width, 0.0), 1.0 - x)
@@ -639,6 +648,8 @@ def _page_regions(doc, page_num: int, panels: bool = False) -> dict:
 
     warnings: list[str] = []
     raw_regions: list[dict] = []
+    rotated = bool(getattr(page, "rotation", 0) % 360)
+    words: list = []
 
     # --- Raster images ---
     try:
@@ -650,10 +661,18 @@ def _page_regions(doc, page_num: int, panels: bool = False) -> dict:
     except Exception:
         pass
 
+    # A page's drawings are read once and handed to everything below that
+    # works on them. A dense plot has tens of thousands of paths, and reading
+    # them was most of the time this function took, three times over.
+    try:
+        drawings = page.get_drawings()
+    except Exception:
+        drawings = []
+
     # --- Vector graphics (clustered) ---
     if hasattr(page, "cluster_drawings"):
         try:
-            for rect in page.cluster_drawings():
+            for rect in _cluster_drawings(page, drawings):
                 raw_regions.append(
                     {
                         "source": "drawing",
@@ -669,15 +688,17 @@ def _page_regions(doc, page_num: int, panels: bool = False) -> dict:
         )
 
     # --- Tables ---
-    try:
-        drawings = page.get_drawings()
-    except Exception:
-        drawings = []
+    # Rules and rows are judged on the page as displayed: on a turned page a
+    # table's horizontal rules are vertical strokes in the unrotated frame.
+    shown_rects = [
+        {"rect": drawing["rect"] * page.rotation_matrix}
+        for drawing in drawings if drawing.get("rect") is not None
+    ] if rotated else drawings
     # find_tables() is the slowest step here and finds only grids, which
     # need vertical strokes. A page whose drawings are all horizontal
     # rules (or that has none) cannot hold one, so it skips the call; its
     # rule-only tables are found below.
-    if any(drawing["rect"].height > 2 for drawing in drawings):
+    if any(drawing["rect"].height > 2 for drawing in shown_rects):
         try:
             # PyMuPDF prints an advert for pymupdf_layout to stdout on its
             # first find_tables() call, which corrupts `zotero-cli --json`.
@@ -688,27 +709,31 @@ def _page_regions(doc, page_num: int, panels: bool = False) -> dict:
                 found_tables = page.find_tables().tables
             for table in found_tables:
                 x0, y0, x1, y1 = table.bbox
+                # find_tables() works on a derotated copy of a turned page,
+                # so its boxes are already those of the page as displayed.
                 raw_regions.append(
-                    {"source": "table", "bbox": normalize_bbox(x0, y0, x1, y1)}
+                    {"source": "table", "bbox": normalize_bbox(x0, y0, x1, y1, shown=True)}
                 )
         except Exception:
             pass
 
     # --- Tables drawn with horizontal rules only (find_tables misses these) ---
     try:
-        ruled = _ruled_table_boxes(drawings, page_width, page_height)
-        words = page.get_text("words") if ruled else []
+        ruled = _ruled_table_boxes(shown_rects, page_width, page_height)
+        if ruled or panels:
+            words = page.get_text("words")
+        shown_words = [_shown_points(page, w[:4]) for w in words] if ruled else []
         for x0, y0, x1, y1 in ruled:
             # Rules around a single line are a heading band (an
             # algorithm's title bar, say), not a table.
             rows = {
                 round((w[1] + w[3]) / 6)
-                for w in words
+                for w in shown_words
                 if x0 - 2 <= w[0] and w[2] <= x1 + 2 and y0 < (w[1] + w[3]) / 2 < y1
             }
             if len(rows) >= LAYOUT_RULE_MIN_ROWS:
                 raw_regions.append(
-                    {"source": "table", "bbox": normalize_bbox(x0, y0, x1, y1)}
+                    {"source": "table", "bbox": normalize_bbox(x0, y0, x1, y1, shown=True)}
                 )
     except Exception:
         pass
@@ -784,7 +809,7 @@ def _page_regions(doc, page_num: int, panels: bool = False) -> dict:
             "confidence": "high" if equation["label"] else "medium",
         })
     if panels:
-        regions.extend(panel_regions(page, regions))
+        regions.extend(panel_regions(page, regions, drawings=drawings, words=words or None))
     regions.sort(key=lambda r: (r["bbox"][1], r["bbox"][0]))
 
     for idx, region in enumerate(regions, start=1):
@@ -809,16 +834,36 @@ _PANEL_FIGURE_REACH = 0.03        # a figure region this near a letter belongs t
 _BOLD_FLAG = 16                   # PyMuPDF span flag
 
 
-def _shown_box(page, bbox) -> list[float]:
-    """A PyMuPDF page-space box -> ``[x0, y0, x1, y1]`` normalized to the page as displayed."""
+def _shown_points(page, bbox) -> tuple[float, float, float, float]:
+    """A PyMuPDF page-space box -> ``(x0, y0, x1, y1)`` in points on the page as displayed."""
     x0, y0, x1, y1 = bbox
     if getattr(page, "rotation", 0) % 360:
         a, b, c, d, e, f = tuple(page.rotation_matrix)
         xs = (a * x0 + c * y0 + e, a * x1 + c * y1 + e)
         ys = (b * x0 + d * y0 + f, b * x1 + d * y1 + f)
         x0, x1, y0, y1 = min(xs), max(xs), min(ys), max(ys)
+    return x0, y0, x1, y1
+
+
+def _shown_box(page, bbox) -> list[float]:
+    """A PyMuPDF page-space box -> ``[x0, y0, x1, y1]`` normalized to the page as displayed."""
+    x0, y0, x1, y1 = _shown_points(page, bbox)
     width, height = page.rect.width, page.rect.height
     return [x0 / width, y0 / height, x1 / width, y1 / height]
+
+
+def _cluster_drawings(page, drawings: list) -> list:
+    """page.cluster_drawings() on drawings already read, where PyMuPDF takes them.
+
+    On a turned page the clip is given: PyMuPDF's default is the page as
+    displayed, while the drawings are in the unrotated frame, so everything
+    beyond the shorter side was left out.
+    """
+    clip = {"clip": page.rect * page.derotation_matrix} if getattr(page, "rotation", 0) % 360 else {}
+    try:
+        return page.cluster_drawings(drawings=drawings, **clip)
+    except TypeError:  # a PyMuPDF whose cluster_drawings reads them itself
+        return page.cluster_drawings(**clip)
 
 
 def panel_letters(page) -> list[dict]:
@@ -842,14 +887,19 @@ def panel_letters(page) -> list[dict]:
     return letters
 
 
-def _ink_boxes(page) -> list[list[float]]:
-    """Drawings, images and words on a page as displayed ``[x0, y0, x1, y1]`` boxes."""
-    boxes = [word[:4] for word in page.get_text("words")]
+def _ink_boxes(page, drawings: list | None = None, words: list | None = None) -> list[list[float]]:
+    """Drawings, images and words on a page as displayed ``[x0, y0, x1, y1]`` boxes.
+
+    ``drawings`` and ``words`` are the page's, when the caller has read them.
+    """
+    boxes = [word[:4] for word in (page.get_text("words") if words is None else words)]
     boxes += [info["bbox"] for info in page.get_image_info()]
-    try:
-        boxes += [tuple(drawing["rect"]) for drawing in page.get_drawings()]
-    except Exception:
-        pass
+    if drawings is None:
+        try:
+            drawings = page.get_drawings()
+        except Exception:
+            drawings = []
+    boxes += [tuple(drawing["rect"]) for drawing in drawings if drawing.get("rect") is not None]
     shown = [_shown_box(page, box) for box in boxes]
     # A page-sized frame or background is not a panel's ink.
     return [b for b in shown if (b[2] - b[0]) * (b[3] - b[1]) < LAYOUT_MAX_REGION_AREA]
@@ -860,7 +910,8 @@ def _centre_in(box, outer) -> bool:
     return outer[0] <= x <= outer[2] and outer[1] <= y <= outer[3]
 
 
-def panel_regions(page, figure_regions: list[dict]) -> list[dict]:
+def panel_regions(page, figure_regions: list[dict], *, drawings: list | None = None,
+                  words: list | None = None) -> list[dict]:
     """One region per panel letter on a page, boxed to the ink in its cell.
 
     The letters cut the figure into cells: a panel runs from its letter to the
@@ -871,8 +922,8 @@ def panel_regions(page, figure_regions: list[dict]) -> list[dict]:
     known from a detected figure region, "medium" when they run in order but
     the figure's edges are guessed, and "low" otherwise.
 
-    ``figure_regions`` is detect_page_regions' list; on a rotated page it is
-    ignored, since those boxes are in the page's unrotated frame.
+    ``figure_regions`` is detect_page_regions' list. ``drawings`` and
+    ``words`` are the page's, when the caller has already read them.
     """
     letters = panel_letters(page)
     if len(letters) < 2:
@@ -882,8 +933,6 @@ def panel_regions(page, figure_regions: list[dict]) -> list[dict]:
         ord(b) - ord(a) == 1 for a, b in zip(marks, marks[1:]))
     confidence = "high" if in_order else "low"
 
-    if getattr(page, "rotation", 0) % 360:
-        figure_regions = []
     reach = _PANEL_FIGURE_REACH
     near = []
     for region in figure_regions:
@@ -903,7 +952,7 @@ def panel_regions(page, figure_regions: list[dict]) -> list[dict]:
               max(bounds[2], *(m["box"][2] for m in letters)), max(bounds[3], *(m["box"][3] for m in letters))]
 
     tolerance = _PANEL_ROW_TOLERANCE
-    ink = _ink_boxes(page)
+    ink = _ink_boxes(page, drawings, words)
     regions = []
     for letter in letters:
         lx, ly = letter["box"][0], letter["box"][1]
@@ -950,10 +999,7 @@ def auto_box(doc, page_num: int, near: list[float] | None = None) -> dict:
     layout = _page_regions(doc, page_num, panels=True)
     if "error" in layout:
         return layout
-    page = doc[page_num - 1]
     regions = [r for r in layout["regions"] if r["source"] != "equation"]
-    if getattr(page, "rotation", 0) % 360:
-        regions = [r for r in regions if r["source"] == "panel"]
 
     def fall_back(why: str) -> dict:
         if near is None:
