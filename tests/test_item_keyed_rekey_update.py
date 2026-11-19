@@ -141,18 +141,23 @@ def test_an_automatic_update_leaves_legacy_passages_where_they_are(env, zotero):
     assert _all_ids(search) == {"ITEM0001", "ITEM0001#0", "ITEM0001#1", "ITEM0001#2"}
 
 
-def test_an_item_whose_passages_were_dropped_is_written_again_by_the_next_update(env, zotero):  # noqa: F811
+def test_a_plain_update_never_drops_the_passages_it_cannot_place(env, zotero, monkeypatch):  # noqa: F811
+    """Dropping is irreversible and costs a re-embed: only migrate-index, after its dry run, does it (review of #840, item 6)."""
     # A second PDF was attached since the passages were written: which one the old text came from cannot be told.
     reader = LibReader([Item("ITEM0001", 1)], targets={1: [target("PDFAAAAA"), target("PDFBBBBB")]})
     zotero(reader)
     search, _ = env(reader, update=False)
     _seed_legacy(search, att_keys="PDFAAAAA")
+    deleted = []
+    real = type(search.chroma_client).delete_records
+    monkeypatch.setattr(
+        type(search.chroma_client), "delete_records", lambda self, ids: (deleted.extend(ids), real(self, ids))[1]
+    )
 
     search, stats = env(reader)
 
-    assert stats["passages_rekeyed"]["dropped_items"] == 1
-    assert not any(i.startswith("ITEM0001#") for i in _all_ids(search))
-    assert search.chroma_client.embedded, "the dropped passages are embedded again, not skipped as unchanged"
-    # One file is indexed per item: the largest of the first category (the first of equals).
-    assert "PDFAAAAA" in _ids(search) and "PDFBBBBB" not in _ids(search)
-    assert "title" not in _meta(search, "ITEM0001"), "the item is written in the new shape"
+    # The re-key step deleted nothing: the item is held, and told to the user.
+    assert not {"ITEM0001#0", "ITEM0001#1", "ITEM0001#2"} & set(deleted)
+    assert stats["passages_rekeyed"]["dropped_items"] == 0
+    assert stats["passages_rekeyed"]["held_items"] == 1
+    assert "migrate-index" in stats["passages_rekeyed"]["note"]

@@ -75,6 +75,9 @@ class MigrationReport:
     # Left as they are because Zotero could not be asked (unreachable).
     skipped_items: int = 0
     skipped_passages: int = 0
+    # Left as they are because the run may not drop (an update); ``migrate-index`` would.
+    held_items: int = 0
+    held_passages: int = 0
     # Items whose re-key failed part way (their old passages are still there; a rerun carries on).
     failed_items: int = 0
     # Attachments whose record or passages had no ``parent_hint`` when the run
@@ -427,8 +430,15 @@ def rekey_legacy_passages(
     progress: Callable[[str], None],
     *,
     config_path: str | None = None,
+    drop: bool = True,
 ) -> None:
     """Re-key the legacy passages of every item to their attachment; fills the report.
+
+    An item whose attachment is known not to be there (``attachment_for`` says
+    None) loses its passages, which the next update embeds again: that is
+    irreversible and costs embeddings, so only an explicit ``migrate-index``
+    (``drop=True``, after its dry run) does it. Without ``drop`` such items
+    are left as they are and counted in ``held_items``.
 
     ``client`` is None for a dry run, which only decides what would happen.
     Each item is its own step: its passages are written under the attachment
@@ -445,6 +455,9 @@ def rekey_legacy_passages(
         if attachment is UNKNOWN:
             report.skipped_items += 1
             report.skipped_passages += len(ids)
+        elif attachment is None and not drop:
+            report.held_items += 1
+            report.held_passages += len(ids)
         elif attachment is None:
             report.dropped_items += 1
             report.dropped_passages += len(ids)
@@ -690,6 +703,16 @@ def _sources_or(sources: LocalSources | None, config_path: str | None) -> Iterat
             yield opened
 
 
+def held_note(held_items: int, held_passages: int) -> str:
+    """What an update says about legacy passages it left as they are because only ``migrate-index`` drops."""
+    return (
+        f"{held_passages:,} passages of {held_items:,} items could not be kept under an attachment "
+        "(the item or its file is gone, or the files changed since they were embedded). They are left "
+        "as they are; zotero-mcp migrate-index --dry-run shows them, and zotero-mcp migrate-index drops "
+        "them so the next update-db embeds them again."
+    )
+
+
 def rekey_note(legacy_items: int, legacy_passages: int) -> list[str]:
     """What status says about passages still keyed by their parent item: what they are and what to run.
 
@@ -704,8 +727,9 @@ def rekey_note(legacy_items: int, legacy_passages: int) -> list[str]:
         "did, under their item's key with the item's metadata. Search keeps working with them.",
         "zotero-mcp migrate-index re-keys them to their attachments without embedding anything "
         "(add --dry-run to see what would change); so does a manual zotero-mcp update-db, "
-        "which runs it first. Items whose attachment cannot be told for certain have their "
-        "passages embedded again by that update.",
+        "which runs it first. Items whose attachment is known not to be there are left as they "
+        "are by update-db: only migrate-index drops their passages, so that the next update-db "
+        "embeds them again.",
     ]
 
 

@@ -656,3 +656,65 @@ def test_an_item_without_an_article_record_is_rekeyed_and_its_old_passages_go(in
 
     assert (report.rekeyed_items, report.failed_items) == (1, 0)
     assert set(_read(directory, PASSAGES)) == {f"{ATT}#{n}" for n in range(3)}
+
+
+# --- an update never drops; only migrate-index does (review of #840, item 6) ---
+
+def _rekey(directory, config, sources, **kwargs):
+    client = ChromaClient(collection_name=NAME, persist_directory=directory)
+    report = index_migration.MigrationReport(directory, dry_run=False)
+    index_migration.rekey_legacy_passages(
+        directory, NAME, client, sources, report, lambda _m: None, config_path=config, **kwargs
+    )
+    return report
+
+
+def test_without_drop_an_item_with_no_file_is_held_and_with_drop_it_is_dropped(index):
+    directory, config = index
+    _seed_split(directory)
+    sources = LocalSources(MigReader([], targets={}), config)  # the item is gone from Zotero
+
+    held = _rekey(directory, config, sources, drop=False)
+
+    assert (held.held_items, held.held_passages, held.dropped_items, held.rekeyed_items) == (1, 3, 0, 0)
+    assert set(_read(directory, PASSAGES)) == {f"{ITEM}#{n}" for n in range(3)}
+
+    dropped = _rekey(directory, config, sources)
+
+    assert (dropped.dropped_items, dropped.held_items) == (1, 0)
+    assert _read(directory, PASSAGES) == {}
+
+
+def test_without_drop_what_can_be_placed_is_still_rekeyed(index):
+    directory, config = index
+    _seed_split(directory)
+
+    report = _rekey(directory, config, _sources(config), drop=False)
+
+    assert (report.rekeyed_items, report.held_items) == (1, 0)
+    assert set(_read(directory, PASSAGES)) == {f"{ATT}#{n}" for n in range(3)}
+
+
+def test_the_notes_say_who_drops():
+    assert "migrate-index" in index_migration.held_note(2, 40)
+    assert "40" in index_migration.held_note(2, 40)
+    assert "only migrate-index drops" in " ".join(index_migration.rekey_note(2, 40))
+
+
+def test_the_mcp_update_tool_passes_the_note_on(monkeypatch, tmp_path):
+    from zotero_mcp import semantic_search
+    from zotero_mcp.tools import search as search_tools
+
+    class FakeSearch:
+        def update_database(self, **kwargs):
+            assert kwargs.get("automatic", False) is False
+            return {"processed_items": 0, "passages_rekeyed": {"held_items": 2, "note": index_migration.held_note(2, 40)}}
+
+    monkeypatch.setattr(semantic_search, "create_semantic_search", lambda _config: FakeSearch())
+    ctx = SimpleNamespace(info=lambda _m: None, error=lambda _m: None)
+
+    out = search_tools.update_search_database.__wrapped__(ctx=ctx) if hasattr(
+        search_tools.update_search_database, "__wrapped__"
+    ) else search_tools.update_search_database(ctx=ctx)
+
+    assert "migrate-index" in out

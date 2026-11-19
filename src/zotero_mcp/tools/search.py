@@ -1807,6 +1807,9 @@ def update_search_database(
             if stats.get("deletion_skipped_reason"):
                 output.append(f"**Deletion check skipped:** {stats['deletion_skipped_reason']}")
             output.append(f"**Errors:** {stats.get('errors', 0)}")
+            held_note = (stats.get("passages_rekeyed") or {}).get("note")
+            if held_note:
+                output.append(f"**Note:** {held_note}")
             output.append(f"**Duration:** {stats.get('duration', 'Unknown')}")
 
             if stats.get('start_time'):
