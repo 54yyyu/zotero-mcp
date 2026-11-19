@@ -2089,13 +2089,13 @@ def _annotation_payload(
     if file_type == "epub":
         from zotero_mcp.epub_utils import find_text_in_epub
 
-        position = find_text_in_epub(source, page, text)
+        position = find_text_in_epub(source, page, text, cache=cache)
         if "error" in position:
             return None, {"error": _describe_text_miss(position, text, file_type)}
-        chapter = position.get("chapter_found", page)
-        char_position = position.get("char_position", chapter * 1000)
-        # EPUB sort index is "spine index|character offset"; Zotero's own
-        # EPUB annotations leave pageLabel empty, and navigation needs that.
+        chapter = position["chapter_found"]
+        # The sort index Zotero's reader writes: the 0-based spine position,
+        # then the characters of that chapter before the highlight. Zotero's
+        # own EPUB annotations leave pageLabel empty, and navigation needs that.
         payload = annotation(
             "underline" if underline else "highlight",
             annotationText=text,

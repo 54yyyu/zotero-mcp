@@ -80,7 +80,6 @@ semantic = [
 pdf = [
     # >=1.24.2 for Page.cluster_drawings (vector figure detection in zotero_get_page_layout)
     "pymupdf>=1.24.2",
-    "ebooklib>=0.18",
 ]
 scite = [
     "requests>=2.28.0",
