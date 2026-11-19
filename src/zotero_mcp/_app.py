@@ -6,6 +6,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -67,6 +68,9 @@ def _spawn_semantic_update(cmd: list[str]) -> subprocess.Popen:
     stdin is DEVNULL and stdout/stderr are a pipe to us, never the client's
     pipes: a child that outlived the server would otherwise hold them open
     and the client would never see the connection close (#431).
+
+    On POSIX the child leads its own session, so ``_stop_semantic_update`` can
+    signal it together with the processes it started (the extraction pool).
     """
     env = os.environ.copy()
     env.setdefault("PYTHONIOENCODING", "utf-8")
@@ -79,15 +83,70 @@ def _spawn_semantic_update(cmd: list[str]) -> subprocess.Popen:
         encoding="utf-8",
         errors="replace",
         env=env,
+        start_new_session=os.name != "nt",
         # A console child of a windowless server would open a console window.
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
 
 
+def _signal_update_tree(proc: subprocess.Popen, force: bool) -> None:
+    """Signal the update child and every process it started."""
+    if os.name == "nt":
+        # TerminateProcess reaches one process only; taskkill /T walks the tree.
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:
+            pass
+        if proc.poll() is None:
+            proc.terminate()
+        return
+    import signal
+
+    try:
+        # The child is its session's leader, so its pid is the group's id.
+        os.killpg(proc.pid, signal.SIGKILL if force else signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except Exception:
+        if proc.poll() is None:
+            proc.kill() if force else proc.terminate()
+
+
+def _stop_semantic_update(proc: subprocess.Popen, grace: float = 3.0) -> None:
+    """Stop an unfinished update together with its worker processes.
+
+    Terminating the child alone orphaned its extraction pool: the workers
+    lived on, and they held the write end of the output pipe, so whoever was
+    reading it never saw it close and the server could not exit.
+
+    Call it only for a child that is still running. Workers that outlast the
+    child's own exit (one in the middle of a PDF, the resource tracker) are
+    killed right after it.
+    """
+    _signal_update_tree(proc, force=False)
+    try:
+        proc.wait(timeout=grace)
+    except subprocess.TimeoutExpired:
+        _signal_update_tree(proc, force=True)
+    else:
+        if os.name != "nt":
+            _signal_update_tree(proc, force=True)
+
+
 def _relay_update_output(proc: subprocess.Popen) -> None:
     """Copy the child's output to our stderr (the client's log) until it exits."""
-    for line in proc.stdout:
-        sys.stderr.write(line)
+    try:
+        for line in proc.stdout:
+            sys.stderr.write(line)
+    except ValueError:
+        return  # our stderr was closed under us at interpreter exit
     returncode = proc.wait()
     if returncode != 0:
         sys.stderr.write(f"Warning: semantic search auto-update exited with code {returncode}\n")
@@ -99,12 +158,14 @@ async def server_lifespan(server: "FastMCP"):
 
     The semantic auto-update runs as a child ``zotero-mcp update-db`` process
     (see ``_spawn_semantic_update``), with only the relay of its output on a
-    worker thread, so nothing it does can hold up the MCP handshake (#706).
+    daemon thread, so nothing it does can hold up the MCP handshake (#706) or,
+    should something keep the pipe open, the server's exit.
     The update lock in ``update_database`` still keeps it from racing a
     manual ``update-db`` or another server.
 
-    On shutdown an unfinished update is terminated: ChromaDB (SQLite WAL)
-    is crash-safe, so it simply resumes on the next startup.
+    On shutdown an unfinished update is stopped, workers included
+    (``_stop_semantic_update``): ChromaDB (SQLite WAL) is crash-safe, so it
+    simply resumes on the next startup.
     """
     sys.stderr.write("Starting Zotero MCP server...\n")
     update_proc: subprocess.Popen | None = None
@@ -122,7 +183,10 @@ async def server_lifespan(server: "FastMCP"):
                 return
             sys.stderr.write("Auto-updating semantic search database...\n")
             update_proc = _spawn_semantic_update(cmd)
-            await asyncio.to_thread(_relay_update_output, update_proc)
+            threading.Thread(
+                target=_relay_update_output, args=(update_proc,),
+                name="zotero-mcp-update-relay", daemon=True,
+            ).start()
         except Exception as e:
             sys.stderr.write(f"Warning: Could not run semantic search auto-update: {e}\n")
 
@@ -144,8 +208,11 @@ async def server_lifespan(server: "FastMCP"):
     yield {}
 
     sys.stderr.write("Shutting down Zotero MCP server...\n")
+    # Only while it is still running: once it has been reaped its pid, and
+    # so its group id, can belong to something else. Not awaited, because
+    # the lifespan may be unwinding under cancellation.
     if update_proc is not None and update_proc.poll() is None:
-        update_proc.terminate()
+        _stop_semantic_update(update_proc)
     chroma_worker.stop_all()
 
 
