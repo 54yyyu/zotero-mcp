@@ -1063,24 +1063,6 @@ def cmd_collections(args):
         sys.exit(1)
 
 
-def cmd_tags(args):
-    # Deprecated in 0.15.2, removal in 0.17: `batch` does the same with --add-tags/--remove-tags.
-    print("zotero-cli tags is deprecated and will be removed in 0.17; use: "
-          "zotero-cli batch --add-tags ... --remove-tags ...", file=sys.stderr)
-    setup_zotero_environment()
-    search_mod, retrieval, annotations, write_mod, _client = _import_tools()
-    ctx = _ctx(args)
-    _out(args, "tags", text=write_mod.batch_update_tags(
-        query=args.query or "",
-        add_tags=_split_tags(args.add),
-        remove_tags=_split_tags(args.remove),
-        tag=_split_tags(args.tag),
-        limit=args.limit,
-        item_keys=_split_csv(args.item_keys),
-        ctx=ctx,
-    ))
-
-
 def _field_assignment(value: str) -> tuple[str, str]:
     """Parse one metadata assignment, preserving empty values and '=' in text."""
     name, separator, text = value.partition("=")
@@ -2021,17 +2003,6 @@ def build_parser() -> argparse.ArgumentParser:
     cmg.add_argument("--add-to")
     cmg.add_argument("--remove-from")
 
-    # tags
-    t_p = sub.add_parser("tags", help="Deprecated: use batch --add-tags/--remove-tags")
-    t_p.add_argument("--item-keys",
-                     help="Comma-separated item keys to edit; --query and --tag are then ignored")
-    t_p.add_argument("--query")
-    t_p.add_argument("--tag", help=f"Select items by tag ({TAG_LIST_HELP}; any matches)")
-    t_p.add_argument("--add", help=f"Tags to add ({TAG_LIST_HELP})")
-    t_p.add_argument("--remove", help=f"Tags to remove ({TAG_LIST_HELP})")
-    t_p.add_argument("--limit", type=int, default=50,
-                     help="Most items to select by --query/--tag (at most 1000)")
-
     # edit (item metadata)
     e_p = sub.add_parser("edit", help="Edit metadata fields of an existing item")
     e_p.add_argument("item_key")
@@ -2217,7 +2188,6 @@ _CMD_MAP = {
     "notes": cmd_notes, "n": cmd_notes,
     "add": cmd_add,
     "collections": cmd_collections, "coll": cmd_collections,
-    "tags": cmd_tags,
     "edit": cmd_edit,
     "duplicates": cmd_duplicates,
     "db": cmd_db,
