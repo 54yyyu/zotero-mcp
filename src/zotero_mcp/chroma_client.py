@@ -408,7 +408,8 @@ class ChromaClient:
                n_results: int = 10,
                where: dict[str, Any] | None = None,
                where_document: dict[str, Any] | None = None,
-               level: str = ARTICLES) -> dict[str, Any]:
+               level: str = ARTICLES,
+               query_embeddings: list[list[float]] | None = None) -> dict[str, Any]:
         """
         Search for similar documents.
 
@@ -419,9 +420,13 @@ class ChromaClient:
             where_document: Document content filter conditions
             level: Collection to search, ``ARTICLES`` or ``PASSAGES``. Only
                 the collection searched has its vector index loaded.
+            query_embeddings: Vectors of ``query_texts`` from an earlier call
+                (its result's ``query_embeddings``), so asking again for more
+                results does not embed, and bill, the query again.
 
         Returns:
-            Search results from ChromaDB
+            Search results from ChromaDB. When this call embedded the queries
+            itself, they come back as ``query_embeddings``.
         """
         try:
             query_kwargs = {
@@ -437,7 +442,10 @@ class ChromaClient:
             # included — is handed query_texts and left to embed them itself.
             _is_custom_ef = isinstance(self.embedding_function, CUSTOM_EMBEDDING_FUNCTIONS)
             embedding_started = time.perf_counter()
-            if _is_custom_ef and query_texts:
+            if query_embeddings:
+                query_kwargs["query_embeddings"] = query_embeddings
+                query_embeddings = None  # not embedded here, so not handed back
+            elif _is_custom_ef and query_texts:
                 query_embeddings = []
                 for qt in query_texts:
                     emb = self.embedding_function.embed_query_text(qt)
@@ -457,6 +465,8 @@ class ChromaClient:
             # How long the query took to embed, so a slow first search can be
             # told apart from a slow index load (see chroma_worker).
             results["embedding_seconds"] = embedding_seconds
+            if query_embeddings:
+                results["query_embeddings"] = query_embeddings
             logger.info(f"Semantic search returned {len(results.get('ids', [[]])[0])} results")
             return results
         except Exception as e:

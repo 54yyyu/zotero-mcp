@@ -933,6 +933,7 @@ def _collect_hits(chroma_results: dict) -> list[dict[str, Any]]:
         meta = meta if isinstance(meta, dict) else {}
         group_id = meta.get("group_id")
         hit = {
+            "id": raw_id,
             "record_key": record_key(raw_id),
             "meta": meta,
             "library": int(group_id) if group_id is not None else None,
@@ -5767,7 +5768,7 @@ class ZoteroSemanticSearch:
             Search results with Zotero item details
         """
         try:
-            search_level, _chunked, level_note, level_error = self._resolve_search_level(level)
+            search_level, chunked, level_note, level_error = self._resolve_search_level(level)
             if level_error:
                 return {
                     "query": query,
@@ -5780,11 +5781,13 @@ class ZoteroSemanticSearch:
                 }
             reranker = self._get_reranker()
             multiplier = max(1, int(self._reranker_config.get("candidate_multiplier", 3) or 3))
-            # Hits collapse to their owners and trashed ones are dropped, at
-            # either level: an attachment's record and its parent's
-            # bibliographic record are two hits of one owner, and passages
-            # several more. So fetch several candidates per wanted result.
-            fetch_limit = limit * 4
+            # As 0.17 asked: `limit` candidates, or four per wanted result where
+            # hits are passages (several of one item collapse to it). Where
+            # hits still collapse or drop out (an item's records, trashed
+            # items) and leave fewer than `limit`, a further round asks for more.
+            fetch_limit = limit
+            if chunked:
+                fetch_limit = limit * 4
             if reranker:
                 fetch_limit = max(fetch_limit, limit * multiplier)
 
@@ -5817,12 +5820,20 @@ class ZoteroSemanticSearch:
             load_note = None
             candidates = 0
             memo = self._new_lookup_memo()
+            # What each round shares: the query's embedding (a hosted model
+            # bills it), and the re-rank score of every record already ranked.
+            embedded: dict[str, Any] = {}
+            ranked: dict[str, float] = {}
             if prefilter_keys is None or prefilter_keys:
                 for _ in range(rounds):
                     if not use_post_rounds:
                         results, rerank_info, load_note, candidates = self._query_candidates(
-                            query, fetch_limit, where, search_level, reranker
+                            query, fetch_limit, where, search_level, reranker, embedded
                         )
+                        for record_id, score in zip(
+                            (results.get("ids") or [[]])[0] or [], (results.get("rerank_scores") or [[]])[0] or []
+                        ):
+                            ranked[record_id] = score
                         # Enrich results with full Zotero item data, collapsing
                         # hits to their owners and capping at `limit` owners.
                         # The live filter is checked on every hit even after a
@@ -5836,19 +5847,36 @@ class ZoteroSemanticSearch:
                         use_post_rounds = True
                         continue
                     results, _, load_note, candidates = self._query_candidates(
-                        query, fetch_limit, where, search_level, None
+                        query, fetch_limit, where, search_level, None, embedded
                     )
                     survivors = self._filter_hits(self._resolve_hits(_collect_hits(results), memo), live_where)
                     enough = len({h["owner_key"] for h in survivors}) >= limit
                     if reranker and survivors:
-                        survivors = survivors[:rerank_bound]
-                        order, scores, rerank_info = self._rerank(
-                            query, [h["document"] for h in survivors], reranker
-                        )
-                        survivors = [survivors[i] for i in order]
-                        if scores is not None:
-                            for hit, score in zip(survivors, scores):
-                                hit["rerank_score"] = score
+                        # A record ranked in an earlier round keeps its score
+                        # and is not sent again; only new ones are ranked, at
+                        # most `rerank_bound` of them, nearest first.
+                        fresh: list[dict[str, Any]] = []
+                        kept = []
+                        for hit in survivors:
+                            if hit["id"] in ranked:
+                                kept.append(hit)
+                            elif len(fresh) < rerank_bound:
+                                fresh.append(hit)
+                                kept.append(hit)
+                        survivors = kept
+                        if fresh:
+                            order, scores, rerank_info = self._rerank(
+                                query, [h["document"] for h in fresh], reranker
+                            )
+                            if scores is not None:
+                                for i, score in zip(order, scores):
+                                    ranked[fresh[i]["id"]] = score
+                            elif len(fresh) == len(survivors):
+                                survivors = [fresh[i] for i in order]  # nothing to merge with: the order is all there is
+                        if survivors and all(h["id"] in ranked for h in survivors):
+                            for hit in survivors:
+                                hit["rerank_score"] = ranked[hit["id"]]
+                            survivors.sort(key=lambda h: h["rerank_score"], reverse=True)
                     enriched_results = self._build_results(survivors, query, limit)
                     if enough or candidates < fetch_limit:
                         break
@@ -5923,13 +5951,20 @@ class ZoteroSemanticSearch:
         where: dict[str, Any] | None,
         search_level: str | None,
         reranker: Any,
+        embedded: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None, int]:
         """Query ChromaDB and re-rank: ``(results, rerank info, load note, candidates)``.
 
         ``candidates`` is how many records ChromaDB returned, so a caller can
         tell a short answer from an exhausted index.
+
+        ``embedded`` is kept by the caller across rounds: the first round
+        stores the query's embedding in it and later rounds search by that
+        vector, so the query is embedded (and billed) once.
         """
         search_kwargs: dict[str, Any] = {}
+        if embedded and embedded.get("vectors"):
+            search_kwargs["query_embeddings"] = embedded["vectors"]
         # On an unmigrated index everything is in the article collection,
         # which is what the client searches by default.
         if search_level == SEARCH_PASSAGES and self.chroma_client.separate_passages():
@@ -5940,6 +5975,9 @@ class ZoteroSemanticSearch:
         load_note = None
         if isinstance(results, dict):
             results.pop("embedding_seconds", None)  # in-process; the worker drops it itself
+            vectors = results.pop("query_embeddings", None)
+            if embedded is not None and vectors:
+                embedded["vectors"] = vectors
             load_note = _passage_load_note(results.pop("passage_load", None))
         candidates = len((results.get("ids") or [[]])[0] or [])
 

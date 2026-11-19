@@ -129,3 +129,21 @@ class TestQueryInstruction(unittest.TestCase):
             self.assertEqual(self.model.calls, [])  # opening did not re-embed
             self.assertEqual(second.search(["query"], n_results=1)["ids"], [["item1"]])
             self.assertEqual(self.model.calls, [["Instruct: Find papers\nQuery: query"]])
+
+    @unittest.skipUnless(hasattr(chromadb, "PersistentClient"), "requires real ChromaDB")
+    def test_a_search_handed_the_query_vector_does_not_embed_it_again(self):
+        from zotero_mcp.chroma_client import ChromaClient
+
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
+            client = ChromaClient(persist_directory=directory, embedding_model="qwen")
+            client.upsert_documents(["Document"], [{"title": "Paper"}], ["item1"])
+            self.model.calls.clear()
+
+            first = client.search(["query"], n_results=1)
+            self.assertEqual(len(self.model.calls), 1)
+            self.assertEqual(first["query_embeddings"], [[1.0, 0.0]])
+
+            again = client.search(["query"], n_results=1, query_embeddings=first["query_embeddings"])
+            self.assertEqual(len(self.model.calls), 1, "the query was embedded a second time")
+            self.assertEqual(again["ids"], [["item1"]])
+            self.assertNotIn("query_embeddings", again)

@@ -290,7 +290,9 @@ def test_article_level_overfetches_so_collapsing_still_fills_limit(monkeypatch, 
     out = s.search("q", limit=3)
 
     assert _keys(out) == ["PAR1", "PAR2", "PAR3"]
-    assert s.chroma_client.calls[0]["n_results"] > 3
+    # As 0.17: `limit` candidates first; the collapse leaves two owners, so a
+    # second round asks for more.
+    assert [c["n_results"] for c in s.chroma_client.calls] == [3, 12]
 
 
 class _FailingBatchZot(FakeZot):
@@ -877,6 +879,89 @@ class _RecordingReranker:
     def rerank(self, query, documents, top_k=10):
         self.sizes.append(len(documents))
         return list(range(len(documents)))[:top_k]
+
+
+class _EmbeddingChroma(FakeChroma):
+    """A FakeChroma that embeds like ChromaClient.search: once per query text it is not handed a vector for."""
+
+    def __init__(self, hits):
+        super().__init__(hits)
+        self.embedded = 0
+
+    def search(self, query_texts, n_results, where=None, where_document=None, query_embeddings=None, **kw):
+        out = super().search(query_texts, n_results, where=where)
+        if query_embeddings is None:
+            self.embedded += len(query_texts)
+            out["query_embeddings"] = [[1.0, 0.0] for _ in query_texts]
+        self.calls[-1]["query_embeddings"] = query_embeddings
+        return out
+
+
+class _ScoringReranker(semantic_search.CrossEncoderReranker):
+    """Scores a document by the number after 'score' in its text; records each call's size."""
+
+    def __init__(self):
+        self.sizes: list[int] = []
+        self.label = "scoring"
+
+    def rerank_detailed(self, query, documents, top_k):
+        self.sizes.append(len(documents))
+        scored = sorted(
+            ((i, float(d.rsplit("score", 1)[1])) for i, d in enumerate(documents)), key=lambda p: -p[1]
+        )
+        return scored[:top_k], None
+
+
+def _crowded(monkeypatch, tmp_path):
+    """Twelve passages of one paper crowd out the second paper: limit=2 needs a second round."""
+    hits = [_hit(f"ATTA0001#{n}", f"passage score{n}", item_key="ATTA0001") for n in range(12)]
+    hits += [_hit("ATTB0001#0", "other score50", item_key="ATTB0001")]
+    zot = [
+        _regular("PARA0001"), _attachment("ATTA0001", "PARA0001"),
+        _regular("PARB0001"), _attachment("ATTB0001", "PARB0001"),
+    ]
+    s, _ = _search(monkeypatch, tmp_path, hits, zot)
+    s.chroma_client = _EmbeddingChroma(hits)
+    return s
+
+
+def test_a_second_round_does_not_embed_the_query_again(monkeypatch, tmp_path):
+    s = _crowded(monkeypatch, tmp_path)
+
+    out = s.search("q", limit=2)
+
+    assert _keys(out) == ["PARA0001", "PARB0001"]
+    calls = s.chroma_client.calls
+    assert [c["n_results"] for c in calls] == [8, 32]
+    assert s.chroma_client.embedded == 1, "the query was embedded again for the later round"
+    assert calls[1]["query_embeddings"] == [[1.0, 0.0]]
+
+
+def test_a_second_round_ranks_only_the_hits_not_ranked_before(monkeypatch, tmp_path):
+    s = _crowded(monkeypatch, tmp_path)
+    s._reranker_config = {"enabled": True, "candidate_multiplier": 3}
+    s._reranker = reranker = _ScoringReranker()
+
+    out = s.search("q", limit=2)
+
+    # Round 1: 8 candidates (limit x 4). Round 2 saw 13; 8 were ranked, 5 are new.
+    assert reranker.sizes == [8, 5], "hits ranked in round 1 were ranked again"
+    assert _keys(out) == ["PARB0001", "PARA0001"], "the new hit scored 50 and must lead the old ones"
+    assert out["results"][0]["rerank_score"] == 50.0
+    assert out["results"][1]["rerank_score"] == 11.0
+
+
+def test_a_reranked_article_search_asks_for_what_0_17_did(monkeypatch, tmp_path):
+    hits = [_hit(f"PAR{n:03d}", f"doc score{n}", item_key=f"PAR{n:03d}") for n in range(40)]
+    s, _ = _search(monkeypatch, tmp_path, hits, [_regular(f"PAR{n:03d}") for n in range(40)], chunking=False)
+    s._reranker_config = {"enabled": True, "candidate_multiplier": 3}
+    s._reranker = reranker = _ScoringReranker()
+
+    out = s.search("q", limit=10)
+
+    assert reranker.sizes == [30]
+    assert [c["n_results"] for c in s.chroma_client.calls] == [30]
+    assert len(out["results"]) == 10
 
 
 def test_post_filter_reranks_only_bounded_survivors(monkeypatch, tmp_path):

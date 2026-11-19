@@ -634,9 +634,8 @@ class TestReranking:
 
         s.search("test", limit=2)
 
-        # candidate_multiplier=3 is below the ×4 every search over-fetches
-        # to collapse hits to owners (#826), so n_results is 2*4=8.
-        assert s.chroma_client._last_query_kwargs["n_results"] == 8
+        # candidate_multiplier=3 and no chunking: 2*3, as 0.17 asked.
+        assert s.chroma_client._last_query_kwargs["n_results"] == 6
 
     def test_search_overfetches_by_a_larger_reranker_multiplier(self):
         s = self._make_search_with_reranker(enabled=True)
@@ -649,12 +648,12 @@ class TestReranking:
 
         assert s.chroma_client._last_query_kwargs["n_results"] == 12
 
-    def test_search_without_reranker_overfetches_for_owner_collapse(self):
+    def test_search_without_reranker_asks_for_limit_at_article_level(self):
         s = self._make_search_with_reranker(enabled=False)
 
         s.zotero_client = _zotero_serving_every_key()
 
         s.search("test", limit=5)
 
-        # Hits collapse to their owners and trashed ones drop out (#826).
-        assert s.chroma_client._last_query_kwargs["n_results"] == 20
+        # As 0.17; a round that falls short asks again for more (#826).
+        assert s.chroma_client._last_query_kwargs["n_results"] == 5
