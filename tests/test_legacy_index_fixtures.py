@@ -429,3 +429,55 @@ def test_search_works_on_the_split_index(library):
         assert "error" not in out, out
         assert out["results"][0]["item_key"] == key
     assert set(StrictEmbedding.seen) == set(QUERIES.values())
+
+
+# --- turning chunking on for an untouched 0.17 index (review of #839, item 3) ----------------------
+
+
+def _chunking_was_off(library):
+    """What 0.17.1 leaves with chunking off: the article records, no passages."""
+    import chromadb
+    from chromadb.config import Settings
+
+    client = chromadb.PersistentClient(
+        str(library.persist_dir), settings=Settings(anonymized_telemetry=False, allow_reset=True)
+    )
+    client.delete_collection(PASSAGES)
+    del client
+
+
+@pytest.mark.parametrize("second_run", ["explicit_fulltext", "explicit", "automatic", "automatic_fulltext"])
+def test_turning_chunking_on_writes_only_the_missing_passages(second_run, tmp_path, monkeypatch):
+    """A legacy item that only lacks passages gets them under its attachment; its article record stays."""
+    library = Library("v0171", tmp_path, monkeypatch)
+    _chunking_was_off(library)
+    before = library.snapshot()
+    assert set(before) == {ARTICLES}
+    search = library.search_object()
+    StrictEmbedding.allowed = None  # record, do not refuse: the passages are expected
+
+    stats = search.update_database(extract_fulltext=True)
+    assert stats.get("error") is None and stats["errors"] == 0, stats
+
+    after = library.snapshot()
+    passages = after[PASSAGES]
+    # Three items have a file; the one without has nothing to cut passages from.
+    assert {k.split("#")[0] for k in passages} == {"ATTONEA1", "ATTTWOB2", "ATTFOUR4"}
+    # Exactly the passages were embedded: no article, bibliographic or attachment record.
+    assert len(StrictEmbedding.seen) == len(passages)
+    assert set(after[ARTICLES]) == set(before[ARTICLES])
+    for key, (meta, vector) in before[ARTICLES].items():
+        new_meta, new_vector = after[ARTICLES][key]
+        assert new_vector == vector
+        assert {k: v for k, v in new_meta.items() if k != "rekeyed_to"} == meta
+    assert {k for k, (m, _v) in after[ARTICLES].items() if m.get("rekeyed_to")} == {
+        "ITEMONE1", "ITEMTWO2", "ITEMFOU4",
+    }
+
+    # The next run, automatic or explicit, finds nothing left to do.
+    StrictEmbedding.seen.clear()
+    done = library.snapshot()
+    again = library.search_object().update_database(**RUNS[second_run])
+    assert again.get("error") is None and again["errors"] == 0, again
+    assert StrictEmbedding.seen == []
+    assert library.snapshot() == done

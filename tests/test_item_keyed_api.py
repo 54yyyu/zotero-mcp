@@ -361,6 +361,34 @@ def test_an_unchanged_legacy_item_writes_nothing(env):
     assert "title" in meta(search, "ITEM0001")
 
 
+def test_a_legacy_item_lacking_only_passages_gets_them_under_its_attachment(env):
+    """Chunking turned on over an untouched 0.17 index pays for the passages and nothing else (review of #839)."""
+    library(env, paper("ITEM0001"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
+    search = env.search()
+    _legacy_record(search, "ITEM0001")
+    before = dict(meta(search, "ITEM0001"))
+    # The sync version 0.17 left behind: the run is incremental, and fills gaps.
+    search._save_update_config(last_sync_version=env.zot.version)
+
+    search, _stats = env.update()
+
+    passages = {i for i in all_ids(search) if "#" in i}
+    assert passages and all(i.startswith("PDFAAAAA#") for i in passages)
+    # Only passages were embedded: no article, bibliographic or attachment record.
+    assert len(search.chroma_client.embedded) == len(passages)
+    assert records(search) == {"ITEM0001"}
+    assert meta(search, "ITEM0001") == {**before, "rekeyed_to": "PDFAAAAA"}
+
+    # Neither the next run nor a full one has anything left to embed.
+    for forget in (False, True):
+        if forget:
+            env.forget_sync_version()
+        again, _stats = env.update()
+        assert again.chroma_client.embedded == []
+        assert {i for i in all_ids(again) if "#" in i} == passages
+        assert records(again) == {"ITEM0001"}
+
+
 def test_a_changed_legacy_item_is_rewritten_in_the_new_shape(env):
     library(env, paper("ITEM0001", date="2024-03-01T00:00:00Z"), attachment("PDFAAAAA", "ITEM0001"), PDFAAAAA=TEXT)
     search = env.search()

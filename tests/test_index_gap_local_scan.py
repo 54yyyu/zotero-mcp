@@ -57,6 +57,12 @@ class FakeChroma:
     def get_document_metadata(self, key):
         return self.stored
 
+    def get_metadatas(self, ids):
+        return {i: self.stored for i in ids if "#" not in i}
+
+    def get_existing_ids(self, ids):
+        return set()
+
 
 def _scan(monkeypatch, stored, gaps, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
@@ -84,14 +90,13 @@ def test_up_to_date_item_without_a_gap_is_skipped(monkeypatch, tmp_path):
     assert reader.extract_calls == 0
 
 
-def test_up_to_date_legacy_item_missing_passages_is_rewritten_by_attachment(monkeypatch, tmp_path):
-    """Its passages are cut from its files now, under their own keys."""
+def test_up_to_date_legacy_item_missing_passages_gets_only_passages_under_its_attachment(monkeypatch, tmp_path):
+    """Its article record stays as 0.17 wrote it; only the passages are new (review of #839)."""
     items, reader = _scan(monkeypatch, {"has_fulltext": True}, {"ITEMKEY1": {"passages"}}, tmp_path)
 
-    assert [(item["key"], item["unit"]) for item in items] == [("ITEMKEY1", "item"), ("ATTKEY01", "attachment")]
-    assert items[0]["legacy_rewrite"] is True
-    assert items[1]["text"] == "extracted text"
-    assert "_index_levels" not in items[1]
+    assert [(item["key"], item["unit"]) for item in items] == [("ATTKEY01", "attachment")]
+    assert items[0]["text"] == "extracted text"
+    assert items[0]["_index_levels"] == {"passages"}
     assert reader.extract_calls == 1
 
 
