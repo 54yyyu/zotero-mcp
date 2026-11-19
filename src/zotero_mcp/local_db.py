@@ -248,19 +248,23 @@ def _source_for_path(path: Path) -> str:
 def _pool_context():
     """Multiprocessing context for the extraction pool.
 
-    Never plain ``fork``: by the time a pool starts, the parent has threads of
-    its own (ChromaDB, the embedding clients), and a child forked while another
-    thread holds a lock (logging's, an allocator's) can wait for it forever. A
-    hung worker then blocks the pool's shutdown, and with it the whole run.
-    ``forkserver`` forks from a clean single-threaded helper; macOS and
-    Windows already spawn. Returns None where the platform has no forkserver.
+    Never plain ``fork`` where something safer exists: by the time a pool
+    starts, the parent has threads of its own (ChromaDB, the embedding
+    clients), and a child forked while another thread holds a lock can wait
+    for it forever. A hung worker then blocks the pool's shutdown, and with it
+    the whole run. ``forkserver`` forks from a clean single-threaded helper.
+    The worker needs nothing from the parent (a path and an int in, text out;
+    the initializer only sets log levels), so it behaves the same under it.
+    Returns None, the platform default, where there is no forkserver (Windows;
+    macOS already spawns) and in a frozen/packaged app, whose executable
+    cannot be re-entered as a forkserver helper.
     """
     import multiprocessing
+    import sys
 
-    try:
-        return multiprocessing.get_context("forkserver")
-    except ValueError:
+    if getattr(sys, "frozen", False) or "forkserver" not in multiprocessing.get_all_start_methods():
         return None
+    return multiprocessing.get_context("forkserver")
 
 
 @contextmanager
