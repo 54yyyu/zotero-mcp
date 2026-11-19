@@ -268,6 +268,30 @@ def test_a_run_stopped_after_hashing_a_changed_migrated_file_does_not_hide_the_c
     assert all(after[f"{ATT}#{n}"] != before[f"{ATT}#{n}"] for n in range(3)), "no passage of the old file remains"
 
 
+def test_migrate_index_reads_no_file_bytes_and_a_later_update_hashes_lazily(world, tmp_path, monkeypatch):
+    path = tmp_path / "a.pdf"
+    path.write_bytes(b"the file")
+    reader = _reader()
+    reader.targets[1] = [_live(path, "1:8")]
+    world.seed_pre_0_17()
+    import builtins
+
+    real_open = builtins.open
+    opened = []
+
+    def spy(file, *args, **kwargs):
+        if str(file) == str(path):
+            opened.append(file)
+        return real_open(file, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "open", spy)
+    world.migrate(reader)
+    assert opened == [], "migrate-index must not read the file"
+
+    world.update(reader)  # the first update that needs the hash reads it
+    assert opened, "the update hashes the file when it writes the attachment record"
+
+
 def _live(path, stamp):
     return ExtractionTarget(
         key=ATT, path=path, content_type="application/pdf", category="pdf", file_stamp=stamp, size=8
