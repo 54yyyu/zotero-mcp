@@ -124,7 +124,9 @@ def resolve_chroma_dir(persist_directory: str | None = None) -> Path:
     Windows (#617).
     """
     if persist_directory:
-        return Path(persist_directory).expanduser()
+        # Absolute: the index is also read through a file: URI, which a
+        # relative path cannot be written as.
+        return Path(persist_directory).expanduser().absolute()
     return Path.home() / ".config" / "zotero-mcp" / "chroma_db"
 
 
