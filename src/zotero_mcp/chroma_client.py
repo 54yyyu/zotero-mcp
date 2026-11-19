@@ -466,7 +466,10 @@ class ChromaClient:
                 query_kwargs["query_texts"] = query_texts  # embedded inside query(), not timed apart
             embedding_seconds = time.perf_counter() - embedding_started
 
-            results = self._collection_for_level(level).query(**query_kwargs)
+            collection = self._collection_for_level(level)
+            results = collection.query(**query_kwargs)
+            # What the distances mean, so they can be reported as a similarity.
+            results["space"] = self._distance_space(collection)
             # How long the query took to embed, so a slow first search can be
             # told apart from a slow index load (see chroma_worker).
             results["embedding_seconds"] = embedding_seconds
@@ -475,6 +478,26 @@ class ChromaClient:
         except Exception as e:
             logger.error(f"Error performing semantic search: {e}")
             raise
+
+    @staticmethod
+    def _distance_space(collection) -> str:
+        """The distance a collection ranks by: ``l2`` (squared), ``cosine`` or ``ip``.
+
+        ChromaDB's default is ``l2``, and a collection keeps the space it was
+        created with, so nearly every index here is ``l2``.
+        """
+        try:
+            config = collection.configuration_json or {}
+            for index in ("hnsw", "spann"):
+                space = (config.get(index) or {}).get("space")
+                if space:
+                    return str(space)
+        except Exception:
+            pass
+        try:
+            return str((collection.metadata or {}).get("hnsw:space") or "l2")
+        except Exception:
+            return "l2"
 
     def delete_documents(self, ids: list[str]) -> None:
         """

@@ -872,6 +872,23 @@ def best_snippet(query: str, text: str, width: int = 320) -> tuple[str, int]:
 SLOW_PASSAGE_LOAD_SECONDS = 5.0
 
 
+def similarity_from_distance(distance: Any, space: str | None) -> float:
+    """A ChromaDB distance as a similarity, 1 for identical and 0 for unrelated.
+
+    ChromaDB's default space is squared L2, which between unit-length vectors
+    (what the embedding models here return) is ``2 - 2 * cosine``, so half of
+    it is the cosine distance: ``1 - distance`` showed a cosine of 0.69 as
+    0.37 and an unrelated passage as -1. Cosine and inner product distances
+    are already ``1 - similarity``. With no space given (a client that does
+    not report one) the distance is read that way too.
+    """
+    if distance is None:
+        return 0
+    if space == "l2":
+        return 1 - distance / 2
+    return 1 - distance
+
+
 def _passage_load_note(load: dict | None) -> str | None:
     """Why a passage search was slow, from the worker's ``passage_load`` report, or None."""
     if not load or load.get("seconds", 0) < SLOW_PASSAGE_LOAD_SECONDS:
@@ -5826,6 +5843,7 @@ class ZoteroSemanticSearch:
         documents = chroma_results.get("documents", [[]])[0]
         metadatas = chroma_results.get("metadatas", [[]])[0]
         rerank_scores = (chroma_results.get("rerank_scores") or [[]])[0] or []
+        space = chroma_results.get("space")
 
         seen_items: set[str] = set()
         for i, raw_id in enumerate(ids):
@@ -5842,7 +5860,7 @@ class ZoteroSemanticSearch:
 
             enriched_result: dict[str, Any] = {
                 "item_key": item_key,
-                "similarity_score": (1 - distance) if distance is not None else 0,
+                "similarity_score": similarity_from_distance(distance, space),
                 "matched_text": document,
                 "matched_passage": passage,
                 "metadata": meta if isinstance(meta, dict) else {},
