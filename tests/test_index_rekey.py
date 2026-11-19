@@ -79,9 +79,13 @@ def index(tmp_path):
 class MigReader(ScanReader):
     """The Zotero side of the migration: regular items, and the files each one has."""
 
-    def __init__(self, items=(), **kwargs):
+    def __init__(self, items=(), ft_caches=None, **kwargs):
         super().__init__(**kwargs)
         self.items = {it.key: it for it in items}
+        self.ft_caches = dict(ft_caches or {})  # attachment key -> Zotero's .zotero-ft-cache text
+
+    def _read_zotero_ft_cache(self, attachment_key):
+        return self.ft_caches.get(attachment_key)
 
     def get_item_by_key(self, key):
         return self.items.get(key)
@@ -552,3 +556,49 @@ def test_a_legacy_item_with_two_files_and_a_changed_fingerprint_is_dropped(index
     report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
 
     assert (report.rekeyed_items, report.dropped_items) == (0, 1)
+
+
+# --- the text 0.17 read from Zotero's cache names its own attachment (review of #840, item 5b) ---
+
+def test_a_zotero_cache_item_is_filed_under_the_attachment_whose_cache_was_read(index):
+    """0.17 read the first listed attachment with a cache, which can be a sibling of the largest file."""
+    directory, config = index
+    _seed_split(directory, source="zotero-cache", att_keys="ATTACH01,ATTACH02")
+    reader = MigReader(
+        [_item()],
+        targets={1: [_sized("ATTACH02", 100), _sized(ATT, 900)]},  # listed order: the small sibling first
+        ft_caches={"ATTACH02": "cached text", ATT: "the large file's own cache"},
+    )
+
+    report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+
+    assert (report.rekeyed_items, report.dropped_items, report.skipped_items) == (1, 0, 0)
+    assert set(_read(directory, PASSAGES)) == {f"ATTACH02#{n}" for n in range(3)}
+
+
+def test_a_zotero_cache_item_whose_cache_belongs_to_a_file_the_scan_does_not_index_is_left_alone(index):
+    directory, config = index
+    _seed_split(directory, source="zotero-cache", att_keys="ATTACH01,ATTACH02")
+    snapshot = ["ATTACH02", "storage:s.html", "text/html"]
+    reader = MigReader(
+        [_item()],
+        targets={1: [_sized(ATT, 900)]},
+        rows={1: [snapshot, PDF_ROW]},
+        ft_caches={"ATTACH02": "the snapshot's cache"},
+    )
+
+    report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+
+    assert (report.rekeyed_items, report.dropped_items, report.skipped_items) == (0, 0, 1)
+    assert set(_read(directory, PASSAGES)) == {f"{ITEM}#{n}" for n in range(3)}
+
+
+def test_a_zotero_cache_item_with_one_file_is_filed_under_it(index):
+    directory, config = index
+    _seed_split(directory, source="zotero-cache")
+    reader = MigReader([_item()], targets={1: [target(ATT)]}, ft_caches={ATT: "cached text"})
+
+    report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+
+    assert report.rekeyed_items == 1
+    assert set(_read(directory, PASSAGES)) == {f"{ATT}#{n}" for n in range(3)}
