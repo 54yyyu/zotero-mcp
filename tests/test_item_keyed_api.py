@@ -652,6 +652,35 @@ def test_a_legacy_item_lacking_only_passages_gets_them_under_its_attachment(env)
         assert records(again) == {"ITEM0001"}
 
 
+def test_a_legacy_item_lacking_passages_gets_them_from_the_file_017_indexed_not_the_first_by_key(env):
+    """0.17.1 read the first PDF with text in listing order; a supplement may sort before the main PDF by key."""
+    library(
+        env,
+        paper("ITEM0001"),
+        attachment("ZMAINPDF", "ITEM0001"),
+        attachment("ASUPPLMT", "ITEM0001"),
+        ZMAINPDF=TEXT,
+        ASUPPLMT=TEXT,
+    )
+    search = env.search()
+    _legacy_record(search, "ITEM0001")
+    search._save_update_config(last_sync_version=env.zot.version)
+
+    # An automatic run leaves the whole library's passage gaps to an explicit one.
+    search, _stats = env.update(automatic=True)
+    assert search.chroma_client.embedded == []
+
+    for forget in (False, True):
+        if forget:
+            env.forget_sync_version()
+        search, _stats = env.update()
+        passages = {i for i in all_ids(search) if "#" in i}
+        assert passages and all(i.startswith("ZMAINPDF#") for i in passages)
+        # The item's other file is not indexed: an untouched legacy item keeps what 0.17 had.
+        assert not any(i.startswith("ASUPPLMT") for i in all_ids(search))
+        assert "ASUPPLMT" not in env.zot.fulltext_keys()
+
+
 @pytest.mark.parametrize("mark_landed", [True, False], ids=["marked", "run-stopped-before-the-mark"])
 @pytest.mark.parametrize("forget", [False, True], ids=["incremental", "full-scan"])
 @pytest.mark.parametrize("automatic", [False, True], ids=["explicit", "automatic"])
