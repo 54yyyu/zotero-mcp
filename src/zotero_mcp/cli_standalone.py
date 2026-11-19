@@ -295,7 +295,28 @@ def cmd_config(args):
         print(f"  {k}={v}")
 
 
+def _json_flag(args, command: str, flag: str, raw):
+    """A flag's JSON value, or a usage error naming the flag.
+
+    Called before the tools are imported: a typo in the JSON should not cost
+    the third of a second that takes, and it is the caller's mistake, so it
+    is reported like every other usage error (:func:`_fail`).
+    """
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        _fail(args, command, f"invalid JSON in {flag}: {e}", "bad_json")
+
+
 def cmd_search(args):
+    conditions = filters = None
+    if args.mode == "advanced":
+        if not args.conditions:
+            _fail(args, "search", "--mode advanced needs --conditions (a JSON list)", "bad_args")
+        conditions = _json_flag(args, "search", "--conditions", args.conditions)
+    elif args.mode == "semantic" and getattr(args, "filters", None):
+        filters = _json_flag(args, "search", "--filters", args.filters)
+
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
     ctx = _ctx(args)
@@ -308,11 +329,6 @@ def cmd_search(args):
     elif args.mode == "citekey":
         result = search_mod.search_by_citation_key(citekey=args.query, ctx=ctx)
     elif args.mode == "advanced":
-        try:
-            conditions = json.loads(args.conditions)
-        except json.JSONDecodeError as e:
-            print(f"Error: invalid JSON in --conditions: {e}", file=sys.stderr)
-            sys.exit(1)
         result = search_mod.advanced_search(
             conditions=conditions, join_mode=args.join_mode,
             sort_by=args.sort_by, sort_direction=args.sort_direction,
@@ -320,13 +336,6 @@ def cmd_search(args):
             search_all_libraries=getattr(args, "all_libraries", False), ctx=ctx,
         )
     elif args.mode == "semantic":
-        filters = None
-        if getattr(args, "filters", None):
-            try:
-                filters = json.loads(args.filters)
-            except json.JSONDecodeError as e:
-                print(f"Error: invalid JSON in --filters: {e}", file=sys.stderr)
-                sys.exit(1)
         result = search_mod.semantic_search(
             query=args.query, limit=args.limit, filters=filters,
             search_all_libraries=getattr(args, "all_libraries", False),
@@ -797,6 +806,13 @@ def cmd_layout(args):
 
 
 def cmd_notes(args):
+    new_note_text = None
+    if args.subcommand == "create":
+        new_note_text = sys.stdin.read() if args.text == "-" else (args.text or "")
+        if not new_note_text:
+            _fail(args, "notes create",
+                  "provide note text via --text TEXT or --text - (reads stdin)", "bad_args")
+
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
     ctx = _ctx(args)
@@ -827,15 +843,10 @@ def cmd_notes(args):
             return
         print(result)
     elif args.subcommand == "create":
-        note_text = sys.stdin.read() if args.text == "-" else (args.text or "")
-        if not note_text:
-            print("Error: provide note text via --text TEXT or --text - (reads stdin)",
-                  file=sys.stderr)
-            sys.exit(1)
         tags = _split_tags(args.tags) or []
         _out(args, "notes create", text=annotations.create_note(
             item_key=args.item_key, note_title=args.title or "CLI Note",
-            note_text=note_text, tags=tags, ctx=ctx,
+            note_text=new_note_text, tags=tags, ctx=ctx,
         ))
     elif args.subcommand == "update":
         note_text = sys.stdin.read() if args.text == "-" else args.text
@@ -1073,17 +1084,11 @@ def _field_assignment(value: str) -> tuple[str, str]:
 
 def cmd_edit(args):
     """Edit metadata fields of an existing Zotero item."""
+    creators = _json_flag(args, "edit", "--creators", args.creators) if args.creators else None
+
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
     ctx = _ctx(args)
-
-    creators = None
-    if args.creators:
-        try:
-            creators = json.loads(args.creators)
-        except json.JSONDecodeError as e:
-            print(f"Error: invalid JSON in --creators: {e}", file=sys.stderr)
-            sys.exit(1)
 
     # Flat metadata flags all travel in one `fields` mapping now; only the
     # params with delta semantics stay top-level.
@@ -1202,8 +1207,12 @@ def cmd_db(args):
             from zotero_mcp.chroma_client import unreadable_index_message
 
             print(f"\nError: {unreadable_index_message(ci, uc.get('last_update'))}")
+            # The status above is still worth printing, but a script asking
+            # "is the index usable" must not read exit 0.
+            sys.exit(1)
         elif ci.get("error"):
             print(f"\nError: {ci['error']}")
+            sys.exit(1)
 
     elif args.subcommand == "inspect":
         from collections import Counter
@@ -1674,14 +1683,9 @@ def cmd_open(args):
 
 
 def cmd_batch(args):
+    set_keys = _json_flag(args, "batch", "--set", args.set) if args.set else None
     setup_zotero_environment()
     _s, _r, _a, write_mod, _c = _import_tools()
-    set_keys = None
-    if args.set:
-        try:
-            set_keys = json.loads(args.set)
-        except json.JSONDecodeError as e:
-            _fail(args, "batch", f"invalid JSON in --set: {e}", "bad_json")
     _out(args, "batch", text=write_mod.batch_update(
         item_keys=_split_csv(args.item_keys), query=args.query or "",
         tag=_split_tags(args.tag), add_tags=_split_tags(args.add_tags),
