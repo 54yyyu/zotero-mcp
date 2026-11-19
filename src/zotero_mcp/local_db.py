@@ -3457,57 +3457,55 @@ class LocalZoteroReader:
     ) -> dict | None:
         """The item owning `citekey`, matched exactly.
 
-        Zotero 7 stores the key in a real ``citationKey`` field, so this is
-        an indexed equality match rather than the ranked substring search
-        the API path had to use. Older items keep it as a ``Citation Key:``
-        line inside ``extra``; those are checked second, which is why the
-        pattern match is only reached when the field lookup misses.
+        Zotero 7 stores the key in a real ``citationKey`` field; older items
+        keep it as a ``Citation Key:`` line inside ``extra``, which is checked
+        second. Both lookups start from the value: the key through the unique
+        index on ``itemDataValues.value``, the legacy line through the
+        ``extra`` rows alone. Starting from ``items`` walked every item's
+        fields in the library, twice on a miss.
         """
+        from zotero_mcp.tools._helpers import _extra_has_citekey
+
         conn = self._get_connection()
         lib_ids = self._resolve_scope_library_ids(group_id)
         if not lib_ids:
             return None
-        lib_ph = ",".join("?" * len(lib_ids))
 
-        row = conn.execute(
-            self._FULL_ITEM_COLUMNS
-            + f""" JOIN itemData ck_data ON ck_data.itemID = i.itemID
-                   JOIN fields ck_f
-                       ON ck_f.fieldID = ck_data.fieldID AND ck_f.fieldName = 'citationKey'
-                   JOIN itemDataValues ck_v ON ck_v.valueID = ck_data.valueID
-                   WHERE i.libraryID IN ({lib_ph})
-                   AND del.itemID IS NULL
-                   AND ck_v.value = ?
-                   LIMIT 1""",
-            list(lib_ids) + [citekey],
-        ).fetchone()
-        if row is not None:
-            return self._build_full_items(conn, [row])[0]
+        def first_live(item_ids: list[int]) -> dict | None:
+            for start in range(0, len(item_ids), _ID_CHUNK):
+                chunk = item_ids[start:start + _ID_CHUNK]
+                row = conn.execute(
+                    self._FULL_ITEM_COLUMNS
+                    + f""" WHERE i.itemID IN ({','.join('?' * len(chunk))})
+                           AND i.libraryID IN ({','.join('?' * len(lib_ids))})
+                           AND del.itemID IS NULL
+                           ORDER BY i.itemID LIMIT 1""",
+                    chunk + list(lib_ids),
+                ).fetchone()
+                if row is not None:
+                    return self._build_full_items(conn, [row])[0]
+            return None
 
-        # Legacy placement: a "Citation Key: <key>" line in `extra`. LIKE
-        # narrows to candidates; the exact line match is applied in Python
-        # by the caller's `_extra_has_citekey`, so this only has to avoid
-        # returning the wrong item, not parse the field itself.
-        rows = conn.execute(
-            self._FULL_ITEM_COLUMNS
-            + f""" JOIN itemData ex_data ON ex_data.itemID = i.itemID
-                   JOIN fields ex_f
-                       ON ex_f.fieldID = ex_data.fieldID AND ex_f.fieldName = 'extra'
-                   JOIN itemDataValues ex_v ON ex_v.valueID = ex_data.valueID
-                   WHERE i.libraryID IN ({lib_ph})
-                   AND del.itemID IS NULL
-                   AND ex_v.value LIKE ?
-                   LIMIT 25""",
-            list(lib_ids) + [f"%{_semantics.escape_like(citekey)}%"],
+        exact = conn.execute(
+            f"""SELECT d.itemID FROM itemData d
+                WHERE d.valueID IN (SELECT valueID FROM itemDataValues WHERE value = ?)
+                AND d.fieldID = {_field_id('citationKey')}""",
+            (citekey,),
         ).fetchall()
-        for item in self._build_full_items(conn, rows):
-            if item["data"].get("citationKey") == citekey:
-                return item
-            from zotero_mcp.tools._helpers import _extra_has_citekey
+        if (item := first_live([row[0] for row in exact])) is not None:
+            return item
 
-            if _extra_has_citekey(item["data"].get("extra", ""), citekey):
-                return item
-        return None
+        # Legacy placement: LIKE narrows the `extra` values to candidates and
+        # the exact line is matched here, before anything is hydrated.
+        legacy = conn.execute(
+            f"""SELECT d.itemID, v.value FROM itemData d
+                JOIN itemDataValues v ON v.valueID = d.valueID
+                WHERE d.fieldID = {_field_id('extra')}
+                AND v.value LIKE ? ESCAPE '\\'
+                ORDER BY d.itemID""",
+            (f"%{_semantics.escape_like(citekey)}%",),
+        ).fetchall()
+        return first_live([row[0] for row in legacy if _extra_has_citekey(row[1], citekey)])
 
     #: Share of `items` above which a full scan beats the (libraryID, key)
     #: index for a library-filtered ranking query. Measured crossover on a
