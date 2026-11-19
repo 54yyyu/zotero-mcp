@@ -61,6 +61,8 @@ zotero-cli --json search "attention" --limit 5 --detail keys_only
 
 Success carries `data`; failure carries `error.message` and a stable `error.code`, also on stdout, so one stream carries both outcomes, and a failed command exits 1. Read commands (search, get, annotations list, notes list, config) return real structure; commands whose answer is a status line return `{"text": ...}`. Run `zotero-cli --json-schema` for the full contract.
 
+Attachment summaries include `contentType` and `filename` when present. Item projections and metadata omit attachment URLs with recognized signing parameters (S3, CloudFront, Google Cloud Storage, and Azure Storage SAS). Use the attachment key to read the stored file.
+
 ```bash
 # Item keys are the currency of every command — pipe them onward
 zotero-cli --json search "diffusion models" --limit 5 --detail keys_only \

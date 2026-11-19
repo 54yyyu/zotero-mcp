@@ -8,6 +8,7 @@ import sys
 import tempfile
 import threading
 from contextlib import contextmanager
+from urllib.parse import parse_qsl
 
 from unidecode import unidecode
 
@@ -440,6 +441,39 @@ def item_display_date(data: dict) -> str:
             return str(date)
 
     return str(data.get("date") or "")
+
+
+_ATTACHMENT_SIGNING_FIELDS = {
+    "awsaccesskeyid",
+    "googleaccessid",
+    "x-amz-credential",
+    "x-amz-security-token",
+    "x-amz-signature",
+    "x-goog-credential",
+    "x-goog-signature",
+}
+
+
+def redact_signed_attachment_url(data: dict) -> dict:
+    """Omit recognized signed download URLs from a displayed attachment.
+
+    Return a copy when redacting so backend records retain the original URL.
+    """
+    url = data.get("url")
+    if data.get("itemType") != "attachment" or not isinstance(url, str):
+        return data
+
+    query = url.partition("#")[0].partition("?")[2]
+    names = {name.casefold() for name, _ in parse_qsl(query, keep_blank_values=True)}
+    if (
+        names & _ATTACHMENT_SIGNING_FIELDS
+        or {"key-pair-id", "signature"} <= names  # CloudFront
+        or {"sig", "sv"} <= names  # Azure Storage SAS
+    ):
+        redacted = data.copy()
+        del redacted["url"]
+        return redacted
+    return data
 
 
 def library_label(item: dict) -> str | None:

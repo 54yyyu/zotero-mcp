@@ -365,9 +365,7 @@ def cmd_get(args):
     json_mode = _json_mode(args)
 
     if sub == "metadata":
-        # In JSON mode the raw Zotero record is strictly better than a
-        # projection: the caller asked for one specific item, so there is
-        # nothing to trim for size and no reason to hide a field.
+        # For a single item, use the metadata tool's structured Zotero record.
         fmt = "json" if (json_mode and args.output_format == "markdown") else args.output_format
         result = retrieval.get_item_metadata(
             item_key=args.item_key, include_abstract=not args.no_abstract,
@@ -2251,7 +2249,7 @@ never disagree.
 Commands returning structured data
 ----------------------------------
   search                data.items[]  -- item projections, in rank order
-  get metadata          the raw Zotero item record
+  get metadata          the Zotero item record (signed attachment URLs omitted)
   get collection-items  data.items[], data.offset, data.count
   get children          data.items[]
   get recent            data.items[]
@@ -2276,7 +2274,7 @@ Item projection (--detail keys_only | summary | full)
   keys_only  key, itemType, title, date  (+ deleted when trashed)
   summary    the above + creators[], doi, publication, url, tags[],
              collections[]
-  full       the above + abstract, raw (the complete Zotero data dict)
+  full       the above + abstract, raw (Zotero data with signed attachment URLs omitted)
 
 `title` resolves type-specific base fields (a statute's nameOfAct, a
 note's first line), so it is never the literal "Untitled" for an item

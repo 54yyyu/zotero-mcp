@@ -98,7 +98,7 @@ Example (Claude Desktop / Claude Code):
 - `zotero_get_search_database_status`: Index state and configuration
 
 ### 📚 Content tools
-- `zotero_get_item_metadata`: Metadata for one item (`format="markdown"`, `"json"` for the raw record, or `"bibtex"`)
+- `zotero_get_item_metadata`: Metadata for one item (`format="markdown"`, `"json"` for the Zotero record, or `"bibtex"`). Metadata omits attachment URLs with recognized signing parameters.
 - `zotero_get_item_fulltext`: Full text of an item's PDF or EPUB
 - `zotero_get_item_children`: Attachments and notes for one item or many (pass an array of keys)
 - `zotero_read_pdf_pages`: Read a page range of a PDF as Markdown, with pages whose math, figures or tables the text garbles flagged; `format="image"` returns the pages as images, and `rect=[x, y, width, height]` zooms into one region
