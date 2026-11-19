@@ -87,6 +87,16 @@ describe("diagram sanitizer", () => {
       assert.deepEqual((t.kids[0] as SvgEl).attrs, { width: "1", height: "1" }, bad);
     }
   });
+  it("mask, clip-path and markers take none or a reference to the drawing's own element, never a CSS image", () => {
+    // In CSS these properties take images too: image-set() with a quoted address needs no url(), and would be a request
+    // to any host as the answer is drawn.
+    for (const bad of [`image-set('https://x.example/p.png' 1x)`, "image-set(&quot;//x.example/p&quot; 1x)", "-moz-element(#zotero-pane)", "linear-gradient(red, blue)", "circle(10px)", "url(#a) image-set('https://x' 1x)", "url(#a), url(#b)"]) {
+      const t = clean(`<svg><rect width="1" height="1" mask="${bad}" clip-path="${bad}" marker-end="${bad}" style="mask: ${bad.replace(/&quot;/g, "'")}"/></svg>`) as SvgEl;
+      assert.deepEqual((t.kids[0] as SvgEl).attrs, { width: "1", height: "1" }, bad);
+    }
+    const ok = clean(`<svg><rect width="1" height="1" mask="url(#m)" clip-path=" URL( '#c' ) " marker-start="none" style="marker-end: url(#a)"/></svg>`) as SvgEl;
+    assert.deepEqual((ok.kids[0] as SvgEl).attrs, { width: "1", height: "1", "marker-end": "url(#p-a)", mask: "url(#p-m)", "clip-path": "url(#p-c)", "marker-start": "none" });
+  });
   it("is null for something with no drawing in it", () => {
     assert.equal(clean("<svg><script>x</script></svg>"), null);
     assert.equal(clean("<svg><title>only a title</title></svg>"), null);
