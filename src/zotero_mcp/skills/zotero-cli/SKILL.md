@@ -5,20 +5,21 @@ description: Read and write a Zotero library from the shell with the `zotero-cli
 
 # Zotero from the shell
 
-`zotero-cli` reaches a Zotero library directly. Prefer it over the Zotero MCP
-server when you have shell access: the MCP server's tool schemas cost ~14k
-tokens of context on every request whether or not you use them, while this
-costs only what you actually run.
+When you have shell access, prefer `zotero-cli` for direct library access.
 
-Check it is set up before the first real call:
+Before using the library, check settings and read access.
 
 ```bash
-zotero-cli config          # prints the resolved Zotero settings
+zotero-cli config
+zotero-cli --json get recent --limit 1
 ```
 
-If that fails, Zotero is not reachable. Local mode needs the Zotero desktop
-app running with its local API enabled; web mode needs `ZOTERO_API_KEY` and
-`ZOTERO_LIBRARY_ID`. Say so rather than guessing at library contents.
+`config` displays settings. `ok: true` from `get recent` confirms read access
+even when the library is empty. On failure, report `error.message`. Check
+`ZOTERO_DB_PATH` for a custom SQLite location, the running app and enabled
+API for local API reads, or `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` for web
+reads. SQLite reads can work with Zotero closed. Local API writes require
+running Zotero, an enabled local API, and write authorization.
 
 ## Always pass --json when you will read the output
 
@@ -210,9 +211,8 @@ or newer) or web API credentials. A write refused for that reason says so.
 
 ## When something looks wrong
 
-- Empty search results: check `zotero-cli config` and, for semantic mode,
-  `zotero-cli db status`. Do not report "you have no papers on X" until you
-  know the library is actually reachable and indexed.
+- Empty search results: confirm read access as above. For semantic mode,
+  check the index with `zotero-cli db status`.
 - `ok: false`: read `error.message`. It names the cause.
 - A partial-results note on a search means the scan was cut short, not that
   nothing else matched. Narrow the query and re-run.
