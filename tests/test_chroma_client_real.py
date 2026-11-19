@@ -77,6 +77,171 @@ def _seed(client, n, tagged_group_id=None, prefix="K"):
 
 
 # ---------------------------------------------------------------------------
+# ids_in_group: the deletion pass's by-id answer must equal the filtered listing
+# ---------------------------------------------------------------------------
+
+def test_ids_in_group_agrees_with_the_filtered_listing(client):
+    personal = _seed(client, 6, tagged_group_id=0, prefix="P")
+    group = _seed(client, 5, tagged_group_id=GROUP_ID, prefix="G")
+    untagged = _seed(client, 4, prefix="U")
+    # Passages, in their own collection: two libraries share the item key X.
+    client.upsert_embeddings(
+        documents=["a", "b", "c"],
+        metadatas=[
+            {"item_key": "X", "parent_item_key": "X", "chunk_index": 0, "group_id": 0},
+            {"item_key": "X", "parent_item_key": "X", "chunk_index": 1, "group_id": GROUP_ID},
+            {"item_key": "X", "parent_item_key": "X", "chunk_index": 2},
+        ],
+        ids=["X#0", "X#1", "X#2"],
+        embeddings=[[1.0, 0.0, 0.0, 0.0]] * 3,
+    )
+    everything = [*personal, *group, *untagged, "X#0", "X#1", "X#2", "NOT_STORED"]
+
+    for group_id in (0, GROUP_ID, 424242):
+        assert client.ids_in_group(everything, group_id) == client.get_all_ids(
+            where={"group_id": group_id}
+        )
+    assert client.ids_in_group(everything, 0) == {*personal, "X#0"}
+    assert client.ids_in_group([], 0) == set()
+    # Asked about some records only, it answers about those only.
+    assert client.ids_in_group([personal[0], group[0], "X#1"], 0) == {personal[0]}
+
+
+def test_ids_in_group_raises_on_a_read_error(client, monkeypatch):
+    _seed(client, 2, tagged_group_id=0)
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("database disk image is malformed")
+
+    monkeypatch.setattr(client.collection, "get", broken)
+    with pytest.raises(RuntimeError):
+        client.ids_in_group(["K00000"], 0)
+
+
+# ---------------------------------------------------------------------------
+# item_keys_by_level: which items have an article record, and all their passages
+# ---------------------------------------------------------------------------
+
+def _passages(client, key, indexes, n_chunks):
+    metadatas = []
+    for index in indexes:
+        meta = {"item_key": key, "parent_item_key": key, "chunk_index": index}
+        if n_chunks is not None:
+            meta["n_chunks"] = n_chunks
+        metadatas.append(meta)
+    client.upsert_embeddings(
+        documents=[f"{key} passage {index}" for index in indexes],
+        metadatas=metadatas,
+        ids=[f"{key}#{index}" for index in indexes],
+        embeddings=[[1.0, 0.0, 0.0, float(index)] for index in indexes],
+    )
+
+
+def test_item_keys_by_level_counts_only_items_with_all_their_passages(client):
+    articles = _seed(client, 3, tagged_group_id=0, prefix="A")
+    _passages(client, "WHOLE", range(12), 12)        # past #9: "#10" sorts before "#2"
+    _passages(client, "SHORT", [0, 1], 3)            # one passage failed to write
+    _passages(client, "HEADLESS", [1, 2], 3)         # its first passage is missing
+    _passages(client, "HEADLESS_WHOLE", [1, 2], 2)   # counted by number, as before
+    _passages(client, "LEGACY", [0, 1], None)        # written before n_chunks existed
+
+    found_articles, found_passages = client.item_keys_by_level()
+
+    assert found_articles == set(articles)
+    assert found_passages == {"WHOLE", "HEADLESS_WHOLE", "LEGACY"}
+
+
+def test_item_keys_by_level_is_reused_until_the_index_changes(client, monkeypatch):
+    from zotero_mcp import chroma_client as chroma_client_module
+
+    _seed(client, 2, tagged_group_id=0, prefix="A")
+    _passages(client, "ONE", [0, 1], 2)
+    first = client.item_keys_by_level()
+
+    opened = []
+    real_connect = chroma_client_module.sqlite3.connect
+
+    def counting_connect(*args, **kwargs):
+        opened.append(args)
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(chroma_client_module.sqlite3, "connect", counting_connect)
+    again = client.item_keys_by_level()
+    assert again == first and opened == []
+    # A caller changing what it was given must not change the next answer.
+    again[0].clear()
+    again[1].clear()
+    assert client.item_keys_by_level() == first
+
+    _passages(client, "TWO", [0], 1)
+    assert client.item_keys_by_level() == (first[0], first[1] | {"TWO"})
+    assert opened
+
+
+# ---------------------------------------------------------------------------
+# get_documents_metadata: the single lookup, for many items at once
+# ---------------------------------------------------------------------------
+
+def test_get_documents_metadata_answers_as_the_single_lookup_does(client):
+    articles = _seed(client, 4, tagged_group_id=0, prefix="A")
+    _passages(client, "PASSAGES_ONLY", [0, 1], 2)
+    _passages(client, articles[0], [0, 1], 2)   # an item with both levels
+    _passages(client, "NO_FIRST", [1], 2)        # no article, no first passage
+    keys = [*articles, "PASSAGES_ONLY", "NO_FIRST", "NOT_INDEXED"]
+
+    many = client.get_documents_metadata(keys)
+
+    assert many == {
+        key: meta for key in keys if (meta := client.get_document_metadata(key)) is not None
+    }
+    assert set(many) == {*articles, "PASSAGES_ONLY"}
+    assert "parent_item_key" not in many[articles[0]]  # the item's own record wins
+    assert many["PASSAGES_ONLY"]["chunk_index"] == 0
+    assert client.get_documents_metadata([]) == {}
+
+
+# ---------------------------------------------------------------------------
+# prune_items_chunks: prune_item_chunks for a batch, deleting the same records
+# ---------------------------------------------------------------------------
+
+def _prune_scenario(tmp_path, name, *, route_passages=True):
+    client = ChromaClient(
+        collection_name="real_client_test",
+        persist_directory=str(tmp_path / name),
+        embedding_model="default",
+    )
+    client.route_passages = route_passages
+    _seed(client, 3, tagged_group_id=0, prefix="A")   # article records, or bare legacy docs
+    _passages(client, "A00000", range(6), 6)          # shrinks to 2
+    _passages(client, "A00001", range(3), 3)          # same length: nothing to prune
+    _passages(client, "HOLES", [0, 1, 5, 6], 7)       # stale tail does not start at the new count
+    _passages(client, "GROWN", range(2), 2)           # grew: nothing past the new count
+    _passages(client, "UNTOUCHED", range(4), 4)       # not in this write
+    return client
+
+
+PRUNE = {"A00000": 2, "A00001": 3, "HOLES": 3, "GROWN": 5, "NEW_ITEM": 4}
+
+
+@pytest.mark.parametrize("route_passages", [True, False], ids=["separate", "unmigrated"])
+def test_prune_items_chunks_deletes_what_the_per_item_prune_deletes(tmp_path, route_passages):
+    one_by_one = _prune_scenario(tmp_path, "one", route_passages=route_passages)
+    for key, keep in PRUNE.items():
+        one_by_one.prune_item_chunks(key, keep)
+    batched = _prune_scenario(tmp_path, "many", route_passages=route_passages)
+    batched.prune_items_chunks(PRUNE)
+
+    left = batched.get_all_ids()
+    assert left == one_by_one.get_all_ids()
+    assert {"A00000#0", "A00000#1", "HOLES#0", "HOLES#1", "UNTOUCHED#3", "GROWN#1"} <= left
+    assert not {"A00000#2", "A00000#5", "HOLES#5", "HOLES#6"} & left
+    # Where passages share the article collection, the bare record of an item
+    # now stored as passages goes too; in its own collection it is the article.
+    assert ("A00000" in left) is route_passages
+    batched.prune_items_chunks({})
+
+
+# ---------------------------------------------------------------------------
 # iter_metadatas
 # ---------------------------------------------------------------------------
 

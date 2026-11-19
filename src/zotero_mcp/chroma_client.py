@@ -331,29 +331,18 @@ class ChromaClient:
                 text = text[:max_chars]
         return text
 
-    def add_documents(self,
-                     documents: list[str],
-                     metadatas: list[dict[str, Any]],
-                     ids: list[str]) -> None:
-        """
-        Add documents to the collection.
+    def _max_batch_size(self) -> int:
+        """Most records one ChromaDB write may carry.
 
-        Args:
-            documents: List of document texts to embed
-            metadatas: List of metadata dictionaries for each document
-            ids: List of unique IDs for each document
+        ChromaDB rejects batches larger than its max_batch_size (~5461). With
+        passage-chunking enabled a batch of 25 books easily exceeds that, so
+        writes are split instead of failing (#369).
         """
         try:
-            for collection, positions in self._group_by_collection(ids):
-                collection.add(
-                    documents=[documents[i] for i in positions],
-                    metadatas=[metadatas[i] for i in positions],
-                    ids=[ids[i] for i in positions],
-                )
-            logger.info(f"Added {len(documents)} documents to ChromaDB collection")
-        except Exception as e:
-            logger.error(f"Error adding documents to ChromaDB: {e}")
-            raise
+            max_batch = int(self.client.get_max_batch_size())
+        except Exception:
+            return 5000
+        return max_batch if max_batch >= 1 else 5000
 
     def upsert_documents(self,
                         documents: list[str],
@@ -368,13 +357,7 @@ class ChromaClient:
             ids: List of unique IDs for each document
         """
         try:
-            # ChromaDB rejects batches larger than its max_batch_size
-            # (~5461). With passage-chunking enabled a batch of 25 books
-            # easily exceeds that, so split instead of failing.
-            try:
-                max_batch = int(self.client.get_max_batch_size())
-            except Exception:
-                max_batch = 5000
+            max_batch = self._max_batch_size()
             for collection, positions in self._group_by_collection(ids):
                 for start in range(0, len(positions), max_batch):
                     part = positions[start:start + max_batch]
@@ -400,11 +383,7 @@ class ChromaClient:
         returned asynchronously without calling the realtime embeddings API.
         """
         try:
-            # Same max_batch_size constraint as upsert_documents.
-            try:
-                max_batch = int(self.client.get_max_batch_size())
-            except Exception:
-                max_batch = 5000
+            max_batch = self._max_batch_size()
             for collection, positions in self._group_by_collection(ids):
                 for start in range(0, len(positions), max_batch):
                     part = positions[start:start + max_batch]
@@ -466,7 +445,10 @@ class ChromaClient:
                 query_kwargs["query_texts"] = query_texts  # embedded inside query(), not timed apart
             embedding_seconds = time.perf_counter() - embedding_started
 
-            results = self._collection_for_level(level).query(**query_kwargs)
+            collection = self._collection_for_level(level)
+            results = collection.query(**query_kwargs)
+            # What the distances mean, so they can be reported as a similarity.
+            results["space"] = self._distance_space(collection)
             # How long the query took to embed, so a slow first search can be
             # told apart from a slow index load (see chroma_worker).
             results["embedding_seconds"] = embedding_seconds
@@ -475,6 +457,26 @@ class ChromaClient:
         except Exception as e:
             logger.error(f"Error performing semantic search: {e}")
             raise
+
+    @staticmethod
+    def _distance_space(collection) -> str:
+        """The distance a collection ranks by: ``l2`` (squared), ``cosine`` or ``ip``.
+
+        ChromaDB's default is ``l2``, and a collection keeps the space it was
+        created with, so nearly every index here is ``l2``.
+        """
+        try:
+            config = collection.configuration_json or {}
+            for index in ("hnsw", "spann"):
+                space = (config.get(index) or {}).get("space")
+                if space:
+                    return str(space)
+        except Exception:
+            pass
+        try:
+            return str((collection.metadata or {}).get("hnsw:space") or "l2")
+        except Exception:
+            return "l2"
 
     def delete_documents(self, ids: list[str]) -> None:
         """
@@ -546,6 +548,40 @@ class ChromaClient:
                 self.collection.delete(ids=[item_key])
         except Exception as e:
             logger.warning(f"prune_item_chunks({item_key}) failed: {e}")
+
+    def prune_items_chunks(self, keep: dict[str, int]) -> None:
+        """:meth:`prune_item_chunks` for many items: ``{item_key: passages to keep}``.
+
+        One read per collection finds the passages of all of them, and those
+        past an item's count are deleted by id. A filtered delete per item
+        costs about as much as that read, and nearly every item written has
+        nothing to prune: all of a first build, and any item that did not
+        shrink.
+        """
+        if not keep:
+            return
+        keys = list(keep)
+        try:
+            for collection in self.collections():
+                for start in range(0, len(keys), 500):
+                    got = collection.get(
+                        where={"parent_item_key": {"$in": keys[start:start + 500]}},
+                        include=["metadatas"],
+                    )
+                    stale = []
+                    for doc_id, meta in zip(got.get("ids") or [], got.get("metadatas") or []):
+                        index = (meta or {}).get("chunk_index")
+                        limit = keep.get((meta or {}).get("parent_item_key"))
+                        if limit is None or isinstance(index, bool) or not isinstance(index, (int, float)):
+                            continue
+                        if index >= int(limit):
+                            stale.append(doc_id)
+                    if stale:
+                        collection.delete(ids=stale)
+            if not self.separate_passages():
+                self.collection.delete(ids=keys)
+        except Exception as e:
+            logger.warning(f"prune_items_chunks({len(keys)} items) failed: {e}")
 
     def get_collection_info(self) -> dict[str, Any]:
         """Get information about the collection."""
@@ -633,16 +669,6 @@ class ChromaClient:
             logger.error(f"Error resetting collection: {e}")
             raise
 
-    def document_exists(self, doc_id: str) -> bool:
-        """Check if a document exists in the collection."""
-        try:
-            return any(
-                len(collection.get(ids=part)['ids']) > 0
-                for collection, part in self._group_existing([doc_id])
-            )
-        except Exception:
-            return False
-
     def get_document_metadata(self, doc_id: str) -> dict[str, Any] | None:
         """
         Get metadata for an item if it is indexed.
@@ -666,6 +692,28 @@ class ChromaClient:
             return None
         except Exception:
             return None
+
+    def get_documents_metadata(self, item_keys: list[str]) -> dict[str, dict[str, Any]]:
+        """:meth:`get_document_metadata` for many items, a few requests for all of them.
+
+        Items that are not indexed are left out, and so is everything that
+        could not be read, as the single lookup answers None for both.
+        """
+        found: dict[str, dict[str, Any]] = {}
+        keys = list(dict.fromkeys(item_keys))
+        try:
+            # The item's own record first; its first passage only where there
+            # is none, so an index with both levels reads the small one.
+            for suffix in ("", "#0"):
+                ids = [f"{key}{suffix}" for key in keys if key not in found]
+                for collection, part in self._group_existing(ids):
+                    for start in range(0, len(part), 5000):
+                        result = collection.get(ids=part[start:start + 5000], include=["metadatas"])
+                        for doc_id, meta in zip(result.get("ids") or [], result.get("metadatas") or []):
+                            found.setdefault(doc_id.split("#", 1)[0], meta)
+        except Exception as e:
+            logger.debug(f"Error reading document metadata: {e}")
+        return found
 
     def get_existing_ids(self, ids: list[str]) -> set[str]:
         """Return the subset of ids that already exist in the collection."""
@@ -704,6 +752,26 @@ class ChromaClient:
         except Exception as e:
             logger.debug(f"Error reading item libraries: {e}")
             return {}
+
+    def ids_in_group(self, ids: list[str], group_id: int) -> set[str]:
+        """Those of ``ids`` whose record is attributed to the library ``group_id``.
+
+        Read by id, which costs a seek per record asked about. Listing a
+        library's ids with ``get_all_ids(where={"group_id": ...})`` instead
+        reads a metadata row of every record in the index. A record without
+        a ``group_id`` is never returned. Raises on a ChromaDB error: the
+        deletion pass must not take a failed read for an answer.
+        """
+        wanted = int(group_id)
+        found: set[str] = set()
+        for collection, part in self._group_existing(list(ids)):
+            for start in range(0, len(part), 5000):
+                result = collection.get(ids=part[start:start + 5000], include=["metadatas"])
+                for doc_id, meta in zip(result.get("ids") or [], result.get("metadatas") or []):
+                    stored = (meta or {}).get("group_id")
+                    if stored is not None and not isinstance(stored, bool) and stored == wanted:
+                        found.add(doc_id)
+        return found
 
     def get_all_ids(self, where: dict[str, Any] | None = None) -> set[str]:
         """Return every id currently stored in the collection.
@@ -778,12 +846,7 @@ class ChromaClient:
         if not ids:
             return
         try:
-            try:
-                max_batch = int(self.client.get_max_batch_size())
-            except Exception:
-                max_batch = 5000
-            if max_batch < 1:
-                max_batch = 5000
+            max_batch = self._max_batch_size()
             by_id = dict(zip(ids, metadatas))
             for collection, part in self._group_existing(ids):
                 for start in range(0, len(part), max_batch):
@@ -1263,6 +1326,13 @@ def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tup
     db = Path(persist_directory) / "chroma.sqlite3"
     if not db.exists():
         return set(), set()
+    # Every update reads this before it knows whether anything changed, and on
+    # a large index it takes seconds. Reuse it until the file changes.
+    stamp = _file_stamp(db)
+    cache_key = (str(db), collection_name)
+    cached = _level_keys_cache.get(cache_key)
+    if stamp is not None and cached is not None and cached[0] == stamp:
+        return set(cached[1]), set(cached[2])
     con = sqlite3.connect(f"{db.as_uri()}?mode=ro", uri=True, timeout=5)
     try:
         articles = {
@@ -1279,25 +1349,46 @@ def read_item_keys_by_level(persist_directory: str, collection_name: str) -> tup
             )
         }
         found: dict[str, int] = {}
-        expected: dict[str, int] = {}
-        for doc_id, n_chunks in con.execute(
+        # One record per item says how many passages it should have: its
+        # first passage, or whichever is there. Reading n_chunks of every
+        # passage is a metadata row per record, most of this function's time.
+        counted_on: dict[str, tuple[bool, int]] = {}
+        for row_id, doc_id in con.execute(
             """
-            SELECT e.embedding_id, m.int_value
+            SELECT e.id, e.embedding_id
             FROM embeddings e
             JOIN segments s ON e.segment_id = s.id
             JOIN collections c ON s.collection = c.id
-            LEFT JOIN embedding_metadata m ON m.id = e.id AND m.key = 'n_chunks'
             WHERE c.name = ? AND s.scope = 'METADATA' AND e.embedding_id LIKE '%#%'
             """,
             (passage_collection_name(collection_name),),
         ):
-            key = doc_id.split("#", 1)[0]
+            key, _, index = doc_id.partition("#")
             found[key] = found.get(key, 0) + 1
-            if n_chunks is not None:
-                expected[key] = n_chunks
+            if index == "0" or key not in counted_on:
+                counted_on[key] = (index == "0", row_id)
+        key_of_row = {row_id: key for key, (_first, row_id) in counted_on.items()}
+        expected: dict[str, int] = {}
+        row_ids = sorted(key_of_row)
+        for start in range(0, len(row_ids), 500):
+            part = row_ids[start:start + 500]
+            marks = ",".join("?" * len(part))
+            for row_id, n_chunks in con.execute(
+                f"SELECT id, int_value FROM embedding_metadata WHERE key = 'n_chunks' AND id IN ({marks})",
+                part,
+            ):
+                if n_chunks is not None:
+                    expected[key_of_row[row_id]] = n_chunks
     finally:
         con.close()
-    return articles, {key for key, count in found.items() if count >= expected.get(key, 1)}
+    passages = {key for key, count in found.items() if count >= expected.get(key, 1)}
+    if stamp is not None and stamp == _file_stamp(db):  # not written to while reading
+        _level_keys_cache[cache_key] = (stamp, set(articles), set(passages))
+    return articles, passages
+
+
+# (chroma.sqlite3 path, collection name) -> (file stamp, article keys, passage keys).
+_level_keys_cache: dict[tuple[str, str], tuple[tuple, set[str], set[str]]] = {}
 
 
 def read_collection_status(

@@ -466,6 +466,7 @@ def test_old_passages_that_could_not_be_deleted_are_reported(build, monkeypatch,
     zotero.changed = {"AAA": CHANGED}
     search = build(zotero, parallel=parallel)
     monkeypatch.setattr(search.chroma_client, "prune_item_chunks", lambda key, keep: None)
+    monkeypatch.setattr(search.chroma_client, "prune_items_chunks", lambda keep: None)
 
     noted: list[str] = []
     original_note = search._note_undropped_passages
@@ -492,6 +493,7 @@ def test_undropped_passages_do_not_carry_over_to_the_next_run(build, monkeypatch
     zotero.changed = {"AAA": CHANGED}
     search = build(zotero)
     monkeypatch.setattr(search.chroma_client, "prune_item_chunks", lambda key, keep: None)
+    monkeypatch.setattr(search.chroma_client, "prune_items_chunks", lambda keep: None)
     _stop_in_the_passage_pass(monkeypatch, search)
 
     # A later run of the same instance, and a delete that fails after it (say

@@ -88,9 +88,6 @@ class FakeChromaClient:
         for i, m in zip(ids, metadatas):
             self._metas[i] = dict(m)
 
-    def add_documents(self, documents, metadatas, ids):
-        self.upsert_documents(documents, metadatas, ids)
-
     def delete_documents(self, ids):
         self.deleted.extend(list(ids))
         for i in ids:
