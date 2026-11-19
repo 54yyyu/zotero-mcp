@@ -437,8 +437,20 @@ def test_split_filters_single_side():
     assert split_filters(None) == (None, None)
 
 
-def test_split_filters_keeps_unknown_fields_on_the_chroma_side():
-    assert split_filters({"file_stamp": "1:1"}) == ({"file_stamp": "1:1"}, None)
+@pytest.mark.parametrize("where", [{"tag": "x"}, {"year": 2020}, {"$or": [{"section": "A"}, {"file_stamp": "1:1"}]}])
+def test_split_filters_rejects_unknown_fields_with_the_supported_list(where):
+    with pytest.raises(ValueError, match="Cannot filter on .*Supported fields:.*item_type"):
+        split_filters(where)
+
+
+def test_multi_key_dict_inside_or_becomes_an_and_for_chroma_and_live():
+    chroma, live = split_filters({"$or": [{"section": "A", "page": 2}, {"section": "B"}]})
+    assert chroma == {"$or": [{"$and": [{"section": "A"}, {"page": 2}]}, {"section": "B"}]}
+    assert live is None
+    mixed = split_filters({"$or": [{"item_type": "book", "doi": "x"}, {"section": "B"}]})[1]
+    assert mixed == {"$or": [{"$and": [{"item_type": "book"}, {"doi": "x"}]}, {"section": "B"}]}
+    fields = {"item_type": "book", "doi": "x"}
+    assert matches(mixed, fields) and not matches(mixed, {"item_type": "book", "doi": "y"})
 
 
 def test_split_filters_mixed_or_is_evaluated_live_whole():
@@ -492,6 +504,14 @@ def test_a_bad_live_filter_is_an_error_even_without_hits(monkeypatch, tmp_path):
     out = s.search("q", limit=5, filters={"doi": {"$in": "10.1/x"}})
 
     assert "takes a list" in out["error"]
+
+
+def test_an_unknown_filter_field_is_an_error_from_search(monkeypatch, tmp_path):
+    s, _ = _search(monkeypatch, tmp_path, [], [])
+
+    out = s.search("q", limit=5, filters={"tag": "x"})
+
+    assert "Cannot filter on tag" in out["error"] and "Supported fields" in out["error"]
 
 
 def test_evaluator_tags_are_membership():
