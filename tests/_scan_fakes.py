@@ -64,7 +64,7 @@ class ScanReader:
     # Keys of the library's notes and annotations, as the database types them.
     non_indexed: frozenset = frozenset()
 
-    def get_non_indexed_item_keys(self):
+    def get_non_indexed_item_keys(self, group_id=None):
         return set(self.non_indexed)
 
     def _resolve_extraction_targets(self, item_id):

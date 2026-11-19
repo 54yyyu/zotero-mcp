@@ -2549,16 +2549,24 @@ class LocalZoteroReader:
                 return found  # no such table in this Zotero: nothing known
         return found
 
-    def get_non_indexed_item_keys(self) -> set[str]:
+    def get_non_indexed_item_keys(self, group_id: int | None = None) -> set[str]:
         """Keys of every note and annotation, which are never indexed (#604).
 
         One query, so the deletion pass can tell a stale record of one of them
-        from a record of an item that is merely gone.
+        from a record of an item that is merely gone. Scoped like the other
+        local reads: ``group_id`` 0 is the personal library, a groupID one
+        group, None every user/group library. A library not in this database
+        has no keys.
         """
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if lib_ids is None:
+            return set()
         conn = self._get_connection()
         rows = conn.execute(
             "SELECT i.key FROM items i JOIN itemTypes it ON i.itemTypeID = it.itemTypeID "
-            "WHERE it.typeName IN ('note', 'annotation')"
+            "WHERE it.typeName IN ('note', 'annotation') "
+            f"AND i.libraryID IN ({','.join('?' * len(lib_ids))})",
+            lib_ids,
         )
         return {row[0] for row in rows}
 
