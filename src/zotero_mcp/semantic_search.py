@@ -2767,6 +2767,15 @@ class ZoteroSemanticSearch:
             # passages the migration moved here and whose file has not changed.
             stored = on_record if not rewrite else None
             current = self._unit_is_current(unit, stored)
+            if (
+                current and not levels and check and stored and stored.get("text_truncated")
+                and not target.ft_cache and not self._automatic_run
+            ):
+                # Made from a cache Zotero cut short, and the file itself is
+                # readable now: an explicit run re-extracts it from the file
+                # (the new record carries no flag, so this happens once). A
+                # file still out of reach leaves the record as it is.
+                current = False
             if levels:
                 # Only these levels, whatever the file's own records say.
                 unit["_index_levels"] = levels

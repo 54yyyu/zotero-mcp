@@ -1821,7 +1821,7 @@ def level_status_rows(info: dict[str, Any]) -> list[tuple[str, str]]:
         # Made from Zotero's text cache, which Zotero indexed only in part.
         rows.append((
             "Records from a cut-short text cache",
-            f"{truncated} (`update-db --force-rebuild` with the files present indexes their full text)",
+            f"{truncated} (`update-db` with the files present indexes their full text)",
         ))
     return rows
 
