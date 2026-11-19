@@ -535,8 +535,9 @@ def test_an_explicit_update_writes_only_the_missing_records_not_the_passages(fre
     if fresh_migration:
         assert new[PASSAGES] == set() and after[PASSAGES] == before[PASSAGES]
     else:
-        # moved by the re-key, vectors untouched
-        assert set(after[PASSAGES]) == set(REKEYED.values())
+        # moved by the re-key, vectors untouched; ITEMTHR3 has no file, which only migrate-index acts on
+        assert set(after[PASSAGES]) == set(REKEYED.values()) | {"ITEMTHR3#0"}
+        assert stats["passages_rekeyed"]["held_items"] == 1 and stats["passages_rekeyed"]["dropped_items"] == 0
         assert all(after[PASSAGES][new_id][1] == before[ARTICLES][old_id][1] for old_id, new_id in REKEYED.items())
     assert len(StrictEmbedding.seen) == 7  # 4 + 3, never a passage
     attachments = {k: after[ARTICLES][k][0] for k in fake_zotero.LARGEST.values()}
@@ -562,7 +563,8 @@ def test_an_explicit_update_of_a_0171_index_re_keys_it_without_embedding(tmp_pat
         assert stats["errors"] == 0, stats
     after = library.snapshot()
     assert StrictEmbedding.seen == [] and library.reads == []
-    assert set(after[PASSAGES]) == set(REKEYED.values())
+    # ITEMTHR3 has no file: an update leaves its passage, only migrate-index drops it.
+    assert set(after[PASSAGES]) == set(REKEYED.values()) | {"ITEMTHR3#0"}
     assert after[ARTICLES] == _stamped(before[ARTICLES])
     assert all(after[PASSAGES][new][1] == before[PASSAGES][old][1] for old, new in REKEYED.items())
 

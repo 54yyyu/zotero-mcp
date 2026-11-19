@@ -2999,6 +2999,9 @@ class ZoteroSemanticSearch:
                     report,
                     lambda _message: None,
                     config_path=self.config_path,
+                    # Dropping is irreversible and costs embeddings: only
+                    # ``migrate-index``, after its dry run, does it.
+                    drop=False,
                 )
         except Exception as e:
             logger.error(f"Re-keying legacy passages failed ({e}); they stay as they are")
@@ -3007,7 +3010,13 @@ class ZoteroSemanticSearch:
             "passages": report.rekeyed_passages,
             "dropped_items": report.dropped_items,
             "skipped_items": report.skipped_items,
+            "held_items": report.held_items,
+            "failed_items": report.failed_items,
         }
+        if report.held_items:
+            note = index_migration.held_note(report.held_items, report.held_passages)
+            stats["passages_rekeyed"]["note"] = note
+            _report(note + "\n")
 
     def _attachment_parents(self, keys: list[str]) -> dict[str, str | None]:
         """``{attachment key: parent key or None}`` for the attachments Zotero says it has among ``keys``.
