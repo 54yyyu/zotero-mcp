@@ -642,6 +642,105 @@ def _tag_dsl_condition(entries: list[str]) -> tuple[str, list] | None:
     return " AND ".join(clauses), params
 
 
+def _base_field_ids_sql(base_field: str) -> str:
+    """The base field's own fieldID plus every type-specific field mapped to it."""
+    field_id = _field_id(base_field)
+    return (
+        f"SELECT {field_id} UNION ALL SELECT fieldID "
+        f"FROM baseFieldMappingsCombined WHERE baseFieldID = {field_id}"
+    )
+
+
+def _typed_rows_sql(base_field: str, source: str, condition: str) -> str:
+    """itemIDs of the `source` rows (aliased ``r``, with itemID and fieldID)
+    that satisfy `condition` and sit in the field the item's own type keeps
+    `base_field` in. With `_base_field_ids_sql` narrowing the source, this is
+    `_base_field_resolved_join` read from the value side: the same items,
+    found without visiting every item in the library.
+    """
+    field_id = _field_id(base_field)
+    return (
+        f"SELECT r.itemID FROM {source} r "
+        "JOIN items di ON di.itemID = r.itemID "
+        "LEFT JOIN baseFieldMappingsCombined m "
+        f"ON m.itemTypeID = di.itemTypeID AND m.baseFieldID = {field_id} "
+        f"WHERE {condition} AND r.fieldID = COALESCE(m.fieldID, {field_id})"
+    )
+
+
+_NORM = _semantics.SQLITE_NORM_FUNCTION
+_LIKE = "LIKE ? ESCAPE '\\'"
+_DATA_VALUES = "itemData d JOIN itemDataValues v ON v.valueID = d.valueID"
+
+def _search_ctes(qmode: str, shared: bool) -> str:
+    """The folded titles, creators and (in 'everything' mode) tags that
+    `_term_match_sql` reads.
+
+    With several terms they are computed once and shared (`shared`), so a
+    three-word query does not fold each title and creator three times. SQLite
+    would otherwise inline them into each term; the hint exists from 3.35.
+    A single term reads them inline, which saves building the temporary table.
+    """
+    hint = "MATERIALIZED " if shared and sqlite3.sqlite_version_info >= (3, 35) else ""
+    ctes = [
+        f"norm_title(itemID, fieldID, n) AS {hint}("
+        f"SELECT d.itemID, d.fieldID, {_NORM}(v.value) "
+        f"FROM {_DATA_VALUES} WHERE d.fieldID IN ({_base_field_ids_sql('title')}))",
+        f"norm_creator(creatorID, n) AS {hint}("
+        f"SELECT c.creatorID, {_NORM}({_CREATOR_NAME_EXPR}) FROM creators c)",
+    ]
+    if qmode == "everything":
+        ctes.append(
+            f"norm_tag(tagID, n) AS {hint}(SELECT t.tagID, {_NORM}(t.name) FROM tags t)"
+        )
+    return ", ".join(ctes)
+
+
+def _term_match_sql(term: str, qmode: str) -> tuple[str, list]:
+    """SELECT of the itemIDs one keyword-search term matches, with its params.
+
+    Title, a creator's name, and the year when the term is one; in
+    'everything' mode also abstract, tags and notes (a note matches itself
+    and its parent). Reads the `_search_ctes`.
+    """
+    pattern = f"%{_semantics.escape_like(term)}%"
+    parts = [
+        _typed_rows_sql("title", "norm_title", f"r.n {_LIKE}"),
+        "SELECT ic.itemID FROM itemCreators ic WHERE ic.creatorID IN ("
+        f"SELECT creatorID FROM norm_creator WHERE n {_LIKE})",
+    ]
+    params: list = [pattern, pattern]
+    # Only a year is looked for in the date, and only in its year: the stored
+    # value is "2020-05-00 May 2020", where "may", "10" or "-00" would
+    # otherwise match thousands of items.
+    if re.fullmatch(r"\d{4}", term):
+        dates = (
+            f"(SELECT d.itemID, d.fieldID FROM {_DATA_VALUES} "
+            f"WHERE d.fieldID IN ({_base_field_ids_sql('date')}) "
+            "AND SUBSTR(v.value, 1, 4) = ?)"
+        )
+        parts.append(_typed_rows_sql("date", dates, "1"))
+        params.append(term)
+    if qmode == "everything":
+        parts.append(
+            f"SELECT d.itemID FROM {_DATA_VALUES} "
+            f"WHERE d.fieldID = {_field_id('abstractNote')} AND {_NORM}(v.value) {_LIKE}"
+        )
+        parts.append(
+            "SELECT itg.itemID FROM itemTags itg WHERE itg.tagID IN ("
+            f"SELECT tagID FROM norm_tag WHERE n {_LIKE})"
+        )
+        # One pass over the notes yields both ids; a standalone note's NULL
+        # parent matches no item.
+        parts.append(
+            "SELECT CASE side.n WHEN 0 THEN n.itemID ELSE n.parentItemID END "
+            "FROM itemNotes n CROSS JOIN (SELECT 0 AS n UNION ALL SELECT 1) side "
+            f"WHERE {_NORM}(n.note) {_LIKE}"
+        )
+        params.extend([pattern] * 3)
+    return " UNION ".join(parts), params
+
+
 def row_to_api_item(
     row: sqlite3.Row,
     creators: list[dict],
@@ -2637,6 +2736,24 @@ class LocalZoteroReader:
             for row in rows
         ]
 
+    def _hydrate_ids(
+        self, conn: sqlite3.Connection, lib_ids: list[int], item_ids: list[int]
+    ) -> list[dict]:
+        """Search-projection items for `item_ids`, in that order.
+
+        The searches pick their page as bare itemIDs first; only the page
+        pays for the field joins, creators and tags.
+        """
+        if not item_ids:
+            return []
+        rows = conn.execute(
+            _item_hydration_select(len(lib_ids))
+            + f" AND i.itemID IN ({','.join('?' * len(item_ids))})",
+            list(lib_ids) + list(item_ids),
+        ).fetchall()
+        by_id = {row["itemID"]: row for row in rows}
+        return self._hydrate_rows(conn, [by_id[i] for i in item_ids if i in by_id])
+
     def get_items_by_keys(self, keys: list[str]) -> dict[str, dict]:
         """Hydrate item keys from *any* library into pyzotero-shaped dicts.
 
@@ -2747,8 +2864,6 @@ class LocalZoteroReader:
                 return None  # boolean itemType expressions ("a || b") unsupported
 
         variants = _generate_search_variants(query)
-        like_clauses: list[str] = []
-        like_params: list = []
         if not variants:
             # A blank query is a *filter-only* search — "every item carrying
             # this tag" — which is exactly what a tag-only zotero_search_items asks for
@@ -2768,63 +2883,58 @@ class LocalZoteroReader:
         folded = [v for v in folded if v.strip()]
         if variants and not folded:
             return []
-        norm = _semantics.SQLITE_NORM_FUNCTION
         # As in Zotero's quick search, every word must match somewhere
         # (title, a creator, the year; in 'everything' mode also abstract,
         # tags and notes) but not all in one field: "Brewer 2011" is a
         # surname and a year. A double-quoted phrase stays one term. The
         # variants are alternatives to each other.
+        #
+        # Each distinct term becomes one CTE holding the itemIDs it matches,
+        # found from the value side: the title rows, the distinct creators,
+        # the tags. Testing the terms per item instead (a LIKE inside the
+        # hydration join) cost about ten index seeks and a creator subquery
+        # for every item in the library before the first comparison.
+        term_ctes: dict[str, str] = {}
+        cte_sql: list[str] = []
+        cte_params: list = []
+        variant_clauses: list[str] = []
         for variant in folded:
             word_clauses: list[str] = []
             for phrase, word in re.findall(r'"([^"]+)"|(\S+)', variant):
                 term = phrase.strip() or word.strip(",;:.()[]\"'")
                 if not term:
                     continue
-                pattern = f"%{_semantics.escape_like(term)}%"
-                fields = [f"{norm}(title_val.value) LIKE ? ESCAPE '\\'"]
-                like_params.append(pattern)
-                # Only a year is looked for in the date, and only in its year:
-                # the stored value is "2020-05-00 May 2020", where "may",
-                # "10" or "-00" would otherwise match thousands of items.
-                if re.fullmatch(r"\d{4}", term):
-                    fields.append("SUBSTR(date_val.value, 1, 4) = ?")
-                    like_params.append(term)
-                fields.append(
-                    f"EXISTS (SELECT 1 FROM itemCreators ic JOIN creators c ON ic.creatorID = c.creatorID "
-                    f"WHERE ic.itemID = i.itemID AND {norm}({_CREATOR_NAME_EXPR}) LIKE ? ESCAPE '\\')"
-                )
-                like_params.append(pattern)
-                if qmode == "everything":
-                    fields.append(f"{norm}(abstract_val.value) LIKE ? ESCAPE '\\'")
-                    like_params.append(pattern)
-                    fields.append(
-                        "EXISTS (SELECT 1 FROM itemTags itg JOIN tags t ON itg.tagID = t.tagID "
-                        f"WHERE itg.itemID = i.itemID AND {norm}(t.name) LIKE ? ESCAPE '\\')"
-                    )
-                    like_params.append(pattern)
-                    fields.append(
-                        "EXISTS (SELECT 1 FROM itemNotes n WHERE "
-                        f"(n.parentItemID = i.itemID OR n.itemID = i.itemID) AND {norm}(n.note) LIKE ? ESCAPE '\\')"
-                    )
-                    like_params.append(pattern)
-                word_clauses.append(f"({' OR '.join(fields)})")
+                if term not in term_ctes:
+                    term_ctes[term] = f"term{len(term_ctes)}"
+                    term_sql, term_params = _term_match_sql(term, qmode)
+                    cte_sql.append(f"{term_ctes[term]}(itemID) AS ({term_sql})")
+                    cte_params.extend(term_params)
+                word_clauses.append(f"i.itemID IN (SELECT itemID FROM {term_ctes[term]})")
             if word_clauses:
-                like_clauses.append(f"({' AND '.join(word_clauses)})")
-        if variants and not like_clauses:
+                variant_clauses.append(f"({' AND '.join(word_clauses)})")
+        if variants and not variant_clauses:
             return []
 
-        like_sql = f" AND ({' OR '.join(like_clauses)})" if like_clauses else ""
-        query_sql = (
-            _item_hydration_select(len(lib_ids))
-            + f" {type_filter_sql} {tag_sql}{collection_sql}{like_sql}"
-            + " ORDER BY i.dateModified DESC LIMIT ?"
-        )
-        params = (
-            list(lib_ids) + type_params + tag_params + collection_params
-            + like_params + [limit]
-        )
-        rows = conn.execute(query_sql, params).fetchall()
-        return self._hydrate_rows(conn, rows)
+        with_sql = ""
+        if cte_sql:
+            shared = _search_ctes(qmode, shared=len(cte_sql) > 1)
+            with_sql = f"WITH {shared}, {', '.join(cte_sql)} "
+        match_sql = f" AND ({' OR '.join(variant_clauses)})" if variant_clauses else ""
+        lib_placeholders = ",".join("?" * len(lib_ids))
+        page = [
+            row[0]
+            for row in conn.execute(
+                f"""{with_sql}SELECT i.itemID FROM items i
+                    JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
+                    WHERE i.libraryID IN ({lib_placeholders})
+                    AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+                    {type_filter_sql} {tag_sql}{collection_sql}{match_sql}
+                    ORDER BY i.dateModified DESC, i.itemID DESC LIMIT ?""",
+                cte_params + list(lib_ids) + type_params + tag_params
+                + collection_params + [limit],
+            ).fetchall()
+        ]
+        return self._hydrate_ids(conn, lib_ids, page)
 
     def advanced_search_sql(
         self,
