@@ -1380,6 +1380,31 @@ class ZoteroSemanticSearch:
             )
         return fit
 
+    # No tokenizer here averages this many characters a token over a whole
+    # document (they average 3 to 4), so text past it cannot be embedded.
+    FULLTEXT_CAP_CHARS_PER_TOKEN = 16
+
+    def _fulltext_char_cap(self) -> int | None:
+        """How much of an item's full text any of its records can use, in characters.
+
+        An article record is cut to the model's token limit, and passages
+        cover ``max_chunks_per_item`` chunks from the start. A scan holds the
+        text of every item it will index until the item is written, which for
+        a first build is the whole library, so the rest is dropped as soon as
+        it is read. None when the model's limit is not known.
+        """
+        max_tokens = getattr(self.chroma_client, "embedding_max_tokens", None)
+        if isinstance(max_tokens, bool) or not isinstance(max_tokens, (int, float)) or max_tokens <= 0:
+            return None
+        cap = int(max_tokens) * self.FULLTEXT_CAP_CHARS_PER_TOKEN
+        if self._chunking_enabled:
+            try:
+                chunks = int(self._chunking_config.get("max_chunks_per_item", 20))
+            except (TypeError, ValueError):
+                return None
+            cap = max(cap, self._effective_chunk_size() * chunks)
+        return cap
+
     def _fulltext_fit_warning(self) -> str | None:
         """Warning for item-level fulltext indexing on a small-context model.
 
@@ -2449,6 +2474,7 @@ class ZoteroSemanticSearch:
                     # results arrive out of order — hence the lookup by id.
                     if pending_extraction:
                         by_id = {it.item_id: it for it in pending_extraction}
+                        text_cap = self._fulltext_char_cap()
                         done = 0
                         for item_id, result in _extract_fulltext_batch(
                             reader, [(it.item_id, it.key) for it in pending_extraction]
@@ -2458,6 +2484,8 @@ class ZoteroSemanticSearch:
                                 continue
                             if result:
                                 target.fulltext, target.fulltext_source = result
+                                if text_cap and len(target.fulltext or "") > text_cap:
+                                    target.fulltext = target.fulltext[:text_cap]
                             elif getattr(target, "_attachment_keys", ""):
                                 # An attachment existed but produced no text —
                                 # record the attempt so incremental runs don't
@@ -3027,6 +3055,7 @@ class ZoteroSemanticSearch:
         except Exception:
             pass
         fetched = 0
+        text_cap = self._fulltext_char_cap()
         pdf_keys = (
             self._pdf_attachment_keys_by_parent()
             if whole_library and total >= self._BULK_ATTACHMENT_WALK_MIN_ITEMS
@@ -3050,7 +3079,7 @@ class ZoteroSemanticSearch:
             else:
                 text, source, failed = self._fetch_fulltext_checked(key)
             if text:
-                data["fulltext"] = text
+                data["fulltext"] = text[:text_cap] if text_cap else text
                 data["fulltextSource"] = source
                 fetched += 1
             else:
