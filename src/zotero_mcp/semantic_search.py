@@ -2619,6 +2619,7 @@ class ZoteroSemanticSearch:
         waiting = set(self.update_config.get("gaps_waiting_for_text") or [])
         skipped = self._still_waiting_for_text(include_fulltext)
         items: list[dict[str, Any]] = []
+        wanted: list[str] = []
         for key in sorted(gaps):
             if key in already_fetched or key in skipped:
                 continue
@@ -2631,12 +2632,10 @@ class ZoteroSemanticSearch:
                 if existing.get("has_fulltext") and existing.get("has_fulltext") != "failed":
                     waiting.add(key)
                     continue
-            try:
-                item = self.zotero_client.item(key)
-            except Exception as e:
-                logger.debug(f"item({key}) failed while filling index gaps: {e}")
-                self._note_unanswered_recheck(key, waiting)
-                continue
+            wanted.append(key)
+        fetched, _failed = self._fetch_items_by_keys(wanted)
+        for key in wanted:
+            item = fetched.get(key)
             if not item or item.get("data", {}).get("itemType") in _NON_INDEXED_ITEM_TYPES:
                 self._note_unanswered_recheck(key, waiting)
                 continue
@@ -3142,16 +3141,36 @@ class ZoteroSemanticSearch:
             )
             current_keys = None
 
-        if not changed_versions:
+        self._fetch_failed_keys = set()
+        if not changed_versions and not include_fulltext:
             return [], current_keys
 
+        fetched, failed = self._fetch_items_by_keys(list(changed_versions))
+        order = list(changed_versions)
+        if include_fulltext:
+            # Attaching a PDF, or Zotero extracting its text later, changes the
+            # attachment and not the parent, so the parent's key is not among
+            # the changed ones. Its record is what holds the text: re-index it.
+            attachment_keys = [k for k in self._new_fulltext_keys(since_version) if k not in fetched]
+            if attachment_keys:
+                more, more_failed = self._fetch_items_by_keys(attachment_keys)
+                fetched.update(more)
+                failed |= more_failed
+            parents: list[str] = []
+            for child in list(fetched.values()):
+                parent = (child.get("data") or {}).get("parentItem") if self._pdf_attachment_key(child) else None
+                if parent and parent not in fetched and parent not in parents:
+                    parents.append(parent)
+            if parents:
+                more, more_failed = self._fetch_items_by_keys(parents)
+                fetched.update(more)
+                failed |= more_failed
+                order.extend(parents)
+        self._fetch_failed_keys = failed
+
         changed_items: list[dict[str, Any]] = []
-        for key in changed_versions.keys():
-            try:
-                item = self.zotero_client.item(key)
-            except Exception as e:
-                logger.debug(f"item({key}) failed during incremental fetch: {e}")
-                continue
+        for key in order:
+            item = fetched.get(key)
             if not item:
                 continue
             item_type = item.get("data", {}).get("itemType")
@@ -3167,6 +3186,60 @@ class ZoteroSemanticSearch:
         self._tag_group_id(changed_items)
 
         return changed_items, current_keys
+
+    # The Zotero API takes at most this many keys in one itemKey filter.
+    _ITEM_KEY_BATCH = 50
+
+    def _fetch_items_by_keys(self, keys: list[str]) -> tuple[dict[str, dict[str, Any]], set[str]]:
+        """Fetch items by key, 50 to a request: ``(items by key, keys whose fetch failed)``.
+
+        A key the batch does not return (a failed request, or a server that
+        ignores ``itemKey``) is asked for on its own. An item Zotero says is
+        gone (404) is left out of both results; any other error puts its key
+        in the failed set, so the caller knows this run did not see it.
+        """
+        found: dict[str, dict[str, Any]] = {}
+        failed: set[str] = set()
+        keys = [key for key in dict.fromkeys(keys) if key]
+        for start in range(0, len(keys), self._ITEM_KEY_BATCH):
+            chunk = keys[start:start + self._ITEM_KEY_BATCH]
+            wanted = set(chunk)
+            if len(chunk) > 1:
+                try:
+                    rows = self.zotero_client.items(itemKey=",".join(chunk), limit=self._ITEM_KEY_BATCH) or []
+                except Exception as e:
+                    logger.debug(f"items(itemKey=...) failed, asking per item: {e}")
+                    rows = []
+                for row in rows:
+                    key = row.get("key") if isinstance(row, dict) else None
+                    if key in wanted:
+                        found[key] = row
+            for key in chunk:
+                if key in found:
+                    continue
+                try:
+                    item = self.zotero_client.item(key)
+                except ResourceNotFoundError:
+                    continue
+                except Exception as e:
+                    logger.warning(f"Could not fetch item {key} from Zotero: {e}")
+                    failed.add(key)
+                    continue
+                if item:
+                    found[key] = item
+        return found, failed
+
+    def _new_fulltext_keys(self, since_version: int) -> list[str]:
+        """Attachments whose extracted text changed since ``since_version``; [] if unknown."""
+        lookup = getattr(self.zotero_client, "new_fulltext", None)
+        if lookup is None:
+            return []
+        try:
+            changed = lookup(since_version)
+        except Exception as e:
+            logger.debug(f"new_fulltext(since={since_version}) failed: {e}")
+            return []
+        return [str(key) for key in changed] if isinstance(changed, dict) else []
 
     def _verify_local_snapshot_version(self, target_sync_version: int) -> int | None:
         """Decide whether the local sqlite snapshot supports promoting the
@@ -3956,6 +4029,15 @@ class ZoteroSemanticSearch:
                     since_version=last_sync_version,
                     include_fulltext=include_fulltext_via_api,
                 )
+                fetch_failed = len(getattr(self, "_fetch_failed_keys", None) or ())
+                if fetch_failed:
+                    # They would not come back in a later item_versions(since=...),
+                    # so the sync version stays where it is and the next run asks again.
+                    stats["fetch_failed_items"] = fetch_failed
+                    _report(
+                        f"Could not fetch {fetch_failed} changed item(s) from Zotero; "
+                        "the next update tries them again.\n"
+                    )
                 self._run_deletion_pass(stats, current_library_keys, allow_mass_deletion)
                 self._keep_current_articles(all_items, index_gaps)
                 gap_items = self._get_gap_items_from_api(
@@ -4043,7 +4125,7 @@ class ZoteroSemanticSearch:
                 stats["batch_mode"] = True
                 stats["batch_provider"] = active_batch_provider
                 batch_label = _batch_adapter(active_batch_provider).label
-                if stats.get("deletion_skipped_reason"):
+                if stats.get("deletion_skipped_reason") or stats.get("fetch_failed_items"):
                     # The manifest's target_sync_version is promoted at import
                     # time; a skipped deletion pass must stay retryable there
                     # exactly as on the realtime path.
@@ -4316,7 +4398,7 @@ class ZoteroSemanticSearch:
             # Trade-off: an item that always fails keeps the watermark back
             # on every run. Persisting failed keys instead is a follow-up.
             self.update_config["last_update"] = datetime.now().isoformat()
-            if stats.get("deletion_skipped_reason") or retry_fail:
+            if stats.get("deletion_skipped_reason") or retry_fail or stats.get("fetch_failed_items"):
                 self._save_update_config()
             else:
                 self._save_update_config(
