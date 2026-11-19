@@ -75,6 +75,16 @@ class KeyGroupMap(NamedTuple):
     excluded_keys: set[str]
 
 
+class SearchPage(NamedTuple):
+    """One page of an advanced search, with what the page alone cannot say."""
+
+    items: list[dict]
+    #: Every match, not only those on the page.
+    total: int
+    #: False when a sort was asked for and no match carries the field.
+    sorted: bool
+
+
 @dataclass
 class FulltextExtraction:
     """Extracted attachment text, plus how much of the document it covers.
@@ -739,6 +749,21 @@ def _term_match_sql(term: str, qmode: str) -> tuple[str, list]:
         )
         params.extend([pattern] * 3)
     return " UNION ".join(parts), params
+
+
+#: Item ids bound per statement when a list of them is unbounded.
+_ID_CHUNK = 900
+
+
+def _date_sort_key(stored: str | None) -> str:
+    """Sort key for a stored date: its ISO half ("2016-10-01", with 00 for a
+    part Zotero could not parse), else the first four-digit year in it."""
+    if not stored:
+        return ""
+    if re.match(r"\d{4}-\d{2}-\d{2} ", stored):
+        return "" if stored.startswith("0000") else stored[:10]
+    match = re.search(r"\b(\d{4})\b", stored)
+    return match.group(1) if match else ""
 
 
 def row_to_api_item(
@@ -2744,15 +2769,19 @@ class LocalZoteroReader:
         The searches pick their page as bare itemIDs first; only the page
         pays for the field joins, creators and tags.
         """
-        if not item_ids:
-            return []
-        rows = conn.execute(
-            _item_hydration_select(len(lib_ids))
-            + f" AND i.itemID IN ({','.join('?' * len(item_ids))})",
-            list(lib_ids) + list(item_ids),
-        ).fetchall()
-        by_id = {row["itemID"]: row for row in rows}
-        return self._hydrate_rows(conn, [by_id[i] for i in item_ids if i in by_id])
+        items: list[dict] = []
+        # In slices: an id list is one bound variable per item, and some
+        # SQLite builds allow only 999.
+        for start in range(0, len(item_ids), _ID_CHUNK):
+            chunk = list(item_ids[start:start + _ID_CHUNK])
+            rows = conn.execute(
+                _item_hydration_select(len(lib_ids))
+                + f" AND i.itemID IN ({','.join('?' * len(chunk))})",
+                list(lib_ids) + chunk,
+            ).fetchall()
+            by_id = {row["itemID"]: row for row in rows}
+            items.extend(self._hydrate_rows(conn, [by_id[i] for i in chunk if i in by_id]))
+        return items
 
     def get_items_by_keys(self, keys: list[str]) -> dict[str, dict]:
         """Hydrate item keys from *any* library into pyzotero-shaped dicts.
@@ -2942,6 +2971,21 @@ class LocalZoteroReader:
         join_mode: str = "all",
         group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
     ) -> list[dict] | None:
+        """Every item matching `conditions`, or None when the SQL backend
+        cannot serve them; see :meth:`advanced_search_page`."""
+        page = self.advanced_search_page(conditions, join_mode, group_id)
+        return None if page is None else page.items
+
+    def advanced_search_page(
+        self,
+        conditions: list[dict[str, str]],
+        join_mode: str = "all",
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        *,
+        sort_by: str | None = None,
+        sort_direction: str = "asc",
+        limit: int | None = None,
+    ) -> SearchPage | None:
         """#167 SQLite metadata search backend for zotero_advanced_search.
 
         Always excludes attachments/notes/annotations and trashed items,
@@ -2949,8 +2993,15 @@ class LocalZoteroReader:
         Returns None when any single condition uses a field/operator this
         v1 backend doesn't cover, or when `group_id` has no matching
         library in this database — the caller falls back to the existing
-        client-side path. Sorting and the result limit are left to the
-        caller, exactly as with that existing path.
+        client-side path.
+
+        The matches are ranked as bare itemIDs with their sort key, and only
+        the `limit` that will be shown are hydrated; the total is the count of
+        all of them. Without `sort_by` the order is newest-modified first, as
+        the Zotero API lists items. Sort keys follow the tool's client-side
+        sort so both backends order alike, except that a date sorts by its
+        full ISO form, which the API path only has when the server sends
+        ``meta.parsedDate``.
 
         `group_id=None` searches every accessible library (#163). A
         `collection` condition is refused in that scope: a collection key
@@ -2985,14 +3036,53 @@ class LocalZoteroReader:
         joiner = " AND " if join_mode == "all" else " OR "
         where_sql = joiner.join(f"({c})" for c in clauses)
 
-        query_sql = (
-            _item_hydration_select(len(lib_ids))
-            + " AND it.typeName NOT IN ('attachment', 'note', 'annotation')"
-            + f" AND ({where_sql})"
-        )
-        all_params = list(lib_ids) + params
-        rows = conn.execute(query_sql, all_params).fetchall()
-        return self._hydrate_rows(conn, rows)
+        sort_field = (sort_by or "").strip()
+        by_creator = sort_field in ("creator", "author")
+        by_date = sort_field in ("date", "year", "publicationDate")
+        key_sql, key_params = "NULL", []
+        if by_date:
+            key_sql = _base_field_resolved_subquery("date")
+        elif sort_field in _SIMPLE_FIELD_SQL:
+            key_sql = _SIMPLE_FIELD_SQL[sort_field]
+        elif sort_field == "key":
+            key_sql = "i.key"
+        elif sort_field in self._known_field_names():
+            key_sql, key_params = _resolved_field_subquery(), [sort_field, sort_field]
+
+        lib_placeholders = ",".join("?" * len(lib_ids))
+        rows = conn.execute(
+            f"""SELECT i.itemID, {key_sql} FROM items i
+                JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
+                WHERE i.libraryID IN ({lib_placeholders})
+                AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+                AND it.typeName NOT IN ('attachment', 'note', 'annotation')
+                AND ({where_sql})
+                ORDER BY i.dateModified DESC, i.itemID DESC""",
+            key_params + list(lib_ids) + params,
+        ).fetchall()
+        ids = [row[0] for row in rows]
+
+        ordered = True
+        if sort_field:
+            if by_creator:
+                from .utils import format_creators
+
+                creators: dict[int, list[dict]] = {}
+                for start in range(0, len(ids), _ID_CHUNK):
+                    creators.update(self._fetch_creators(conn, ids[start:start + _ID_CHUNK]))
+                keys = {i: format_creators(creators.get(i, [])) for i in ids}
+            elif by_date:
+                keys = {row[0]: _date_sort_key(row[1]) for row in rows}
+            else:
+                keys = {row[0]: str(row[1] or "").lower() for row in rows}
+            # A field no match carries cannot order anything: leave the
+            # default order and let the caller say so (#418).
+            ordered = not ids or any(keys.values())
+            if ordered:
+                ids.sort(key=keys.__getitem__, reverse=sort_direction == "desc")
+
+        page = ids if limit is None else ids[:limit]
+        return SearchPage(self._hydrate_ids(conn, lib_ids, page), len(ids), ordered)
 
 
     # -- full-fidelity readers for the SQLite library backend --------------

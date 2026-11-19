@@ -1260,22 +1260,30 @@ def advanced_search(
         scope_group_id = None if search_all_libraries else _client.get_active_group_id()
 
         results = None
+        # Every match, when that is known: the SQL backend counts them, the
+        # client-side walk only knows if it read the whole library.
+        total: int | None = None
+        # The SQL backend ranks all matches itself and returns one page.
+        sql_page = None
         if _utils.get_search_backend() == "sqlite" and not collection_scopes:
             try:
                 reader = get_local_zotero_reader()
                 if reader is not None:
                     try:
-                        results = reader.advanced_search_sql(
+                        sql_page = reader.advanced_search_page(
                             parsed_conditions, join_mode=join_mode,
-                            group_id=scope_group_id,
+                            group_id=scope_group_id, sort_by=sort_by,
+                            sort_direction=sort_direction, limit=limit,
                         )
                     finally:
                         reader.close()
+                    if sql_page is not None:
+                        results, total = sql_page.items, sql_page.total
             except Exception as e:
                 if search_all_libraries:
                     raise
                 _search_logger.debug(f"[ADVANCED SEARCH] sqlite backend failed, falling back: {e}")
-                results = None
+                results, total, sql_page = None, None, None
 
         if results is None and search_all_libraries:
             # The client-side scan below pages ONE library. Falling into it
@@ -1320,6 +1328,7 @@ def advanced_search(
             while True:
                 batch = zot.items(start=start, limit=batch_size, **server_filters)
                 if not batch:
+                    total = len(results)
                     break
 
                 for item in batch:
@@ -1333,9 +1342,10 @@ def advanced_search(
                     if matched:
                         results.append(item)
 
-                if can_stop_early and len(results) >= limit:
-                    break
                 if len(batch) < batch_size:
+                    total = len(results)  # the walk reached the end
+                    break
+                if can_stop_early and len(results) >= limit:
                     break
                 start += batch_size
 
@@ -1352,7 +1362,15 @@ def advanced_search(
                     break
 
         sort_warning: str | None = None
-        if sort_by:
+        not_sorted = (
+            f"Requested sort by `{(sort_by or '').strip()}` was not applied: no result carries "
+            f"that field. Results are in library order. Sortable fields include "
+            f"dateAdded, dateModified, title, date, creator."
+        )
+        if sort_by and sql_page is not None:
+            if not sql_page.sorted:
+                sort_warning = not_sorted
+        elif sort_by:
             sort_field = sort_by.strip()
             reverse = sort_direction == "desc"
 
@@ -1381,11 +1399,7 @@ def advanced_search(
             # "" and silently return library order as though it had been
             # honored. Say so instead (#418).
             if results and not any(_sort_key(item) for item in results):
-                sort_warning = (
-                    f"Requested sort by `{sort_field}` was not applied: no result carries "
-                    f"that field. Results are in library order. Sortable fields include "
-                    f"dateAdded, dateModified, title, date, creator."
-                )
+                sort_warning = not_sorted
             else:
                 results.sort(key=_sort_key, reverse=reverse)
 
@@ -1404,7 +1418,20 @@ def advanced_search(
         results = results[:limit]
 
         output = ["# Advanced Search Results", ""]
-        output.append(f"Found {len(results)} items matching the search criteria:")
+        # Say when the answer is a page of something larger. It used to read
+        # "Found 50 items" for 13,000 matches cut to the limit.
+        if total is not None and total > len(results):
+            output.append(
+                f"Found {total} items matching the search criteria; showing "
+                f"{len(results)} (limit {limit}, max 500):"
+            )
+        elif total is None and len(results) >= limit:
+            output.append(
+                f"Showing the first {len(results)} items matching the search "
+                f"criteria; there may be more (limit {limit}, max 500):"
+            )
+        else:
+            output.append(f"Found {len(results)} items matching the search criteria:")
         output.append("")
         output.append("## Search Criteria")
         if search_all_libraries:
