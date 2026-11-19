@@ -463,6 +463,11 @@ def _print_migration_report(report) -> None:
                     f"{report.skipped_items} ({report.skipped_passages} passages left as they are; "
                     "start Zotero and run this again)"
                 )
+            if report.failed_items:
+                print(
+                    f"- Items whose re-key failed, their passages left as they are "
+                    f"(see the log; run this again): {report.failed_items}"
+                )
             if report.dropped_items:
                 print(
                     f"- Items whose attachment could not be told for certain, so their {report.dropped_passages} "

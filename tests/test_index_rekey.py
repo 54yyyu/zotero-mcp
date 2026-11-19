@@ -299,10 +299,10 @@ def test_a_run_that_stopped_after_writing_the_new_ids_finishes_on_the_next(index
     real_hook = index_migration._after_rekey_upsert
 
     def stop():
-        raise RuntimeError("interrupted")
+        raise KeyboardInterrupt("interrupted")  # a kill is no Exception: a failing item does not hide it
 
     monkeypatch.setattr(index_migration, "_after_rekey_upsert", stop)
-    with pytest.raises(RuntimeError, match="interrupted"):
+    with pytest.raises(KeyboardInterrupt, match="interrupted"):
         migrate_index(config, sources=_sources(config), **QUIET)
     both = {f"{ITEM}#{n}" for n in range(3)} | {f"{ATT}#{n}" for n in range(3)}
     assert set(_read(directory, PASSAGES)) == both
@@ -601,4 +601,58 @@ def test_a_zotero_cache_item_with_one_file_is_filed_under_it(index):
     report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
 
     assert report.rekeyed_items == 1
+    assert set(_read(directory, PASSAGES)) == {f"{ATT}#{n}" for n in range(3)}
+
+
+# --- a mark that did not land must not cost the old passages (review of #840, item 5c) ---
+
+def _two_items(directory):
+    """Two legacy items, each with its own attachment (ITEM0001 -> ATTACH01, ITEM0002 -> ATTACH02)."""
+    _seed_split(directory)
+    _seed_split(directory, key="ITEM0002", att_keys="ATTACH02")
+    second = SimpleNamespace(**{**vars(_item("ITEM0002", 2))})
+    return MigReader([_item(), second], targets={1: [target(ATT)], 2: [target("ATTACH02")]})
+
+
+@pytest.mark.parametrize("how", ["silent", "raises"])
+def test_old_passages_stay_when_the_rekeyed_to_mark_does_not_land(index, monkeypatch, how):
+    directory, config = index
+    reader = _two_items(directory)
+    real = ChromaClient.update_metadatas
+
+    def update(self, ids, metadatas):
+        if ids == [ITEM]:
+            if how == "raises":
+                raise RuntimeError("disk full")
+            return  # what a swallowed error looks like to the caller
+        return real(self, ids, metadatas)
+
+    monkeypatch.setattr(ChromaClient, "update_metadatas", update)
+
+    report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+
+    stored = _read(directory, PASSAGES)
+    # The failed item keeps its old passages, so an update does not embed it again ...
+    assert {f"{ITEM}#{n}" for n in range(3)} <= set(stored)
+    assert "rekeyed_to" not in _read(directory, NAME)[ITEM][1]
+    # ... and the migration goes on with the next item, reporting the failure.
+    assert {f"ITEM0002#{n}" for n in range(3)}.isdisjoint(stored)
+    assert {f"ATTACH02#{n}" for n in range(3)} <= set(stored)
+    assert (report.failed_items, report.rekeyed_items, report.dropped_items) == (1, 1, 0)
+
+    monkeypatch.setattr(ChromaClient, "update_metadatas", real)
+    again = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+    assert (again.rekeyed_items, again.failed_items) == (1, 0)
+    assert set(_read(directory, PASSAGES)) == {f"{att}#{n}" for att in (ATT, "ATTACH02") for n in range(3)}
+    assert _read(directory, NAME)[ITEM][1]["rekeyed_to"] == ATT
+
+
+def test_an_item_without_an_article_record_is_rekeyed_and_its_old_passages_go(index):
+    """A passages-only 0.16 item has no record to mark; nothing waits on a mark."""
+    directory, config = index
+    _seed_split(directory, bare=False)
+
+    report = migrate_index(config, sources=_sources(config), **QUIET)
+
+    assert (report.rekeyed_items, report.failed_items) == (1, 0)
     assert set(_read(directory, PASSAGES)) == {f"{ATT}#{n}" for n in range(3)}
