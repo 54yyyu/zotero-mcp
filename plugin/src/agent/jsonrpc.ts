@@ -33,6 +33,14 @@ export class JsonRpcError extends Error {
   }
 }
 
+/** The agent is up but could not reopen the saved conversation (session/load refused it, or it cannot load one): the chat may go on in a fresh session. */
+export class ResumeError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ResumeError";
+  }
+}
+
 export class JsonRpcPeer {
   #nextId = 1;
   #pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();

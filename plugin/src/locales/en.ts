@@ -223,6 +223,7 @@ const en = {
   "chat.startFailed": "Couldn't start the agent: {error}",
   "chat.checkStatus": "Check Status for what is missing, then send again.",
   "chat.loadFailed": "Couldn't open that chat: {error}",
+  "chat.resumeFresh": "The earlier session could not be reopened, so the agent starts fresh here. It does not remember the messages above.",
   // header
   "header.close": "Close the panel",
   "header.apiKey": "{agent} · API key",

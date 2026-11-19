@@ -3,6 +3,7 @@
 import type { AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, CustomAgentConfig, Spawner, StartOpts } from "../types.ts";
 import { readCustomAgent } from "../custom-agent.ts";
 import { AcpClient } from "./acp.ts";
+import { ResumeError } from "./jsonrpc.ts";
 import { BACKENDS, BACKEND_IDS, backendOf, findClaudeExecutable, findCli, isNative, probeLogin, type BackendSpec } from "./backends.ts";
 import { ensureBridge, locateBridge, locateBundledCodex, systemCodexForChats } from "./bridges.ts";
 import { bridgeEnv, dirnameOf, findBinary, nodeEval, stripApiKeys, withPathFirst } from "./env.ts";
@@ -172,7 +173,7 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
     async start(start: StartOpts): Promise<AgentSession> {
       if (start.backend === "custom") {
         if (start.locked) throw new Error(t("agent.custom.noTranslate"));
-        if (start.resumeSessionId) throw new Error(t("agent.custom.noResume"));
+        if (start.resumeSessionId) throw new ResumeError(t("agent.custom.noResume"));
         const config = readCustomAgent(opts.customAgent?.());
         const base = await spawner.baseEnv();
         const env = bridgeEnv({ ...base, ...config.env }, { extra: start.env });

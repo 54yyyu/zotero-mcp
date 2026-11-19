@@ -223,6 +223,7 @@ const de: Catalog = {
   "chat.startFailed": "Der Agent konnte nicht gestartet werden: {error}",
   "chat.checkStatus": "Prüfen Sie unter „Status“, was fehlt, und senden Sie dann erneut.",
   "chat.loadFailed": "Dieser Chat konnte nicht geöffnet werden: {error}",
+  "chat.resumeFresh": "Die frühere Sitzung konnte nicht wieder geöffnet werden, der Agent beginnt hier also neu. Er erinnert sich nicht an die Nachrichten oben.",
   // header
   "header.close": "Seitenleiste schließen",
   "header.apiKey": "{agent} · API-Schlüssel",

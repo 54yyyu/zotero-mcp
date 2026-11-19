@@ -223,6 +223,7 @@ const es: Catalog = {
   "chat.startFailed": "No se pudo iniciar el agente: {error}",
   "chat.checkStatus": "Consulte Estado para ver qué falta y vuelva a enviar.",
   "chat.loadFailed": "No se pudo abrir ese chat: {error}",
+  "chat.resumeFresh": "No se pudo reabrir la sesión anterior, así que el agente empieza de nuevo aquí. No recuerda los mensajes de arriba.",
   // header
   "header.close": "Cerrar el panel",
   "header.apiKey": "{agent} · clave de API",

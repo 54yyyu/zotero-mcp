@@ -60,6 +60,8 @@ class Panel {
   private autoPicked = false;
   private disposers: (() => void)[] = [];
   private catalogs = new Map<BackendId, Catalog>();
+  /** What decides which agent runs and whether it can (agentKey): a settings change that leaves it alone starts no check and closes no session. */
+  private agentKey = "";
   private seenImage: string;
 
   constructor(root: ShadowRoot, host: PanelHost) {
@@ -79,6 +81,7 @@ class Panel {
       expand: (text, cwd) => this.expand(text, cwd),
     });
     this.applyLanguage();
+    this.agentKey = this.readAgentKey();
     this.build();
 
     this.disposers.push(host.onContextChange(() => this.refreshChips()), host.onThemeChange(() => { this.app.dataset.theme = host.theme(); }),
@@ -323,15 +326,26 @@ class Panel {
     void this.host.setSettings({ backend: alt.id }).then(() => { this.onSettings(); void this.health.refresh(); });
   }
 
+  /** The agent, how it signs in, a custom agent's command and the folder chats run in. */
+  private readAgentKey(): string {
+    const s = this.host.getSettings();
+    return JSON.stringify([s.backend, s.auth, s.customAgent ?? null, s.chatFolder]);
+  }
+
   private onSettings(): void {
     if (this.applyLanguage()) this.relabel();
-    this.catalogs.delete("custom");
     this.onHealth();
     this.applyBehavior();
-    // An empty chat has no history to protect: let a changed backend take effect on the next send.
-    if (!this.chat.tr.messages.length && this.chat.session && !this.chat.sending) void this.chat.closeSession();
+    const key = this.readAgentKey();
+    if (key !== this.agentKey) {
+      this.agentKey = key;
+      this.catalogs.delete("custom");
+      // An empty chat has no history to protect: a changed agent takes effect at once, also over a session still starting
+      // (the panel starts one as soon as it opens, and that one was for the agent chosen before).
+      if (!this.chat.tr.messages.length && (this.chat.session || this.chat.starting) && !this.chat.sending) void this.chat.closeSession();
+      void this.health.refreshStatuses();
+    }
     void this.loadCatalog(false);
-    void this.health.refreshStatuses();
   }
 
   /** Saved elsewhere (Zotero's Settings pane, another window): the look, the behaviour, the pickers and an open settings screen follow. */
@@ -494,15 +508,14 @@ class Panel {
     this.feed.update(c.tr, !c.busy);
     this.composer.setBusy(c.busy);
     this.composer.setContextFill(contextFill(c.tr));
-    this.feed.setPending(c.sending && c.tr.running === null ? (c.compacting ? t("work.summarising") : c.starting ? t("work.starting", { agent: BACKEND_LABEL[this.host.getSettings().backend] }) : t("work.sending")) : null);
+    this.feed.setPending(c.sending && c.tr.running === null ? (c.compacting ? t("work.summarising") : c.starting ? t("work.starting", { agent: BACKEND_LABEL[c.backend] }) : t("work.sending")) : null);
   }
 
   private dispose(): void {
-    this.chat.flush();
+    void this.chat.dispose();
     for (const d of this.disposers.splice(0)) { try { d(); } catch { /* ignore */ } }
     this.composer.dispose();
     this.pendingRender = false;
-    void this.chat.closeSession();
     clear(this.root);
   }
 }
