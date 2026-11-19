@@ -331,6 +331,19 @@ class ChromaClient:
                 text = text[:max_chars]
         return text
 
+    def _max_batch_size(self) -> int:
+        """Most records one ChromaDB write may carry.
+
+        ChromaDB rejects batches larger than its max_batch_size (~5461). With
+        passage-chunking enabled a batch of 25 books easily exceeds that, so
+        writes are split instead of failing (#369).
+        """
+        try:
+            max_batch = int(self.client.get_max_batch_size())
+        except Exception:
+            return 5000
+        return max_batch if max_batch >= 1 else 5000
+
     def upsert_documents(self,
                         documents: list[str],
                         metadatas: list[dict[str, Any]],
@@ -344,13 +357,7 @@ class ChromaClient:
             ids: List of unique IDs for each document
         """
         try:
-            # ChromaDB rejects batches larger than its max_batch_size
-            # (~5461). With passage-chunking enabled a batch of 25 books
-            # easily exceeds that, so split instead of failing.
-            try:
-                max_batch = int(self.client.get_max_batch_size())
-            except Exception:
-                max_batch = 5000
+            max_batch = self._max_batch_size()
             for collection, positions in self._group_by_collection(ids):
                 for start in range(0, len(positions), max_batch):
                     part = positions[start:start + max_batch]
@@ -376,11 +383,7 @@ class ChromaClient:
         returned asynchronously without calling the realtime embeddings API.
         """
         try:
-            # Same max_batch_size constraint as upsert_documents.
-            try:
-                max_batch = int(self.client.get_max_batch_size())
-            except Exception:
-                max_batch = 5000
+            max_batch = self._max_batch_size()
             for collection, positions in self._group_by_collection(ids):
                 for start in range(0, len(positions), max_batch):
                     part = positions[start:start + max_batch]
@@ -843,12 +846,7 @@ class ChromaClient:
         if not ids:
             return
         try:
-            try:
-                max_batch = int(self.client.get_max_batch_size())
-            except Exception:
-                max_batch = 5000
-            if max_batch < 1:
-                max_batch = 5000
+            max_batch = self._max_batch_size()
             by_id = dict(zip(ids, metadatas))
             for collection, part in self._group_existing(ids):
                 for start in range(0, len(part), max_batch):
