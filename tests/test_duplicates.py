@@ -434,11 +434,11 @@ class TestMergeDuplicatesConfirm:
             keeper_key="KEEP", duplicate_keys=["DUP1", "DUP2"], confirm=True, ctx=dummy_ctx
         )
 
-        # Keeper was already in COL_A, so addto_collection should be called for COL_B and COL_C
-        added_colls = {call[0] for call in fake.addto_calls}
-        # COL_B comes from DUP1, COL_C comes from DUP2
-        assert "COL_B" in added_colls
-        assert "COL_C" in added_colls
+        # Keeper was already in COL_A; COL_B comes from DUP1, COL_C from DUP2.
+        keeper = fake.item("KEEP")
+        assert keeper["data"]["collections"] == ["COL_A", "COL_B", "COL_C"]
+        assert keeper in fake.update_calls
+        assert fake.addto_calls == []  # sent with the tags, not one PATCH each
 
     def test_keeper_in_duplicate_keys_removed_with_warning(self, monkeypatch, dummy_ctx):
         """If keeper_key appears in duplicate_keys, it is removed (not trashed)."""
@@ -535,8 +535,9 @@ class TestMergeDuplicatesConfirm:
         # Duplicates should NOT be trashed because re-parenting failed
         assert len(fake.client.patch_calls) == 0
 
-    def test_version_refetch_after_operations(self, monkeypatch, dummy_ctx):
-        """Keeper is re-fetched after tag update and collection adds for fresh version."""
+    def test_keeper_is_written_once_with_the_version_it_was_read_at(self, monkeypatch, dummy_ctx):
+        """Tags and collections go to the keeper in one write. They used to be
+        a tag PATCH, then a PATCH and a re-fetch per collection."""
         fake = FakeZoteroForDuplicates()
         fake._items = [
             _make_item("KEEP", "Keeper", tags=["t1"], collections=["C1"], version=1),
@@ -546,25 +547,30 @@ class TestMergeDuplicatesConfirm:
         monkeypatch.setattr("zotero_mcp.client.get_zotero_client", lambda: fake)
         monkeypatch.setattr("zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake))
 
-        # Track item() fetches to verify re-fetching
         fetch_log = []
-        original_item = fake.item
+        sent_versions = []
+        original_item, original_update = fake.item, fake.update_item
 
         def tracking_item(key):
             fetch_log.append(key)
             return original_item(key)
 
+        def tracking_update(item, **kwargs):
+            sent_versions.append((item["key"], item["version"]))
+            return original_update(item, **kwargs)
+
         fake.item = tracking_item
+        fake.update_item = tracking_update
 
         server.merge_duplicates(
             keeper_key="KEEP", duplicate_keys=["DUP1"], confirm=True, ctx=dummy_ctx
         )
 
-        # Keeper should be fetched multiple times: initial + after tag update + after collection add
-        keeper_fetches = [k for k in fetch_log if k == "KEEP"]
-        assert len(keeper_fetches) >= 2, (
-            f"Expected keeper to be re-fetched after updates, got {len(keeper_fetches)} fetches"
-        )
+        assert fetch_log == ["KEEP", "DUP1"]
+        assert sent_versions == [("KEEP", 1)]
+        keeper = original_item("KEEP")["data"]
+        assert [t["tag"] for t in keeper["tags"]] == ["t1", "t2"]
+        assert keeper["collections"] == ["C1", "C2"]
 
     def test_duplicate_keys_as_string_normalized(self, monkeypatch, dummy_ctx):
         """duplicate_keys can be a single string (normalized via _normalize_str_list_input)."""

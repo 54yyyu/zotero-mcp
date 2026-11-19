@@ -169,7 +169,8 @@ def _parse_bibtex_author_list(raw: str) -> list[dict[str, str]]:
     creators = []
     for part in parts:
         name = part.strip().strip("{}").strip()
-        if not name:
+        # "and others" is BibTeX for et al., not a person named Others.
+        if not name or name.lower() == "others":
             continue
         if "," in name and name.count(",") == 1 and not _looks_corporate(name):
             last, first = [x.strip() for x in name.split(",", 1)]
@@ -639,12 +640,37 @@ def _csl_text(value: Any) -> str:
     """
     if isinstance(value, list):
         value = next((v for v in value if v is not None and str(v).strip()), "")
-    return "" if value is None else str(value).strip()
+    # An object is not text: Crossref's ``license`` is a list of them, and its
+    # repr must not be written to the field CSL's ``license`` maps to.
+    if value is None or isinstance(value, (dict, list)):
+        return ""
+    return str(value).strip()
 
 
 # Zotero's CSL crosswalk name -> the CSL 1.0.2 names producers (Crossref,
 # citeproc exports) send for the same variable.
 _CSL_SPEC_NAMES = {"journalAbbreviation": ("container-title-short",)}
+
+
+# A CSL ``id`` usable as a citation key: one token with a letter in it and
+# none of the characters a path or URL would bring.
+_CITEKEY_LIKE = re.compile(r"^(?=.*[^\W\d_])[^\s/\\{}%#~,]+$")
+# ...and not a reference manager's placeholder (Mendeley and Word: "ITEM-1").
+_RECORD_ID = re.compile(r"^ITEM-\d+$", re.IGNORECASE)
+
+# Plain-valued keys of a Crossref record that describe the record, not the work.
+_PROVIDER_KEYS = frozenset({
+    "reference-count", "references-count", "is-referenced-by-count",
+    "member", "prefix", "score",
+})
+
+
+def _csl_variables() -> set[str]:
+    """Every CSL variable Zotero's crosswalk knows, under either spelling."""
+    names = {*schema.csl_text_fields(), *schema.csl_date_fields(), *schema.csl_name_variables()}
+    for aliases in _CSL_SPEC_NAMES.values():
+        names.update(aliases)
+    return names
 
 
 def csl_json_to_zotero(
@@ -729,9 +755,11 @@ def csl_json_to_zotero(
         template["tags"] = [{"tag": t} for t in source_tags]
         consumed.update({"keyword", "keywords"})
 
-    # Citation key from `id`
+    # Citation key from `id`, when it is one. Most producers put their own
+    # record identifier there (a DOI URL, a zotero.org item URI, "ITEM-1", a
+    # bare number), and a "Citation Key:" line in Extra is read as a key.
     citekey = _csl_text(csl.get("id"))
-    if citekey:
+    if _CITEKEY_LIKE.match(citekey) and not _RECORD_ID.match(citekey):
         _append_extra(template, f"Citation Key: {citekey}")
     consumed.add("id")
 
@@ -743,11 +771,22 @@ def csl_json_to_zotero(
 
     # Preserve everything not written above, including a known variable this
     # item type has no field for (a standard's ``volume``), so nothing is lost.
+    # A key that is not a CSL variable is kept only as a plain value: a
+    # provider's record carries its own bookkeeping beside the citation
+    # (Crossref's ``reference`` is the whole cited-works list, with
+    # ``indexed``, ``license``, ``content-domain`` ...), and all of it used to
+    # be dumped into Extra as JSON, kilobytes per item.
+    known = _csl_variables()
+    text_variables = schema.csl_text_fields()
     for k, v in csl.items():
         if k in consumed:
             continue
         if v is None or v == "" or v == [] or v == {}:
             continue
+        if k not in known and (isinstance(v, (dict, list)) or k in _PROVIDER_KEYS):
+            continue
+        if k in text_variables and not _csl_text(v):
+            continue  # a text variable holding objects (Crossref's ``license``)
         if isinstance(v, (dict, list)):
             try:
                 v = json.dumps(v, ensure_ascii=False)

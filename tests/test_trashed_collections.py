@@ -134,7 +134,7 @@ class TestManageCollectionsValidation:
         assert "Trash" in result
         assert "DEAD0000" in result
         # And nothing was actually filed.
-        assert z.addto_calls == []
+        assert z.updated == []
 
     def test_rejects_missing_collection_in_add_to(self, monkeypatch):
         z = _CollectionFakeZotero(live=[], trashed=[])
@@ -147,7 +147,7 @@ class TestManageCollectionsValidation:
         )
         assert "not found" in result
         assert "NONESUCH" in result
-        assert z.addto_calls == []
+        assert z.updated == []
 
     def test_live_collection_proceeds_normally(self, monkeypatch):
         z = _CollectionFakeZotero(
@@ -161,7 +161,8 @@ class TestManageCollectionsValidation:
             ctx=DummyContext(),
         )
         assert "Added ITEM0001 to LIVE0000" in result
-        assert z.addto_calls == [("LIVE0000", "ITEM0001")]
+        assert [(it["key"], it["data"]["collections"]) for it in z.updated] == [
+            ("ITEM0001", ["LIVE0000"])]
 
     def test_validation_includes_both_add_and_remove_keys(self, monkeypatch):
         z = _CollectionFakeZotero(
@@ -180,7 +181,7 @@ class TestManageCollectionsValidation:
         assert "Trash" in result
         assert "DEAD0000" in result
         # And nothing was filed because validation gates ALL collection keys.
-        assert z.addto_calls == []
+        assert z.updated == []
 
 
 # ---------------------------------------------------------------------------

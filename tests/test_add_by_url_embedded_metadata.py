@@ -97,12 +97,14 @@ class TestEmbeddedMetadataIsUsed:
         with patch("zotero_mcp.tools.write.requests.get",
                    return_value=_html_response(OJS_PAGE_WITH_DOI)), \
              patch("zotero_mcp.tools.write.add_by_doi",
-                   return_value="Successfully added: **X**") as mock_doi:
+                   return_value=write._AddResult(
+                       "Successfully added: **X**", "DOIKEY01", "created")) as mock_doi:
             result = write.add_by_url(url=ARTICLE_URL, ctx=DummyContext())
 
         mock_doi.assert_called_once()
         assert mock_doi.call_args.kwargs["doi"] == "10.13165/VPA-20-19-2-04"
         assert "Successfully added" in result
+        assert patched.created == []  # the DOI route's item is the item
 
     def test_doi_route_failure_falls_back_to_the_page(self, patched):
         """CrossRef not knowing the DOI must not cost us the metadata the
@@ -268,7 +270,8 @@ class TestSupplementalMetadata:
         with patch("zotero_mcp.tools.write.requests.get",
                    return_value=_html_response(OJS_PAGE_WITH_DOI)), \
              patch("zotero_mcp.tools.write.add_by_doi",
-                   return_value="Successfully added: **X**") as mock_doi:
+                   return_value=write._AddResult(
+                       "Successfully added: **X**", "DOIKEY01", "created")) as mock_doi:
             write.add_by_url(url=ARTICLE_URL, ctx=DummyContext())
 
         supplied = mock_doi.call_args.kwargs["supplemental"]
