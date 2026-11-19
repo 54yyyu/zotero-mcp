@@ -62,7 +62,8 @@ Zotero main window ── #tabs-deck lives in an hbox below the tab bar; we appe
 - Zotero 10 removed `ZoteroPane.getSelectedCollection()`; use `getSelectedCollections()`.
 - The reader's live page and selection state is `reader._internalReader._state.primaryViewStats`
   (`pageIndex`, `pageLabel`, `pagesCount`, `canCopy` = text is selected). There is no event for a page turn or a
-  cleared selection, so the context tracker polls it every 400 ms, only while the panel has a listener.
+  cleared selection, so the context tracker polls it every 400 ms, only while the panel is shown: `inject.ts` tells the panel when it is opened
+  and closed, and a closed panel keeps no timer and passes on no item, tab or selection event (it catches up once when shown).
   `renderTextSelectionPopup` carries the selected text. Synthetic DOM/pointer events cannot start a selection in Zotero's
   own PDF view, so the selection chip is tested by feeding the event; a real drag is a human check.
 - A selected image annotation's PNG is `Zotero.Annotations.getCacheImagePath(ann)` (render it with
@@ -223,7 +224,9 @@ Features (Beaver's, measured from its demo video, rebuilt in our visual language
   model name is what truncates; the effort word, the context ring and the mode button stay whole.
 - Models (`ui/model-list.ts`; no model id or provider is hardcoded). **Default** marks the model the agent starts on by itself:
   the model the live session's own session/new reported before our explicit choice (`AgentSession.defaultModel()`, unknown after a
-  resume), else the catalog probe's (a session started with no model). Choosing it saves `""` (the agent's default), so the panel
+  resume), else the catalog's. The catalog is what a chat's own session said last (`catalogOf`), kept by the host per backend
+  and bridge version in `<profile>/zotero-chat/catalogs.json`, so opening the panel starts no agent to fill the pickers; one
+  is started to ask (a probe: a session with no model) only when a model menu or the Settings is opened and nothing is known yet. Choosing it saves `""` (the agent's default), so the panel
   keeps following the agent; the settings' Model select shows it only as "Default (name)", never twice. A catalog of up to 12
   keeps the bridge's order: the first four, then an inline More models; the current model and the default are listed without
   expanding. A longer one (pi with OpenRouter: 418, measured 2026-10-05) gets a search field instead and takes the dropdown's full
@@ -480,7 +483,9 @@ languages for the translator, not the interface.
 - **Startup**: `plugin.ts` registers a `renderTextSelectionPopup` listener that builds one button (styled like the reader's
   own) unless the `translate` setting is off, read from the pref as the popup renders (0.6 ms, loads nothing). Once the popup
   has painted (`requestIdleCallback`), it preloads: reads panel.js (38 ms, once) and starts the translator's session, the
-  press being a second or two away. One start at a time, shared with the press; nothing new while one is ready; a failed
+  press being a second or two away. That is for someone who translates: until Translate has been pressed once on the
+  profile (the `translateUsed` pref), a selection is taken for what it usually is, a highlight, and the preload waits for
+  the pointer or the focus to reach the button. One start at a time, shared with the press; nothing new while one is ready; a failed
   preload is silent and not retried for a minute. A session costs no tokens until prompted, but about 340 MB (the bridge
   ~97 MB, its `claude` ~245 MB) for its 5 idle minutes, which is why there is no earlier preload (on a reader tab).
 - **In the popup**: Zotero documents this use (append a container, fill it later). The result goes under the button, in the
