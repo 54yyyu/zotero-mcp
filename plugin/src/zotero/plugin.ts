@@ -91,8 +91,12 @@ class ChatPlugin {
 
   /**
    * "Translate" in the reader's text selection popup, styled like its own buttons, unless the setting is off (read as the
-   * popup renders, so a change applies to the next selection). Nothing loads until it is pressed; the translation then
-   * appears in this popup, under the button.
+   * popup renders, so a change applies to the next selection). The translation appears in this popup, under the button.
+   *
+   * A selection is far more often a highlight than a translation, and the translator's session is an agent process
+   * (hundreds of MB, kept five minutes). So until Translate has been pressed once on this profile, nothing loads before
+   * the pointer or the focus reaches the button; after that the session is started as soon as the popup has painted,
+   * the press being a second away.
    */
   private onSelectionPopup = (event: any): void => {
     const s = prefs.json<{ translate?: boolean; uiLanguage?: string; backend?: string }>("settings", {});
@@ -103,13 +107,18 @@ class ChatPlugin {
     b.setAttribute("data-tabstop", "1");
     b.setAttribute("aria-expanded", "false");
     b.textContent = startupWord("translate", s.uiLanguage, Zotero.locale);
-    b.addEventListener("click", () => this.translator().toggle(event, box, b));
+    const used = prefs.get("translateUsed") === true;
+    // Reading panel.js the first time takes ~35 ms: never inside the popup's own render.
+    const preload = () => Zotero.getMainWindow()?.requestIdleCallback(() => this.translator().translator.preload(), { timeout: 300 });
+    b.addEventListener("click", () => {
+      if (!used) prefs.set("translateUsed", true);
+      this.translator().toggle(event, box, b);
+    });
+    if (!used) for (const type of ["pointerenter", "focus"]) b.addEventListener(type, preload, { once: true });
     box.append(b);
     event.append(box);
     this.translate?.revive(event, box, b); // the reader re-rendered this popup: a translation already showing stays
-    // The press is likely a second away: start the session meanwhile, once the popup has painted (reading panel.js the
-    // first time takes ~35 ms, which must not hold the popup up).
-    Zotero.getMainWindow()?.requestIdleCallback(() => this.translator().translator.preload(), { timeout: 300 });
+    if (used) preload();
   };
 
   /** The reader's Translate (panel.js), made on first use; it starts the translator's session only when asked. */

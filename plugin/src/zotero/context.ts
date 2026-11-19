@@ -51,6 +51,10 @@ export class ContextTracker {
   /** Renders under way, as `key:position`. */
   private rendering = new Set<string>();
   private lastSig = "";
+  /** The panel is showing. Hidden, nothing here runs: no timer, and Zotero's events are not passed on. */
+  private active = true;
+  private win: any = null;
+  private timer: number | null = null;
   /** Per attachment id: its annotations counted by kind, in all and per page. Cleared by the item notifier, so a turn costs a lookup. */
   private annIndex = new Map<number, { n: number; all: Counts; pages: Map<number, Counts> }>();
   /** A renderTextSelectionPopup event's selection, kept for its reader. */
@@ -78,13 +82,34 @@ export class ContextTracker {
       el.addEventListener("select", cb);
       this.disposers.push(() => el.removeEventListener("select", cb));
     }
-    // The reader emits no event for page turns or for a selection being cleared; its view stats change quietly.
-    const timer = win.setInterval(() => {
+    this.win = win;
+    this.disposers.push(() => this.watch(false));
+    this.watch(this.active);
+  }
+
+  /** The reader emits no event for page turns or for a selection being cleared; its view stats change quietly. Watched only while the panel shows. */
+  private watch(on: boolean): void {
+    const win = this.win;
+    if (!win) return;
+    if (this.timer !== null) { win.clearInterval(this.timer); this.timer = null; }
+    if (!on) return;
+    this.timer = win.setInterval(() => {
       if (!this.listeners.size) return;
       const sig = this.signature(win);
       if (sig !== this.lastSig) { this.lastSig = sig; this.changed(); }
     }, 400);
-    this.disposers.push(() => win.clearInterval(timer));
+  }
+
+  /**
+   * The panel was shown or hidden. Hidden, the timer stops and a change is not passed on (each one would read the
+   * selection and redraw the chips of a panel nobody sees, for every item a sync touches); shown again, listeners are
+   * told once (a page turned meanwhile sends no event).
+   */
+  setActive(on: boolean): void {
+    if (on === this.active) return;
+    this.active = on;
+    this.watch(on);
+    if (on) { this.lastSig = this.signature(this.win); this.changed(); }
   }
 
   private signature(win: any): string {
@@ -117,6 +142,7 @@ export class ContextTracker {
   }
 
   private changed(): void {
+    if (!this.active) return;
     for (const cb of [...this.listeners]) cb();
   }
 

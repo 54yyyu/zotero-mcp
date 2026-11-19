@@ -63,7 +63,11 @@ async function main(ctx) {
   const btn = await ctx.waitFor(button, "the Translate button");
   out.renderMs = Date.now() - t0;
   check(btn.classList.contains("toolbar-button") && btn.classList.contains("wide-button"), "styled like the reader's own: " + btn.className);
-  // Once the popup has painted (idle), the translator's session is started: exactly one, however many popups follow.
+  // Translate has never been pressed on this profile: a selection (far more often a highlight) starts nothing by itself.
+  await ctx.sleep(1200);
+  check(!ctx.plugin.translate && ctx.plugin.timing.panelLoadMs === null, "a selection alone loads nothing and starts no agent");
+  // The pointer reaching the button does: exactly one session, however many popups follow.
+  btn.dispatchEvent(new doc.defaultView.PointerEvent("pointerenter"));
   await ctx.waitFor(() => ctx.plugin.translate?.translator.stats().started === 1 && ctx.plugin.translate.translator.stats().session, "the preload started one session", 15000);
   out.preloadPanelJsMs = ctx.plugin.timing.panelLoadMs;
   check(injected.loaded() === null, "the panel itself is not loaded by it");
@@ -107,6 +111,7 @@ async function main(ctx) {
   const tPress = Date.now();
   (await ctx.waitFor(button, "button")).click();
   check(button().getAttribute("aria-expanded") === "true", "the button says it is open");
+  check(Zotero.Prefs.get("extensions.zotero-chat.translateUsed", true) === true, "pressed once: from now on a popup preloads by itself");
   await ctx.waitFor(() => result()?.querySelector(".zmc-tr__sk") || result()?.querySelector(".zmc-tr__text span"), "the shimmer, or the first words");
   const streamed = await ctx.waitFor(() => result()?.querySelector(".zmc-tr__text span"), "streamed pieces arrive", 20000);
   out.warmPressToFirstTextMs = Date.now() - tPress;

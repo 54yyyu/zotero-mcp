@@ -200,6 +200,8 @@ export interface AgentRuntime {
   start(opts: StartOpts): Promise<AgentSession>;
   /** The backend's models, modes and efforts. Cached after the first call (which starts a short-lived bridge). */
   catalog(backend: BackendId): Promise<Catalog>;
+  /** The catalog if it is known without starting anything (a session said it, this run or an earlier one); undefined otherwise. */
+  cached?(backend: BackendId): Promise<Catalog | undefined>;
 }
 
 // ─────────────────── process spawning (injected into agent/) ───────────────────
@@ -429,8 +431,8 @@ export interface PanelHost {
   about(): { version: string; workspace: string };
 
   doctor(): Promise<DoctorCheck[]>;
-  /** The brief and folder for an agent session (the host knows where the CLI and skill are). `cwd` resumes a saved chat in the folder it ran in; omitted, the chat folder setting is used. */
-  prepareSession(cwd?: string): Promise<{ cwd: string; brief: string; env: Record<string, string> }>;
+  /** The brief and folder for an agent session (the host knows where the CLI and skill are). `cwd` resumes a saved chat in the folder it ran in; omitted, the chat folder setting is used. `backend`: the agent the session is for (its API key), when it is not the chosen one. */
+  prepareSession(cwd?: string, backend?: BackendId): Promise<{ cwd: string; brief: string; env: Record<string, string> }>;
   /** A folder picker; null when cancelled. */
   chooseFolder(start?: string): Promise<string | null>;
   /** Zotero's Save dialog for `data` (a diagram's PNG or SVG); writes the file and returns its path, null when cancelled. */
@@ -455,7 +457,7 @@ export interface PanelHost {
 
 /** What the settings screen needs, and all that Zotero's Settings pane provides (zotero/settings-host.ts). */
 export type SettingsHost = Pick<PanelHost, "getSettings" | "setSettings" | "resetSettings" | "setApiKey" | "hasApiKey" | "clearHistory" | "revealWorkspace"
-  | "about" | "chooseFolder" | "chooseImage" | "loadImage" | "removeImage" | "locale" | "theme" | "onThemeChange" | "onSettingsChange" | "skills"> & { runtime: Pick<AgentRuntime, "detect" | "catalog"> };
+  | "about" | "chooseFolder" | "chooseImage" | "loadImage" | "removeImage" | "locale" | "theme" | "onThemeChange" | "onSettingsChange" | "skills"> & { runtime: Pick<AgentRuntime, "detect" | "catalog" | "cached"> };
 
 /** The only function the UI layer exports to the bootstrap: render into a shadow root, return a disposer. `runPrompt` runs the prompt or skill pinned to that slot. */
 export type MountPanel = (root: ShadowRoot, host: PanelHost) => { dispose(): void; focusComposer(): void; runPrompt(slot: number): void };

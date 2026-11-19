@@ -13,7 +13,7 @@ import type { AgentSession, BackendId, ChatEvent, ModeOption, ModelOption, Permi
 import type { AcpClient, InitializeResult } from "./acp.ts";
 import type { BackendSpec } from "./backends.ts";
 import { withBrief } from "./brief.ts";
-import { JsonRpcError, MethodNotFound } from "./jsonrpc.ts";
+import { JsonRpcError, MethodNotFound, ResumeError } from "./jsonrpc.ts";
 import { t } from "../i18n.ts";
 
 type Obj = Record<string, unknown>;
@@ -310,7 +310,12 @@ export class AcpAgentSession implements AgentSession {
       if (opts.resumeSessionId) {
         // Replayed history arrives as session/update notifications before this resolves; no turn is
         // running, so none of it is emitted.
-        res = asObj(await client.request("session/load", { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers: [], ...meta })) ?? {};
+        try {
+          res = asObj(await client.request("session/load", { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers: [], ...meta })) ?? {};
+        } catch (e) {
+          // The agent answered, and the answer is no (it pruned the session, or loads none): not a dead bridge or a timeout.
+          throw e instanceof JsonRpcError ? new ResumeError(e.message) : e;
+        }
         sessionId = opts.resumeSessionId;
       } else {
         res = asObj(await client.request("session/new", { cwd: opts.cwd, mcpServers: [], ...meta })) ?? {};

@@ -223,6 +223,7 @@ const zhHans: Catalog = {
   "chat.startFailed": "无法启动智能体：{error}",
   "chat.checkStatus": "请在“状态”中查看缺少什么，然后重新发送。",
   "chat.loadFailed": "无法打开该对话：{error}",
+  "chat.resumeFresh": "无法重新打开之前的会话，智能体将从这里重新开始。它不记得上面的消息。",
   // header
   "header.close": "关闭面板",
   "header.apiKey": "{agent} · API 密钥",

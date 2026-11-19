@@ -223,6 +223,7 @@ const ja: Catalog = {
   "chat.startFailed": "エージェントを起動できませんでした：{error}",
   "chat.checkStatus": "「ステータス」で不足しているものを確認してから、もう一度送信してください。",
   "chat.loadFailed": "そのチャットを開けませんでした：{error}",
+  "chat.resumeFresh": "以前のセッションを開き直せなかったため、エージェントはここから新しく始めます。上のメッセージは覚えていません。",
   // header
   "header.close": "パネルを閉じる",
   "header.apiKey": "{agent} · API キー",

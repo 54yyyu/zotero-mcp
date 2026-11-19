@@ -223,6 +223,7 @@ const ptBR: Catalog = {
   "chat.startFailed": "Não foi possível iniciar o agente: {error}",
   "chat.checkStatus": "Veja em Status o que está faltando e envie de novo.",
   "chat.loadFailed": "Não foi possível abrir esse chat: {error}",
+  "chat.resumeFresh": "Não foi possível reabrir a sessão anterior, então o agente começa do zero aqui. Ele não se lembra das mensagens acima.",
   // header
   "header.close": "Fechar o painel",
   "header.apiKey": "{agent} · chave de API",

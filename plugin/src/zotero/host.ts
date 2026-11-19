@@ -1,6 +1,6 @@
 // PanelHost: what ui/ gets. This is the only place that knows both the UI's needs and Zotero's APIs.
 import type { AgentRuntime, BackendId, Catalog, ContextChip, PanelHost, Spawner } from "../types.ts";
-import { CALLOUT_GUIDE, DRAWING_GUIDE, FORMAT_GUIDE, TOOL_SHEET, buildBrief, createRuntime, prepareWorkspace, resumeCommand } from "../agent/index.ts";
+import { BACKENDS, CALLOUT_GUIDE, DRAWING_GUIDE, FORMAT_GUIDE, TOOL_SHEET, buildBrief, catalogOf, createRuntime, dirnameOf, isNative, prepareWorkspace, resumeCommand } from "../agent/index.ts";
 import { ContextTracker, stripBidi } from "./context.ts";
 import { describeContext } from "./describe.ts";
 import { dropChips } from "./drop.ts";
@@ -37,16 +37,48 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
   context.start(win);
   const base = createRuntime({ spawner, bridgeDir: PathUtils.join(dataDir, "bridges"), customAgent: () => settings().customAgent });
   const known = new Map<BackendId, Catalog>();
+  // What each backend offers (models, modes, efforts), as its sessions said, kept across runs: the pickers show it when
+  // the panel opens without an agent being started to ask. A bridge of another version is asked again (by the first chat).
+  const catalogFile = PathUtils.join(dataDir, "catalogs.json");
+  const bridgeOf = (b: BackendId): string => (b === "custom" || isNative(BACKENDS[b]) ? "" : BACKENDS[b].version);
+  type Kept = Record<string, { bridge: string; catalog: Catalog } | undefined>;
+  let kept: Promise<Kept> | null = null;
+  const readKept = () => (kept ??= IOUtils.readUTF8(catalogFile).then((text: string) => (JSON.parse(text) ?? {}) as Kept).catch(() => ({} as Kept)));
+  async function remember(b: BackendId, catalog: Catalog): Promise<void> {
+    known.set(b, catalog);
+    if (b === "custom") return; // its command may change with every save: never kept
+    const all = await readKept();
+    const next = { bridge: bridgeOf(b), catalog };
+    if (JSON.stringify(all[b]) === JSON.stringify(next)) return;
+    all[b] = next;
+    await IOUtils.makeDirectory(dataDir, { createAncestors: true, ignoreExisting: true });
+    await IOUtils.writeUTF8(catalogFile, JSON.stringify(all), { tmpPath: `${catalogFile}.tmp` });
+  }
   // Wherever zotero-cli is, the agent's shell must find it: its folder goes on the agent's PATH.
   const runtime: AgentRuntime = {
     ...base,
-    catalog: (b) => base.catalog(b).then((c) => { known.set(b, c); return c; }),
+    catalog: (b) => base.catalog(b).then((c) => { void remember(b, c).catch((e) => Zotero.logError(e)); return c; }),
+    async cached(b) {
+      if (b === "custom") return undefined;
+      const hit = known.get(b);
+      if (hit) return hit;
+      const k = (await readKept())[b];
+      if (!k || k.bridge !== bridgeOf(b) || !Array.isArray(k.catalog?.models)) return undefined;
+      known.set(b, k.catalog);
+      return k.catalog;
+    },
     async start(o) {
       const cli = await findCli(spawner, await spawner.baseEnv());
-      return base.start(cli ? { ...o, path: [cli.slice(0, cli.lastIndexOf("/")), ...(o.path ?? [])] } : o);
+      const session = await base.start(cli ? { ...o, path: [dirnameOf(cli), ...(o.path ?? [])] } : o);
+      // A chat's session has just said what the backend offers.
+      if (!o.locked && !o.ephemeral) void remember(o.backend, catalogOf(session, o, known.get(o.backend))).catch((e) => Zotero.logError(e));
+      return session;
     },
   };
-  const doctor = createDoctor({ win, spawner, runtime, settings });
+  const check = createDoctor({ win, spawner, runtime, settings });
+  // Agent folders whose zotero-cli skill this run has already brought up to date (`folder`, then where zotero-cli is).
+  const prepared = new Set<string>();
+  const doctor = () => { prepared.clear(); return check(); };
   const papers = createPapers({ dataDir, defaultFolder, chatFolder });
   // The context settings decide what the tracker hands over, wherever they were changed.
   const offSettings = sh.host.onSettingsChange(() => context.refresh());
@@ -116,17 +148,25 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     resumeCommand: (s) => resumeCommand(s.backend, s.cwd, s.agentSessionId),
 
     doctor,
-    async prepareSession(resumeIn) {
+    async prepareSession(resumeIn, backend) {
       const env = await spawner.baseEnv();
       const zoteroCli = await findCli(spawner, env);
       // A chat being resumed runs in the folder it started in; agents look a session up by its folder.
       const dir = resumeIn || chatFolder();
-      const cwd = await prepareWorkspace(spawner, dir, { ...(zoteroCli ? { zoteroCli } : {}), refresh: dir === defaultFolder() });
+      // The installer is a Python start per call, and every new chat is a session: it runs once per folder and Zotero
+      // run (a newer zotero-cli's skill arrives with the next start, or with Recheck), unless the skill is not there.
+      const done = `${dir}\n${zoteroCli ?? ""}`;
+      let cwd = dir;
+      if (!prepared.has(done) || !(await IOUtils.exists(PathUtils.join(dir, ".claude", "skills", "zotero-cli", "SKILL.md")).catch(() => false))) {
+        cwd = await prepareWorkspace(spawner, dir, { ...(zoteroCli ? { zoteroCli } : {}), refresh: dir === defaultFolder() });
+        prepared.add(done);
+      }
       const s = settings();
+      const b = backend ?? s.backend;
       // The skills that are on go into the agent's folder (Claude and Codex also find them there by themselves).
       await skills.sync(cwd, (await skills.host.list()).filter((k) => !s.skills?.[k.name]?.off).map((k) => k.name)).catch((e) => Zotero.logError(e));
-      const key = s.auth[s.backend] === "api-key" ? await keychain.getApiKey(s.backend) : null;
-      const varName = keychain.API_KEY_ENV[s.backend];
+      const key = s.auth[b] === "api-key" ? await keychain.getApiKey(b) : null;
+      const varName = keychain.API_KEY_ENV[b];
       return { cwd, brief: `${buildBrief()}\n\n${TOOL_SHEET}\n\n${DRAWING_GUIDE}\n\n${CALLOUT_GUIDE}\n\n${FORMAT_GUIDE}`, env: key && varName ? { [varName]: key } : {} };
     },
   };

@@ -55,7 +55,29 @@ const WINDOWS_EXECUTABLE = /\.(exe|cmd|bat|com)$/i;
  * `extraDirs` are probed too (`~/.local/bin` for claude, where its installer puts it).
  * On Windows there is no /bin/sh: `where.exe` does the PATH and PATHEXT search, and the first real executable wins.
  */
-export async function findBinary(spawner: Spawner, env: Record<string, string>, name: string, extraDirs: string[] = []): Promise<string | null> {
+export function findBinary(spawner: Spawner, env: Record<string, string>, name: string, extraDirs: string[] = []): Promise<string | null> {
+  // Starting a session asks for the same few programs several times over (node, the agent's CLI, zotero-cli), each a
+  // process of its own. Where one was found is remembered per PATH; a miss is asked again, so a program installed since
+  // is found without anyone clearing anything.
+  let found = FOUND.get(spawner);
+  if (!found) FOUND.set(spawner, (found = new Map()));
+  const key = [name, env["PATH"] ?? "", ...extraDirs].join("\u0000");
+  const hit = found.get(key);
+  if (hit) return hit;
+  const p = lookUp(spawner, env, name, extraDirs);
+  found.set(key, p);
+  void p.then((path) => { if (!path && found.get(key) === p) found.delete(key); });
+  return p;
+}
+
+const FOUND = new WeakMap<Spawner, Map<string, Promise<string | null>>>();
+
+/** Look everything up again (the setup check's Recheck: a program may have moved or been removed). */
+export function forgetBinaries(spawner: Spawner): void {
+  FOUND.delete(spawner);
+}
+
+async function lookUp(spawner: Spawner, env: Record<string, string>, name: string, extraDirs: string[]): Promise<string | null> {
   if (spawner.windows) {
     const path = [env["PATH"], ...extraDirs.map((d) => d.replace(/\//g, "\\"))].filter(Boolean).join(";");
     try {
