@@ -22,6 +22,8 @@ export interface SettingsDeps {
   refreshStatuses(): void;
   /** Something that other parts of the panel show has changed. */
   changed(): void;
+  /** Every saved chat is about to be deleted (the open one too). */
+  cleared?(): void;
   /** Applies the appearance (saved, or a draft while a slider is dragged). */
   look: Look;
   /** "Create with the agent": a new chat starting with /create-skill (the panel only; Zotero's Settings pane has no chat). */
@@ -75,12 +77,13 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
   const customEditor = customAgentEditor(() => host.getSettings(), save);
   const flag = (key: FlagKey, label: string, help: string) => switchRow(label, help, host.getSettings()[key], (on) => void save(setFlag(key, on)));
 
-  /** Read the backend's catalog once; the runtime caches it, this remembers the answer for the screen. */
+  /** Read the backend's catalog once: what a chat's session already said if the host kept it, else by asking (which starts the agent). */
   function loadCatalog(b: BackendId, force = false) {
     if (!force && cats.has(b)) return;
     cats.set(b, { state: "loading" });
     const source = JSON.stringify(host.getSettings().customAgent);
-    host.runtime.catalog(b).then(
+    const known = force ? undefined : host.runtime.cached?.(b).catch(() => undefined);
+    Promise.resolve(known).then((c) => c ?? host.runtime.catalog(b)).then(
       (catalog) => { if (b !== "custom" || source === JSON.stringify(host.getSettings().customAgent)) cats.set(b, { state: "ok", catalog }); },
       (e) => { if (b !== "custom" || source === JSON.stringify(host.getSettings().customAgent)) cats.set(b, { state: "error", error: errMessage(e) }); },
     ).finally(render);
@@ -189,7 +192,7 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
   function data(): HTMLElement {
     return section(t("settings.data"), t("settings.data.desc"),
       h("div.datarow", null,
-        confirmAction({ label: t("settings.data.clear"), ask: t("settings.data.clearAsk"), yes: t("settings.data.clearYes"), danger: true, run: async () => { await host.clearHistory(); o.changed(); return t("settings.data.cleared"); } }),
+        confirmAction({ label: t("settings.data.clear"), ask: t("settings.data.clearAsk"), yes: t("settings.data.clearYes"), danger: true, run: async () => { o.cleared?.(); await host.clearHistory(); o.changed(); return t("settings.data.cleared"); } }),
         confirmAction({ label: t("settings.data.reset"), ask: t("settings.data.resetAsk"), yes: t("settings.data.resetYes"), danger: true, run: async () => { await host.resetSettings(); cats.clear(); o.look.setImage(null); o.changed(); render(); return t("settings.data.wasReset"); } })),
       hint(t("settings.data.hint")));
   }
@@ -208,8 +211,13 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
     // Rebuilding the page must not drop the keyboard user's place: refocus the control that had focus.
     const focused = (body.getRootNode() as ShadowRoot).activeElement as HTMLElement | null;
     const fid = focused && body.contains(focused) ? focused.dataset.fid : undefined;
-    // ...and its scroll position (WebKit drops it when the page is emptied and refilled).
+    // ...and its place on the page (WebKit drops the scroll position when the page is emptied and refilled). The place is
+    // the card at the top of the view, not a number of pixels: a card above it may come back taller (the agent's options
+    // arriving), and what the reader was looking at, or was just sent to (`show(view, "#skills")`), must not slide away.
     const scroller = body.parentElement;
+    const edge = scroller?.getBoundingClientRect().top ?? 0;
+    const at = scroller ? [...body.children].findIndex((c) => c.getBoundingClientRect().bottom > edge + 1) : -1;
+    const offset = at >= 0 ? (body.children[at] as Element).getBoundingClientRect().top - edge : 0;
     const top = scroller?.scrollTop ?? 0;
     clear(body);
     body.append(
@@ -237,7 +245,11 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
       ),
       translate(s), skills(), folder(s), data(), about(s),
       h("div.set__saved", { role: "status", "aria-live": "polite" }, h("span", null, saved)));
-    if (scroller) scroller.scrollTop = top;
+    if (scroller) {
+      scroller.scrollTop = top;
+      const card = at >= 0 ? body.children[at] : undefined;
+      if (card) scroller.scrollTop += card.getBoundingClientRect().top - scroller.getBoundingClientRect().top - offset;
+    }
     if (fid) (body.querySelector(`[data-fid="${CSS.escape(fid)}"]`) as HTMLElement | null)?.focus({ preventScroll: true });
   }
 

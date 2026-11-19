@@ -190,6 +190,8 @@ const ATTR = new Map(ATTRS.map((a) => [a.toLowerCase(), a]));
 /** What a `style` attribute may set (as presentation attributes). */
 const STYLE_PROPS = new Set(ATTRS.filter((a) => /-|^(fill|stroke|opacity|color|display|visibility|mask)$/.test(a) && a !== "aria-label"));
 const ID = /^[A-Za-z_][\w.-]{0,63}$/;
+/** Attributes whose only use in a drawing is a reference to one of its own elements. */
+const REFERENCES = new Set(["mask", "clip-path", "marker-start", "marker-mid", "marker-end"]);
 const BAD_VALUE = /javascript:|vbscript:|data:|expression\s*\(|@import|\\/i;
 
 /** A short stable prefix for one diagram's ids, so two diagrams (or the panel) never share one. */
@@ -224,6 +226,13 @@ function cleanAttr(name: string, raw: string, p: string): [string, string] | nul
     if (/^url\(/i.test(v)) { const u = localUrls(v, p); return u ? [key, u] : null; }
     const name2 = paletteName(v, key);
     return name2 ? [key, `var(--dg-${name2})`] : null;
+  }
+  // These take a CSS image or shape where they take a reference: `mask="image-set('https://…' 1x)"` would be a request
+  // to any host, sent as the answer is drawn. A drawing needs `none` or a reference to its own <mask>, <clipPath> or <marker>.
+  if (REFERENCES.has(key)) {
+    if (v.toLowerCase() === "none") return [key, "none"];
+    const u = /^url\(\s*(['"]?)#[^)'"]*\1\s*\)$/i.test(v) ? localUrls(v, p) : null;
+    return u ? [key, u] : null;
   }
   if (/url\(/i.test(v)) { const u = localUrls(v, p); return u ? [key, u] : null; }
   return [key, v];

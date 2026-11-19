@@ -14,8 +14,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from pydantic import TypeAdapter, ValidationError
-
 ZOTERO_MCP_CONFIG_PATH = Path.home() / ".config" / "zotero-mcp" / "config.json"
 
 logger = logging.getLogger(__name__)
@@ -124,11 +122,28 @@ def resolve_chroma_dir(persist_directory: str | None = None) -> Path:
     Windows (#617).
     """
     if persist_directory:
-        return Path(persist_directory).expanduser()
+        # Absolute: the index is also read through a file: URI, which a
+        # relative path cannot be written as.
+        return Path(persist_directory).expanduser().absolute()
     return Path.home() / ".config" / "zotero-mcp" / "chroma_db"
 
 
-_config_adapter: TypeAdapter[ZoteroMcpConfig] = TypeAdapter(ZoteroMcpConfig)
+_config_adapter = None
+
+
+def _adapter():
+    """The pydantic adapter for the config, built on first use.
+
+    Importing pydantic and building this costs about 45 ms, which every
+    ``zotero-cli`` command that imports this module paid whether or not it
+    went on to read the config.
+    """
+    global _config_adapter
+    if _config_adapter is None:
+        from pydantic import TypeAdapter
+
+        _config_adapter = TypeAdapter(ZoteroMcpConfig)
+    return _config_adapter
 
 
 def _strip_nulls(obj: Any) -> Any:
@@ -157,8 +172,10 @@ def load_config() -> ZoteroMcpConfig:
                 raw = json.load(f) or {}
         except (json.JSONDecodeError, OSError):
             pass
+    from pydantic import ValidationError
+
     try:
-        return _config_adapter.validate_python(_strip_nulls(raw))
+        return _adapter().validate_python(_strip_nulls(raw))
     except ValidationError:
         logger.warning("Invalid zotero-mcp config, falling back to defaults")
         return ZoteroMcpConfig()

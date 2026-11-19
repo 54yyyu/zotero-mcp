@@ -1,6 +1,6 @@
 // "Is everything the chat needs in place?" Each check says what is wrong and, where we can, fixes it.
 import type { AgentRuntime, DoctorCheck, PanelSettings, Spawner } from "../types.ts";
-import { BACKENDS, findBinary, isNative } from "../agent/index.ts";
+import { BACKENDS, findBinary, forgetBinaries, isNative } from "../agent/index.ts";
 import { t } from "../i18n.ts";
 
 const port = () => Number(Zotero.Prefs.get("httpServer.port")) || 23119;
@@ -82,6 +82,7 @@ export function installCli(spawner: Spawner, maxMs?: number): () => AsyncIterabl
 export function createDoctor(deps: { win: any; spawner: Spawner; runtime: AgentRuntime; settings: () => PanelSettings }) {
   const { win, spawner, runtime } = deps;
   return async function doctor(): Promise<DoctorCheck[]> {
+    forgetBinaries(spawner); // a check is the moment to look again: something may have been installed, moved or removed
     const checks: DoctorCheck[] = [];
     const env = await spawner.baseEnv();
 

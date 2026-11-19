@@ -36,6 +36,17 @@ def _clean_environment(monkeypatch):
     zclient.clear_active_library()
 
 
+@pytest.fixture(autouse=True, params=["by_id", "listing"])
+def _deletion_lookup(request, monkeypatch):
+    """Every test runs both ways the pass can find a library's records: asking
+    only about records of items Zotero no longer lists (``ids_in_group``), and
+    the full ``get_all_ids(where=group_id)`` listing a client without that
+    method gets. What is deleted must be the same."""
+    if request.param == "listing":
+        monkeypatch.delattr(RecordingChroma, "ids_in_group")
+    return request.param
+
+
 class FakeZoteroClient:
     """pyzotero double scoped to one library."""
 
@@ -81,6 +92,8 @@ class RecordingChroma:
         self.deleted = []
         self.chunk_deletes = []
         self.reset_calls = 0
+        self.group_lookups = []
+        self.listings = []
 
     def truncate_text(self, text, max_tokens=None):
         return text
@@ -94,6 +107,7 @@ class RecordingChroma:
         return {i for i in ids if i in self._docs}
 
     def get_all_ids(self, where=None):
+        self.listings.append(where)
         if where and "group_id" in where:
             cond = where["group_id"]
             if isinstance(cond, dict) and "$ne" in cond:
@@ -108,6 +122,10 @@ class RecordingChroma:
                 if m.get("group_id") == cond
             }
         return set(self._docs)
+
+    def ids_in_group(self, ids, group_id):
+        self.group_lookups.append(list(ids))
+        return {i for i in ids if i in self._docs and self._docs[i].get("group_id") == group_id}
 
     def get_document_metadata(self, doc_id):
         return self._docs.get(doc_id)
@@ -124,9 +142,6 @@ class RecordingChroma:
     def upsert_documents(self, documents, metadatas, ids):
         for i, m in zip(ids, metadatas):
             self._docs[i] = dict(m)
-
-    def add_documents(self, documents, metadatas, ids):
-        self.upsert_documents(documents, metadatas, ids)
 
     def delete_documents(self, ids):
         self.deleted.extend(ids)
@@ -587,3 +602,66 @@ def test_force_rebuild_runs_no_deletion_pass(monkeypatch, tmp_path):
     assert chroma.deleted == []
     assert not stats.get("deleted_items")
 
+
+
+# ---------------------------------------------------------------------------
+# Asking only about the records of items Zotero no longer lists
+# ---------------------------------------------------------------------------
+
+def test_only_records_of_absent_items_are_asked_for_their_library(
+    monkeypatch, tmp_path, _deletion_lookup
+):
+    if _deletion_lookup != "by_id":
+        pytest.skip("the listing path asks about nothing by id")
+    chroma = RecordingChroma({
+        "KEEP1": _personal_doc("KEEP1"),
+        "KEEP2": _personal_doc("KEEP2"),
+        "GONE": _personal_doc("GONE"),
+        "OTHER": _group_doc("OTHER"),
+    })
+    zot = FakeZoteroClient(versions_state={"KEEP1": 3, "KEEP2": 3})
+    search = _build_search(monkeypatch, zot, chroma, _write_config(tmp_path, {"0": 5}))
+
+    search.update_database()
+
+    assert chroma.group_lookups == [["GONE", "OTHER"]]
+    assert chroma.deleted == ["GONE"]
+    # No listing of the whole library by its group_id: that is the slow read.
+    assert {"group_id": 0} not in chroma.listings
+
+
+def test_unattributed_records_of_live_items_do_not_dilute_the_guard(monkeypatch, tmp_path):
+    """The guard weighs deletions against what is indexed *for the library*.
+    Records with no library must not count, however many items they cover:
+    30 attributed items of which 26 are gone is a mass deletion."""
+    docs = {f"LEGACY{i:03d}": {"item_key": f"LEGACY{i:03d}"} for i in range(200)}
+    live = [f"LIVE{i}" for i in range(4)]
+    dead = [f"DEAD{i:02d}" for i in range(26)]
+    for key in live + dead:
+        docs[key] = _personal_doc(key)
+    chroma = RecordingChroma(docs)
+    zot = FakeZoteroClient(versions_state={k: 3 for k in [*live, *(d for d in docs if d.startswith("LEGACY"))]})
+    search = _build_search(monkeypatch, zot, chroma, _write_config(tmp_path, {"0": 5}))
+
+    stats = search.update_database()
+
+    assert chroma.deleted == []
+    assert stats["deletion_skipped_reason"] == "mass_deletion_guard"
+
+
+def test_a_failed_library_lookup_deletes_nothing(monkeypatch, tmp_path, _deletion_lookup):
+    if _deletion_lookup != "by_id":
+        pytest.skip("the listing path has its own test")
+    chroma = RecordingChroma({"GONE": _personal_doc("GONE"), "KEEP": _personal_doc("KEEP")})
+
+    def broken(ids, group_id):
+        raise RuntimeError("database disk image is malformed")
+
+    chroma.ids_in_group = broken
+    zot = FakeZoteroClient(versions_state={"KEEP": 3})
+    search = _build_search(monkeypatch, zot, chroma, _write_config(tmp_path, {"0": 5}))
+
+    stats = search.update_database()
+
+    assert chroma.deleted == [] and chroma.chunk_deletes == []
+    assert stats["deleted_items"] == 0

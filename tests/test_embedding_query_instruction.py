@@ -116,7 +116,7 @@ class TestQueryInstruction(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as directory:
             first = ChromaClient(persist_directory=directory, embedding_model="qwen")
-            first.add_documents(["Document"], [{"title": "Paper"}], ["item1"])
+            first.upsert_documents(["Document"], [{"title": "Paper"}], ["item1"])
             collection_id = first.collection.id
             self.model.calls.clear()
 

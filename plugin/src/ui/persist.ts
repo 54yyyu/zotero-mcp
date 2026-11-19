@@ -24,6 +24,12 @@ export class Persister {
     this.write(ev);
   }
 
+  /** Forget what is waiting to be written (the chat's history was cleared). */
+  drop(): void {
+    this.buf = null;
+    env.win.clearTimeout(this.timer);
+  }
+
   flush(): void {
     const b = this.buf;
     this.buf = null;

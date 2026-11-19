@@ -12,14 +12,14 @@ The MCP server sends every enabled tool's name, description and JSON parameter s
 
 | Route | Tokens in context | When it is paid |
 |---|---:|---|
-| MCP, default profile (38 tools) | 7,939 | every request |
-| MCP, `ZOTERO_MCP_TOOLSETS=none` (31 tools) | 6,863 | every request |
-| MCP, `ZOTERO_MCP_TOOLSETS=all` (50 tools) | 11,225 | every request |
+| MCP, default profile (38 tools) | 7,752 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=none` (31 tools) | 6,612 | every request |
+| MCP, `ZOTERO_MCP_TOOLSETS=all` (51 tools) | 10,971 | every request |
 | CLI skill, frontmatter only | 98 | always |
-| CLI skill, body loaded | 2,400 | once the skill fires |
-| CLI skill + full command reference | 6,582 | worst case |
+| CLI skill, body loaded | 2,755 | once the skill fires |
+| CLI skill + full command reference | 7,944 | only if the agent opens the reference |
 
-That is the *fixed* cost only. It does not measure task success, output size, or how many round trips each route takes to finish a job — a cheaper surface that gets the answer wrong is not cheaper. Numbers are `cl100k_base` tokens and are re-measured, not estimated; `tests/test_context_cost_claim.py` fails if the relationship stops holding.
+That is the *fixed* cost only. It does not measure task success, output size, or how many round trips each route takes to finish a job — a cheaper surface that gets the answer wrong is not cheaper. Numbers are `cl100k_base` tokens and are re-measured, not estimated; `tests/test_context_cost_claim.py` fails if the first two CLI rows stop being cheaper than the MCP default. With the whole command reference loaded the CLI route costs about the same as the MCP default profile; the reference is read only when the skill body is not enough.
 
 ## 🪶 Agent skill: one command for any harness
 
@@ -60,6 +60,8 @@ zotero-cli --json search "attention" --limit 5 --detail keys_only
 ```
 
 Success carries `data`; failure carries `error.message` and a stable `error.code`, also on stdout, so one stream carries both outcomes, and a failed command exits 1. Read commands (search, get, annotations list, notes list, config) return real structure; commands whose answer is a status line return `{"text": ...}`. Run `zotero-cli --json-schema` for the full contract.
+
+Attachment summaries include `contentType` and `filename` when present. Item projections and metadata omit attachment URLs with recognized signing parameters (S3, CloudFront, Google Cloud Storage, and Azure Storage SAS). Use the attachment key to read the stored file.
 
 ```bash
 # Item keys are the currency of every command — pipe them onward

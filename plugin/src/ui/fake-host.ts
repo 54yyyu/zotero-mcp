@@ -48,6 +48,8 @@ interface Sim {
   pickFolder: string | null;
   preparedCwd: (string | undefined)[];
   catalogDelay: number;
+  /** How often catalog() was asked: each one is an agent started only to read its options. */
+  catalogReads: number;
   /** What chooseImage() answers next (null = the user cancelled), and the picture the host keeps. */
   pickImage: { name: string; dataUrl: string } | null;
   image: string | null;
@@ -304,7 +306,7 @@ export class FakeHost implements PanelHost {
     this._locale = o.locale ?? "en-US";
     this.settings.welcomed = !o.welcome;
     const sim: Sim = {
-      opened: [], prompts: [], doctorMode: o.doctor ?? "ok", searchFails: false, startFails: null, catalogFails: [], pickFolder: "/Users/you/Documents/Projects/hiring-audits/paper-notes", pickImage: { name: "kyoto-evening.jpg", dataUrl: SAMPLE_IMAGE }, image: null, preparedCwd: [], catalogDelay: o.catalogDelay ?? 120, data: { cleared: 0, revealed: 0, resets: 0 }, nextAnswer: null, saved: [], saveTo: "/Users/you/Downloads", notes: [], noteFails: null, contextUsage: null, speed: o.speed ?? 18, writes: [], keys: {}, closed: 0,
+      opened: [], prompts: [], doctorMode: o.doctor ?? "ok", searchFails: false, startFails: null, catalogFails: [], pickFolder: "/Users/you/Documents/Projects/hiring-audits/paper-notes", pickImage: { name: "kyoto-evening.jpg", dataUrl: SAMPLE_IMAGE }, image: null, preparedCwd: [], catalogDelay: o.catalogDelay ?? 120, catalogReads: 0, data: { cleared: 0, revealed: 0, resets: 0 }, nextAnswer: null, saved: [], saveTo: "/Users/you/Downloads", notes: [], noteFails: null, contextUsage: null, speed: o.speed ?? 18, writes: [], keys: {}, closed: 0,
       catalogs: { ...CATALOGS, ...(o.bigPi ? { pi: bigPiCatalog() } : {}) },
       statuses: [
         { id: "claude-code", label: "Claude Code", available: true, account: "Claude Max" },
@@ -323,11 +325,18 @@ export class FakeHost implements PanelHost {
     this.runtime = {
       detect: async () => { await sleep(10); return this.statuses(); },
       catalog: async (b) => {
+        sim.catalogReads++;
         await sleep(sim.catalogDelay);
         const st = this.statuses().find((x) => x.id === b);
         if (st && !st.available) throw new Error(st.reason ?? `${st.label} is not available`);
         if (sim.catalogFails.includes(b)) throw new Error("the bridge did not answer within 20 s");
         return sim.catalogs[b];
+      },
+      // As in a profile that has chatted before: the host kept what the sessions said. A scenario about reading a catalog
+      // (the `catalogDelay` option, a failing one, an agent that is not there) has none kept, and neither has a custom agent.
+      cached: async (b) => {
+        const st = this.statuses().find((x) => x.id === b);
+        return b === "custom" || o.catalogDelay !== undefined || sim.catalogFails.includes(b) || (st && !st.available) ? undefined : sim.catalogs[b];
       },
       start: async (opts) => {
         await sleep(sim.speed ? 250 : 0);

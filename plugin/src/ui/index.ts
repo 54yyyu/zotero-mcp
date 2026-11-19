@@ -60,6 +60,8 @@ class Panel {
   private autoPicked = false;
   private disposers: (() => void)[] = [];
   private catalogs = new Map<BackendId, Catalog>();
+  /** What decides which agent runs and whether it can (agentKey): a settings change that leaves it alone starts no check and closes no session. */
+  private agentKey = "";
   private seenImage: string;
 
   constructor(root: ShadowRoot, host: PanelHost) {
@@ -74,11 +76,12 @@ class Panel {
       blockReason: () => this.health.blockReason(),
       turnEnded: (stop) => this.feed.announce(stop === "end_turn" ? t("chat.answerFinished") : t("chat.turnEnded")),
       setupFailed: () => void this.health.refresh(),
-      sessionChanged: () => this.syncPickers(),
+      sessionChanged: () => void this.loadCatalog(false), // the pickers; a session that came up has also said what its agent offers
       shownChanged: () => this.refreshChips(),
       expand: (text, cwd) => this.expand(text, cwd),
     });
     this.applyLanguage();
+    this.agentKey = this.readAgentKey();
     this.build();
 
     this.disposers.push(host.onContextChange(() => this.refreshChips()), host.onThemeChange(() => { this.app.dataset.theme = host.theme(); }),
@@ -207,7 +210,7 @@ class Panel {
       v === "history" ? historyView(host, { current: () => this.chat.saved?.id ?? null, back, resume: (s) => void this.openSaved(s), deleted: (id) => { if (this.chat.saved?.id === id) void this.newChat(); }, renamed: (s) => this.chat.adoptRename(s.id, s.title) })
       : v === "welcome" ? welcomeView(host, this.health, { done: () => void this.finishWelcome(), recheck: () => void this.health.refresh(), changed: () => this.onSettings(), openSettings: () => this.show("settings") })
       : v === "status" ? statusView(host, { back, initial: this.health.checks, openSettings: () => this.show("settings"), changed: (c) => this.health.set(c) })
-      : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), look: this.look,
+      : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), cleared: () => this.onCleared(), look: this.look,
         createSkill: () => void this.newChat().then(() => { this.composer.setText("/create-skill "); this.composer.focus(); }) });
     this.activeView = screen;
     this.viewEl.append(screen.el);
@@ -281,6 +284,20 @@ class Panel {
     this.render();
   }
 
+  /**
+   * Clear history deletes the open chat with the rest, as deleting it in the history list does. Left open it would keep
+   * saving: the list would get it back holding only what came after the clear.
+   */
+  private onCleared(): void {
+    if (!this.chat.saved) return;
+    this.chat.forget();
+    void this.chat.reset();
+    this.chips.clearAll();
+    this.feed.clear();
+    this.refreshChips();
+    this.render();
+  }
+
   private async openSaved(s: Parameters<Chat["load"]>[0]): Promise<void> {
     this.feed.clear();
     await this.chat.load(s);
@@ -323,15 +340,26 @@ class Panel {
     void this.host.setSettings({ backend: alt.id }).then(() => { this.onSettings(); void this.health.refresh(); });
   }
 
+  /** The agent, how it signs in, a custom agent's command and the folder chats run in. */
+  private readAgentKey(): string {
+    const s = this.host.getSettings();
+    return JSON.stringify([s.backend, s.auth, s.customAgent ?? null, s.chatFolder]);
+  }
+
   private onSettings(): void {
     if (this.applyLanguage()) this.relabel();
-    this.catalogs.delete("custom");
     this.onHealth();
     this.applyBehavior();
-    // An empty chat has no history to protect: let a changed backend take effect on the next send.
-    if (!this.chat.tr.messages.length && this.chat.session && !this.chat.sending) void this.chat.closeSession();
+    const key = this.readAgentKey();
+    if (key !== this.agentKey) {
+      this.agentKey = key;
+      this.catalogs.delete("custom");
+      // An empty chat has no history to protect: a changed agent takes effect at once, also over a session still starting
+      // (the panel starts one as soon as it opens, and that one was for the agent chosen before).
+      if (!this.chat.tr.messages.length && (this.chat.session || this.chat.starting) && !this.chat.sending) void this.chat.closeSession();
+      void this.health.refreshStatuses();
+    }
     void this.loadCatalog(false);
-    void this.health.refreshStatuses();
   }
 
   /** Saved elsewhere (Zotero's Settings pane, another window): the look, the behaviour, the pickers and an open settings screen follow. */
@@ -371,6 +399,15 @@ class Panel {
     const b = this.host.getSettings().backend;
     if (b === "custom" && !strict) return this.syncPickers();
     if (this.catalogs.has(b) || this.chat.session?.backend === b) return this.syncPickers();
+    // What is already known (read from a session before, kept by the host) costs nothing. Reading one starts an agent, so
+    // that is left to a menu being opened (`strict`), and even then a session already starting is waited for instead.
+    const known = await this.host.runtime.cached?.(b).catch(() => undefined);
+    if (known && !this.catalogs.has(b)) this.catalogs.set(b, known);
+    if (known || !strict) return this.syncPickers();
+    if (this.chat.starting) {
+      await this.chat.starting.catch(() => {});
+      if (this.chat.session?.backend === b) return this.syncPickers();
+    }
     const source = JSON.stringify(this.host.getSettings().customAgent);
     try {
       const catalog = await this.host.runtime.catalog(b);
@@ -494,15 +531,14 @@ class Panel {
     this.feed.update(c.tr, !c.busy);
     this.composer.setBusy(c.busy);
     this.composer.setContextFill(contextFill(c.tr));
-    this.feed.setPending(c.sending && c.tr.running === null ? (c.compacting ? t("work.summarising") : c.starting ? t("work.starting", { agent: BACKEND_LABEL[this.host.getSettings().backend] }) : t("work.sending")) : null);
+    this.feed.setPending(c.sending && c.tr.running === null ? (c.compacting ? t("work.summarising") : c.starting ? t("work.starting", { agent: BACKEND_LABEL[c.backend] }) : t("work.sending")) : null);
   }
 
   private dispose(): void {
-    this.chat.flush();
+    void this.chat.dispose();
     for (const d of this.disposers.splice(0)) { try { d(); } catch { /* ignore */ } }
     this.composer.dispose();
     this.pendingRender = false;
-    void this.chat.closeSession();
     clear(this.root);
   }
 }

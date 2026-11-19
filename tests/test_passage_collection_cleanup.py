@@ -91,12 +91,6 @@ def test_all_ids_come_from_both_collections(both):
     assert both.get_all_ids(where={"group_id": 1}) == set()
 
 
-def test_document_exists_checks_both_collections(both):
-    assert both.document_exists("AAA#0") is True
-    assert both.document_exists("AAA") is True
-    assert both.document_exists("CCC#0") is False
-
-
 def test_item_metadata_comes_from_the_article_then_the_first_passage(client):
     _write(client, ["AAA"], [_meta("AAA", marker="article")])
     _write(client, ["AAA#0"], [_passage_meta("AAA", 0, 1, marker="passage")])
@@ -265,11 +259,3 @@ def test_deletion_stays_within_the_library_being_synced(search):
     search._run_deletion_pass({"deleted_items": 0}, {"KEPT"}, allow_mass_deletion=True)
 
     assert search.chroma_client.get_all_ids() == {"OTHER", "OTHER#0"}
-
-
-def test_delete_item_removes_both_levels(search):
-    _write(search.chroma_client, ["GONE", "GONE#0"], [_meta("GONE"), _passage_meta("GONE", 0, 1)])
-
-    assert search.delete_item("GONE") is True
-
-    assert search.chroma_client.get_all_ids() == set()

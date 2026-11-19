@@ -369,11 +369,13 @@ def export_bibliography(
 
         def _bibtex_text(raw):
             if hasattr(raw, "entries"):
-                # pyzotero parses a format=bibtex response into a
-                # bibtexparser BibDatabase; serialise it back to .bib text.
+                # pyzotero parses a format=bibtex response with bibtexparser
+                # (a 1.x BibDatabase, a 2.x Library from pyzotero 1.17);
+                # serialise it back to .bib text.
                 import bibtexparser
 
-                raw = bibtexparser.dumps(raw)
+                write = getattr(bibtexparser, "write_string", None) or bibtexparser.dumps
+                raw = write(raw)
             return raw.decode("utf-8") if isinstance(raw, bytes) else raw
 
         def _bibtex_pages(method, *args):

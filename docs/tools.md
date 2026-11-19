@@ -98,7 +98,7 @@ Example (Claude Desktop / Claude Code):
 - `zotero_get_search_database_status`: Index state and configuration
 
 ### 📚 Content tools
-- `zotero_get_item_metadata`: Metadata for one item (`format="markdown"`, `"json"` for the raw record, or `"bibtex"`)
+- `zotero_get_item_metadata`: Metadata for one item (`format="markdown"`, `"json"` for the Zotero record, or `"bibtex"`). Metadata omits attachment URLs with recognized signing parameters.
 - `zotero_get_item_fulltext`: Full text of an item's PDF or EPUB
 - `zotero_get_item_children`: Attachments and notes for one item or many (pass an array of keys)
 - `zotero_read_pdf_pages`: Read a page range of a PDF as Markdown, with pages whose math, figures or tables the text garbles flagged; `format="image"` returns the pages as images, and `rect=[x, y, width, height]` zooms into one region
@@ -207,5 +207,7 @@ Zotero MCP includes advanced PDF annotation extraction capabilities:
 - **Seamless integration**: Works alongside Zotero's native annotation system
 
 For optimal annotation extraction, it is **highly recommended** to install the [Better BibTeX plugin](https://retorque.re/zotero-better-bibtex/installation/) for Zotero. The annotation-related functions have been primarily tested with this plugin and provide enhanced functionality when it's available.
+
+When listing annotations for an item, Zotero MCP accepts Better BibTeX results for that item's attachments in the active library. If Better BibTeX returns no matching annotations, Zotero MCP reads annotations from the configured Zotero backend.
 
 The first time you use PDF annotation features, the necessary tools will be automatically downloaded.

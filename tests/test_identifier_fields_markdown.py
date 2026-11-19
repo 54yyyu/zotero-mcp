@@ -5,25 +5,7 @@ markdown formatter, causing agents to conclude ISBN was missing and attempt
 to write stale values.
 """
 
-import importlib.util
-import pathlib
-import sys
-from unittest.mock import MagicMock
-
-for _mod_name in (
-    "pyzotero", "pyzotero.zotero",
-    "dotenv", "fastmcp", "mcp", "mcp.server",
-    "zotero_mcp", "zotero_mcp.utils", "zotero_mcp._app",
-):
-    if _mod_name not in sys.modules:
-        sys.modules[_mod_name] = MagicMock()
-
-_client_path = pathlib.Path(__file__).parent.parent / "src" / "zotero_mcp" / "client.py"
-_spec = importlib.util.spec_from_file_location("zotero_mcp.client", _client_path)
-_client_mod = importlib.util.module_from_spec(_spec)
-sys.modules["zotero_mcp.client"] = _client_mod
-_spec.loader.exec_module(_client_mod)
-format_item_metadata = _client_mod.format_item_metadata
+from zotero_mcp.client import format_item_metadata
 
 
 def _book(**fields):

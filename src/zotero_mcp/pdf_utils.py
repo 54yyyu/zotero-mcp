@@ -9,10 +9,10 @@ extraction issues like:
 - Missing word spacing in extracted text
 - Page number mismatches
 
-Search Strategy (in order):
+Search Strategy (in order), each on the page given and then its neighbours:
 1. For long text (>100 chars): Anchor-based matching (find start/end, highlight between)
-2. Exact match using PyMuPDF's search
-3. Fuzzy matching with normalized text comparison
+2. Exact match in the page's normalized text index
+3. Fuzzy matching against that index
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ ANCHOR_MIN_TEXT_LENGTH = 100  # Use anchor matching for text longer than this
 ANCHOR_TARGET_LENGTH = 40     # Target length for start/end anchors
 ANCHOR_WORD_BOUNDARY_TOLERANCE = 15  # How far to extend to find word boundary
 ANCHOR_MATCH_THRESHOLD = 0.75  # Minimum similarity for anchor fuzzy matching
+ACROSS_PAGE_MIN_RATIO = 0.8    # How closely the next page must read like the rest of a quote
 
 # Fuzzy matching thresholds (by text length)
 FUZZY_THRESHOLD_SHORT = 0.85   # For text < 50 chars
@@ -119,19 +120,23 @@ def normalize_text(text: str) -> str:
 
 def normalize_for_matching(text: str) -> str:
     """
-    Aggressively normalize text for fuzzy matching.
+    Aggressively normalize text for matching.
 
     This removes ALL spaces and lowercases the text to handle PDFs where
-    words are stored without proper spacing between spans.
+    words are stored without proper spacing between spans. Hyphens and dashes
+    are removed too. A hyphen at the end of a line is either typesetting
+    ("regard-" / "less") or part of the word ("state-of-the-" / "art"), and
+    nothing on the page says which, so a quote typed either way has to match:
+    "regardless" finds the first and "state-of-the-art" the second.
 
     Args:
         text: Text to normalize
 
     Returns:
-        Text with all spaces removed, lowercased
+        Text with all spaces and hyphens removed, lowercased
     """
     text = normalize_text(text)
-    text = re.sub(r'\s+', '', text)
+    text = re.sub(r'[\s-]+', '', text)
     return text.lower()
 
 
@@ -173,23 +178,6 @@ def _extract_page_spans(page) -> list[dict[str, Any]]:
     return spans
 
 
-def _hyphenates_into_next_line(normalized: str, spans: list[dict], i: int) -> bool:
-    """True when span ``i`` ends in the hyphen of a word broken across lines.
-
-    The hyphen is dropped from the index so that "regard-" and "less" on the
-    next line match a search for "regardless". Only a letter before the
-    hyphen and a lowercase letter starting the next line count, so a dash
-    before a number, or a hyphenated compound whose second half is capitalized,
-    is left alone.
-    """
-    if len(normalized) < 2 or not normalized.endswith("-") or not normalized[-2].isalpha():
-        return False
-    if i + 1 >= len(spans) or spans[i + 1].get("line") == spans[i].get("line"):
-        return False
-    following = spans[i + 1]["text"].lstrip()
-    return bool(following) and following[0].isalpha() and following[0].islower()
-
-
 def _build_normalized_text_index(spans: list[dict]) -> tuple[str, list[tuple[int, int, int]]]:
     """
     Build a normalized cumulative text string and index mapping.
@@ -205,19 +193,17 @@ def _build_normalized_text_index(spans: list[dict]) -> tuple[str, list[tuple[int
         - Cumulative normalized text string
         - List of (norm_start, norm_end, span_index) tuples
     """
-    cumulative = ""
+    parts = []
     positions = []
+    end = 0
 
     for i, span in enumerate(spans):
-        start = len(cumulative)
         normalized = normalize_for_matching(span["text"])
-        if _hyphenates_into_next_line(normalized, spans, i):
-            normalized = normalized[:-1]
-        cumulative += normalized
-        end = len(cumulative)
-        positions.append((start, end, i))
+        parts.append(normalized)
+        positions.append((end, end + len(normalized), i))
+        end += len(normalized)
 
-    return cumulative, positions
+    return "".join(parts), positions
 
 
 def _get_spans_in_range(
@@ -279,7 +265,11 @@ def _clip_span(span: dict, lo: int, hi: int) -> tuple[tuple, str] | None:
     character is normalized on its own to find where it lands there; that
     reproduces the span-level normalization exactly, because every rule in
     normalize_for_matching either maps one character (dashes, quotes,
-    ligatures, case) or deletes whitespace.
+    ligatures, case) or deletes it (whitespace, hyphens).
+
+    A deleted character has no width there. It is kept when it sits after the
+    first character of the range and before the range's end, so the hyphen
+    that closes a line stays inside the box of the word it breaks.
 
     Returns None when the span has no character data, so the caller keeps the
     whole-span box rather than dropping the piece.
@@ -290,7 +280,9 @@ def _clip_span(span: dict, lo: int, hi: int) -> tuple[tuple, str] | None:
     box = None
     for idx, char in enumerate(chars):
         width = len(normalize_for_matching(char["c"]))
-        if width and offset < hi and offset + width > lo:
+        inside = offset < hi and offset + width > lo if width else (
+            lo < offset < hi and not char["c"].isspace())
+        if inside:
             x0, y0, x1, y1 = char["bbox"]
             box = (x0, y0, x1, y1) if box is None else (
                 min(box[0], x0), min(box[1], y0), max(box[2], x1), max(box[3], y1)
@@ -449,7 +441,49 @@ def _extract_page_char_rects(page) -> list[list[float]]:
     return _convert_rects_to_zotero(bboxes, page)
 
 
-def _build_sort_index(page, page_index: int, rects: list[list[float]]) -> str:
+#: Pages a PageCache keeps. A page's characters with their boxes run to a
+#: couple of megabytes, and a batch works through a document page by page.
+_PAGE_CACHE_SIZE = 12
+
+
+class PageCache:
+    """Extracted text of the pages of ONE document, kept across lookups.
+
+    Placing a highlight reads its page twice (the text index to find the
+    quote, the character boxes for the sort index) and its neighbours on a
+    miss. A batch of annotations on the same pages repeated all of that per
+    annotation. Pass one cache to every call made on the same open document.
+    """
+
+    def __init__(self) -> None:
+        self._text: dict[int, tuple] = {}
+        self._chars: dict[int, list] = {}
+
+    @staticmethod
+    def _put(store: dict, key: int, value):
+        while len(store) >= _PAGE_CACHE_SIZE:
+            del store[next(iter(store))]
+        store[key] = value
+        return value
+
+    def text_index(self, page, page_index: int) -> tuple:
+        """(spans, cumulative, span_positions) for a page."""
+        found = self._text.get(page_index)
+        if found is None:
+            spans = _extract_page_spans(page)
+            cumulative, span_positions = _build_normalized_text_index(spans)
+            found = self._put(self._text, page_index, (spans, cumulative, span_positions))
+        return found
+
+    def char_rects(self, page, page_index: int) -> list:
+        found = self._chars.get(page_index)
+        if found is None:
+            found = self._put(self._chars, page_index, _extract_page_char_rects(page))
+        return found
+
+
+def _build_sort_index(page, page_index: int, rects: list[list[float]],
+                      cache: PageCache | None = None) -> str:
     """
     Build Zotero annotation sort index string.
 
@@ -466,6 +500,7 @@ def _build_sort_index(page, page_index: int, rects: list[list[float]]) -> str:
         page: The fitz page the rects belong to
         page_index: 0-indexed page number
         rects: Annotation rects in Zotero coordinates
+        cache: The document's PageCache, when the caller keeps one
 
     Returns:
         Sort index string
@@ -474,7 +509,7 @@ def _build_sort_index(page, page_index: int, rects: list[list[float]]) -> str:
     top = 0.0
     if rects:
         rect = max(rects, key=lambda r: r[3])
-        chars = _extract_page_char_rects(page)
+        chars = cache.char_rects(page, page_index) if cache else _extract_page_char_rects(page)
         if chars:
             offset = min(range(len(chars)), key=lambda i: _rect_distance(chars[i], rect))
         # page.rect is the page as displayed, so a quarter turn swaps its sides.
@@ -488,6 +523,7 @@ def _build_search_result(
     bboxes: list,
     texts: list[str],
     page,
+    cache: PageCache | None = None,
 ) -> dict:
     """
     Build a successful search result dict.
@@ -497,12 +533,13 @@ def _build_search_result(
         bboxes: List of bounding boxes
         texts: List of matched text strings
         page: The fitz page for coordinate conversion
+        cache: The document's PageCache, when the caller keeps one
 
     Returns:
         Dict with pageIndex, rects, sort_index, matched_text
     """
     rects = _convert_rects_to_zotero(bboxes, page)
-    sort_index = _build_sort_index(page, page_index, rects)
+    sort_index = _build_sort_index(page, page_index, rects, cache)
 
     return {
         "pageIndex": page_index,
@@ -524,8 +561,15 @@ def _sliding_window_match(text: str, pattern: str) -> tuple[int, int, float] | N
     because a below-threshold best match still feeds "did you mean" feedback.
 
     A window is fully scored only when ``quick_ratio()``, an upper bound on
-    ``ratio()``, could beat the best so far. That skips most windows without
-    changing which one wins.
+    ``ratio()``, could beat the best so far. Window starts are sampled an
+    eighth of the pattern apart and the neighbourhood of the best one is then
+    scanned at every offset: a window 1.2x the pattern still holds nearly all
+    of a match that begins between two samples, and scoring every offset of a
+    page cost seconds per missed quote.
+
+    The window is wider than the pattern, so the span returned is where the
+    pattern's first and last matched runs fall inside it, not the window's
+    start.
 
     Args:
         text: Normalized text to search in
@@ -540,7 +584,7 @@ def _sliding_window_match(text: str, pattern: str) -> tuple[int, int, float] | N
 
     window_size = int(pattern_len * 1.2)
     matcher = SequenceMatcher(None, pattern)
-    best = [0.0, 0, 0]  # ratio, start, end
+    best = [0.0, 0]  # ratio, window start
 
     def scan(starts) -> None:
         for i in starts:
@@ -549,15 +593,35 @@ def _sliding_window_match(text: str, pattern: str) -> tuple[int, int, float] | N
                 continue
             ratio = matcher.ratio()
             if ratio > best[0]:
-                best[:] = [ratio, i, min(i + pattern_len, len(text))]
+                best[:] = [ratio, i]
 
-    # Use stepping for very long texts, then refine around the best step.
-    step = max(1, len(text) // 5000) if len(text) >= SLIDING_WINDOW_STEP_THRESHOLD else 1
-    scan(range(0, len(text) - pattern_len + 1, step))
+    last = len(text) - pattern_len + 1
+    step = max(1, pattern_len // 8)
+    if len(text) >= SLIDING_WINDOW_STEP_THRESHOLD:
+        step = max(step, len(text) // 5000)
+    scan(range(0, last, step))
     if step > 1 and best[0] > 0:
-        scan(range(max(0, best[1] - step), min(len(text) - pattern_len + 1, best[1] + step)))
+        scan(range(max(0, best[1] - step), min(last, best[1] + step)))
 
-    return best[1], best[2], best[0]
+    ratio, i = best
+    matcher.set_seq2(text[i:i + window_size])
+    # Runs of three or more: a lone matching letter says nothing about where
+    # the pattern sits.
+    runs = [b for b in matcher.get_matching_blocks() if b.size >= 3]
+    if not runs:
+        return i, min(i + pattern_len, len(text)), ratio
+    first, final = runs[0], runs[-1]
+    # A few unmatched characters before the first run or after the last are a
+    # typo at the quote's edge, and the span is widened to take them in. More
+    # than that is wording the page does not have, and nothing is added for it.
+    slack = max(3, pattern_len // 10)
+    unmatched_head = first.a if first.a <= slack else 0
+    unmatched_tail = pattern_len - (final.a + final.size)
+    if unmatched_tail > slack:
+        unmatched_tail = 0
+    start = i + max(0, first.b - unmatched_head)
+    end = i + min(window_size, final.b + final.size + unmatched_tail)
+    return start, min(end, len(text)), ratio
 
 
 def _get_dynamic_threshold(text_length: int) -> float:
@@ -610,7 +674,29 @@ def _extract_anchor(text: str, from_start: bool) -> str:
     return anchor.strip()
 
 
-def _anchor_based_search(page, page_index: int, search_text: str, text_index) -> dict | None:
+def _leading_overlap(needle: str, text: str) -> int:
+    """
+    How much of ``needle``'s start ``text`` also starts with, typos allowed.
+
+    Used for a quote that runs off the end of a page: ``text`` is the page
+    from where the quote begins, and whatever follows the quote there (a
+    footnote, the page number) is not part of the overlap. Matching runs
+    count while they stay in step with the needle and no more than a few
+    characters apart.
+    """
+    matcher = SequenceMatcher(None, needle, text[:len(needle)], autojunk=False)
+    covered = 0
+    for a, b, size in matcher.get_matching_blocks():
+        if size < 4:
+            continue
+        if abs(a - b) > 3 or a - covered > 8:
+            break
+        covered = a + size
+    return covered
+
+
+def _anchor_based_search(page, page_index: int, search_text: str, text_index,
+                         cache: PageCache | None = None, following=None) -> dict | None:
     """
     Search for long text using anchor-based matching.
 
@@ -618,11 +704,22 @@ def _anchor_based_search(page, page_index: int, search_text: str, text_index) ->
     END (~40 chars) of the passage, then highlights everything between them.
     This is robust against variations in the middle of the text.
 
+    Both ends have to be found. When the end is not on this page, the quote
+    may continue on the next one: if the rest of it is there, the result
+    carries ``nextPageRects`` for that part, the way Zotero stores a highlight
+    across a page break. Otherwise there is no answer here and the caller's
+    other strategies judge the whole quote. Guessing the end from the quote's
+    length, as this used to, highlighted the right number of characters after
+    any passage that merely began like the quote.
+
     Args:
         page: PyMuPDF page object
         page_index: 0-indexed page number
         search_text: Full text to highlight
         text_index: (spans, cumulative, span_positions) for the page
+        cache: The document's PageCache, when the caller keeps one
+        following: Callable returning ``(page, text_index)`` for the next
+            page, or None when there is none
 
     Returns:
         Search result dict if found, None otherwise
@@ -650,29 +747,86 @@ def _anchor_based_search(page, page_index: int, search_text: str, text_index) ->
     normalized_end = normalize_for_matching(end_anchor)
     search_offset = start_pos + len(normalized_start) // 2
     end_pos = cumulative.find(normalized_end, search_offset)
-    if end_pos == -1:
-        match = _sliding_window_match(cumulative[search_offset:], normalized_end)
-        if match and match[2] >= ANCHOR_MATCH_THRESHOLD:
-            end_pos = search_offset + match[0] + len(normalized_end)
-        else:
-            # Estimate based on text length
-            estimated_len = int(len(normalize_for_matching(search_text)) * 1.1)
-            end_pos = min(start_pos + estimated_len, len(cumulative))
+    if end_pos != -1:
+        end_pos += len(normalized_end)
     else:
-        end_pos = end_pos + len(normalized_end)
+        match = _sliding_window_match(cumulative[search_offset:], normalized_end)
+        if not match or match[2] < ANCHOR_MATCH_THRESHOLD:
+            return _across_page_break(page, page_index, search_text, text_index, start_pos,
+                                      normalized_end, cache, following)
+        end_pos = search_offset + match[1]
 
     bboxes, texts = _get_spans_in_range(start_pos, end_pos, span_positions, spans)
     if not bboxes:
         return None
-    return _build_search_result(page_index, bboxes, texts, page)
+    return _build_search_result(page_index, bboxes, texts, page, cache)
+
+
+def _across_page_break(page, page_index: int, search_text: str, text_index, start_pos: int,
+                       normalized_end: str, cache: PageCache | None, following) -> dict | None:
+    """
+    A long quote that starts at ``start_pos`` on this page and ends on the next.
+
+    The part on this page is what the page holds of the quote's start; the
+    rest must then be on the next page, ending at the quote's end anchor and
+    reading like the rest of the quote. None when either does not hold.
+    """
+    upcoming = following() if following else None
+    if upcoming is None:
+        return None
+    next_page, (next_spans, next_cumulative, next_positions) = upcoming
+    spans, cumulative, span_positions = text_index
+
+    needle = normalize_for_matching(search_text)
+    here = _leading_overlap(needle, cumulative[start_pos:])
+    rest = needle[here:]
+    if here < ANCHOR_TARGET_LENGTH // 2 or len(rest) < 6 or not next_cumulative:
+        return None
+
+    # The end anchor, or all of the rest when less than an anchor is left.
+    key = normalized_end if len(rest) >= len(normalized_end) else rest
+    end_pos = next_cumulative.find(key)
+    if end_pos != -1:
+        end_pos += len(key)
+    elif key is rest:
+        return None
+    else:
+        match = _sliding_window_match(next_cumulative, key)
+        if not match or match[2] < ANCHOR_MATCH_THRESHOLD:
+            return None
+        end_pos = match[1]
+    begin = max(0, end_pos - len(rest))
+    if SequenceMatcher(None, rest, next_cumulative[begin:end_pos], autojunk=False).ratio() < ACROSS_PAGE_MIN_RATIO:
+        return None
+
+    bboxes, texts = _get_spans_in_range(start_pos, start_pos + here, span_positions, spans)
+    next_bboxes, next_texts = _get_spans_in_range(begin, end_pos, next_positions, next_spans)
+    if not bboxes or not next_bboxes:
+        return None
+    result = _build_search_result(page_index, bboxes, texts + next_texts, page, cache)
+    result["nextPageRects"] = _convert_rects_to_zotero(next_bboxes, next_page)
+    return result
+
+
+def _exact_index_match(search_text: str, text_index) -> tuple[list, list[str]] | None:
+    """Boxes and texts of ``search_text`` where the page's text index holds it exactly."""
+    spans, cumulative, span_positions = text_index
+    needle = normalize_for_matching(search_text)
+    if not spans or not needle:
+        return None
+    start = cumulative.find(needle)
+    if start == -1:
+        return None
+    bboxes, texts = _get_spans_in_range(start, start + len(needle), span_positions, spans)
+    return (bboxes, texts) if bboxes else None
 
 
 def _fuzzy_search_page(search_text: str, text_index) -> dict | None:
     """
-    Perform fuzzy text search on a PDF page.
+    The closest loose match for a text on a PDF page.
 
-    Handles cases where exact matching fails due to hyphenation,
-    whitespace differences, or character variations.
+    For text the exact strategies did not find: a typo, another spelling,
+    characters the PDF stores differently.
 
     Args:
         search_text: Text to search for
@@ -688,17 +842,6 @@ def _fuzzy_search_page(search_text: str, text_index) -> dict | None:
     if not spans or not normalized_search or not cumulative:
         return None
 
-    threshold = _get_dynamic_threshold(len(search_text))
-
-    # Try exact match first
-    match_start = cumulative.find(normalized_search)
-    if match_start != -1:
-        bboxes, texts = _get_spans_in_range(
-            match_start, match_start + len(normalized_search), span_positions, spans
-        )
-        if bboxes:
-            return {"rects": bboxes, "bboxes": bboxes, "matched_text": " ".join(texts), "score": 1.0}
-
     match = _sliding_window_match(cumulative, normalized_search)
     if match is None:
         return None
@@ -707,127 +850,66 @@ def _fuzzy_search_page(search_text: str, text_index) -> dict | None:
     if not bboxes:
         return None
     return {
-        "rects": bboxes if match_score >= threshold else [],
+        "rects": bboxes if match_score >= _get_dynamic_threshold(len(search_text)) else [],
         "bboxes": bboxes,
         "matched_text": " ".join(texts),
         "score": match_score,
     }
 
 
-def _first_occurrence_bboxes(search_rects: list, search_text: str, text_index) -> list | None:
+def _exact_search_page(page, page_index: int, search_text: str, cache: PageCache,
+                       following=None) -> dict | None:
     """
-    Boxes of one occurrence of search_text, when it occurs more than once on the page.
+    Find text on one page where it is written as given.
 
-    page.search_for returns the rects of every occurrence, with nothing to
-    tell where one ends and the next begins, so a quote that appears twice on
-    a page (a repeated table cell, a sentence from the abstract) would be
-    highlighted twice. This finds the occurrences in the page's text index
-    and keeps the one at search_for's first rect.
+    A long passage is found by both of its ends (see _anchor_based_search).
+    Anything else, and a long passage that did not answer that way, is looked
+    up in the page's text index, which ignores case and spacing and reads
+    across line-break hyphens, ligatures, and dash and quote variants. Of
+    several occurrences on the page the first is taken.
 
-    Args:
-        search_rects: Rects from page.search_for, in PyMuPDF page space
-        search_text: Text that was searched for
-        text_index: (spans, cumulative, span_positions) for the page
-
-    Returns:
-        Boxes of that occurrence in PyMuPDF page space, or None when the text
-        index has at most one occurrence (then all rects belong to it, e.g. a
-        quote over several lines)
+    PyMuPDF's own ``page.search_for`` is not used. It answered before the
+    index did, and on PyMuPDF 2.x it joins words hyphenated across lines and
+    then reports every hit after such a word a few characters to the left of
+    where it is, so most pages of a typeset paper gave highlights that began
+    and ended inside neighbouring words.
     """
-    spans, cumulative, span_positions = text_index
-    needle = normalize_for_matching(search_text)
-    if not needle:
-        return None
-    starts = [m.start() for m in re.finditer(re.escape(needle), cumulative)]
-    if len(starts) < 2:
-        return None
+    text_index = cache.text_index(page, page_index)
 
-    first = list(search_rects[0])
-    best = None
-    for start in starts:
-        bboxes, _ = _get_spans_in_range(start, start + len(needle), span_positions, spans)
-        if bboxes:
-            distance = _rect_distance(list(bboxes[0]), first)
-            if best is None or distance < best[0]:
-                best = (distance, bboxes)
-    return best[1] if best else None
-
-
-def _search_single_page(page, page_index: int, search_text: str, best_debug: dict) -> dict | None:
-    """
-    Search for text on a single PDF page using multiple strategies.
-
-    Strategy order:
-    1. Anchor-based matching (for long text)
-    2. Exact search via PyMuPDF
-    3. Fuzzy matching
-
-    The page's text index is built at most once, on first use, and shared by
-    the anchor and fuzzy strategies.
-
-    Args:
-        page: PyMuPDF page object
-        page_index: 0-indexed page number
-        search_text: Text to search for
-        best_debug: Dict to track best match for debug info (mutated)
-
-    Returns:
-        Search result dict if found, None otherwise
-    """
-    cached_index: list = []
-
-    def text_index():
-        if not cached_index:
-            spans = _extract_page_spans(page)
-            cumulative, span_positions = _build_normalized_text_index(spans)
-            cached_index.append((spans, cumulative, span_positions))
-        return cached_index[0]
-
-    # Strategy 1: Anchor-based matching for long passages
     if len(search_text) > ANCHOR_MIN_TEXT_LENGTH:
-        result = _anchor_based_search(page, page_index, search_text, text_index())
+        result = _anchor_based_search(page, page_index, search_text, text_index, cache, following)
         if result:
             return result
 
-    # Strategy 2: Exact search
-    text_instances = page.search_for(search_text)
-    if not text_instances:
-        # Try with normalized whitespace
-        text_instances = page.search_for(" ".join(search_text.split()))
-    if text_instances:
-        bboxes = list(text_instances)
-        if len(bboxes) > 1:
-            bboxes = _first_occurrence_bboxes(bboxes, search_text, text_index()) or bboxes
-        rects = _convert_rects_to_zotero(bboxes, page)
-        return {
-            "pageIndex": page_index,
-            "rects": rects,
-            "sort_index": _build_sort_index(page, page_index, rects),
-            "matched_text": search_text,
-        }
-
-    # Strategy 3: Fuzzy matching
-    fuzzy_result = _fuzzy_search_page(search_text, text_index())
-    if fuzzy_result:
-        score = fuzzy_result.get("score", 0)
-        if score > best_debug["score"]:
-            best_debug["match"] = fuzzy_result.get("matched_text")
-            best_debug["score"] = score
-            best_debug["page"] = page_index
-        best_debug.setdefault("candidates", []).append({
-            "page_index": page_index, "score": score,
-            "matched_text": fuzzy_result.get("matched_text", ""), "bboxes": fuzzy_result["bboxes"],
-        })
-        if fuzzy_result.get("rects"):
-            rects = _convert_rects_to_zotero(fuzzy_result["rects"], page)
-            return {
-                "pageIndex": page_index,
-                "rects": rects,
-                "sort_index": _build_sort_index(page, page_index, rects),
-                "matched_text": fuzzy_result["matched_text"],
-            }
-
+    found = _exact_index_match(search_text, text_index)
+    if found:
+        return _build_search_result(page_index, found[0], found[1], page, cache)
     return None
+
+
+def _fuzzy_search_single_page(page, page_index: int, search_text: str, best_debug: dict,
+                              cache: PageCache) -> dict | None:
+    """
+    The loose match for a text on one page, when it is close enough.
+
+    Every page's best match is noted in ``best_debug`` (mutated), close
+    enough or not, for the "nearest matches" a miss reports.
+    """
+    fuzzy_result = _fuzzy_search_page(search_text, cache.text_index(page, page_index))
+    if not fuzzy_result:
+        return None
+    score = fuzzy_result["score"]
+    if score > best_debug["score"]:
+        best_debug["match"] = fuzzy_result["matched_text"]
+        best_debug["score"] = score
+        best_debug["page"] = page_index
+    best_debug.setdefault("candidates", []).append({
+        "page_index": page_index, "score": score,
+        "matched_text": fuzzy_result["matched_text"], "bboxes": fuzzy_result["bboxes"],
+    })
+    if not fuzzy_result["rects"]:
+        return None
+    return _build_search_result(page_index, fuzzy_result["rects"], [fuzzy_result["matched_text"]], page, cache)
 
 
 # =============================================================================
@@ -876,24 +958,27 @@ def page_label(page, page_num: int) -> str:
     return str(page_num)
 
 
-def find_text_position(pdf, page_num: int, search_text: str) -> dict:
+def find_text_position(pdf, page_num: int, search_text: str, cache: PageCache | None = None) -> dict:
     """
     Search for text in a PDF and return position data for Zotero annotation.
 
     Searches the specified page first, then DEFAULT_NEIGHBOR_PAGES pages on
-    either side. Uses anchor-based, exact and fuzzy matching to handle
-    PDF text extraction issues.
+    either side. Every one of those pages is tried for the text as written
+    before any is tried for a loose match, so a near miss on the page given
+    never wins over the text itself one page on.
 
     Args:
         pdf: Path to the PDF file, or an open PyMuPDF document
         page_num: 1-indexed page number to search on
         search_text: Text to find
+        cache: A PageCache for this document, to share between calls
 
     Returns:
         On success:
             {
                 "pageIndex": int,  # 0-indexed page where found
                 "rects": [[x1, y1, x2, y2], ...],  # Bounding boxes
+                "nextPageRects": [...],  # only for a quote that runs on to the next page
                 "sort_index": str,  # For annotation ordering
                 "matched_text": str,  # Actual matched text
             }
@@ -907,6 +992,7 @@ def find_text_position(pdf, page_num: int, search_text: str) -> dict:
                 "pages_searched": [int, ...],  # Pages that were searched
             }
     """
+    cache = cache if cache is not None else PageCache()
     with open_pdf(pdf) as doc:
         error = page_range_error(doc, page_num)
         if error:
@@ -921,9 +1007,19 @@ def find_text_position(pdf, page_num: int, search_text: str) -> dict:
             if target_index + offset < total_pages:
                 pages_to_search.append(target_index + offset)
 
+        for page_index in pages_to_search:
+            def following(index=page_index + 1):
+                if index >= total_pages:
+                    return None
+                return doc[index], cache.text_index(doc[index], index)
+
+            result = _exact_search_page(doc[page_index], page_index, search_text, cache, following)
+            if result:
+                return result
+
         best_debug = {"match": None, "score": 0.0, "page": None, "candidates": []}
         for page_index in pages_to_search:
-            result = _search_single_page(doc[page_index], page_index, search_text, best_debug)
+            result = _fuzzy_search_single_page(doc[page_index], page_index, search_text, best_debug, cache)
             if result:
                 return result
 
@@ -990,6 +1086,11 @@ def get_page_label(pdf, page_num: int) -> str:
         return str(page_num)
 
 
+#: Share of a rect's height left out at the top and at the bottom when its
+#: text is read back (see text_in_rects).
+_TEXT_BAND_INSET = 0.3
+
+
 def text_in_rects(pdf, page_index: int, rects: list[list[float]]) -> str:
     """
     Readable text inside annotation rects, as a person would see it highlighted.
@@ -998,6 +1099,10 @@ def text_in_rects(pdf, page_index: int, rects: list[list[float]]) -> str:
     ``matched_text`` runs words together ("theTransformeristhe..."). This reads
     the page again under each final rect, with normal spacing and ligatures
     expanded, which is what a preview should show.
+
+    Only the middle of each rect's height is read. The boxes PyMuPDF reports
+    for neighbouring lines overlap in many fonts, and a rect read at its full
+    height then returns pieces of the lines above and below as well.
 
     Args:
         pdf: Path to the PDF file, or an open PyMuPDF document
@@ -1015,25 +1120,32 @@ def text_in_rects(pdf, page_index: int, rects: list[list[float]]) -> str:
         for x0, y0, x1, y1 in rects:
             box = fitz.Rect(x0, y0, x1, y1) * to_page
             box.normalize()
+            inset = box.height * _TEXT_BAND_INSET
+            box.y0 += inset
+            box.y1 -= inset
             parts.append(page.get_textbox(box))
         return normalize_text(" ".join(parts))
 
 
-def build_annotation_position(page_index: int, rects: list[list[float]]) -> str:
+def build_annotation_position(page_index: int, rects: list[list[float]],
+                              next_page_rects: list[list[float]] | None = None) -> str:
     """
     Build the annotationPosition JSON string for Zotero.
 
     Args:
         page_index: 0-indexed page number
         rects: List of [x1, y1, x2, y2] bounding boxes
+        next_page_rects: Boxes on the following page, for a highlight that
+            runs across a page break (Zotero's ``nextPageRects``)
 
     Returns:
         JSON string for Zotero's annotationPosition field
     """
-    return json.dumps({
-        "pageIndex": page_index,
-        "rects": rects,
-    })
+    position = {"pageIndex": page_index, "rects": rects}
+    if next_page_rects:
+        position["nextPageRects"] = next_page_rects
+    return json.dumps(position)
+
 
 def build_area_position_data(
     pdf,
@@ -1042,6 +1154,7 @@ def build_area_position_data(
     y: float,
     width: float,
     height: float,
+    cache: PageCache | None = None,
 ) -> dict:
     """
     Build Zotero position data for an area/image annotation on a PDF page.
@@ -1070,7 +1183,7 @@ def build_area_position_data(
         return {
             "pageIndex": target_index,
             "rects": rects,
-            "sort_index": _build_sort_index(page, target_index, rects),
+            "sort_index": _build_sort_index(page, target_index, rects, cache),
         }
 
 
@@ -1078,7 +1191,8 @@ def build_area_position_data(
 NOTE_SIZE = 22
 
 
-def build_note_position_data(pdf, page_num: int, x: float, y: float) -> dict:
+def build_note_position_data(pdf, page_num: int, x: float, y: float,
+                             cache: PageCache | None = None) -> dict:
     """
     Build Zotero position data for a sticky note centered on a page point.
 
@@ -1105,7 +1219,7 @@ def build_note_position_data(pdf, page_num: int, x: float, y: float) -> dict:
         return {
             "pageIndex": target_index,
             "rects": [rect],
-            "sort_index": _build_sort_index(page, target_index, [rect]),
+            "sort_index": _build_sort_index(page, target_index, [rect], cache),
         }
 
 

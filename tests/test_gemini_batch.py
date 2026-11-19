@@ -145,13 +145,13 @@ def test_resolve_gemini_batch_enabled_reads_config(tmp_path, monkeypatch):
     search = semantic_search.ZoteroSemanticSearch(
         chroma_client=FakeChromaClient(), config_path=str(config_path)
     )
-    assert search._resolve_gemini_batch_enabled(None) is True
-    assert search._resolve_gemini_batch_enabled(False) is False
+    assert search._resolve_batch_enabled("gemini", None) is True
+    assert search._resolve_batch_enabled("gemini", False) is False
 
     non_gemini = semantic_search.ZoteroSemanticSearch(
         chroma_client=FakeChromaClient(embedding_model="openai"), config_path=str(config_path)
     )
-    assert non_gemini._resolve_gemini_batch_enabled(True) is False
+    assert non_gemini._resolve_batch_enabled("gemini", True) is False
 
 
 def test_import_gemini_batch_evicts_fulltext_cache_only_for_succeeded_ids(tmp_path, monkeypatch):
@@ -208,7 +208,7 @@ def test_import_gemini_batch_evicts_fulltext_cache_only_for_succeeded_ids(tmp_pa
     chroma_client = ImportChromaClient()
     search = semantic_search.ZoteroSemanticSearch(chroma_client=chroma_client)
 
-    stats = search.import_gemini_batch()
+    stats = search._import_batch("gemini")
 
     assert chroma_client.upserted == {"ids": ["A"]}
     assert stats["imported_items"] == 1

@@ -73,6 +73,23 @@ def test_windows_warns_about_a_non_ascii_index_path(monkeypatch, caplog, tmp_pat
     assert ("persist_directory" in caplog.text) is warns
 
 
+def test_a_relative_index_directory_can_be_searched_and_updated(monkeypatch, tmp_path):
+    """A relative ``persist_directory`` opened, then failed every search and
+    update with "relative path can't be expressed as a file URI"."""
+    chroma_client = pytest.importorskip("zotero_mcp.chroma_client")
+    monkeypatch.chdir(tmp_path)
+
+    assert resolve_chroma_dir("idx") == Path.cwd() / "idx"
+
+    client = chroma_client.ChromaClient(collection_name="relative_test", persist_directory="idx")
+    client.upsert_embeddings(["text"], [{"item_key": "A"}], ["A"], [[1.0, 0.0]])
+
+    assert (tmp_path / "idx" / "chroma.sqlite3").exists()
+    assert client.index_layout()["article_records"] == 1   # what every search reads first
+    assert client.item_keys_by_level() == ({"A"}, set())   # and every update
+    assert client.get_existing_ids(["A"]) == {"A"}
+
+
 def _run_wizard(monkeypatch, answers, existing=None):
     it = iter(answers)
     monkeypatch.setattr(builtins, "input", lambda *args: next(it))

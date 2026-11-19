@@ -290,7 +290,8 @@ def test_export_bibliography_bibtex_fenced(monkeypatch):
 
 
 def test_export_bibliography_bibtex_from_parsed_database(monkeypatch):
-    """pyzotero parses format=bibtex into a bibtexparser BibDatabase.
+    """pyzotero parses format=bibtex with bibtexparser (a 1.x BibDatabase,
+    a 2.x Library from pyzotero 1.17).
 
     The stub above returns raw bytes, but the real client hands back the
     parsed database, which used to crash with "'BibDatabase' object is not
@@ -298,10 +299,12 @@ def test_export_bibliography_bibtex_from_parsed_database(monkeypatch):
     """
     import bibtexparser
 
+    parse = getattr(bibtexparser, "parse_string", None) or bibtexparser.loads
+
     class _ParsedBibZotero(_BibZotero):
         def _render(self, kwargs):
             if kwargs.get("format") == "bibtex":
-                return bibtexparser.loads(
+                return parse(
                     "@inproceedings{yan2023, title={FPDM}, booktitle={ICCV}}\n"
                     "@article{smith2020, title={Title}, author={Smith, J.}}\n"
                 )

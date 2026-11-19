@@ -9,6 +9,8 @@ between the SQL backend and the existing pyzotero-based path.
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 import _search_corpus
 from zotero_mcp.local_db import LocalZoteroReader
 
@@ -933,3 +935,40 @@ def test_advanced_search_sql_leaves_ordering_on_other_fields_to_the_fallback(tmp
         assert _adv(reader, {"field": "publisher", "operation": "is", "value": "springer"}) is not None
     finally:
         reader.close()
+
+
+# ---------------------------------------------------------------------------
+# Multi-word keyword search: every word matches somewhere, as in Zotero's
+# quick search; the whole query used to be one substring, so "Smith 2018"
+# (the shape the tool description recommends) found nothing.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("query", [
+    "Smith 2018",             # surname + year
+    "Smith Alex",             # name in the other order
+    "Smith, Alex",            # with the comma a citation has
+    "Classical Smith",        # title word + surname
+    "Review Classical",       # title words out of order
+    '"Literature Review" Smith',  # a quoted phrase is one term
+])
+def test_search_items_sql_matches_words_across_fields(tmp_path, query):
+    reader = _reader(tmp_path)
+    try:
+        results = reader.search_items_sql(query, group_id=0)
+    finally:
+        reader.close()
+    assert {r["key"] for r in results} == {"PERS0002"}
+
+
+@pytest.mark.parametrize("query", [
+    "Smith 2019",               # every word must match
+    '"Review Literature"',      # a phrase keeps its order
+    "05",                       # not a year: the stored date's month is not searched
+])
+def test_search_items_sql_requires_every_word(tmp_path, query):
+    reader = _reader(tmp_path)
+    try:
+        results = reader.search_items_sql(query, group_id=0)
+    finally:
+        reader.close()
+    assert results == []

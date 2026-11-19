@@ -21,7 +21,7 @@ from zotero_mcp.cli_standalone import (
     cmd_get,
     cmd_search,
 )
-from zotero_mcp.tools.retrieval import _format_children_detailed
+from zotero_mcp.tools.retrieval import _format_children_detailed, get_item_metadata
 
 
 def _raw(key, item_type="journalArticle", title="A Paper", **fields):
@@ -33,6 +33,25 @@ def _raw(key, item_type="journalArticle", title="A Paper", **fields):
     }
     data.update(fields)
     return {"key": key, "data": data, "meta": {}}
+
+
+_SIGNED_PDF = "https://download.example.test/paper.pdf?X-Amz-Security-Token=placeholder&edition=1"
+
+
+@pytest.fixture
+def signed_attachment(monkeypatch):
+    attachment = _raw(
+        "ATTACH01", item_type="attachment", title="A PDF",
+        url=_SIGNED_PDF, contentType="application/pdf", filename="paper.pdf", parentItem="PAPER001",
+    )
+    items = {"PAPER001": _raw("PAPER001"), "ATTACH01": attachment}
+    backend = MagicMock()
+    backend.get_item.side_effect = items.get
+    backend.get_items.side_effect = lambda keys: {key: items[key] for key in keys}
+    backend.get_children.return_value = {"PAPER001": [attachment]}
+    monkeypatch.setattr("zotero_mcp.library.get_library_backend", lambda: backend)
+    monkeypatch.setattr("zotero_mcp.cli_standalone.setup_zotero_environment", lambda: None)
+    return attachment
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +111,30 @@ class TestProjection:
         got = cli_json.project_item(_raw("ITEM0001"), "full")
         assert got["abstract"] == "An abstract."
         assert got["raw"]["itemType"] == "journalArticle"
+
+    @pytest.mark.parametrize("query", [
+        "X-Amz-Security-Token=placeholder",
+        "x-amz-%53ignature=placeholder",
+        "AWSAccessKeyId=placeholder&Signature=placeholder",
+        "X-Goog-Signature=placeholder",
+        "Signature=placeholder&Key-Pair-Id=placeholder",
+        "sv=2023-05-24&sig=placeholder",
+    ])
+    def test_full_attachment_projection_omits_signed_urls(self, query):
+        url = f"https://download.example.test/paper.pdf?{query}"
+        raw = _raw("ATTACH01", item_type="attachment", url=url)
+        projected = cli_json.project_item(raw, "full")
+        assert "url" not in projected
+        assert "url" not in projected["raw"]
+        assert raw["data"]["url"] == url
+
+    @pytest.mark.parametrize(("item_type", "url"), [
+        ("attachment", "https://publisher.example.test/read?id=1&signature=publisher"),
+        ("journalArticle", _SIGNED_PDF),
+    ])
+    def test_full_projection_keeps_other_urls_verbatim(self, item_type, url):
+        projected = cli_json.project_item(_raw("ABCD1234", item_type=item_type, url=url), "full")
+        assert projected["url"] == projected["raw"]["url"] == url
 
     def test_every_level_identifies_the_item(self):
         for detail in ("keys_only", "summary", "full"):
@@ -375,6 +418,38 @@ class TestSearchCommand:
 
 
 class TestGetCommand:
+    def test_json_children_omits_signed_url_and_identifies_attachment(self, signed_attachment, capsys):
+        args = build_parser().parse_args(["--json", "get", "children", "PAPER001"])
+        cmd_get(args)
+
+        captured = capsys.readouterr()
+        assert _SIGNED_PDF not in captured.out + captured.err
+        record, = json.loads(captured.out)["data"]["items"]
+        assert record["key"] == "ATTACH01"
+        assert record["title"] == "A PDF"
+        assert record["contentType"] == "application/pdf"
+        assert record["filename"] == "paper.pdf"
+        assert "url" not in record
+        assert signed_attachment["data"]["url"] == _SIGNED_PDF
+
+    def test_json_metadata_omits_signed_attachment_url(self, signed_attachment, capsys):
+        args = build_parser().parse_args(["--json", "get", "metadata", "ATTACH01"])
+        cmd_get(args)
+
+        captured = capsys.readouterr()
+        assert _SIGNED_PDF not in captured.out + captured.err
+        payload = json.loads(captured.out)
+        assert payload["ok"] is True
+        assert payload["data"]["data"]["filename"] == signed_attachment["data"]["filename"]
+        assert "url" not in payload["data"]["data"]
+        assert signed_attachment["data"]["url"] == _SIGNED_PDF
+
+    def test_mcp_markdown_metadata_omits_signed_attachment_url(self, signed_attachment):
+        result = get_item_metadata("ATTACH01", ctx=DummyContext())
+        assert "**Item Key:** ATTACH01" in result
+        assert "**URL:**" not in result
+        assert signed_attachment["data"]["url"] == _SIGNED_PDF
+
     def test_metadata_returns_the_raw_record(self, capsys):
         args = _args(subcommand="metadata", item_key="ABCD1234",
                      no_abstract=False, output_format="markdown")
@@ -592,3 +667,23 @@ class TestLibraryScope:
         self._run(argv)
 
         assert opened and set(opened) == {("6626192", "group")}
+
+
+@pytest.mark.parametrize("argv", [
+    ["--json", "get", "metadata", "ABCD1234"],
+    ["get", "--json", "metadata", "ABCD1234"],
+    ["get", "metadata", "ABCD1234", "--json"],
+    ["annotations", "list", "--item-key", "ABCD1234", "--json"],
+    ["notes", "list", "--item-key", "ABCD1234", "--json"],
+    ["add", "doi", "10.1/x", "--json"],
+    ["db", "status", "--json"],
+])
+def test_json_flag_is_accepted_anywhere_on_the_line(argv):
+    """Agents put --json last; a nested subcommand used to reject it there."""
+    assert build_parser().parse_args(argv).json_out is True
+
+
+def test_csl_json_keeps_its_own_json_option():
+    args = build_parser().parse_args(["--json", "add", "csl-json", "--json", '{"title": "T"}'])
+    assert args.json_out is True
+    assert args.json == '{"title": "T"}'

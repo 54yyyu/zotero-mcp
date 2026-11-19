@@ -73,8 +73,9 @@ def _fulltext_section_heading(
     description=(
         "Metadata for ONE item by its 8-character key (not a DOI or title): "
         "title, creators, date, DOI, tags, abstract, URL, collections (as "
-        "keys). format: 'markdown' (default), 'json' (the raw Zotero record) "
-        "or 'bibtex'. include_abstract=False shortens markdown output. "
+        "keys). format: 'markdown' (default), 'json' (the Zotero record) "
+        "or 'bibtex'. Signed attachment URLs are omitted. "
+        "include_abstract=False shortens markdown output. "
         "Trashed items are returned too, marked In Trash. To read the paper "
         "use zotero_get_item_fulltext; to find items, the search tools."
     )
@@ -94,7 +95,7 @@ def get_item_metadata(
         item_key: Zotero item key/ID
         include_abstract: Whether to include the abstract in the output (markdown format only)
         format: Output format - 'markdown' for a readable summary, 'json' for
-            the complete raw Zotero item, or 'bibtex' for BibTeX citation
+            the Zotero record with signed attachment URLs omitted, or 'bibtex'
         ctx: MCP context
 
     Returns:
@@ -114,6 +115,8 @@ def get_item_metadata(
             return f"No item found with key: {item_key}"
 
         if format == "json":
+            if isinstance(data := item.get("data"), dict):
+                item = {**item, "data": _utils.redact_signed_attachment_url(data)}
             return json.dumps(item, ensure_ascii=False, indent=2, sort_keys=True)
         if format == "bibtex":
             return _client.generate_bibtex(item)
@@ -389,7 +392,6 @@ def get_collections(
             c["key"] for c in collections
             if c.get("key") and c.get("data", {}).get("deleted")
         }
-        collections = collections[:limit]
 
         # Always return the header, even if empty
         output = ["# Zotero Collections", ""]
@@ -437,9 +439,11 @@ def get_collections(
         # Start with top-level collections (those with None as parent)
         top_level_keys = hierarchy.get(None, [])
 
+        first_line = len(output)
         if not top_level_keys:
             # If no clear hierarchy, just list all collections
             output.append("Collections (flat list):")
+            first_line += 1
             for coll in sorted(collections, key=lambda x: x["data"].get("name", "")):
                 name = coll["data"].get("name", "Unnamed Collection")
                 key = coll["key"]
@@ -450,6 +454,17 @@ def get_collections(
             for key in sorted(top_level_keys):
                 output.extend(format_collection(key))
 
+        # The limit caps the lines shown, not the collections the tree is
+        # built from: cutting the list first dropped every subcollection whose
+        # parent fell past the cut, and nothing said the listing was partial.
+        listed = len(output) - first_line
+        if listed > limit:
+            del output[first_line + limit:]
+            output.append(
+                f"\n*Showing {limit} of {listed} collections. Pass a higher limit "
+                f"(up to 5000), or find one by name with zotero_search_collections.*"
+            )
+
         return "\n".join(output)
 
     except Exception as e:
@@ -458,32 +473,6 @@ def get_collections(
         return f"# Zotero Collections\n\n{error_msg}"
 
 
-# Item types that are normally children of a parent metadata item.
-_CHILD_ITEM_TYPES = {"attachment", "note", "annotation"}
-
-
-def _is_standalone_attachment(data: dict) -> bool:
-    """True for a file dragged into Zotero with no parent metadata item.
-
-    Such an attachment is itself a top-level item, not a child (#224).
-    """
-    return data.get("itemType") == "attachment" and not data.get("parentItem")
-
-
-def _is_top_level_item(item: dict) -> bool:
-    """Whether an item should be listed as a top-level entry in a collection.
-
-    Keeps real parent items and standalone attachments; excludes children
-    that hang off a parent. Standalone notes are excluded too — they carry
-    no useful title and are out of scope for the collection listing.
-    """
-    data = item.get("data", {})
-    if data.get("itemType", "") not in _CHILD_ITEM_TYPES:
-        return True
-    return _is_standalone_attachment(data)
-
-
-@with_zotero_api_lock
 def _build_attachment_extra(info):
     """Build extra_fields dict from attachment_info for format_item_result."""
     if not info:
@@ -559,49 +548,36 @@ def get_collection_items(
         limit = _helpers._normalize_limit(limit, default=50, max_val=1000)
         offset = _helpers._normalize_offset(offset)
 
-        # Fetch all items (includes children mixed in with parents). The
-        # subtree is resolved by the backend, which de-duplicates an item
-        # filed in several of its collections.
-        all_items = backend.collection_items(
-            collection_key, include_subcollections=include_subcollections
-        ) or []
-        if not all_items:
+        # One page of top-level entries, their children, and the count of
+        # entries. The subtree is resolved by the backend, which de-duplicates
+        # an item filed in several of its collections.
+        page = backend.collection_page(
+            collection_key, limit=limit, offset=offset,
+            include_subcollections=include_subcollections,
+        )
+        display_items, children, total_items = page or ([], [], 0)
+        if not total_items:
             scope_note = " or its subcollections" if include_subcollections else ""
             return (
                 f"No items found in collection: {collection_name} "
                 f"(Key: {collection_key}){scope_note}"
             )
 
-        # Build attachment/note summary from already-fetched children (zero extra API calls)
+        # Attachment/note summary per shown entry, from its children.
         attachment_info = {}
-        for item in all_items:
-            data = item.get("data", {})
-            item_type = data.get("itemType", "")
-            parent_key = data.get("parentItem", "")
-            if not parent_key:
-                continue
-            if parent_key not in attachment_info:
-                attachment_info[parent_key] = {
-                    "has_pdf": False, "attachment_count": 0, "has_notes": False
-                }
-            if item_type == "attachment":
-                attachment_info[parent_key]["attachment_count"] += 1
+        for child in children:
+            data = child.get("data", {})
+            info = attachment_info.setdefault(
+                data.get("parentItem", ""),
+                {"has_pdf": False, "attachment_count": 0, "has_notes": False},
+            )
+            if data.get("itemType") == "attachment":
+                info["attachment_count"] += 1
                 if data.get("contentType", "") == "application/pdf":
-                    attachment_info[parent_key]["has_pdf"] = True
-            elif item_type == "note":
-                attachment_info[parent_key]["has_notes"] = True
+                    info["has_pdf"] = True
+            elif data.get("itemType") == "note":
+                info["has_notes"] = True
 
-        # Keep top-level items only. Previously this dropped every attachment,
-        # which made standalone PDFs (no parent metadata item) vanish from the
-        # collection entirely (#224); _is_top_level_item now keeps those.
-        parent_items = [item for item in all_items if _is_top_level_item(item)]
-
-        if not parent_items:
-            return f"No items found in collection: {collection_name} (Key: {collection_key})"
-
-        # Apply the display window after filtering.
-        total_items = len(parent_items)
-        display_items = parent_items[offset:offset + limit] if limit else parent_items[offset:]
         shown_from = offset + 1 if display_items else offset
         shown_to = offset + len(display_items)
         has_more = shown_to < total_items
@@ -622,15 +598,14 @@ def get_collection_items(
             # A standalone attachment is its own PDF — surface the PDF indicator
             # across all detail levels, just like a parent item's child PDF.
             if (
-                _is_standalone_attachment(data)
+                _library.is_standalone_attachment(data)
                 and data.get("contentType") == "application/pdf"
             ):
                 info = {**info, "has_pdf": True}
 
             if detail == "keys_only":
-                # Standalone attachments have no title — fall back to filename.
-                title = data.get("title") or data.get("filename") or "Untitled"
-                date = data.get("date", "")
+                title = _utils.item_display_title(data)
+                date = _utils.item_display_date(data)
                 flags = []
                 if info.get("has_pdf"):
                     flags.append("PDF")
@@ -682,7 +657,7 @@ def _format_children_detailed(backend, key: str, ctx: Context) -> str:
     # First get the parent item details
     parent = backend.get_item(key)
     parent_title = (
-        parent["data"].get("title", "Untitled Item") if parent else f"Item {key}"
+_utils.item_display_title(parent["data"]) if parent else f"Item {key}"
     )
 
     # Then get the children
@@ -714,7 +689,7 @@ def _format_children_detailed(backend, key: str, ctx: Context) -> str:
         output.append("## Attachments")
         for i, att in enumerate(attachments, 1):
             data = att.get("data", {})
-            title = data.get("title", "Untitled")
+            title = _utils.item_display_title(data)
             att_key = att.get("key", "")
             content_type = data.get("contentType", "Unknown")
             filename = data.get("filename", "")
@@ -753,7 +728,7 @@ def _format_children_detailed(backend, key: str, ctx: Context) -> str:
         output.append("## Other Items")
         for i, other in enumerate(others, 1):
             data = other.get("data", {})
-            title = data.get("title", "Untitled")
+            title = _utils.item_display_title(data)
             other_key = other.get("key", "")
             item_type = data.get("itemType", "unknown")
 
@@ -779,7 +754,7 @@ def _format_children_grouped(backend, keys: list[str], ctx: Context) -> str:
         ctx.warning(f"Batch parent lookup failed: {e}")
         parents = {}
     parent_titles = {
-        k: parents[k].get("data", {}).get("title", "Untitled") if k in parents else f"(key: {k})"
+k: _utils.item_display_title(parents[k].get("data", {})) if k in parents else f"(key: {k})"
         for k in keys
     }
 
@@ -1505,7 +1480,7 @@ def get_item_related(
             return f"Error: Item '{item_key}' not found."
 
         data = item.get("data", {})
-        item_title = data.get("title", "Untitled")
+        item_title = _utils.item_display_title(data)
         relations = data.get("relations", {})
 
         if not isinstance(relations, dict) or not relations:
@@ -1560,9 +1535,9 @@ def get_item_related(
                     if rel_item is None:
                         raise KeyError(f"item {rel_key} is not in this library")
                     rel_data = rel_item.get("data", {})
-                    rel_title = rel_data.get("title", "Untitled")
+                    rel_title = _utils.item_display_title(rel_data)
                     rel_type_name = rel_data.get("itemType", "unknown")
-                    rel_date = rel_data.get("date", "")
+                    rel_date = _utils.item_display_date(rel_data)
                     rel_creator = ""
                     if rel_data.get("creators"):
                         first_creator = rel_data["creators"][0]

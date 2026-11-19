@@ -67,7 +67,7 @@ def make_zotero_db(path, keys):
     conn.execute(
         "CREATE TABLE itemNotes (itemID INT, parentItemID INT, note TEXT)"
     )
-    conn.execute("CREATE TABLE itemCreators (itemID INT, creatorID INT)")
+    conn.execute("CREATE TABLE itemCreators (itemID INT, creatorID INT, orderIndex INT)")
     conn.execute(
         "CREATE TABLE creators (creatorID INTEGER PRIMARY KEY, "
         "firstName TEXT, lastName TEXT)"
@@ -345,3 +345,58 @@ def test_retry_does_not_prune_item_with_remaining_failure(tmp_path, monkeypatch)
     saved = _retry_run(tmp_path, monkeypatch, chroma, passages=3)
     assert chroma.pruned == []
     assert saved["semantic_search"]["last_sync_version"] == 10
+
+
+class CountingRetryChroma(RecordingChroma):
+    def __init__(self, bad_ids=()):
+        super().__init__(bad_ids)
+        self.upsert_sizes = []
+
+    def upsert_documents(self, documents, metadatas, ids):
+        self.upsert_sizes.append(len(ids))
+        super().upsert_documents(documents, metadatas, ids)
+
+
+def test_retry_writes_failed_documents_a_batch_at_a_time(tmp_path, monkeypatch):
+    """One request per failed document was 120 embedding requests here."""
+    chroma = CountingRetryChroma()
+    saved = _retry_run(tmp_path, monkeypatch, chroma, passages=120)
+    assert chroma.upsert_sizes == [50, 50, 20]
+    assert len(chroma.upserted) == 120
+    assert chroma.pruned == [("AAAA1111", 120)]
+    assert saved["semantic_search"]["last_sync_version"] == 12
+
+
+def test_a_batch_that_fails_again_is_retried_one_document_at_a_time(tmp_path, monkeypatch):
+    chroma = CountingRetryChroma(bad_ids={"AAAA1111#60"})
+    saved = _retry_run(tmp_path, monkeypatch, chroma, passages=120)
+    # The second batch holds the bad document: its other 49 are still written.
+    assert chroma.upsert_sizes == [50, 50, 20] + [1] * 50
+    assert sorted(chroma.upserted) == sorted(f"AAAA1111#{i}" for i in range(120) if i != 60)
+    assert chroma.pruned == []
+    assert saved["semantic_search"]["last_sync_version"] == 10
+
+
+def test_a_full_text_scan_lists_the_library_once(tmp_path, monkeypatch):
+    """The snapshot check and the deletion pass each listed every item key."""
+    db = tmp_path / "zotero.sqlite"
+    make_zotero_db(db, ["AAAA1111"])
+    config = tmp_path / "config.json"
+    _write_config(config, last_sync_version=10)
+    zotero = FakeVersionsZotero({"AAAA1111": 5}, library_version=12)
+    listings = []
+    real = zotero.item_versions
+    zotero.item_versions = lambda **kwargs: (listings.append(kwargs), real(**kwargs))[1]
+    s = make_search(db, zotero, config_path=config)
+    seen = []
+    monkeypatch.setattr(s, "_get_items_from_source", lambda **kw: [])
+    monkeypatch.setattr(
+        s, "_run_deletion_pass", lambda stats, keys, allow: seen.append(keys)
+    )
+
+    s.update_database(extract_fulltext=True, include_fulltext=False)
+
+    assert seen == [{"AAAA1111"}]
+    assert len([k for k in listings if "since" not in k]) == 1
+    # The next run lists again: nothing is kept between runs.
+    assert s._library_keys_seen is None

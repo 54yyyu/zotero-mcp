@@ -48,12 +48,16 @@ async function main(ctx) {
   p.pw.close();
   await ctx.sleep(500);
 
-  // 3. with a panel open (it read the catalog), the pane shows the agent's options at once
+  // 3. with a panel open and its agent up (whose session says what it offers), the pane shows the agent's options at once
   await ctx.resize(1280, 900);
   injected.show();
   const panelRoot = await ctx.waitFor(() => win.document.getElementById("zmc-root")?.shadowRoot?.querySelector("textarea") && win.document.getElementById("zmc-root").shadowRoot, "panel rendered");
   const bundle = plugin.panel().bundle;
-  await ctx.waitFor(() => bundle.knownCatalog("claude-code"), "the panel read its agent's catalog", 30000);
+  // Opening the panel starts no agent just to read its options: they come from the chat's own session (or from what an
+  // earlier run kept). The composer taking the focus starts that session. The harness window is never the OS's active one, so
+  // focus() fires no event there: the event a click makes is sent.
+  panelRoot.querySelector("textarea.cin").dispatchEvent(new win.FocusEvent("focus"));
+  await ctx.waitFor(() => bundle.knownCatalog("claude-code"), "the chat's session said what its agent offers", 30000);
   p = await openPane();
   const agentCard2 = () => p.$$("section.sec").find((s) => /agent/i.test(s.getAttribute("aria-label")));
   await ctx.waitFor(() => agentCard2().querySelectorAll("select").length >= 1 && agentCard2().querySelectorAll(".radio").length > 3, "the model and permissions from the known catalog");

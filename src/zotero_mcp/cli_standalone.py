@@ -295,7 +295,28 @@ def cmd_config(args):
         print(f"  {k}={v}")
 
 
+def _json_flag(args, command: str, flag: str, raw):
+    """A flag's JSON value, or a usage error naming the flag.
+
+    Called before the tools are imported: a typo in the JSON should not cost
+    the third of a second that takes, and it is the caller's mistake, so it
+    is reported like every other usage error (:func:`_fail`).
+    """
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        _fail(args, command, f"invalid JSON in {flag}: {e}", "bad_json")
+
+
 def cmd_search(args):
+    conditions = filters = None
+    if args.mode == "advanced":
+        if not args.conditions:
+            _fail(args, "search", "--mode advanced needs --conditions (a JSON list)", "bad_args")
+        conditions = _json_flag(args, "search", "--conditions", args.conditions)
+    elif args.mode == "semantic" and getattr(args, "filters", None):
+        filters = _json_flag(args, "search", "--filters", args.filters)
+
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
     ctx = _ctx(args)
@@ -308,11 +329,6 @@ def cmd_search(args):
     elif args.mode == "citekey":
         result = search_mod.search_by_citation_key(citekey=args.query, ctx=ctx)
     elif args.mode == "advanced":
-        try:
-            conditions = json.loads(args.conditions)
-        except json.JSONDecodeError as e:
-            print(f"Error: invalid JSON in --conditions: {e}", file=sys.stderr)
-            sys.exit(1)
         result = search_mod.advanced_search(
             conditions=conditions, join_mode=args.join_mode,
             sort_by=args.sort_by, sort_direction=args.sort_direction,
@@ -320,13 +336,6 @@ def cmd_search(args):
             search_all_libraries=getattr(args, "all_libraries", False), ctx=ctx,
         )
     elif args.mode == "semantic":
-        filters = None
-        if getattr(args, "filters", None):
-            try:
-                filters = json.loads(args.filters)
-            except json.JSONDecodeError as e:
-                print(f"Error: invalid JSON in --filters: {e}", file=sys.stderr)
-                sys.exit(1)
         result = search_mod.semantic_search(
             query=args.query, limit=args.limit, filters=filters,
             search_all_libraries=getattr(args, "all_libraries", False),
@@ -365,9 +374,7 @@ def cmd_get(args):
     json_mode = _json_mode(args)
 
     if sub == "metadata":
-        # In JSON mode the raw Zotero record is strictly better than a
-        # projection: the caller asked for one specific item, so there is
-        # nothing to trim for size and no reason to hide a field.
+        # For a single item, use the metadata tool's structured Zotero record.
         fmt = "json" if (json_mode and args.output_format == "markdown") else args.output_format
         result = retrieval.get_item_metadata(
             item_key=args.item_key, include_abstract=not args.no_abstract,
@@ -799,6 +806,13 @@ def cmd_layout(args):
 
 
 def cmd_notes(args):
+    new_note_text = None
+    if args.subcommand == "create":
+        new_note_text = sys.stdin.read() if args.text == "-" else (args.text or "")
+        if not new_note_text:
+            _fail(args, "notes create",
+                  "provide note text via --text TEXT or --text - (reads stdin)", "bad_args")
+
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
     ctx = _ctx(args)
@@ -829,15 +843,10 @@ def cmd_notes(args):
             return
         print(result)
     elif args.subcommand == "create":
-        note_text = sys.stdin.read() if args.text == "-" else (args.text or "")
-        if not note_text:
-            print("Error: provide note text via --text TEXT or --text - (reads stdin)",
-                  file=sys.stderr)
-            sys.exit(1)
         tags = _split_tags(args.tags) or []
         _out(args, "notes create", text=annotations.create_note(
             item_key=args.item_key, note_title=args.title or "CLI Note",
-            note_text=note_text, tags=tags, ctx=ctx,
+            note_text=new_note_text, tags=tags, ctx=ctx,
         ))
     elif args.subcommand == "update":
         note_text = sys.stdin.read() if args.text == "-" else args.text
@@ -1065,24 +1074,6 @@ def cmd_collections(args):
         sys.exit(1)
 
 
-def cmd_tags(args):
-    # Deprecated in 0.15.2, removal in 0.17: `batch` does the same with --add-tags/--remove-tags.
-    print("zotero-cli tags is deprecated and will be removed in 0.17; use: "
-          "zotero-cli batch --add-tags ... --remove-tags ...", file=sys.stderr)
-    setup_zotero_environment()
-    search_mod, retrieval, annotations, write_mod, _client = _import_tools()
-    ctx = _ctx(args)
-    _out(args, "tags", text=write_mod.batch_update_tags(
-        query=args.query or "",
-        add_tags=_split_tags(args.add),
-        remove_tags=_split_tags(args.remove),
-        tag=_split_tags(args.tag),
-        limit=args.limit,
-        item_keys=_split_csv(args.item_keys),
-        ctx=ctx,
-    ))
-
-
 def _field_assignment(value: str) -> tuple[str, str]:
     """Parse one metadata assignment, preserving empty values and '=' in text."""
     name, separator, text = value.partition("=")
@@ -1093,17 +1084,11 @@ def _field_assignment(value: str) -> tuple[str, str]:
 
 def cmd_edit(args):
     """Edit metadata fields of an existing Zotero item."""
+    creators = _json_flag(args, "edit", "--creators", args.creators) if args.creators else None
+
     setup_zotero_environment()
     search_mod, retrieval, annotations, write_mod, _client = _import_tools()
     ctx = _ctx(args)
-
-    creators = None
-    if args.creators:
-        try:
-            creators = json.loads(args.creators)
-        except json.JSONDecodeError as e:
-            print(f"Error: invalid JSON in --creators: {e}", file=sys.stderr)
-            sys.exit(1)
 
     # Flat metadata flags all travel in one `fields` mapping now; only the
     # params with delta semantics stay top-level.
@@ -1222,8 +1207,12 @@ def cmd_db(args):
             from zotero_mcp.chroma_client import unreadable_index_message
 
             print(f"\nError: {unreadable_index_message(ci, uc.get('last_update'))}")
+            # The status above is still worth printing, but a script asking
+            # "is the index usable" must not read exit 0.
+            sys.exit(1)
         elif ci.get("error"):
             print(f"\nError: {ci['error']}")
+            sys.exit(1)
 
     elif args.subcommand == "inspect":
         from collections import Counter
@@ -1694,14 +1683,9 @@ def cmd_open(args):
 
 
 def cmd_batch(args):
+    set_keys = _json_flag(args, "batch", "--set", args.set) if args.set else None
     setup_zotero_environment()
     _s, _r, _a, write_mod, _c = _import_tools()
-    set_keys = None
-    if args.set:
-        try:
-            set_keys = json.loads(args.set)
-        except json.JSONDecodeError as e:
-            _fail(args, "batch", f"invalid JSON in --set: {e}", "bad_json")
     _out(args, "batch", text=write_mod.batch_update(
         item_keys=_split_csv(args.item_keys), query=args.query or "",
         tag=_split_tags(args.tag), add_tags=_split_tags(args.add_tags),
@@ -1754,24 +1738,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print the --json envelope contract and exit",
     )
 
-    sub = parser.add_subparsers(dest="command", help="Command to run")
-    # Every subcommand accepts the global flags after its own name too, so
-    # both `zotero-cli --json search x` and `zotero-cli search --json x` work.
-    # SUPPRESS is load-bearing: without it each subparser would write its own
-    # default into the namespace and silently undo a flag given before the
-    # subcommand name.
-    _sub_add_parser = sub.add_parser
+    # Every subcommand, nested ones included, accepts the global flags after
+    # its own name too, so `zotero-cli --json get metadata K`, `get --json
+    # metadata K` and `get metadata K --json` all work. SUPPRESS is
+    # load-bearing: without it each subparser would write its own default
+    # into the namespace and silently undo a flag given before its name.
+    def with_global_flags(subparsers):
+        plain_add_parser = subparsers.add_parser
 
-    def add_parser(*args, **kwargs):
-        p = _sub_add_parser(*args, **kwargs)
-        p.add_argument("-v", "--verbose", action="store_true",
-                       default=argparse.SUPPRESS, help=argparse.SUPPRESS)
-        p.add_argument("--json", action="store_true", dest="json_out",
-                       default=argparse.SUPPRESS,
-                       help="Emit a JSON envelope instead of markdown")
-        return p
+        def add_parser(*args, **kwargs):
+            # A command's own option wins the name: `add csl-json --json TEXT`
+            # is the payload there, and the envelope flag goes before it.
+            kwargs.setdefault("conflict_handler", "resolve")
+            p = plain_add_parser(*args, **kwargs)
+            p.add_argument("-v", "--verbose", action="store_true",
+                           default=argparse.SUPPRESS, help=argparse.SUPPRESS)
+            p.add_argument("--json", action="store_true", dest="json_out",
+                           default=argparse.SUPPRESS,
+                           help="Emit a JSON envelope instead of markdown")
+            return p
 
-    sub.add_parser = add_parser
+        subparsers.add_parser = add_parser
+        return subparsers
+
+    sub = with_global_flags(parser.add_subparsers(dest="command", help="Command to run"))
 
     # config
     cfg_p = sub.add_parser("config", help="Show current Zotero configuration")
@@ -1806,7 +1796,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # get
     g_p = sub.add_parser("get", help="Get items, collections, tags, etc.", aliases=["g"])
-    g_sub = g_p.add_subparsers(dest="subcommand")
+    g_sub = with_global_flags(g_p.add_subparsers(dest="subcommand"))
     gm = g_sub.add_parser("metadata", help="Get item metadata")
     gm.add_argument("item_key")
     gm.add_argument("--no-abstract", action="store_true")
@@ -1840,7 +1830,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # annotations
     a_p = sub.add_parser("annotations", help="Manage annotations", aliases=["ann"])
-    a_sub = a_p.add_subparsers(dest="subcommand")
+    a_sub = with_global_flags(a_p.add_subparsers(dest="subcommand"))
     al = a_sub.add_parser("list", help="Get annotations")
     al.add_argument("--item-key")
     al.add_argument("--pdf-extraction", action="store_true")
@@ -1910,7 +1900,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # notes
     n_p = sub.add_parser("notes", help="Manage notes", aliases=["n"])
-    n_sub = n_p.add_subparsers(dest="subcommand")
+    n_sub = with_global_flags(n_p.add_subparsers(dest="subcommand"))
     nl = n_sub.add_parser("list", help="List notes")
     nl.add_argument("--item-key")
     nl.add_argument("--limit", type=int, default=20)
@@ -1932,7 +1922,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # add
     add_p = sub.add_parser("add", help="Add items to your library")
-    add_sub = add_p.add_subparsers(dest="subcommand")
+    add_sub = with_global_flags(add_p.add_subparsers(dest="subcommand"))
 
     def _add_common_flags(p):
         """Collection/idempotency flags shared by every `add` subcommand."""
@@ -2001,7 +1991,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # collections
     col_p = sub.add_parser("collections", help="Manage collections", aliases=["coll"])
-    col_sub = col_p.add_subparsers(dest="subcommand")
+    col_sub = with_global_flags(col_p.add_subparsers(dest="subcommand"))
     ccs = col_sub.add_parser("create", help="Create a collection")
     ccs.add_argument("name")
     ccs.add_argument("--parent")
@@ -2016,17 +2006,6 @@ def build_parser() -> argparse.ArgumentParser:
     cmg.add_argument("--item-keys", required=True)
     cmg.add_argument("--add-to")
     cmg.add_argument("--remove-from")
-
-    # tags
-    t_p = sub.add_parser("tags", help="Deprecated: use batch --add-tags/--remove-tags")
-    t_p.add_argument("--item-keys",
-                     help="Comma-separated item keys to edit; --query and --tag are then ignored")
-    t_p.add_argument("--query")
-    t_p.add_argument("--tag", help=f"Select items by tag ({TAG_LIST_HELP}; any matches)")
-    t_p.add_argument("--add", help=f"Tags to add ({TAG_LIST_HELP})")
-    t_p.add_argument("--remove", help=f"Tags to remove ({TAG_LIST_HELP})")
-    t_p.add_argument("--limit", type=int, default=50,
-                     help="Most items to select by --query/--tag (at most 1000)")
 
     # edit (item metadata)
     e_p = sub.add_parser("edit", help="Edit metadata fields of an existing item")
@@ -2065,7 +2044,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # duplicates
     d_p = sub.add_parser("duplicates", help="Find or merge duplicate items")
-    d_sub = d_p.add_subparsers(dest="subcommand")
+    d_sub = with_global_flags(d_p.add_subparsers(dest="subcommand"))
     df = d_sub.add_parser("find")
     df.add_argument("--method", choices=["title", "doi", "both"], default="both")
     df.add_argument("--collection")
@@ -2077,7 +2056,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # db
     db_p = sub.add_parser("db", help="Manage the semantic search database")
-    db_sub = db_p.add_subparsers(dest="subcommand")
+    db_sub = with_global_flags(db_p.add_subparsers(dest="subcommand"))
     add_update_db_arguments(db_sub.add_parser("update"))
     add_batch_status_arguments(db_sub.add_parser("batch-status"))
     add_batch_import_arguments(db_sub.add_parser("batch-import"))
@@ -2134,7 +2113,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # delete
     del_p = sub.add_parser("delete", help="Delete an item, collection or annotation")
-    del_sub = del_p.add_subparsers(dest="subcommand")
+    del_sub = with_global_flags(del_p.add_subparsers(dest="subcommand"))
     di = del_sub.add_parser("item")
     di.add_argument("item_key")
     di.add_argument("--allow-note", action="store_true",
@@ -2213,7 +2192,6 @@ _CMD_MAP = {
     "notes": cmd_notes, "n": cmd_notes,
     "add": cmd_add,
     "collections": cmd_collections, "coll": cmd_collections,
-    "tags": cmd_tags,
     "edit": cmd_edit,
     "duplicates": cmd_duplicates,
     "db": cmd_db,
@@ -2251,7 +2229,7 @@ never disagree.
 Commands returning structured data
 ----------------------------------
   search                data.items[]  -- item projections, in rank order
-  get metadata          the raw Zotero item record
+  get metadata          the Zotero item record (signed attachment URLs omitted)
   get collection-items  data.items[], data.offset, data.count
   get children          data.items[]
   get recent            data.items[]
@@ -2276,7 +2254,7 @@ Item projection (--detail keys_only | summary | full)
   keys_only  key, itemType, title, date  (+ deleted when trashed)
   summary    the above + creators[], doi, publication, url, tags[],
              collections[]
-  full       the above + abstract, raw (the complete Zotero data dict)
+  full       the above + abstract, raw (Zotero data with signed attachment URLs omitted)
 
 `title` resolves type-specific base fields (a statute's nameOfAct, a
 note's first line), so it is never the literal "Untitled" for an item

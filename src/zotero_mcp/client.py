@@ -37,6 +37,7 @@ from zotero_mcp.utils import (
     is_local_mode,
     item_display_date,
     item_display_title,
+    redact_signed_attachment_url,
 )
 from zotero_mcp.webdav import (
     WebDAVNotConfiguredError,
@@ -913,7 +914,7 @@ def format_item_metadata(item: dict[str, Any], include_abstract: bool = True) ->
         lines.append(f"**ISBN:** {isbn}")
     if issn := data.get("ISSN"):
         lines.append(f"**ISSN:** {issn}")
-    if url := data.get("url"):
+    if url := redact_signed_attachment_url(data).get("url"):
         lines.append(f"**URL:** {url}")
 
     # Whatever the branches above did not cover. The formatter knows about

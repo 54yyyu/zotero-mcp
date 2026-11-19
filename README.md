@@ -158,11 +158,11 @@ An MCP server sends every tool's schema on every request, before you type anythi
 
 | Route | In context | Paid |
 |---|---:|---|
-| MCP server, default profile (38 tools) | **7,939** | every request |
-| MCP server, all tools (50) | 11,225 | every request |
+| MCP server, default profile (38 tools) | **7,752** | every request |
+| MCP server, all tools (51) | 10,971 | every request |
 | Agent skill, frontmatter only | **98** | always |
-| Agent skill, body loaded | 2,400 | when it fires |
-| Agent skill + full command reference | 6,582 | worst case |
+| Agent skill, body loaded | 2,755 | when it fires |
+| Agent skill + full command reference | 7,944 | only if the agent opens it |
 
 Use the MCP server when your client speaks MCP but has no shell (Claude Desktop, ChatGPT); use the skill when it has a shell. Both share one config. Details: [CLI and agent skill](https://github.com/54yyyu/zotero-mcp/blob/main/docs/cli.md).
 

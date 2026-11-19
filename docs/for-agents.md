@@ -18,7 +18,7 @@ Both read the same configuration. If you have a shell, prefer `zotero-cli`: the 
 Check before installing; it may already be there:
 
 ```bash
-zotero-cli config                  # prints resolved settings, or fails if not installed/configured
+zotero-cli config                  # display the resolved settings
 ```
 
 If not installed:
@@ -35,10 +35,14 @@ Optional extras: `[pdf]` for page layout, page images, outlines and EPUB annotat
 
 | Mode | What the user must do | Reads | Writes |
 |---|---|---|---|
-| Local | Zotero desktop running, with *Settings → Advanced → Allow other applications on this computer to communicate with Zotero* ticked; `ZOTERO_LOCAL=true` | ✓ (straight from `zotero.sqlite`) | ✗ |
-| Local + write (Zotero 10+) | Also run `zotero-mcp authorize-local` once and click **Always Allow** in the dialog Zotero shows | ✓ | ✓ to the running Zotero |
+| Local | Set `ZOTERO_LOCAL=true` and make `zotero.sqlite` available to the CLI. For local API reads, start Zotero and enable *Settings → Advanced → Allow other applications on this computer to communicate with Zotero*. | ✓ | ✗ |
+| Local + write (Zotero 10+) | With Zotero running and its local API enabled, run `zotero-mcp authorize-local` once and click **Always Allow** in the dialog Zotero shows. | ✓ | ✓ to the running Zotero |
 | Hybrid (older Zotero) | Local, plus `ZOTERO_API_KEY` and `ZOTERO_LIBRARY_ID` | ✓ local | ✓ via web API |
 | Web | `ZOTERO_API_KEY`, `ZOTERO_LIBRARY_ID` (and `ZOTERO_LIBRARY_TYPE=group` for a group library) | ✓ | ✓ |
+
+Use `zotero-cli --json get recent --limit 1` to check read access to the active
+library. `ok: true` confirms it even for an empty library. `zotero-cli config`
+only displays settings. A SQLite-backed read can succeed with Zotero closed.
 
 `authorize-local` needs a human to click in Zotero. Tell the user to expect the dialog; do not retry it in a loop (Zotero rate-limits it). An API key comes from https://www.zotero.org/settings/security, and the numeric user ID is on the same page.
 
@@ -97,7 +101,7 @@ Plan everything, check placement, then write in one run:
 3. `zotero-cli annotations batch --attachment-key ATTACHMENT_KEY --file plan.jsonl --dry-run` prints the words each highlight would cover. Fix every miss.
 4. Run it again without `--dry-run`. Failures are listed with `ok: false` and the exit code is 1. Re-running with `--on-existing skip` adds only what is missing, instead of duplicating.
 
-Colors take Zotero's names (yellow, red, green, blue, purple, magenta, orange, gray). Three or four colors with fixed meanings read better than eight; explain them in a note (`zotero-cli notes create --item-key ITEM_KEY --text -`).
+Colors take Zotero's names (yellow, red, green, blue, purple, magenta, orange, gray).
 
 ### Writing
 
@@ -116,7 +120,7 @@ The tools mirror the CLI: `zotero_search_items`, `zotero_get_item_metadata`, `zo
 ## Rules that prevent mistakes
 
 - **Confirm before destructive changes** (deleting items or annotations, merging duplicates, batch edits over many items) and show the user what will change. Annotation deletes are permanent.
-- **Do not report "no papers on X" from an empty result** until you know the library is reachable (`zotero-cli config`) and, for semantic search, indexed (`zotero-cli db status`; build with `zotero-cli db update`).
+- **Do not report "no papers on X" from an empty result** until you have confirmed read access (`zotero-cli --json get recent --limit 1`) and, for semantic search, checked the index (`zotero-cli db status`; build with `zotero-cli db update`).
 - **A write refused with "Cannot perform write operations"** means no write path is configured. The message names both fixes (`zotero-mcp authorize-local`, or web API credentials); relay it rather than retrying.
 - **An item marked `"deleted": true` is in the trash**; do not treat it as part of the live library.
 - **A partial-results note** on a search means the scan was cut short, not that nothing else matched. Narrow the query.

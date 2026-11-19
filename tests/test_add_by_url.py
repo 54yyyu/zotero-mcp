@@ -335,18 +335,15 @@ class TestArxivErrors:
         assert "error" in result.lower() or "not found" in result.lower() or "no arxiv paper found" in result.lower()
 
     def test_timeout_on_arxiv_api(self, dummy_ctx, patch_write_client):
-        """Network timeout + a failing CrossRef fallback should return a clear,
+        """Network timeout + a failing DataCite fallback should return a clear,
         non-crashing error (and create nothing)."""
         import requests as req_lib
 
-        # arXiv times out on every attempt; the CrossRef fallback (which goes
-        # through add_by_doi) also can't resolve. Patch sleep so retries are fast.
+        # arXiv times out on every attempt, and so does the DataCite fallback
+        # (doi.org). Patch sleep so retries are fast.
         with patch("zotero_mcp.tools.write._time.sleep"), patch(
             "zotero_mcp.tools.write.requests.get",
             side_effect=req_lib.exceptions.Timeout("Connection timed out"),
-        ), patch(
-            "zotero_mcp.tools.write.add_by_doi",
-            return_value="DOI not found on CrossRef: 10.48550/arXiv.2401.00001",
         ):
             result = write.add_item(
                 source="https://arxiv.org/abs/2401.00001",
@@ -358,28 +355,54 @@ class TestArxivErrors:
         assert "error" in result.lower() or "unreachable" in result.lower()
 
 
-class TestArxivCrossrefFallback:
-    """When arXiv (export.arxiv.org) is overloaded, _add_by_arxiv should fall
-    back to CrossRef via the arXiv DOI (10.48550/arXiv.{id}) — independent
-    infrastructure — rather than failing. Regression coverage for graceful
-    degradation during arXiv outages.
+DATACITE_CSL = {
+    "type": "article",
+    "id": "https://doi.org/10.48550/arxiv.2401.00001",
+    "title": "Attention Is\n  All You Need",
+    "author": [{"family": "Vaswani", "given": "Ashish"}, {"literal": "The Team"}],
+    "issued": {"date-parts": [[2024, 1, 2]]},
+    "abstract": "We propose the Transformer.",
+    "publisher": "arXiv",
+}
+
+
+def _arxiv_down(datacite=None, arxiv_status=None):
+    """requests.get for an arXiv outage: export.arxiv.org and arxiv.org fail;
+    doi.org answers with *datacite* (CSL JSON), or fails too when None."""
+    import requests as req_lib
+
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        if url.startswith("https://doi.org/") and datacite is not None:
+            resp = MagicMock(status_code=200)
+            resp.json.return_value = datacite
+            return resp
+        if arxiv_status and "export.arxiv.org" in url:
+            return _make_arxiv_response("", status_code=arxiv_status)
+        raise req_lib.exceptions.Timeout("timed out")
+
+    get.calls = calls
+    return get
+
+
+class TestArxivDataCiteFallback:
+    """When arXiv (export.arxiv.org) is overloaded, _add_by_arxiv reads the
+    same record from DataCite, which registers arXiv's DOIs
+    (10.48550/arXiv.{id}), through doi.org. The fallback used to ask
+    CrossRef, which holds none of them, so it never resolved anything.
     """
 
-    def test_timeout_falls_back_to_crossref(self, dummy_ctx, patch_write_client):
-        """arXiv timeout → delegate to add_by_doi with the arXiv DOI; surface its result."""
-        import requests as req_lib
-
+    def test_timeout_falls_back_to_the_datacite_record(self, dummy_ctx, patch_write_client):
         fake_zot = patch_write_client
         fake_zot._collections = [
             {"key": "ABC12345", "data": {"name": "Preprints", "parentCollection": False}},
         ]
+        get = _arxiv_down(DATACITE_CSL)
         with patch("zotero_mcp.tools.write._time.sleep"), patch(
-            "zotero_mcp.tools.write.requests.get",
-            side_effect=req_lib.exceptions.Timeout("timed out"),
-        ), patch(
-            "zotero_mcp.tools.write.add_by_doi",
-            return_value="Successfully added: **Attention Is All You Need**",
-        ) as mock_doi:
+            "zotero_mcp.tools.write.requests.get", side_effect=get,
+        ), patch("zotero_mcp.tools.write.add_by_doi") as mock_doi:
             result = write.add_item(
                 source="https://arxiv.org/abs/2401.00001",
                 source_type="url",
@@ -388,46 +411,45 @@ class TestArxivCrossrefFallback:
                 ctx=dummy_ctx,
             )
 
-        # Fallback fired with the arXiv DOI and forwarded the resolved
-        # collection keys and tags.
-        mock_doi.assert_called_once()
-        kwargs = mock_doi.call_args.kwargs
-        assert kwargs.get("doi") == "10.48550/arXiv.2401.00001"
-        assert kwargs.get("collections") == ["ABC12345"]
-        assert kwargs.get("tags") == ["t1"]
-        # The successful CrossRef result is surfaced to the caller.
-        assert "Successfully added" in result
+        mock_doi.assert_not_called()  # CrossRef has no arXiv DOIs
+        doi_calls = [(u, k) for u, k in get.calls if u.startswith("https://doi.org/")]
+        assert [u for u, _ in doi_calls] == ["https://doi.org/10.48550/arXiv.2401.00001"]
+        assert doi_calls[0][1]["headers"]["Accept"] == "application/vnd.citationstyles.csl+json"
 
-    def test_503_falls_back_to_crossref(self, dummy_ctx, patch_write_client):
-        """A persistent 5xx from arXiv should also trigger the CrossRef fallback."""
-        mock_resp = _make_arxiv_response("", status_code=503)
+        item, = fake_zot.created
+        assert item["itemType"] == "preprint"
+        assert item["title"] == "Attention Is All You Need"
+        assert item["creators"] == [
+            {"creatorType": "author", "firstName": "Ashish", "lastName": "Vaswani"},
+            {"creatorType": "author", "name": "The Team"},
+        ]
+        assert item["date"] == "2024-01-02"
+        assert item["abstractNote"] == "We propose the Transformer."
+        assert item["url"] == "https://arxiv.org/abs/2401.00001"
+        assert item["extra"] == "arXiv:2401.00001"
+        assert item["collections"] == ["ABC12345"]
+        assert item["tags"] == [{"tag": "t1"}]
+        assert "Successfully added arXiv paper: **Attention Is All You Need**" in result
 
+    def test_503_falls_back_to_the_datacite_record(self, dummy_ctx, patch_write_client):
+        """A persistent 5xx from arXiv also triggers the fallback."""
         with patch("zotero_mcp.tools.write._time.sleep"), patch(
-            "zotero_mcp.tools.write.requests.get", return_value=mock_resp
-        ), patch(
-            "zotero_mcp.tools.write.add_by_doi",
-            return_value="Successfully added: **Paper**",
-        ) as mock_doi:
+            "zotero_mcp.tools.write.requests.get",
+            side_effect=_arxiv_down(DATACITE_CSL, arxiv_status=503),
+        ):
             result = write.add_item(
                 source="https://arxiv.org/abs/2401.00001",
                 source_type="url",
                 ctx=dummy_ctx,
             )
 
-        mock_doi.assert_called_once()
-        assert mock_doi.call_args.kwargs.get("doi") == "10.48550/arXiv.2401.00001"
-        assert "Successfully added" in result
+        assert len(patch_write_client.created) == 1
+        assert "Successfully added arXiv paper" in result
 
     def test_both_routes_fail_returns_actionable_message(self, dummy_ctx, patch_write_client):
-        """arXiv down AND CrossRef miss → a clear retry message, nothing created, no raise."""
-        import requests as req_lib
-
+        """arXiv down AND no DataCite record → a clear retry message, nothing created, no raise."""
         with patch("zotero_mcp.tools.write._time.sleep"), patch(
-            "zotero_mcp.tools.write.requests.get",
-            side_effect=req_lib.exceptions.ConnectionError("conn refused"),
-        ), patch(
-            "zotero_mcp.tools.write.add_by_doi",
-            return_value="DOI not found on CrossRef: 10.48550/arXiv.2401.00001",
+            "zotero_mcp.tools.write.requests.get", side_effect=_arxiv_down(),
         ):
             result = write.add_item(
                 source="https://arxiv.org/abs/2401.00001",
@@ -439,16 +461,10 @@ class TestArxivCrossrefFallback:
         assert "unreachable" in result.lower()
         assert "retry" in result.lower()
 
-    def test_crossref_fallback_exception_is_caught(self, dummy_ctx, patch_write_client):
-        """If the fallback itself raises, _add_by_arxiv must not propagate it."""
-        import requests as req_lib
-
+    def test_a_record_without_a_title_is_not_used(self, dummy_ctx, patch_write_client):
         with patch("zotero_mcp.tools.write._time.sleep"), patch(
             "zotero_mcp.tools.write.requests.get",
-            side_effect=req_lib.exceptions.Timeout("timed out"),
-        ), patch(
-            "zotero_mcp.tools.write.add_by_doi",
-            side_effect=RuntimeError("crossref blew up"),
+            side_effect=_arxiv_down({"type": "article", "author": []}),
         ):
             result = write.add_item(
                 source="https://arxiv.org/abs/2401.00001",

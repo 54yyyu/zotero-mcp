@@ -66,6 +66,23 @@ class TestAdvertised:
         # A string here is not a fallback encoding, so both shapes stay.
         assert {b["type"] for b in props["rect"]["anyOf"]} == {"array", "string"}
 
+    def test_null_default_is_not_advertised(self):
+        """``"default": null`` says nothing "not required" does not; any
+        other default is information and stays."""
+        server, _ = _probe_server()
+        tool, _ = _run(server, {})
+        props = _input_schema(tool)["properties"]
+        assert all("default" not in props[name] for name in ("tags", "rect", "key"))
+        assert props["limit"]["default"] == 10
+        assert "required" not in _input_schema(tool)
+
+    def test_omitted_and_null_arguments_still_mean_the_default(self):
+        server, _ = _probe_server()
+        _, omitted = _run(server, {})
+        _, nulls = _run(server, {"limit": None, "tags": None, "rect": None, "key": None})
+        assert omitted == repr((10, None, None, None))
+        assert nulls == repr((None, None, None, None))
+
     def test_docstring_args_are_not_advertised(self):
         server, fn = _probe_server()
         tool, _ = _run(server, {})
@@ -90,6 +107,53 @@ class TestCompact:
         assert compact("fields", schema, default=None) == {
             "anyOf": [{"type": "object"}, {"type": "string"}]
         }
+
+
+class TestDropNullDefaults:
+    def test_only_a_null_default_goes(self):
+        from zotero_mcp._tool_schema import drop_null_defaults
+
+        parameters = {"type": "object", "additionalProperties": False, "properties": {
+            "key": {"type": "string", "default": None},
+            "flag": {"type": "boolean", "default": False},
+            "limit": {"type": "integer", "default": 0},
+            "text": {"type": "string", "default": ""},
+            "parent": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        }}
+        drop_null_defaults(parameters)
+        assert parameters == {"type": "object", "additionalProperties": False, "properties": {
+            "key": {"type": "string"},
+            "flag": {"type": "boolean", "default": False},
+            "limit": {"type": "integer", "default": 0},
+            "text": {"type": "string", "default": ""},
+            "parent": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        }}
+
+    @pytest.mark.parametrize("odd", [None, {}, {"properties": None}, {"properties": {"a": True}}, []])
+    def test_an_unexpected_schema_is_left_alone(self, odd):
+        from zotero_mcp._tool_schema import drop_null_defaults
+
+        drop_null_defaults(odd)
+
+
+def test_real_registry_advertises_no_null_defaults():
+    # Listed on the server object, not through a client: connecting one to
+    # the real app would start its lifespan (schema refresh, auto-update).
+    # TestAdvertised covers what a client is sent.
+    from zotero_mcp.server import mcp
+
+    async def go():
+        return await mcp.list_tools()
+
+    tools = asyncio.run(go())
+    assert tools
+    leaked = [
+        (t.name, name)
+        for t in tools
+        for name, prop in (t.parameters or {}).get("properties", {}).items()
+        if isinstance(prop, dict) and "default" in prop and prop["default"] is None
+    ]
+    assert not leaked, f"null defaults advertised: {leaked}"
 
 
 def test_real_registry_advertises_no_parameter_descriptions():

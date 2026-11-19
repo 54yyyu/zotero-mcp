@@ -37,7 +37,7 @@ dependencies = [
     # PDF text extraction. Rust with prebuilt abi3 wheels for every platform
     # we support and no Python dependencies of its own. Pinned exactly while
     # it is pre-1.0 — the extraction output is user-visible. A bump also means
-    # the version and hashes in flake.nix and the pin in .github/workflows/release.yml.
+    # the version and hashes in flake.nix.
     "pdf-inspector==0.2.6",
     # HTML snapshots only.
     "markdownify>=1.2",
@@ -46,9 +46,10 @@ dependencies = [
     "markdown-it-py>=2.2",
     "pydantic>=2.0.0",
     "requests>=2.28.0",
-    # <4 until the FastMCP 4 migration: FastMCP 4 targets the stateless
-    # 2026-07-28 MCP revision, drops ctx.sample/list_roots/elicit, and swaps
-    # httpx for httpx2. It is still a beta (4.0.0b1) as of this pin.
+    # Majors 2.14+, 3 and 4 are supported, and CI runs 3 and 4. A fresh
+    # install resolves 4, which targets the stateless 2026-07-28 MCP revision,
+    # drops ctx.sample/list_roots/elicit (not used here) and swaps httpx for
+    # httpx2. <5 because the next major is untested.
     "fastmcp>=2.14.0,<5",
     # The client we hand the local Zotero API is built from whichever HTTP
     # library the installed pyzotero is built against — httpx2 on >=1.15,
@@ -59,7 +60,10 @@ dependencies = [
     # fastmcp (which itself replaces it with httpx2 in v4).
     "httpx>=0.27",
     "unidecode>=1.3.0",
-    "bibtexparser>=1.4,<2",
+    # Both majors: pyzotero requires 1.x up to 1.16 and >=2.1 from 1.17, and
+    # the resolver has to be free to follow it (citation_import.parse_bibtex
+    # speaks both APIs).
+    "bibtexparser>=1.4,<3",
     # updater.py reads the uv tool receipt (TOML); tomllib is stdlib from 3.11.
     "tomli>=2.0.1; python_version < '3.11'",
 ]
@@ -77,7 +81,6 @@ semantic = [
 pdf = [
     # >=1.24.2 for Page.cluster_drawings (vector figure detection in zotero_get_page_layout)
     "pymupdf>=1.24.2",
-    "ebooklib>=0.18",
 ]
 scite = [
     "requests>=2.28.0",
@@ -85,12 +88,20 @@ scite = [
 all = [
     "zotero-mcp-server[semantic,pdf,scite]",
 ]
-dev = [
-    "zotero-mcp-server[all]",
+# What the test suite needs, and what CI installs: the test tools and the
+# optional packages the tests exercise. sentence-transformers (torch) and
+# google-genai are left out; the tests that need them skip.
+test = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21",
     "pytest-timeout>=2.0.0",
-    "pytest-httpserver>=1.0",
+    "chromadb>=1.0.0",
+    "tiktoken>=0.7.0",
+    "openai>=1.30.0",
+    "pymupdf>=1.24.2",
+]
+dev = [
+    "zotero-mcp-server[all,test]",
     "ruff>=0.9.0",
 ]
 

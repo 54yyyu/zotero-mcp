@@ -37,7 +37,7 @@ BASE_SCHEMA = [
     "CREATE TABLE baseFieldMappingsCombined (itemTypeID INT, baseFieldID INT, "
     "fieldID INT, PRIMARY KEY (itemTypeID, baseFieldID, fieldID))",
     "CREATE TABLE itemNotes (itemID INT, parentItemID INT, note TEXT)",
-    "CREATE TABLE itemCreators (itemID INT, creatorID INT)",
+    "CREATE TABLE itemCreators (itemID INT, creatorID INT, orderIndex INT)",
     "CREATE TABLE creators (creatorID INTEGER PRIMARY KEY, firstName TEXT, "
     "lastName TEXT)",
     # The two tables the collection walk reads. No other test in the suite

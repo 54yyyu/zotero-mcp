@@ -160,13 +160,14 @@ def test_a_passage_search_keeps_a_worker_with_passages(worker):
 PASSAGE_CALLS = {
     "search by keyword": ("search", (), {"query_texts": ["q"], "level": "passages"}),
     "search by position": ("search", (["q"], 5, None, None, "passages"), {}),
-    "add": ("add_documents", (["t"], [{}], ["K#0"]), {}),
     "upsert": ("upsert_documents", (), {"documents": ["t"], "metadatas": [{}], "ids": ["A", "K#3"]}),
+    "upsert by position": ("upsert_documents", (["t"], [{}], ["K#0"]), {}),
     "upsert vectors": ("upsert_embeddings", (["t"], [{}], ["K#0"], [[0.0]]), {}),
     "delete": ("delete_documents", (["K#1"],), {}),
     "metadata update": ("update_metadatas", (["K#1"], [{}]), {}),
     "delete chunks": ("delete_item_chunks", ("K",), {}),
     "prune chunks": ("prune_item_chunks", ("K", 3), {}),
+    "prune a batch": ("prune_items_chunks", ({"K": 3},), {}),
     "reset": ("reset_collection", (), {}),
 }
 

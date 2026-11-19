@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, NamedTuple
 
 from . import fulltext_cache
+from . import schema as _schema
 from . import search_semantics as _semantics
 from .config import load_config
 from .extract import (
@@ -34,7 +35,7 @@ from .extract import (
     normalize_attachment_priority,
     pick_by_priority,
 )
-from .utils import _generate_search_variants, _normalize_for_search, is_local_mode
+from .utils import _generate_search_variants, is_local_mode
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +73,16 @@ class KeyGroupMap(NamedTuple):
 
     groups: dict[str, int]
     excluded_keys: set[str]
+
+
+class SearchPage(NamedTuple):
+    """One page of an advanced search, with what the page alone cannot say."""
+
+    items: list[dict]
+    #: Every match, not only those on the page.
+    total: int
+    #: False when a sort was asked for and no match carries the field.
+    sorted: bool
 
 
 @dataclass
@@ -641,6 +652,120 @@ def _tag_dsl_condition(entries: list[str]) -> tuple[str, list] | None:
     return " AND ".join(clauses), params
 
 
+def _base_field_ids_sql(base_field: str) -> str:
+    """The base field's own fieldID plus every type-specific field mapped to it."""
+    field_id = _field_id(base_field)
+    return (
+        f"SELECT {field_id} UNION ALL SELECT fieldID "
+        f"FROM baseFieldMappingsCombined WHERE baseFieldID = {field_id}"
+    )
+
+
+def _typed_rows_sql(base_field: str, source: str, condition: str) -> str:
+    """itemIDs of the `source` rows (aliased ``r``, with itemID and fieldID)
+    that satisfy `condition` and sit in the field the item's own type keeps
+    `base_field` in. With `_base_field_ids_sql` narrowing the source, this is
+    `_base_field_resolved_join` read from the value side: the same items,
+    found without visiting every item in the library.
+    """
+    field_id = _field_id(base_field)
+    return (
+        f"SELECT r.itemID FROM {source} r "
+        "JOIN items di ON di.itemID = r.itemID "
+        "LEFT JOIN baseFieldMappingsCombined m "
+        f"ON m.itemTypeID = di.itemTypeID AND m.baseFieldID = {field_id} "
+        f"WHERE {condition} AND r.fieldID = COALESCE(m.fieldID, {field_id})"
+    )
+
+
+_NORM = _semantics.SQLITE_NORM_FUNCTION
+_LIKE = "LIKE ? ESCAPE '\\'"
+_DATA_VALUES = "itemData d JOIN itemDataValues v ON v.valueID = d.valueID"
+
+def _search_ctes(qmode: str, shared: bool) -> str:
+    """The folded titles, creators and (in 'everything' mode) tags that
+    `_term_match_sql` reads.
+
+    With several terms they are computed once and shared (`shared`), so a
+    three-word query does not fold each title and creator three times. SQLite
+    would otherwise inline them into each term; the hint exists from 3.35.
+    A single term reads them inline, which saves building the temporary table.
+    """
+    hint = "MATERIALIZED " if shared and sqlite3.sqlite_version_info >= (3, 35) else ""
+    ctes = [
+        f"norm_title(itemID, fieldID, n) AS {hint}("
+        f"SELECT d.itemID, d.fieldID, {_NORM}(v.value) "
+        f"FROM {_DATA_VALUES} WHERE d.fieldID IN ({_base_field_ids_sql('title')}))",
+        f"norm_creator(creatorID, n) AS {hint}("
+        f"SELECT c.creatorID, {_NORM}({_CREATOR_NAME_EXPR}) FROM creators c)",
+    ]
+    if qmode == "everything":
+        ctes.append(
+            f"norm_tag(tagID, n) AS {hint}(SELECT t.tagID, {_NORM}(t.name) FROM tags t)"
+        )
+    return ", ".join(ctes)
+
+
+def _term_match_sql(term: str, qmode: str) -> tuple[str, list]:
+    """SELECT of the itemIDs one keyword-search term matches, with its params.
+
+    Title, a creator's name, and the year when the term is one; in
+    'everything' mode also abstract, tags and notes (a note matches itself
+    and its parent). Reads the `_search_ctes`.
+    """
+    pattern = f"%{_semantics.escape_like(term)}%"
+    parts = [
+        _typed_rows_sql("title", "norm_title", f"r.n {_LIKE}"),
+        "SELECT ic.itemID FROM itemCreators ic WHERE ic.creatorID IN ("
+        f"SELECT creatorID FROM norm_creator WHERE n {_LIKE})",
+    ]
+    params: list = [pattern, pattern]
+    # Only a year is looked for in the date, and only in its year: the stored
+    # value is "2020-05-00 May 2020", where "may", "10" or "-00" would
+    # otherwise match thousands of items.
+    if re.fullmatch(r"\d{4}", term):
+        dates = (
+            f"(SELECT d.itemID, d.fieldID FROM {_DATA_VALUES} "
+            f"WHERE d.fieldID IN ({_base_field_ids_sql('date')}) "
+            "AND SUBSTR(v.value, 1, 4) = ?)"
+        )
+        parts.append(_typed_rows_sql("date", dates, "1"))
+        params.append(term)
+    if qmode == "everything":
+        parts.append(
+            f"SELECT d.itemID FROM {_DATA_VALUES} "
+            f"WHERE d.fieldID = {_field_id('abstractNote')} AND {_NORM}(v.value) {_LIKE}"
+        )
+        parts.append(
+            "SELECT itg.itemID FROM itemTags itg WHERE itg.tagID IN ("
+            f"SELECT tagID FROM norm_tag WHERE n {_LIKE})"
+        )
+        # One pass over the notes yields both ids; a standalone note's NULL
+        # parent matches no item.
+        parts.append(
+            "SELECT CASE side.n WHEN 0 THEN n.itemID ELSE n.parentItemID END "
+            "FROM itemNotes n CROSS JOIN (SELECT 0 AS n UNION ALL SELECT 1) side "
+            f"WHERE {_NORM}(n.note) {_LIKE}"
+        )
+        params.extend([pattern] * 3)
+    return " UNION ".join(parts), params
+
+
+#: Item ids bound per statement when a list of them is unbounded.
+_ID_CHUNK = 900
+
+
+def _date_sort_key(stored: str | None) -> str:
+    """Sort key for a stored date: its ISO half ("2016-10-01", with 00 for a
+    part Zotero could not parse), else the first four-digit year in it."""
+    if not stored:
+        return ""
+    if re.match(r"\d{4}-\d{2}-\d{2} ", stored):
+        return "" if stored.startswith("0000") else stored[:10]
+    match = re.search(r"\b(\d{4})\b", stored)
+    return match.group(1) if match else ""
+
+
 def row_to_api_item(
     row: sqlite3.Row,
     creators: list[dict],
@@ -665,8 +790,8 @@ def row_to_api_item(
         "itemType": row["itemType"],
         "title": row["title"] or "",
         "date": row["date"] or "",
-        "dateAdded": row["dateAdded"] or "",
-        "dateModified": row["dateModified"] or "",
+        "dateAdded": _api_timestamp(row["dateAdded"]),
+        "dateModified": _api_timestamp(row["dateModified"]),
         "abstractNote": row["abstractNote"] or "",
         "DOI": row["DOI"] or "",
         "publicationTitle": row["publicationTitle"] or "",
@@ -983,8 +1108,8 @@ _LINK_MODES = {
     4: "embedded_image",
 }
 
-#: Zotero's numeric annotation types, spelled as the API spells them. Same
-#: mapping `search_annotations_local` already uses.
+#: Zotero's numeric annotation types, spelled as the API spells them; the one
+#: map for every reader here.
 # Zotero.Annotations.ANNOTATION_TYPE_* (chrome/content/zotero/xpcom/
 # annotations.js:31-36), spelled as data/items.js:526-548 names them. Type 6
 # ("text") arrived after this map was written, so it resolved to "" — which
@@ -1059,7 +1184,13 @@ def _row_to_full_api_item(
     }
 
     for name, value in fields.items():
-        data[name] = _api_date_field(value) if name == "date" else value
+        # Every field on the `date` base field is stored multipart, not only
+        # the one named "date": a case's dateDecided, a patent's issueDate.
+        if name == "accessDate":
+            value = _api_timestamp(value)
+        elif name == "date" or _schema.base_field_of(item_type, name) == "date":
+            value = _api_date_field(value)
+        data[name] = value
 
     if item_type not in ("attachment", "note", "annotation"):
         data["creators"] = creators
@@ -1904,16 +2035,23 @@ class LocalZoteroReader:
             abstract_val.value as abstract,
             extra_val.value as extra,
             doi_val.value as doi,
-            GROUP_CONCAT(n.note, ' ') as notes,
-            GROUP_CONCAT(
-                CASE
+            -- Notes and creators are each gathered in their own subquery.
+            -- Joined side by side they multiplied: an item with 3 notes and
+            -- 2 creators listed every creator 3 times and every note twice,
+            -- and that text is what the semantic index embeds.
+            (SELECT GROUP_CONCAT(note, ' ') FROM (
+                SELECT n.note FROM itemNotes n
+                WHERE n.parentItemID = i.itemID ORDER BY n.itemID
+            )) as notes,
+            (SELECT GROUP_CONCAT(name, '; ') FROM (
+                SELECT CASE
                     WHEN c.firstName IS NOT NULL AND c.lastName IS NOT NULL
                     THEN c.lastName || ', ' || c.firstName
-                    WHEN c.lastName IS NOT NULL
-                    THEN c.lastName
-                    ELSE NULL
-                END, '; '
-            ) as creators
+                    ELSE c.lastName
+                END AS name
+                FROM itemCreators ic JOIN creators c ON ic.creatorID = c.creatorID
+                WHERE ic.itemID = i.itemID ORDER BY ic.orderIndex
+            )) as creators
         FROM items i
         JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
         """
@@ -1925,13 +2063,6 @@ class LocalZoteroReader:
             + _plain_field_join("extra", "extra")
             + _plain_field_join("doi", "DOI")
             + """
-        -- Get notes
-        LEFT JOIN itemNotes n ON i.itemID = n.parentItemID OR i.itemID = n.itemID
-
-        -- Get creators
-        LEFT JOIN itemCreators ic ON i.itemID = ic.itemID
-        LEFT JOIN creators c ON ic.creatorID = c.creatorID
-
         WHERE it.typeName NOT IN ('attachment', 'note', 'annotation')
         AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
         """
@@ -1969,12 +2100,7 @@ class LocalZoteroReader:
             query += " AND i.key = ?"
             params.append(key_filter)
 
-        query += """
-        GROUP BY i.itemID, i.key, i.itemTypeID, it.typeName, i.dateAdded, i.dateModified,
-                 title_val.value, abstract_val.value, extra_val.value
-
-        ORDER BY i.dateModified DESC
-        """
+        query += " ORDER BY i.dateModified DESC"
 
         if limit:
             query += " LIMIT ?"
@@ -2212,31 +2338,6 @@ class LocalZoteroReader:
         items = self.get_items_with_text(key_filter=key)
         return items[0] if items else None
 
-    def search_items_by_text(self, query: str, limit: int = 50) -> list[ZoteroItem]:
-        """
-        Simple text search through item content.
-
-        Args:
-            query: Search query string.
-            limit: Maximum number of results.
-
-        Returns:
-            List of matching ZoteroItem objects.
-        """
-        items = self.get_items_with_text()
-        matching_items = []
-
-        query_lower = _normalize_for_search(query).lower()
-
-        for item in items:
-            searchable_text = _normalize_for_search(item.get_searchable_text()).lower()
-            if query_lower in searchable_text:
-                matching_items.append(item)
-                if len(matching_items) >= limit:
-                    break
-
-        return matching_items
-
     def search_notes_local(
         self, query: str, limit: int = 20, group_id: int | None = None
     ) -> list[dict] | None:
@@ -2328,9 +2429,6 @@ class LocalZoteroReader:
             LIMIT ?
         """, (pattern, pattern, *lib_ids, limit))
 
-        # Map integer annotation types to names
-        type_map = {1: "highlight", 2: "note", 3: "image", 4: "ink", 5: "underline"}
-
         results = []
         for row in cursor.fetchall():
             results.append({
@@ -2338,7 +2436,7 @@ class LocalZoteroReader:
                 "key": row[0],
                 "text": row[1] or "",
                 "comment": row[2] or "",
-                "annotation_type": type_map.get(row[3], "unknown"),
+                "annotation_type": _ANNOTATION_TYPES.get(row[3], "unknown"),
                 "color": row[4] or "",
                 "page_label": row[5] or None,
                 "attachment_key": row[6],
@@ -2630,6 +2728,28 @@ class LocalZoteroReader:
             for row in rows
         ]
 
+    def _hydrate_ids(
+        self, conn: sqlite3.Connection, lib_ids: list[int], item_ids: list[int]
+    ) -> list[dict]:
+        """Search-projection items for `item_ids`, in that order.
+
+        The searches pick their page as bare itemIDs first; only the page
+        pays for the field joins, creators and tags.
+        """
+        items: list[dict] = []
+        # In slices: an id list is one bound variable per item, and some
+        # SQLite builds allow only 999.
+        for start in range(0, len(item_ids), _ID_CHUNK):
+            chunk = list(item_ids[start:start + _ID_CHUNK])
+            rows = conn.execute(
+                _item_hydration_select(len(lib_ids))
+                + f" AND i.itemID IN ({','.join('?' * len(chunk))})",
+                list(lib_ids) + chunk,
+            ).fetchall()
+            by_id = {row["itemID"]: row for row in rows}
+            items.extend(self._hydrate_rows(conn, [by_id[i] for i in chunk if i in by_id]))
+        return items
+
     def get_items_by_keys(self, keys: list[str]) -> dict[str, dict]:
         """Hydrate item keys from *any* library into pyzotero-shaped dicts.
 
@@ -2740,8 +2860,6 @@ class LocalZoteroReader:
                 return None  # boolean itemType expressions ("a || b") unsupported
 
         variants = _generate_search_variants(query)
-        like_clauses: list[str] = []
-        like_params: list = []
         if not variants:
             # A blank query is a *filter-only* search — "every item carrying
             # this tag" — which is exactly what a tag-only zotero_search_items asks for
@@ -2761,44 +2879,58 @@ class LocalZoteroReader:
         folded = [v for v in folded if v.strip()]
         if variants and not folded:
             return []
-        norm = _semantics.SQLITE_NORM_FUNCTION
+        # As in Zotero's quick search, every word must match somewhere
+        # (title, a creator, the year; in 'everything' mode also abstract,
+        # tags and notes) but not all in one field: "Brewer 2011" is a
+        # surname and a year. A double-quoted phrase stays one term. The
+        # variants are alternatives to each other.
+        #
+        # Each distinct term becomes one CTE holding the itemIDs it matches,
+        # found from the value side: the title rows, the distinct creators,
+        # the tags. Testing the terms per item instead (a LIKE inside the
+        # hydration join) cost about ten index seeks and a creator subquery
+        # for every item in the library before the first comparison.
+        term_ctes: dict[str, str] = {}
+        cte_sql: list[str] = []
+        cte_params: list = []
+        variant_clauses: list[str] = []
         for variant in folded:
-            pattern = f"%{_semantics.escape_like(variant)}%"
-            like_clauses.append(f"{norm}(title_val.value) LIKE ? ESCAPE '\\'")
-            like_params.append(pattern)
-            like_clauses.append("date_val.value LIKE ? ESCAPE '\\'")
-            like_params.append(pattern)
-            like_clauses.append(
-                f"EXISTS (SELECT 1 FROM itemCreators ic JOIN creators c ON ic.creatorID = c.creatorID "
-                f"WHERE ic.itemID = i.itemID AND {norm}({_CREATOR_NAME_EXPR}) LIKE ? ESCAPE '\\')"
-            )
-            like_params.append(pattern)
-            if qmode == "everything":
-                like_clauses.append(f"{norm}(abstract_val.value) LIKE ? ESCAPE '\\'")
-                like_params.append(pattern)
-                like_clauses.append(
-                    "EXISTS (SELECT 1 FROM itemTags itg JOIN tags t ON itg.tagID = t.tagID "
-                    f"WHERE itg.itemID = i.itemID AND {norm}(t.name) LIKE ? ESCAPE '\\')"
-                )
-                like_params.append(pattern)
-                like_clauses.append(
-                    "EXISTS (SELECT 1 FROM itemNotes n WHERE "
-                    f"(n.parentItemID = i.itemID OR n.itemID = i.itemID) AND {norm}(n.note) LIKE ? ESCAPE '\\')"
-                )
-                like_params.append(pattern)
+            word_clauses: list[str] = []
+            for phrase, word in re.findall(r'"([^"]+)"|(\S+)', variant):
+                term = phrase.strip() or word.strip(",;:.()[]\"'")
+                if not term:
+                    continue
+                if term not in term_ctes:
+                    term_ctes[term] = f"term{len(term_ctes)}"
+                    term_sql, term_params = _term_match_sql(term, qmode)
+                    cte_sql.append(f"{term_ctes[term]}(itemID) AS ({term_sql})")
+                    cte_params.extend(term_params)
+                word_clauses.append(f"i.itemID IN (SELECT itemID FROM {term_ctes[term]})")
+            if word_clauses:
+                variant_clauses.append(f"({' AND '.join(word_clauses)})")
+        if variants and not variant_clauses:
+            return []
 
-        like_sql = f" AND ({' OR '.join(like_clauses)})" if like_clauses else ""
-        query_sql = (
-            _item_hydration_select(len(lib_ids))
-            + f" {type_filter_sql} {tag_sql}{collection_sql}{like_sql}"
-            + " ORDER BY i.dateModified DESC LIMIT ?"
-        )
-        params = (
-            list(lib_ids) + type_params + tag_params + collection_params
-            + like_params + [limit]
-        )
-        rows = conn.execute(query_sql, params).fetchall()
-        return self._hydrate_rows(conn, rows)
+        with_sql = ""
+        if cte_sql:
+            shared = _search_ctes(qmode, shared=len(cte_sql) > 1)
+            with_sql = f"WITH {shared}, {', '.join(cte_sql)} "
+        match_sql = f" AND ({' OR '.join(variant_clauses)})" if variant_clauses else ""
+        lib_placeholders = ",".join("?" * len(lib_ids))
+        page = [
+            row[0]
+            for row in conn.execute(
+                f"""{with_sql}SELECT i.itemID FROM items i
+                    JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
+                    WHERE i.libraryID IN ({lib_placeholders})
+                    AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+                    {type_filter_sql} {tag_sql}{collection_sql}{match_sql}
+                    ORDER BY i.dateModified DESC, i.itemID DESC LIMIT ?""",
+                cte_params + list(lib_ids) + type_params + tag_params
+                + collection_params + [limit],
+            ).fetchall()
+        ]
+        return self._hydrate_ids(conn, lib_ids, page)
 
     def advanced_search_sql(
         self,
@@ -2806,6 +2938,21 @@ class LocalZoteroReader:
         join_mode: str = "all",
         group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
     ) -> list[dict] | None:
+        """Every item matching `conditions`, or None when the SQL backend
+        cannot serve them; see :meth:`advanced_search_page`."""
+        page = self.advanced_search_page(conditions, join_mode, group_id)
+        return None if page is None else page.items
+
+    def advanced_search_page(
+        self,
+        conditions: list[dict[str, str]],
+        join_mode: str = "all",
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        *,
+        sort_by: str | None = None,
+        sort_direction: str = "asc",
+        limit: int | None = None,
+    ) -> SearchPage | None:
         """#167 SQLite metadata search backend for zotero_advanced_search.
 
         Always excludes attachments/notes/annotations and trashed items,
@@ -2813,8 +2960,15 @@ class LocalZoteroReader:
         Returns None when any single condition uses a field/operator this
         v1 backend doesn't cover, or when `group_id` has no matching
         library in this database — the caller falls back to the existing
-        client-side path. Sorting and the result limit are left to the
-        caller, exactly as with that existing path.
+        client-side path.
+
+        The matches are ranked as bare itemIDs with their sort key, and only
+        the `limit` that will be shown are hydrated; the total is the count of
+        all of them. Without `sort_by` the order is newest-modified first, as
+        the Zotero API lists items. Sort keys follow the tool's client-side
+        sort so both backends order alike, except that a date sorts by its
+        full ISO form, which the API path only has when the server sends
+        ``meta.parsedDate``.
 
         `group_id=None` searches every accessible library (#163). A
         `collection` condition is refused in that scope: a collection key
@@ -2849,14 +3003,53 @@ class LocalZoteroReader:
         joiner = " AND " if join_mode == "all" else " OR "
         where_sql = joiner.join(f"({c})" for c in clauses)
 
-        query_sql = (
-            _item_hydration_select(len(lib_ids))
-            + " AND it.typeName NOT IN ('attachment', 'note', 'annotation')"
-            + f" AND ({where_sql})"
-        )
-        all_params = list(lib_ids) + params
-        rows = conn.execute(query_sql, all_params).fetchall()
-        return self._hydrate_rows(conn, rows)
+        sort_field = (sort_by or "").strip()
+        by_creator = sort_field in ("creator", "author")
+        by_date = sort_field in ("date", "year", "publicationDate")
+        key_sql, key_params = "NULL", []
+        if by_date:
+            key_sql = _base_field_resolved_subquery("date")
+        elif sort_field in _SIMPLE_FIELD_SQL:
+            key_sql = _SIMPLE_FIELD_SQL[sort_field]
+        elif sort_field == "key":
+            key_sql = "i.key"
+        elif sort_field in self._known_field_names():
+            key_sql, key_params = _resolved_field_subquery(), [sort_field, sort_field]
+
+        lib_placeholders = ",".join("?" * len(lib_ids))
+        rows = conn.execute(
+            f"""SELECT i.itemID, {key_sql} FROM items i
+                JOIN itemTypes it ON i.itemTypeID = it.itemTypeID
+                WHERE i.libraryID IN ({lib_placeholders})
+                AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+                AND it.typeName NOT IN ('attachment', 'note', 'annotation')
+                AND ({where_sql})
+                ORDER BY i.dateModified DESC, i.itemID DESC""",
+            key_params + list(lib_ids) + params,
+        ).fetchall()
+        ids = [row[0] for row in rows]
+
+        ordered = True
+        if sort_field:
+            if by_creator:
+                from .utils import format_creators
+
+                creators: dict[int, list[dict]] = {}
+                for start in range(0, len(ids), _ID_CHUNK):
+                    creators.update(self._fetch_creators(conn, ids[start:start + _ID_CHUNK]))
+                keys = {i: format_creators(creators.get(i, [])) for i in ids}
+            elif by_date:
+                keys = {row[0]: _date_sort_key(row[1]) for row in rows}
+            else:
+                keys = {row[0]: str(row[1] or "").lower() for row in rows}
+            # A field no match carries cannot order anything: leave the
+            # default order and let the caller say so (#418).
+            ordered = not ids or any(keys.values())
+            if ordered:
+                ids.sort(key=keys.__getitem__, reverse=sort_direction == "desc")
+
+        page = ids if limit is None else ids[:limit]
+        return SearchPage(self._hydrate_ids(conn, lib_ids, page), len(ids), ordered)
 
 
     # -- full-fidelity readers for the SQLite library backend --------------
@@ -3236,57 +3429,55 @@ class LocalZoteroReader:
     ) -> dict | None:
         """The item owning `citekey`, matched exactly.
 
-        Zotero 7 stores the key in a real ``citationKey`` field, so this is
-        an indexed equality match rather than the ranked substring search
-        the API path had to use. Older items keep it as a ``Citation Key:``
-        line inside ``extra``; those are checked second, which is why the
-        pattern match is only reached when the field lookup misses.
+        Zotero 7 stores the key in a real ``citationKey`` field; older items
+        keep it as a ``Citation Key:`` line inside ``extra``, which is checked
+        second. Both lookups start from the value: the key through the unique
+        index on ``itemDataValues.value``, the legacy line through the
+        ``extra`` rows alone. Starting from ``items`` walked every item's
+        fields in the library, twice on a miss.
         """
+        from zotero_mcp.tools._helpers import _extra_has_citekey
+
         conn = self._get_connection()
         lib_ids = self._resolve_scope_library_ids(group_id)
         if not lib_ids:
             return None
-        lib_ph = ",".join("?" * len(lib_ids))
 
-        row = conn.execute(
-            self._FULL_ITEM_COLUMNS
-            + f""" JOIN itemData ck_data ON ck_data.itemID = i.itemID
-                   JOIN fields ck_f
-                       ON ck_f.fieldID = ck_data.fieldID AND ck_f.fieldName = 'citationKey'
-                   JOIN itemDataValues ck_v ON ck_v.valueID = ck_data.valueID
-                   WHERE i.libraryID IN ({lib_ph})
-                   AND del.itemID IS NULL
-                   AND ck_v.value = ?
-                   LIMIT 1""",
-            list(lib_ids) + [citekey],
-        ).fetchone()
-        if row is not None:
-            return self._build_full_items(conn, [row])[0]
+        def first_live(item_ids: list[int]) -> dict | None:
+            for start in range(0, len(item_ids), _ID_CHUNK):
+                chunk = item_ids[start:start + _ID_CHUNK]
+                row = conn.execute(
+                    self._FULL_ITEM_COLUMNS
+                    + f""" WHERE i.itemID IN ({','.join('?' * len(chunk))})
+                           AND i.libraryID IN ({','.join('?' * len(lib_ids))})
+                           AND del.itemID IS NULL
+                           ORDER BY i.itemID LIMIT 1""",
+                    chunk + list(lib_ids),
+                ).fetchone()
+                if row is not None:
+                    return self._build_full_items(conn, [row])[0]
+            return None
 
-        # Legacy placement: a "Citation Key: <key>" line in `extra`. LIKE
-        # narrows to candidates; the exact line match is applied in Python
-        # by the caller's `_extra_has_citekey`, so this only has to avoid
-        # returning the wrong item, not parse the field itself.
-        rows = conn.execute(
-            self._FULL_ITEM_COLUMNS
-            + f""" JOIN itemData ex_data ON ex_data.itemID = i.itemID
-                   JOIN fields ex_f
-                       ON ex_f.fieldID = ex_data.fieldID AND ex_f.fieldName = 'extra'
-                   JOIN itemDataValues ex_v ON ex_v.valueID = ex_data.valueID
-                   WHERE i.libraryID IN ({lib_ph})
-                   AND del.itemID IS NULL
-                   AND ex_v.value LIKE ?
-                   LIMIT 25""",
-            list(lib_ids) + [f"%{_semantics.escape_like(citekey)}%"],
+        exact = conn.execute(
+            f"""SELECT d.itemID FROM itemData d
+                WHERE d.valueID IN (SELECT valueID FROM itemDataValues WHERE value = ?)
+                AND d.fieldID = {_field_id('citationKey')}""",
+            (citekey,),
         ).fetchall()
-        for item in self._build_full_items(conn, rows):
-            if item["data"].get("citationKey") == citekey:
-                return item
-            from zotero_mcp.tools._helpers import _extra_has_citekey
+        if (item := first_live([row[0] for row in exact])) is not None:
+            return item
 
-            if _extra_has_citekey(item["data"].get("extra", ""), citekey):
-                return item
-        return None
+        # Legacy placement: LIKE narrows the `extra` values to candidates and
+        # the exact line is matched here, before anything is hydrated.
+        legacy = conn.execute(
+            f"""SELECT d.itemID, v.value FROM itemData d
+                JOIN itemDataValues v ON v.valueID = d.valueID
+                WHERE d.fieldID = {_field_id('extra')}
+                AND v.value LIKE ? ESCAPE '\\'
+                ORDER BY d.itemID""",
+            (f"%{_semantics.escape_like(citekey)}%",),
+        ).fetchall()
+        return first_live([row[0] for row in legacy if _extra_has_citekey(row[1], citekey)])
 
     #: Share of `items` above which a full scan beats the (libraryID, key)
     #: index for a library-filtered ranking query. Measured crossover on a
@@ -3317,7 +3508,9 @@ class LocalZoteroReader:
         sort: str = "dateAdded",
         direction: str = "desc",
     ) -> list[dict] | None:
-        """Most recently added/modified top-level items.
+        """Most recently added/modified top-level items: regular items plus
+        standalone notes and attachments, as the API's ``/items/top`` lists
+        them. Children are left out.
 
         Returns None for a sort field this backend cannot order by, so the
         caller can fall back rather than silently reorder the answer.
@@ -3373,9 +3566,13 @@ class LocalZoteroReader:
                 f"""SELECT i.itemID FROM {items_source}{title_join}
                     WHERE i.libraryID IN ({lib_ph})
                       AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
-                      AND i.itemTypeID NOT IN (
-                          SELECT itemTypeID FROM itemTypes
-                          WHERE typeName IN ('attachment', 'note', 'annotation'))
+                      AND (i.itemTypeID NOT IN (
+                              SELECT itemTypeID FROM itemTypes
+                              WHERE typeName IN ('attachment', 'note', 'annotation'))
+                           OR i.itemID IN (
+                              SELECT itemID FROM itemAttachments WHERE parentItemID IS NULL
+                              UNION ALL
+                              SELECT itemID FROM itemNotes WHERE parentItemID IS NULL))
                       {collection_sql}
                     ORDER BY {sort_column} {direction.upper()}, i.itemID {direction.upper()}
                     LIMIT ?""",
@@ -3391,33 +3588,6 @@ class LocalZoteroReader:
         by_id = {row["itemID"]: row for row in rows}
         ordered = [by_id[item_id] for item_id in page if item_id in by_id]
         return self._build_full_items(conn, ordered)
-
-    def get_related_items(
-        self,
-        key: str,
-        *,
-        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
-    ) -> list[dict]:
-        """Items related to `key`, hydrated in one batch.
-
-        Relations are stored as URIs; the related keys are extracted from
-        them here so the caller gets items rather than strings to re-fetch
-        one at a time.
-        """
-        source = self.get_full_items([key], group_id=group_id)
-        item = source.get(key)
-        if item is None:
-            return []
-        related_keys: list[str] = []
-        for objects in item["data"].get("relations", {}).values():
-            for uri in objects if isinstance(objects, list) else [objects]:
-                match = re.search(r"/items/([A-Z0-9]{8})$", uri) if isinstance(uri, str) else None
-                if match and match.group(1) not in related_keys:
-                    related_keys.append(match.group(1))
-        if not related_keys:
-            return []
-        fetched = self.get_full_items(related_keys, group_id=group_id)
-        return [fetched[k] for k in related_keys if k in fetched]
 
     # -- collections and tags ---------------------------------------------
 
@@ -3492,13 +3662,7 @@ class LocalZoteroReader:
         can distinguish that from an empty collection.
         """
         conn = self._get_connection()
-        # `_resolve_collection_ids` always walks descendants; the singular
-        # lookup is the one that means "this collection only".
-        if include_subcollections:
-            collection_ids = self._resolve_collection_ids(conn, collection_key)
-        else:
-            own_id = self._resolve_collection_id(conn, collection_key)
-            collection_ids = [own_id] if own_id is not None else []
+        collection_ids = self._collection_scope_ids(conn, collection_key, include_subcollections)
         if not collection_ids:
             return None
         lib_ids = self._resolve_scope_library_ids(group_id)
@@ -3516,6 +3680,64 @@ class LocalZoteroReader:
             list(lib_ids) + list(collection_ids),
         ).fetchall()
         return self._build_full_items(conn, rows)
+
+    def _collection_scope_ids(
+        self, conn: sqlite3.Connection, collection_key: str, include_subcollections: bool
+    ) -> list[int]:
+        # `_resolve_collection_ids` always walks descendants; the singular
+        # lookup is the one that means "this collection only".
+        if include_subcollections:
+            return self._resolve_collection_ids(conn, collection_key)
+        own_id = self._resolve_collection_id(conn, collection_key)
+        return [own_id] if own_id is not None else []
+
+    def get_collection_page(
+        self,
+        collection_key: str,
+        *,
+        limit: int,
+        offset: int = 0,
+        include_subcollections: bool = False,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+    ) -> tuple[list[dict], int] | None:
+        """One page of a collection's listing, and how many entries it has.
+
+        The entries are what `zotero_get_collection_items` lists: regular
+        items and standalone attachments, in itemID order; a standalone note
+        is not an entry. Only the page is hydrated, where
+        `get_collection_items` hydrates the whole collection. None when the
+        key names no collection.
+        """
+        conn = self._get_connection()
+        collection_ids = self._collection_scope_ids(conn, collection_key, include_subcollections)
+        if not collection_ids:
+            return None
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return [], 0
+        ids = [
+            row[0]
+            for row in conn.execute(
+                f"""SELECT i.itemID FROM items i
+                    WHERE i.libraryID IN ({",".join("?" * len(lib_ids))})
+                    AND i.itemID NOT IN (SELECT itemID FROM deletedItems)
+                    AND i.itemID IN (SELECT itemID FROM collectionItems
+                        WHERE collectionID IN ({",".join("?" * len(collection_ids))}))
+                    AND i.itemTypeID NOT IN (SELECT itemTypeID FROM itemTypes
+                        WHERE typeName IN ('note', 'annotation'))
+                    ORDER BY i.itemID""",
+                list(lib_ids) + list(collection_ids),
+            ).fetchall()
+        ]
+        page = ids[offset:offset + limit]
+        if not page:
+            return [], len(ids)
+        rows = conn.execute(
+            self._FULL_ITEM_COLUMNS
+            + f" WHERE i.itemID IN ({','.join('?' * len(page))}) ORDER BY i.itemID",
+            page,
+        ).fetchall()
+        return self._build_full_items(conn, rows), len(ids)
 
     def list_tags(
         self,

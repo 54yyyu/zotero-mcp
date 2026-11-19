@@ -223,6 +223,7 @@ const fr: Catalog = {
   "chat.startFailed": "Impossible de démarrer l'agent : {error}",
   "chat.checkStatus": "Consultez État pour voir ce qui manque, puis renvoyez le message.",
   "chat.loadFailed": "Impossible d'ouvrir cette conversation : {error}",
+  "chat.resumeFresh": "La session précédente n'a pas pu être rouverte, l'agent repart donc de zéro ici. Il ne se souvient pas des messages ci-dessus.",
   // header
   "header.close": "Fermer le panneau",
   "header.apiKey": "{agent} · clé API",

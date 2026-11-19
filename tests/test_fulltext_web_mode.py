@@ -68,9 +68,6 @@ class FakeChromaClient:
         for i, m in zip(ids, metadatas):
             self._metas[i] = dict(m)
 
-    def add_documents(self, documents, metadatas, ids):
-        self.upsert_documents(documents, metadatas, ids)
-
     def delete_documents(self, ids):
         self.deleted.extend(list(ids))
         for i in ids:
@@ -592,3 +589,23 @@ def test_attach_web_fulltext_does_not_walk_every_attachment_for_a_few_items(monk
     assert names.count("items") == 0
     assert names.count("children") == 60
     assert papers[3]["data"]["fulltext"] == "text 3"
+
+
+def test_get_items_from_api_lists_top_level_items_only(monkeypatch):
+    """Children are never indexed; listing them was most of a library's pages."""
+    zot = FakeZoteroClient()
+    zot.load_scenario([_paper("P1"), _pdf("ATT1", parent="P1"), _paper("P2")])
+
+    def top(start=0, limit=100, **kwargs):
+        zot.calls.append(("top", start, limit))
+        tops = [k for k in zot.items_order if "parentItem" not in zot.items_by_key[k]["data"]]
+        return [zot.items_by_key[k] for k in tops[start:start + limit]]
+
+    zot.top = top
+    search = _build_search(monkeypatch, zot, FakeChromaClient())
+    zot.calls.clear()
+
+    items = search._get_items_from_api()
+
+    assert [item["key"] for item in items] == ["P1", "P2"]
+    assert [call[0] for call in zot.calls] == ["top"]

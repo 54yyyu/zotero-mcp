@@ -223,6 +223,7 @@ const zhHant: Catalog = {
   "chat.startFailed": "無法啟動 AI 代理：{error}",
   "chat.checkStatus": "請在「狀態」中查看缺少什麼，然後重新傳送。",
   "chat.loadFailed": "無法開啟該對話：{error}",
+  "chat.resumeFresh": "無法重新開啟先前的工作階段，AI 代理將從這裡重新開始。它不記得上面的訊息。",
   // header
   "header.close": "關閉面板",
   "header.apiKey": "{agent} · API 金鑰",
