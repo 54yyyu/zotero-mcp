@@ -92,9 +92,6 @@ class FakeChroma:
         for i, m in zip(ids, metadatas):
             self._docs[i] = dict(m)
 
-    def add_documents(self, documents, metadatas, ids):
-        self.upsert_documents(documents, metadatas, ids)
-
     def delete_documents(self, ids):
         for i in ids:
             self._docs.pop(i, None)

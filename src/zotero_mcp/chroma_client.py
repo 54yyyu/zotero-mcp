@@ -331,30 +331,6 @@ class ChromaClient:
                 text = text[:max_chars]
         return text
 
-    def add_documents(self,
-                     documents: list[str],
-                     metadatas: list[dict[str, Any]],
-                     ids: list[str]) -> None:
-        """
-        Add documents to the collection.
-
-        Args:
-            documents: List of document texts to embed
-            metadatas: List of metadata dictionaries for each document
-            ids: List of unique IDs for each document
-        """
-        try:
-            for collection, positions in self._group_by_collection(ids):
-                collection.add(
-                    documents=[documents[i] for i in positions],
-                    metadatas=[metadatas[i] for i in positions],
-                    ids=[ids[i] for i in positions],
-                )
-            logger.info(f"Added {len(documents)} documents to ChromaDB collection")
-        except Exception as e:
-            logger.error(f"Error adding documents to ChromaDB: {e}")
-            raise
-
     def upsert_documents(self,
                         documents: list[str],
                         metadatas: list[dict[str, Any]],
@@ -689,16 +665,6 @@ class ChromaClient:
         except Exception as e:
             logger.error(f"Error resetting collection: {e}")
             raise
-
-    def document_exists(self, doc_id: str) -> bool:
-        """Check if a document exists in the collection."""
-        try:
-            return any(
-                len(collection.get(ids=part)['ids']) > 0
-                for collection, part in self._group_existing([doc_id])
-            )
-        except Exception:
-            return False
 
     def get_document_metadata(self, doc_id: str) -> dict[str, Any] | None:
         """

@@ -82,7 +82,7 @@ _PASSAGE_CALLS = frozenset({
     "reset_collection",
 })
 _CALLS_BY_ID = frozenset({
-    "add_documents", "upsert_documents", "upsert_embeddings", "delete_documents", "update_metadatas",
+    "upsert_documents", "upsert_embeddings", "delete_documents", "update_metadatas",
 })
 
 

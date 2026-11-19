@@ -189,7 +189,8 @@ def test_batch_manifest_group_id_uses_the_runs_pinned_library(monkeypatch):
         return {"run_id": "r", "manifest_path": "/tmp/m.json", "batches": []}
 
     monkeypatch.setattr(semantic_search.openai_batch, "submit_embedding_batches", capture_submit)
-    search._submit_openai_batch_index(
+    search._submit_batch_index(
+        "openai",
         [{
             "key": "K1",
             "data": {"title": "T", "itemType": "journalArticle", "abstractNote": "A", "creators": []},
@@ -219,7 +220,8 @@ def test_failed_batch_submit_does_not_report_added_or_updated(monkeypatch):
     }
 
     with pytest.raises(RuntimeError, match="missing files.write"):
-        search._submit_openai_batch_index(
+        search._submit_batch_index(
+            "openai",
             [
                 {
                     "key": "EXISTING",
@@ -292,7 +294,8 @@ def test_batch_and_realtime_indexing_share_prepared_payload(monkeypatch):
     monkeypatch.setattr(semantic_search.openai_batch, "submit_embedding_batches", capture_batch_submit)
     batch_client = RecordingChromaClient()
     batch_search = semantic_search.ZoteroSemanticSearch(chroma_client=batch_client)
-    batch_search._submit_openai_batch_index(
+    batch_search._submit_batch_index(
+        "openai",
         [item],
         force_full_rebuild=False,
         target_sync_version=123,
@@ -431,7 +434,7 @@ def test_import_openai_batch_reports_records_missing_from_output(tmp_path, monke
     chroma_client = ImportChromaClient()
     search = semantic_search.ZoteroSemanticSearch(chroma_client=chroma_client)
 
-    stats = search.import_openai_batch()
+    stats = search._import_batch("openai")
 
     assert chroma_client.upserted == {
         "documents": ["doc A"],
@@ -520,7 +523,7 @@ def test_import_openai_batch_evicts_cached_fulltext(tmp_path, monkeypatch):
     search = semantic_search.ZoteroSemanticSearch(
         chroma_client=ImportChromaClient(), config_path=cfg
     )
-    stats = search.import_openai_batch()
+    stats = search._import_batch("openai")
 
     assert stats["imported_items"] == 3
     assert fulltext_cache.get_cached_text("ATT_A", 111, 22, config_path=cfg) is None

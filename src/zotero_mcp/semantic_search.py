@@ -23,12 +23,6 @@ from typing import Any
 
 from pyzotero.zotero_errors import ResourceNotFoundError
 
-try:
-    import tiktoken
-except Exception:
-    tiktoken = None
-
-
 from . import batch_common, chroma_worker, fulltext_cache, gemini_batch, openai_batch
 from .chroma_client import (
     ChromaClient,
@@ -371,45 +365,6 @@ def _acquire_update_lock(lock_path: Path):
     finally:
         if fd is not None:
             fd.close()
-
-
-# Loaded on first use, not at import. get_encoding() parses ~100k BPE ranks
-# (0.1-0.25 s), or downloads them when they are not cached yet, and this
-# module is imported on the main thread before the server answers its first
-# request on Windows (#485) — for a tokenizer that only _truncate_to_tokens
-# uses. False records a failed load so it is not retried on every call.
-_tokenizer = None
-
-
-def _get_tokenizer():
-    """The cl100k_base encoding, or None when tiktoken cannot provide it."""
-    global _tokenizer
-    if _tokenizer is None:
-        try:
-            _tokenizer = tiktoken.get_encoding("cl100k_base") if tiktoken else False
-        except Exception:
-            _tokenizer = False
-    return _tokenizer or None
-
-
-def _truncate_to_tokens(text: str, max_tokens: int = 8000) -> str:
-    """Truncate text to fit within embedding model token limit.
-
-    Uses tiktoken for accurate token counting when available,
-    falls back to conservative character-based estimation.
-    """
-    tokenizer = _get_tokenizer()
-    if tokenizer is not None:
-        tokens = tokenizer.encode(text, disallowed_special=())
-        if len(tokens) > max_tokens:
-            tokens = tokens[:max_tokens]
-            text = tokenizer.decode(tokens)
-    else:
-        # Fallback: conservative char limit (~1.5 chars/token for non-Latin scripts)
-        max_chars = max_tokens * 2
-        if len(text) > max_chars:
-            text = text[:max_chars]
-    return text
 
 
 # Bumped when the ChromaDB metadata shape changes in a way that requires a
@@ -1541,10 +1496,6 @@ class ZoteroSemanticSearch:
     def _resolve_openai_batch_enabled(self, use_openai_batch: bool | None) -> bool:
         """Resolve CLI override + config default for OpenAI batch indexing."""
         return self._resolve_batch_enabled("openai", use_openai_batch)
-
-    def _resolve_gemini_batch_enabled(self, use_gemini_batch: bool | None) -> bool:
-        """Resolve CLI override + config default for Gemini batch indexing."""
-        return self._resolve_batch_enabled("gemini", use_gemini_batch)
 
     def _resolve_batch_mode(
         self,
@@ -2982,15 +2933,11 @@ class ZoteroSemanticSearch:
             return None
         return child.get("key") or data.get("key") or None
 
-    def _fulltext_from_attachments(self, attachment_keys: list[str | None]) -> tuple[str, str]:
-        """Zotero's extracted text for the first of ``attachment_keys`` that has any."""
-        text, source, _failed = self._fulltext_from_attachments_checked(attachment_keys)
-        return text, source
-
     def _fulltext_from_attachments_checked(
         self, attachment_keys: list[str | None]
     ) -> tuple[str, str, bool]:
-        """``_fulltext_from_attachments``, plus whether a request failed on the way."""
+        """Zotero's extracted text for the first of ``attachment_keys`` that has any,
+        its source, and whether a request failed on the way."""
         failed = False
         for child_key in attachment_keys:
             if not child_key:
@@ -3600,36 +3547,6 @@ class ZoteroSemanticSearch:
         stats["estimated_updated_items"] = len(existing_items)
         stats["estimated_added_items"] = len(item_keys) - len(existing_items)
         return stats
-
-    def _submit_openai_batch_index(
-        self,
-        items: list[dict[str, Any]],
-        force_full_rebuild: bool,
-        target_sync_version: int | None,
-        stats: dict[str, Any],
-        max_enqueued_tokens: int | None = None,
-        max_requests: int | None = None,
-    ) -> dict[str, Any]:
-        """Prepare records and submit asynchronous OpenAI embedding batches."""
-        return self._submit_batch_index(
-            "openai", items, force_full_rebuild, target_sync_version, stats,
-            max_enqueued_tokens=max_enqueued_tokens, max_requests=max_requests,
-        )
-
-    def _submit_gemini_batch_index(
-        self,
-        items: list[dict[str, Any]],
-        force_full_rebuild: bool,
-        target_sync_version: int | None,
-        stats: dict[str, Any],
-        max_enqueued_tokens: int | None = None,
-        max_requests: int | None = None,
-    ) -> dict[str, Any]:
-        """Prepare records and submit asynchronous Gemini embedding batches."""
-        return self._submit_batch_index(
-            "gemini", items, force_full_rebuild, target_sync_version, stats,
-            max_enqueued_tokens=max_enqueued_tokens, max_requests=max_requests,
-        )
 
     def _run_deletion_pass(self, stats, current_library_keys, allow_mass_deletion):
         """Delete indexed docs of the syncing library that Zotero no longer has.
@@ -5195,14 +5112,6 @@ class ZoteroSemanticSearch:
             "batches": batches,
         }
 
-    def get_openai_batch_status(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
-        """Refresh and return OpenAI Batch API status for the latest run or selected batches."""
-        return self._get_batch_status("openai", batch_ids)
-
-    def get_gemini_batch_status(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
-        """Refresh and return Gemini Batch API status for the latest run or selected batches."""
-        return self._get_batch_status("gemini", batch_ids)
-
     def _superseded_by(self, provider: str, manifest: dict[str, Any]) -> str | None:
         """Run id of the newer run that has taken over this run's items, if any.
 
@@ -5565,14 +5474,6 @@ class ZoteroSemanticSearch:
             self._drop_passages_on_write = False
             self._level_fill_keys = frozenset()
             lock_cm.__exit__(None, None, None)
-
-    def import_openai_batch(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
-        """Import completed OpenAI Batch API embeddings into ChromaDB."""
-        return self._import_batch("openai", batch_ids)
-
-    def import_gemini_batch(self, batch_ids: list[str] | None = None) -> dict[str, Any]:
-        """Import completed Gemini Batch API embeddings into ChromaDB."""
-        return self._import_batch("gemini", batch_ids)
 
     def auto_loop_batch_pipeline(
         self,
@@ -6167,17 +6068,6 @@ class ZoteroSemanticSearch:
             "should_update": self.should_update_database(),
             "last_update": self.update_config.get("last_update"),
         }
-
-    def delete_item(self, item_key: str) -> bool:
-        """Delete an item from the semantic search database."""
-        try:
-            self.chroma_client.delete_documents([item_key])
-            self.chroma_client.delete_item_chunks(item_key)
-            return True
-        except Exception as e:
-            logger.error(f"Error deleting item {item_key}: {e}")
-            return False
-
 
 def create_semantic_search(
     config_path: str | None = None,

@@ -143,9 +143,6 @@ class RecordingChroma:
         for i, m in zip(ids, metadatas):
             self._docs[i] = dict(m)
 
-    def add_documents(self, documents, metadatas, ids):
-        self.upsert_documents(documents, metadatas, ids)
-
     def delete_documents(self, ids):
         self.deleted.extend(ids)
         for i in ids:
