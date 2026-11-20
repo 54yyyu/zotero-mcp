@@ -20,12 +20,14 @@ if sys.version_info >= (3, 14):
 from test_fulltext_web_mode import FakeChromaClient, FakeZoteroClient, _build_search, _paper, _pdf
 from test_passage_chunking import _chunking_search, _fit_search
 
+from zotero_mcp.semantic_search import _attachment_unit
+
 SENTENCE = "Mindfulness training reduced relapse in the treated group. "
 
 
 def _item(text):
-    return {"key": "ITEM0001", "data": {"key": "ITEM0001", "itemType": "journalArticle",
-                                        "title": "A long paper", "fulltext": text}}
+    # A file's text is its own record's (#826): an attachment unit.
+    return _attachment_unit("ATT00001", text, file_stamp="stamp", group_id=0)
 
 
 def test_the_cap_is_the_longer_of_what_an_article_and_the_passages_read(monkeypatch):
@@ -88,12 +90,14 @@ def test_text_extracted_by_the_local_scan_is_cut_to_the_cap(monkeypatch):
     from zotero_mcp import semantic_search
 
     class LongTextReader(FakeReader):
-        def extract_fulltext_for_item(self, item_id):
-            return (SENTENCE * 4000, "pdf")
+        pass
 
     monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: object())
     monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
-    reader = LongTextReader(attachments=[("ATT1", "storage:paper.pdf", "application/pdf")])
+    reader = LongTextReader(
+        attachments=[("ATT1", "storage:paper.pdf", "application/pdf")],
+        texts={"ATT1": (SENTENCE * 4000, "pdf")},
+    )
     monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda *a, **kw: reader)
     chroma = ScanChroma(None)
     chroma.embedding_max_tokens = 256
@@ -104,5 +108,5 @@ def test_text_extracted_by_the_local_scan_is_cut_to_the_cap(monkeypatch):
 
     items = search._get_items_from_source(extract_fulltext=True, chroma_client=chroma, force_rebuild=False)
 
-    assert items[0]["data"]["fulltext"] == (SENTENCE * 4000)[: 256 * 16]
-    assert items[0]["data"]["fulltextSource"] == "pdf"
+    unit = next(item for item in items if item.get("key") == "ATT1")
+    assert unit["text"] == (SENTENCE * 4000)[: 256 * 16]

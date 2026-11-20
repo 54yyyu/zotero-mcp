@@ -257,6 +257,14 @@ def _check_item(
     ``KEY#n``, the metadata names the same item and chunk, the chunks run
     0..n_chunks-1 without gaps, and every chunk has a document and a vector.
     """
+    # An attachment's own record ``ATT`` may sit beside its passages ``ATT#n``
+    # (an index whose passages are not split off yet). Only the attachment
+    # record may: a bare legacy record with chunks is a half-written item.
+    bare = [d for d in doc_ids if _chunk_number(d) is None]
+    own = None
+    if bare and len(bare) < len(doc_ids) and len(bare) == 1 and "file_stamp" in (metadata.get(bare[0]) or {}):
+        own = bare[0]
+        doc_ids = [d for d in doc_ids if d != own]
     numbers = [_chunk_number(d) for d in doc_ids]
     chunked = numbers[0] is not None
     if any((n is not None) != chunked for n in numbers) or (not chunked and len(doc_ids) > 1):
@@ -268,7 +276,9 @@ def _check_item(
             return "chunks missing"
 
     ids, rows, documents, metadatas = [], [], [], []
-    for n, doc_id in enumerate(doc_ids):
+    for n, doc_id in enumerate(([own] if own else []) + doc_ids):
+        if own:
+            n -= 1  # the attachment record is not chunk 0
         meta = dict(metadata.get(doc_id) or {})
         document = meta.pop("chroma:document", None)
         meta = {k: v for k, v in meta.items() if not k.startswith("chroma:")}
@@ -276,9 +286,9 @@ def _check_item(
             return "chunk without document"
         if meta.get("item_key", item_key) != item_key:
             return "metadata names another item"
-        if chunked and meta.get("chunk_index", n) != n:
+        if chunked and doc_id != own and meta.get("chunk_index", n) != n:
             return "metadata names another chunk"
-        if chunked and n == 0 and meta.get("n_chunks", len(doc_ids)) != len(doc_ids):
+        if chunked and doc_id != own and n == 0 and meta.get("n_chunks", len(doc_ids)) != len(doc_ids):
             return "chunks missing"
         row = vectors.label_to_row.get(vectors.id_to_label.get(doc_id, -1))
         if row is None:
