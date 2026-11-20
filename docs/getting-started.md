@@ -111,6 +111,37 @@ If you want to connect to your Zotero library via the web API:
 
 If your agent has a shell (Claude Code, Cursor, Codex …), you can use `zotero-cli` through an agent skill instead of the MCP server, at a fraction of the context cost: `zotero-mcp install-skill`. See [CLI and agent skill](cli.md).
 
+## Integrating with Tencent WorkBuddy
+
+Install Zotero MCP and complete [local Zotero setup](#option-1-local-zotero-recommended)
+on the same computer as WorkBuddy. Keep Zotero open. WorkBuddy starts the MCP
+server as a local process, and local reads need no Zotero Web API key.
+
+In WorkBuddy, open **专家 · 技能 · 连接器 → 连接器** (Connectors). Choose
+**自定义连接器 → 添加 MCP** (Custom Connectors → Add MCP). Merge this entry into
+`mcpServers` in the `mcp.json` editor, keeping any existing entries. See [Tencent's WorkBuddy setup steps](https://docs.ardot.tencent.com/ardot-mcp/ide-integration.html#workbuddy) and the [WorkBuddy MCP configuration reference](https://open.workbuddy.cn/docs/connector).
+
+```json
+{
+  "mcpServers": {
+    "zotero": {
+      "type": "stdio",
+      "command": "zotero-mcp",
+      "args": ["serve"],
+      "env": { "ZOTERO_LOCAL": "true" }
+    }
+  }
+}
+```
+
+Save the configuration and enable `zotero` in the MCP service manager. If
+WorkBuddy cannot find the executable, use `zotero-mcp setup-info` to find its
+full path and put that path in `command`. Windows JSON paths can use forward
+slashes, as in `C:/full/path/to/zotero-mcp.exe`.
+
+In a WorkBuddy chat, ask it to call `zotero_get_collections`. Check the tool
+result to confirm it can read your Zotero library.
+
 ## Integrating with VS Code and GitHub Copilot
 
 Install Zotero MCP and complete [local Zotero setup](#option-1-local-zotero-recommended)
