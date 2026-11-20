@@ -194,6 +194,40 @@ above assume the server can access the desktop Zotero installation locally.
 See [VS Code's server troubleshooting](https://code.visualstudio.com/docs/agents/run/manage-mcp-servers#troubleshoot-mcp-servers)
 and this project's [Troubleshooting](troubleshooting.md) for more diagnostics.
 
+## Integrating with the ChatGPT desktop app and Codex
+
+For local reads in the ChatGPT desktop app or Codex CLI, use a local `stdio`
+server. Install Zotero MCP, enable the [Zotero local API](#option-1-local-zotero-recommended),
+and keep Zotero open. The client launches `zotero-mcp` on your computer, so this
+connection needs neither a tunnel nor a Zotero Web API key.
+
+In the desktop app, go to **Settings → MCP servers → Add server**. Name the
+server `zotero`, choose **STDIO**, and enter the command `zotero-mcp` with the
+argument `serve`. Set `ZOTERO_LOCAL` to `true` in the server's environment,
+then save and restart the app. See [OpenAI's MCP setup guide](https://learn.chatgpt.com/docs/extend/mcp?surface=desktop).
+
+You can also add the equivalent entry to `~/.codex/config.toml` (on Windows,
+`%USERPROFILE%\.codex\config.toml`). The desktop app and Codex CLI share this
+file. Use one setup method, and keep any other MCP server entries in the file.
+
+```toml
+[mcp_servers.zotero]
+command = "zotero-mcp"
+args = ["serve"]
+env = { ZOTERO_LOCAL = "true" }
+```
+
+If the desktop app cannot find the command, run `zotero-mcp setup-info` to find
+the installed executable and use its absolute path for `command`. In TOML on
+Windows, you can use forward slashes in the path.
+
+In a local session, use `/mcp` to check that `zotero` is connected. Then ask
+the assistant to call `zotero_get_collections` and check the result to verify
+it can read your library. The server connection stays on your computer, but
+tool results used in the conversation can be sent to the model provider.
+
+For a hosted ChatGPT session, see [the Secure MCP Tunnel instructions below](#integrating-with-openais-chatgpt).
+
 ## Authenticated HTTP clients
 
 For clients that connect over HTTP, set `ZOTERO_MCP_AUTH_TOKEN` on the server and
@@ -268,7 +302,10 @@ Ensure Cursor inherits the variable, then restart it. Cursor uses the
 
 ## Integrating with OpenAI's ChatGPT
 
-ChatGPT connects to an MCP server with OAuth or with no authentication; OpenAI's
+For the ChatGPT desktop app running locally, see [the local stdio setup](#integrating-with-the-chatgpt-desktop-app-and-codex).
+The instructions here are for a hosted ChatGPT connection.
+
+Hosted ChatGPT connects to an MCP server with OAuth or with no authentication; OpenAI's
 [authentication docs](https://developers.openai.com/plugins/build/auth#client-identification)
 say it cannot present custom API keys, so it cannot send `ZOTERO_MCP_AUTH_TOKEN`.
 Do not work around that by exposing an unauthenticated server through a public
