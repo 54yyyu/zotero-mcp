@@ -75,6 +75,25 @@ def pyzotero_local_endpoint():
 
 
 @pytest.fixture(autouse=True)
+def isolate_home_and_local_zotero(monkeypatch, tmp_path):
+    """Keep every test away from the developer's home, config and zotero.sqlite.
+
+    Semantic search resolves hits through zotero.sqlite whenever local mode is
+    on (#826), and LocalZoteroReader finds that database from ZOTERO_DB_PATH,
+    the Zotero profile under the home directory, or ~/Zotero. A shell with
+    ZOTERO_LOCAL=true would otherwise point any test that builds a search at
+    the real library, and ~/.config/zotero-mcp at the real index settings.
+    Tests that need local mode or a home of their own set it after this runs.
+    """
+    home = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    for var in ("ZOTERO_LOCAL", "ZOTERO_DB_PATH", "APPDATA"):
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def isolate_local_write_state(monkeypatch, tmp_path):
     """Keep local-write config and capability probing out of the tests.
 
