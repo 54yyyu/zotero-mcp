@@ -1610,6 +1610,7 @@ def semantic_search(
         search_results = results.get("results", [])
         level_note = results.get("level_note")
         load_note = results.get("load_note")
+        filter_note = results.get("filter_note")
 
         if not search_results:
             empty = f"No semantically similar items found for query: '{query}'"
@@ -1617,6 +1618,7 @@ def semantic_search(
                 n for n in (
                     f"*{level_note}*" if level_note else None,
                     f"*{load_note}*" if load_note else None,
+                    f"*{filter_note}*" if filter_note else None,
                     stale_note,
                 ) if n
             ]
@@ -1632,6 +1634,9 @@ def semantic_search(
             output.append("")
         if load_note:
             output.append(f"*{load_note}*")
+            output.append("")
+        if filter_note:
+            output.append(f"*{filter_note}*")
             output.append("")
         output.append(f"Found {len(search_results)} similar items:")
         output.append("")
@@ -1675,7 +1680,11 @@ def semantic_search(
             # Provenance for citing: page (when the index carries page breaks),
             # else which passage of how many, else an approximate char offset.
             loc_bits = []
-            # Section first: it is what tells a reader whether the hit is this
+            # The file the hit came from, when an item has several (#826).
+            if attachment := result.get("matched_attachment"):
+                if name := attachment.get("title") or attachment.get("filename"):
+                    loc_bits.append(f"Attachment: {name}")
+            # Section next: it is what tells a reader whether the hit is this
             # paper's own claim or a citation of someone else's, which changes
             # how the result should be read before anything else does.
             if section := result.get("section"):
@@ -1798,6 +1807,9 @@ def update_search_database(
             if stats.get("deletion_skipped_reason"):
                 output.append(f"**Deletion check skipped:** {stats['deletion_skipped_reason']}")
             output.append(f"**Errors:** {stats.get('errors', 0)}")
+            held_note = (stats.get("passages_rekeyed") or {}).get("note")
+            if held_note:
+                output.append(f"**Note:** {held_note}")
             output.append(f"**Duration:** {stats.get('duration', 'Unknown')}")
 
             if stats.get('start_time'):
@@ -1869,10 +1881,11 @@ def get_search_database_status(*, ctx: Context) -> str:
         output.append(f"**Document Count:** {collection_info.get('count', 0)}")
         output.append(f"**Article-level Records:** {collection_info.get('article_records', 0)}")
         output.append(f"**Passage-level Records:** {collection_info.get('passage_records', 0)}")
-        for label, key in (("Items with Article Records", "article_items"), ("Items with Passages", "passage_items")):
-            if key in collection_info:
-                count = collection_info[key]
-                output.append(f"**{label}:** {'unknown' if count is None else count}")
+        from zotero_mcp.chroma_client import legacy_status_note, level_status_rows
+
+        for label, value in level_status_rows(collection_info):
+            title = " ".join(w if w == "with" else w.capitalize() for w in label.split())
+            output.append(f"**{title}:** {value}")
         if collection_info.get("pending_writes"):
             output.append(
                 f"**Pending Writes:** {collection_info['pending_writes']} "
@@ -1905,6 +1918,13 @@ def get_search_database_status(*, ctx: Context) -> str:
             output.extend(
                 status_note(collection_info["migration"], "zotero-mcp update-db", local_mode=_utils.is_local_mode())
             )
+            output.append("```")
+            output.append("")
+
+        if legacy_lines := legacy_status_note(collection_info):
+            output.append("## Legacy Records")
+            output.append("```")
+            output.extend(legacy_lines)
             output.append("```")
             output.append("")
 
