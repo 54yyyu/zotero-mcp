@@ -726,8 +726,9 @@ def batch_update_tags(
         if explicit_keys:
             # Explicit selection: fetch each key; a key that can't be fetched
             # is reported and skipped rather than failing the whole batch.
+            # A repeated key is edited once: outcomes are counted per key.
             fetched = _fetch_items_by_key(zot, explicit_keys, ctx)
-            items = [fetched[key] for key in explicit_keys if key in fetched]
+            items = [fetched[key] for key in dict.fromkeys(explicit_keys) if key in fetched]
             if not items:
                 return f"No items found for item_keys {explicit_keys}"
         else:
@@ -744,8 +745,7 @@ def batch_update_tags(
 
         # Initialize counters
         skipped_count = 0
-        added_tag_counts = {tag: 0 for tag in (add_tags or [])}
-        removed_tag_counts = {tag: 0 for tag in (remove_tags or [])}
+        changes = {}  # key -> (tags added, tags removed), counted once written
         edits = []
 
         # Process each item
@@ -753,9 +753,7 @@ def batch_update_tags(
             # Get current tags
             current_tags = item["data"].get("tags", [])
             current_tag_values = {t["tag"] for t in current_tags}
-
-            # Track if this item needs to be updated
-            needs_update = False
+            added, removed = [], []
 
             # Process tags to remove
             if remove_tags:
@@ -763,8 +761,7 @@ def batch_update_tags(
                 for tag_obj in current_tags:
                     tag = tag_obj["tag"]
                     if tag in remove_tags:
-                        removed_tag_counts[tag] += 1
-                        needs_update = True
+                        removed.append(tag)
                     else:
                         new_tags.append(tag_obj)
                 current_tags = new_tags
@@ -776,10 +773,9 @@ def batch_update_tags(
                 for tag in add_tags:
                     if tag and tag not in current_tag_values:
                         current_tags.append({"tag": tag})
-                        added_tag_counts[tag] += 1
-                        needs_update = True
+                        added.append(tag)
 
-            if needs_update:
+            if added or removed:
                 # Re-applied to the copy being written, not replayed from
                 # this one: in hybrid mode and on a version-conflict retry
                 # that copy can hold tags this one never saw.
@@ -789,13 +785,23 @@ def batch_update_tags(
                         [{"tag": t} for t in add_tags or [] if t], remove_tags)
 
                 item["data"]["tags"] = current_tags
-                edits.append((item.get("key", "unknown"), item, _set_tags))
+                key = item.get("key", "unknown")
+                changes[key] = (added, removed)
+                edits.append((key, item, _set_tags))
             else:
                 skipped_count += 1
 
         # One multi-object write per 50 items rather than one PATCH each.
-        updated_count, failed_count = _write_batch_edits(zot, write_zot, edits, ctx)
-        skipped_count += failed_count
+        failures: dict[str, str] = {}
+        updated_count, _ = _write_batch_edits(zot, write_zot, edits, ctx, failures)
+        added_tag_counts = {tag: 0 for tag in (add_tags or [])}
+        removed_tag_counts = {tag: 0 for tag in (remove_tags or [])}
+        for key, (added, removed) in changes.items():
+            if key not in failures:
+                for tag in added:
+                    added_tag_counts[tag] += 1
+                for tag in removed:
+                    removed_tag_counts[tag] += 1
 
         # Format the response
         response = ["# Batch Tag Update Results", ""]
@@ -803,8 +809,14 @@ def batch_update_tags(
         response.append(f"Items processed: {len(items)}")
         response.append(f"Items updated: {updated_count}")
         response.append(f"Items skipped: {skipped_count}")
+        if failures:
+            response.append(f"Items failed: {len(failures)}")
         if more_matched:
             response.append("\n" + _limit_note(limit))
+
+        if failures:
+            response.append("\n## Failed")
+            response.extend(f"- {key}: {why}" for key, why in failures.items())
 
         if add_tags:
             response.append("\n## Tags Added")
@@ -995,15 +1007,21 @@ def batch_update_extra(
             edits.append((item_key, item, _set_extra))
 
         # One multi-object write per 50 items rather than one PATCH each.
-        updated_count, failed_count = _write_batch_edits(zot, write_zot, edits, ctx)
-        skipped_count += failed_count
+        failures: dict[str, str] = {}
+        updated_count, _ = _write_batch_edits(zot, write_zot, edits, ctx, failures)
 
         response = ["# Batch Extra Update Results", ""]
         response.append(f"Items processed: {len(item_keys)}")
         response.append(f"Items updated: {updated_count}")
         response.append(f"Items skipped: {skipped_count}")
+        if failures:
+            response.append(f"Items failed: {len(failures)}")
         if more_matched:
             response.append("\n" + _limit_note(limit))
+
+        if failures:
+            response.append("\n## Failed")
+            response.extend(f"- {key}: {why}" for key, why in failures.items())
 
         if set_keys:
             response.append("\n## Keys Set")
@@ -1013,7 +1031,7 @@ def batch_update_extra(
             response.append("\n## Keys Removed")
             for key in remove_keys:
                 response.append(f"- `{key}`")
-        if replace:
+        if replace and updated_count:
             response.append("\nExtra field fully replaced from set_keys.")
 
         return "\n".join(response)

@@ -208,8 +208,57 @@ def test_refused_object_is_counted_and_reported(monkeypatch):
     )
 
     assert "Items updated: 2" in result
-    assert "Items skipped: 1" in result
+    assert "Items skipped: 0" in result
+    assert "Items failed: 1" in result
+    assert "K0000002: bad field" in result
     assert any("K0000002" in e and "bad field" in e for e in errors)
+
+
+def test_refused_tag_write_is_failed_and_not_counted_as_added(monkeypatch):
+    items = _items(3)
+    for it in items:
+        it["data"]["tags"] = [{"tag": "old"}]
+    zot = CountingZot(items, refuse={"K0000001": {"key": "K0000001", "code": 400,
+                                                  "message": "bad tag"}})
+    _install(monkeypatch, zot)
+
+    result = write.batch_update_tags(
+        item_keys=_keys(3), add_tags=["new"], remove_tags=["old"], ctx=DummyContext(),
+    )
+
+    assert "Items updated: 2" in result
+    assert "Items skipped: 0" in result
+    assert "Items failed: 1" in result
+    assert "K0000001: bad tag" in result
+    assert "- `new`: 2 items" in result
+    assert "- `old`: 2 items" in result
+
+
+def test_a_key_given_twice_is_edited_once(monkeypatch):
+    zot = CountingZot(_items(1))
+    _install(monkeypatch, zot)
+
+    result = write.batch_update_tags(
+        item_keys=["K0000000", "K0000000"], add_tags=["new"], ctx=DummyContext(),
+    )
+
+    assert "Items processed: 1" in result
+    assert "Items updated: 1" in result
+    assert "Items skipped: 0" in result
+    assert [len(b) for b in zot.batches] == [1]
+
+
+def test_refused_replacement_does_not_claim_the_extra_was_replaced(monkeypatch):
+    zot = CountingZot(_items(1), refuse={"K0000000": {"key": "K0000000", "code": 400,
+                                                      "message": "bad field"}})
+    _install(monkeypatch, zot)
+
+    result = write.batch_update_extra(
+        item_keys=_keys(1), set_keys={"a": "b"}, replace=True, ctx=DummyContext(),
+    )
+
+    assert "Items failed: 1" in result
+    assert "fully replaced" not in result
 
 
 def test_chunk_the_backend_rejects_is_written_one_at_a_time(monkeypatch):
