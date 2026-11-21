@@ -9,6 +9,7 @@ from conftest import DummyContext, FakeZotero, skip_on_windows
 
 from zotero_mcp import server
 from zotero_mcp.tools import _helpers
+from zotero_mcp.utils import EXPOSE_LOCAL_PATHS_ENV_VAR
 
 
 @pytest.fixture
@@ -213,6 +214,48 @@ class TestAttachFileValidation:
             ctx=dummy_ctx,
         )
         assert "exactly one of file_path or url" in result
+
+    def test_local_file_input_is_disabled_when_paths_are_hidden(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        monkeypatch.setenv(EXPOSE_LOCAL_PATHS_ENV_VAR, "0")
+
+        result = server.attach_file(
+            item_key="ITEM1", file_path="/private/paper.pdf", ctx=dummy_ctx
+        )
+
+        assert "Local file attachments are disabled" in result
+        assert "/private/paper.pdf" not in result
+        assert fake.created == [] and fake.attachments == []
+
+    def test_url_input_remains_available_when_paths_are_hidden(self, monkeypatch, dummy_ctx):
+        fake = FakeZoteroForAttach()
+        _patch_write_client(monkeypatch, fake)
+        monkeypatch.setenv(EXPOSE_LOCAL_PATHS_ENV_VAR, "false")
+        monkeypatch.setattr(
+            "zotero_mcp.tools.write._attach_from_url",
+            lambda write_zot, item_key, url, filename, ctx: "URL attachment reached",
+        )
+
+        result = server.attach_file(
+            item_key="ITEM1", url="https://example.org/paper.pdf", ctx=dummy_ctx
+        )
+
+        assert result == "URL attachment reached"
+
+    def test_linked_url_is_not_directed_to_disabled_file_input(self, monkeypatch, dummy_ctx):
+        _patch_write_client(monkeypatch, FakeZoteroForAttach())
+        monkeypatch.setenv(EXPOSE_LOCAL_PATHS_ENV_VAR, "0")
+
+        result = server.attach_file(
+            item_key="ITEM1",
+            url="https://example.org/paper.pdf",
+            link_mode="linked",
+            ctx=dummy_ctx,
+        )
+
+        assert "Local file attachments are disabled" in result
+        assert "needs file_path" not in result
 
     def test_local_only_mode_message(self, monkeypatch, dummy_ctx):
         def raise_local(ctx):

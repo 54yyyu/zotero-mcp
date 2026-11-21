@@ -35,11 +35,14 @@ import os
 from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
+from zotero_mcp.utils import expose_local_paths
+
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from fastmcp import FastMCP
 
 #: Environment variable that selects which optional toolsets are enabled.
 TOOLSETS_ENV_VAR = "ZOTERO_MCP_TOOLSETS"
+LOCAL_PATH_TOOL = "zotero_get_attachment_path"
 
 #: Optional tool groups, keyed by toolset name.
 #:
@@ -331,6 +334,10 @@ def apply_toolsets(
     off: set[str] = set()
     for name, tools in TOOLSETS.items():
         (on if name in enabled else off).update(tools)
+
+    # This is output visibility only: local extraction still resolves and reads
+    # attachments through their server-side paths.
+    (on if expose_local_paths() else off).add(LOCAL_PATH_TOOL)
 
     # Disable first so a tool appearing in two groups stays on if any of its
     # groups is enabled.

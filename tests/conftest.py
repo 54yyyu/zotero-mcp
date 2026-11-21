@@ -105,6 +105,7 @@ def isolate_local_write_state(monkeypatch, tmp_path):
         "ZOTERO_LOCAL_API_KEY",
         "ZOTERO_LOCAL_SERVER_ID",
         "ZOTERO_LOCAL_WRITE",
+        "ZOTERO_MCP_EXPOSE_LOCAL_PATHS",
         "ZOTERO_WEBDAV_URL",
         "ZOTERO_WEBDAV_USERNAME",
         "ZOTERO_WEBDAV_PASSWORD",

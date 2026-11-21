@@ -1,9 +1,10 @@
 """Tests for Feature 6: update_item (zotero_update_item)."""
 
 import pytest
+from conftest import DummyContext, FakeZotero, _FakeResponse
 
 from zotero_mcp import server
-from conftest import DummyContext, FakeZotero, _FakeResponse
+from zotero_mcp.utils import EXPOSE_LOCAL_PATHS_ENV_VAR
 
 
 # ---------------------------------------------------------------------------
@@ -895,6 +896,39 @@ class TestUpdateItemErrors:
         assert "lastRead" not in submitted
         assert submitted["title"] == "New PDF Title"
         assert "New PDF Title" in result
+
+    def test_linked_path_update_is_disabled_when_paths_are_hidden(self, monkeypatch):
+        old_path = "/private/old.pdf"
+        new_path = "/private/new.pdf"
+        attachment = {
+            "key": "ATTACH12",
+            "version": 7,
+            "data": {
+                "key": "ATTACH12",
+                "version": 7,
+                "itemType": "attachment",
+                "linkMode": "linked_file",
+                "title": "Paper",
+                "path": old_path,
+                "tags": [],
+                "relations": {},
+            },
+        }
+        fake = FakeZoteroForUpdate(items=[attachment])
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake, fake)
+        )
+        monkeypatch.setenv(EXPOSE_LOCAL_PATHS_ENV_VAR, "0")
+
+        result = server.update_item(
+            item_key="ATTACH12",
+            fields={"path": new_path, "title": "Must not be partially applied"},
+            ctx=DummyContext(),
+        )
+
+        assert "Updating linked-file paths is disabled" in result
+        assert old_path not in result and new_path not in result
+        assert fake.update_calls == []
 
 
 # ---------------------------------------------------------------------------

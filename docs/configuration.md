@@ -191,6 +191,16 @@ libraries is two items, and collapsing them would hide where each copy lives.
   a fixed cost on your context window. Groups that need an external service,
   serve maintenance rather than research, or apply only to some users are off
   by default. See [Tool groups](tools.md#tool-groups).
+- `ZOTERO_MCP_EXPOSE_LOCAL_PATHS=0`: Hide server-local filesystem paths from
+  MCP clients (`false` and `no` are equivalent; the default is to expose them).
+  This removes `zotero_get_attachment_path`, omits linked-attachment `data.path`,
+  and omits the semantic-index location from normal database status. It also
+  rejects local-file sources in `zotero_add_item`,
+  `file_path` in `zotero_attach_file`, and linked-file path updates in
+  `zotero_update_item`; DOI/URL imports, URL attachments, inline citation text,
+  and other metadata updates remain available. Local attachment reading and
+  extraction are unchanged, as are `zotero-cli`, attachment filenames, and
+  Zotero item keys.
 
 **Item schema:**
 - `ZOTERO_MCP_SCHEMA_REFRESH=0`: Disable the weekly background refresh of

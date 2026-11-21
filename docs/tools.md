@@ -63,7 +63,9 @@ config of yours still names an old tool, and move it to the new name before
 | `zotero_update_collection(collection_key=..., ...)` | `zotero_manage_collection(action="update", collection_key=..., ...)` |
 | `zotero_delete_collection(collection_key=...)` | `zotero_manage_collection(action="delete", collection_key=...)` |
 
-Anything not listed above is **core** and always available.
+Anything not listed above is **core**. Core tools are available under every
+toolset profile, except that `ZOTERO_MCP_EXPOSE_LOCAL_PATHS=0` removes
+`zotero_get_attachment_path`.
 
 **Note:** a disabled tool is genuinely absent — not merely hidden — so the
 model cannot call it. If you rely on a capability, enable its group.
@@ -103,7 +105,7 @@ Example (Claude Desktop / Claude Code):
 - `zotero_get_item_children`: Attachments and notes for one item or many (pass an array of keys)
 - `zotero_read_pdf_pages`: Read a page range of a PDF as Markdown, with pages whose math, figures or tables the text garbles flagged; `format="image"` returns the pages as images, and `rect=[x, y, width, height]` zooms into one region
 - `zotero_get_pdf_outline`: A PDF's table of contents (`pdf-geometry`)
-- `zotero_get_attachment_path`: Local file paths of an item's attachments (local mode)
+- `zotero_get_attachment_path`: Local file paths of an item's attachments (local mode; absent when `ZOTERO_MCP_EXPOSE_LOCAL_PATHS=0`)
 - `zotero_export_bibliography`: Format references or in-text citations with Zotero's CSL engine, or export BibTeX
 
 In local mode, an item Zotero has flagged as retracted carries
@@ -123,8 +125,14 @@ not proof the paper stands. A retraction hidden in Zotero is not flagged.
 - `zotero_get_page_layout`: Detect figure and table regions on a PDF page with normalized boxes, for area annotations (`pdf-geometry`)
 
 ### 📦 Adding and editing items
+
+With `ZOTERO_MCP_EXPOSE_LOCAL_PATHS=0`, local-file inputs to `zotero_add_item`
+and `zotero_attach_file` are rejected, as are linked-file `path` updates through
+`zotero_update_item`. Remote identifiers, URLs, inline citations, and other
+metadata updates remain available.
+
 - `zotero_add_item`: Add items from a DOI, URL, ISBN, PMID, BibTeX, CSL JSON or a local file. Takes `collections` (keys, names or `parent/child` paths, validated before anything is created), `if_exists` (`"file"`, the default, reuses an item matching the DOI/arXiv ID/ISBN/URL and files it into missing collections; `"duplicate"` always creates a new item; `"skip"` leaves a match untouched) and `create_missing_collections`. The `zotero-cli add` commands default to `--if-exists file`.
-- `zotero_attach_file`: Attach a local file or a PDF URL to an existing item (returns the attachment key; skips a file already attached)
+- `zotero_attach_file`: Attach a local file or a PDF URL to an existing item (returns the attachment key; skips a file already attached; URL-only when local paths are hidden)
 - `zotero_update_item`: Update metadata, tags and collection membership of one item
 - `zotero_batch_update`: Add or remove tags and Extra lines across many items
 - `zotero_set_item_parent`: Set, change, or clear an item's parent (`parent_key=null` makes it top-level)
