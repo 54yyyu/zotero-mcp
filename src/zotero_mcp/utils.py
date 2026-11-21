@@ -12,7 +12,7 @@ from urllib.parse import parse_qsl
 
 from unidecode import unidecode
 
-from zotero_mcp import strict_sqlite
+from zotero_mcp import _serverless, strict_sqlite
 
 html_re = re.compile(r"<.*?>")
 
@@ -244,6 +244,17 @@ def is_local_mode() -> bool:
     """
     value = os.getenv("ZOTERO_LOCAL", "")
     return value.lower() in {"true", "yes", "1"}
+
+
+EXPOSE_LOCAL_PATHS_ENV_VAR = "ZOTERO_MCP_EXPOSE_LOCAL_PATHS"
+
+
+def expose_local_paths() -> bool:
+    """Whether MCP clients may see or use server-local filesystem paths."""
+    if _serverless.ENABLED:
+        return True
+    value = os.getenv(EXPOSE_LOCAL_PATHS_ENV_VAR, "").strip().lower()
+    return value not in {"0", "false", "no"}
 
 
 # ---------------------------------------------------------------------------

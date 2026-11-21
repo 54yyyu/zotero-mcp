@@ -13,6 +13,7 @@ import pytest
 from conftest import DummyContext
 
 from zotero_mcp.tools import _helpers, write
+from zotero_mcp.utils import EXPOSE_LOCAL_PATHS_ENV_VAR
 
 # ---------------------------------------------------------------------------
 # detect_source_type
@@ -360,6 +361,42 @@ class TestAddItemDispatch:
         )
         assert calls["name"] == "add_by_bibtex"
         assert calls["kwargs"]["bibtex"] == "this is not bibtex"
+
+    @pytest.mark.parametrize("source,source_type", [
+        ("/Users/me/paper.pdf", "auto"),
+        ("/Users/me/refs.bib", "auto"),
+        ("/Users/me/refs.json", "auto"),
+        ("paper.pdf", "file"),
+        ("refs.bib", "bibtex"),
+        ("refs.json", "csl_json"),
+    ])
+    def test_local_file_sources_are_disabled_when_paths_are_hidden(
+        self, calls, monkeypatch, source, source_type
+    ):
+        monkeypatch.setenv(EXPOSE_LOCAL_PATHS_ENV_VAR, "0")
+
+        result = write.add_item(source=source, source_type=source_type, ctx=DummyContext())
+
+        assert "Local file sources are disabled" in result
+        assert source not in result
+        assert calls == {}
+
+    @pytest.mark.parametrize("source,source_type,target", [
+        ("10.1145/3708319", "auto", "add_by_doi"),
+        ("https://example.com/p", "auto", "add_by_url"),
+        ("@article{a, title={T}}", "auto", "add_by_bibtex"),
+        ('[{"id": "a"}]', "auto", "add_by_csl_json"),
+    ])
+    def test_non_file_sources_still_dispatch_when_paths_are_hidden(
+        self, calls, monkeypatch, source, source_type, target
+    ):
+        monkeypatch.setenv(EXPOSE_LOCAL_PATHS_ENV_VAR, "false")
+
+        result = write.add_item(source=source, source_type=source_type, ctx=DummyContext())
+
+        assert result == f"called {target}"
+        assert calls["name"] == target
+        assert "file_path" not in calls["kwargs"]
 
     def test_unknown_source_type_rejected(self, calls):
         result = write.add_item(

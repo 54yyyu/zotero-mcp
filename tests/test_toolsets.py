@@ -18,6 +18,7 @@ import pytest
 
 from zotero_mcp.toolsets import (
     DEFAULT_ON,
+    LOCAL_PATH_TOOL,
     TOOLSETS,
     TOOLSETS_ENV_VAR,
     UnknownToolsetError,
@@ -26,6 +27,7 @@ from zotero_mcp.toolsets import (
     resolve_enabled,
     validate_toolsets,
 )
+from zotero_mcp.utils import EXPOSE_LOCAL_PATHS_ENV_VAR
 
 CONNECTOR = "chatgpt-connector"
 
@@ -168,6 +170,27 @@ class TestApplyToolsets:
             default = len(asyncio.run(mcp.list_tools()))
             assert default < full
         finally:
+            apply_toolsets(mcp, raw="all", transport="streamable-http")
+
+
+class TestLocalPathVisibility:
+    def test_local_path_tool_follows_its_environment_setting(self, monkeypatch):
+        from zotero_mcp.server import mcp
+
+        def listed() -> set[str]:
+            return {t.name for t in asyncio.run(mcp.list_tools())}
+
+        try:
+            for value in ("0", "false", "no", " FALSE "):
+                monkeypatch.setenv(EXPOSE_LOCAL_PATHS_ENV_VAR, value)
+                apply_toolsets(mcp, raw="all", transport="streamable-http")
+                assert LOCAL_PATH_TOOL not in listed()
+
+            monkeypatch.setenv(EXPOSE_LOCAL_PATHS_ENV_VAR, "true")
+            apply_toolsets(mcp, raw="none", transport="stdio")
+            assert LOCAL_PATH_TOOL in listed()
+        finally:
+            monkeypatch.delenv(EXPOSE_LOCAL_PATHS_ENV_VAR, raising=False)
             apply_toolsets(mcp, raw="all", transport="streamable-http")
 
 

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`ZOTERO_MCP_EXPOSE_LOCAL_PATHS=0` hides server-local paths from MCP clients.** The attachment-path tool is not exposed, linked-file paths and the normal semantic-index location are omitted, and local-file add/attach inputs and linked-path updates are rejected. DOI/URL imports, URL attachments, inline citations, and other metadata edits remain available. Local attachment extraction and PDF reads still run on the server, errors are unchanged, and the CLI is unaffected. `false` and `no` are equivalent to `0`; paths remain exposed by default.
+
 ## [0.17.3] - 2026-11-19
 
 ### Fixed

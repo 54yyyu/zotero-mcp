@@ -3371,6 +3371,11 @@ def update_item(
             return f"Error: {e}"
         if creators is None:
             creators = fields_creators
+        if "path" in field_updates and not _utils.expose_local_paths():
+            return (
+                "Error: Updating linked-file paths is disabled when "
+                "ZOTERO_MCP_EXPOSE_LOCAL_PATHS is false."
+            )
 
         ctx.info(f"Updating item {item_key}")
 
@@ -5217,6 +5222,12 @@ def attach_file(
             return "Error: Provide exactly one of file_path or url."
         if link_mode not in ("import", "linked"):
             return "Error: link_mode must be 'import' or 'linked'."
+        if not _utils.expose_local_paths() and (file_path or link_mode == "linked"):
+            return (
+                "Error: Local file attachments are disabled when "
+                "ZOTERO_MCP_EXPOSE_LOCAL_PATHS is false. Use link_mode='import' "
+                "with url instead."
+            )
         if link_mode == "linked" and url:
             return "Error: link_mode='linked' needs file_path, not url."
 
@@ -6135,6 +6146,11 @@ def add_by_csl_json(
 # ---------------------------------------------------------------------------
 
 _ADD_SOURCE_TYPES = ("doi", "url", "isbn", "pmid", "bibtex", "csl_json", "file")
+_LOCAL_FILE_SOURCE_ERROR = (
+    "Error: Local file sources are disabled when "
+    "ZOTERO_MCP_EXPOSE_LOCAL_PATHS is false. Use a DOI, URL, ISBN, "
+    "PMID, or inline citation text instead."
+)
 
 _BIBTEX_EXTS = {".bib", ".bibtex"}
 _CSL_JSON_EXTS = {".json", ".csljson"}
@@ -6384,13 +6400,19 @@ def add_item(
     if resolved == "pmid":
         return add_by_pmid(pmid=source, attach_mode=attach_mode, **common)
     if resolved == "file":
+        if not _utils.expose_local_paths():
+            return _LOCAL_FILE_SOURCE_ERROR
         return add_from_file(file_path=source, title=title, **common)
     # BibTeX / CSL JSON arrive either inline or as a path to a citation file.
     if resolved == "bibtex":
         if _is_citation_path(source, _BIBTEX_EXTS):
+            if not _utils.expose_local_paths():
+                return _LOCAL_FILE_SOURCE_ERROR
             return add_by_bibtex(file_path=source, attach_mode=attach_mode, **common)
         return add_by_bibtex(bibtex=source, attach_mode=attach_mode, **common)
     if _is_citation_path(source, _CSL_JSON_EXTS):
+        if not _utils.expose_local_paths():
+            return _LOCAL_FILE_SOURCE_ERROR
         return add_by_csl_json(file_path=source, attach_mode=attach_mode, **common)
     return add_by_csl_json(csl_json=source, attach_mode=attach_mode, **common)
 

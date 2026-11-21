@@ -116,7 +116,11 @@ def get_item_metadata(
 
         if format == "json":
             if isinstance(data := item.get("data"), dict):
-                item = {**item, "data": _utils.redact_signed_attachment_url(data)}
+                data = _utils.redact_signed_attachment_url(data)
+                if not _utils.expose_local_paths() and "path" in data:
+                    data = data.copy()
+                    del data["path"]
+                item = {**item, "data": data}
             return json.dumps(item, ensure_ascii=False, indent=2, sort_keys=True)
         if format == "bibtex":
             return _client.generate_bibtex(item)

@@ -1879,7 +1879,8 @@ def get_search_database_status(*, ctx: Context) -> str:
                 "(logged but not yet applied; applied when the index is next opened)"
             )
         output.append(f"**Embedding Model:** {collection_info.get('embedding_model', 'Unknown')}")
-        output.append(f"**Database Path:** {collection_info.get('persist_directory', 'Unknown')}")
+        if _utils.expose_local_paths():
+            output.append(f"**Database Path:** {collection_info.get('persist_directory', 'Unknown')}")
 
         if collection_info.get("initialized") is False and not collection_info.get("error"):
             output.append("**Status:** Not initialized — run zotero_update_search_database first.")
