@@ -158,7 +158,10 @@ def upload_attachment_to_webdav(
     values to the Zotero attachment item via the web API, keeping the
     two sides of the sync consistent.
 
-    ``timeout`` is the read-side timeout passed to ``requests``. When
+    ``timeout`` bounds both sending each upload and waiting for the
+    reply. urllib3 sends a request body under the connect timeout, so
+    a fixed 10 s connect timeout cut off any upload that took longer
+    than 10 s, whatever the read timeout (#344). When
     ``None`` (the default), the value is read from the
     ``ZOTERO_WEBDAV_TIMEOUT`` environment variable; if that is unset,
     falls back to ``60.0``. An explicit float bypasses the env lookup.
@@ -201,14 +204,14 @@ def upload_attachment_to_webdav(
             zip_url,
             data=zip_bytes,
             headers={"Content-Type": "application/zip"},
-            timeout=(10.0, timeout),
+            timeout=(timeout, timeout),
         )
         zip_resp.raise_for_status()
         prop_resp = session.put(
             prop_url,
             data=prop_bytes,
             headers={"Content-Type": "text/xml; charset=utf-8"},
-            timeout=(10.0, timeout),
+            timeout=(timeout, timeout),
         )
         prop_resp.raise_for_status()
     finally:
