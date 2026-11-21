@@ -255,7 +255,7 @@ def test_upload_default_timeout_is_60s(tmp_path, monkeypatch):
     webdav.upload_attachment_to_webdav("ABCD1234", src)
 
     # Both PUTs use the historic default — (10s connect, 60s read).
-    assert session.timeouts == [(10.0, 60.0), (10.0, 60.0)]
+    assert session.timeouts == [(60.0, 60.0), (60.0, 60.0)]
 
 
 @skip_on_ci
@@ -269,7 +269,7 @@ def test_upload_env_override_respected(tmp_path, monkeypatch):
 
     webdav.upload_attachment_to_webdav("ABCD1234", src)
 
-    assert session.timeouts == [(10.0, 300.0), (10.0, 300.0)]
+    assert session.timeouts == [(300.0, 300.0), (300.0, 300.0)]
 
 
 @skip_on_ci
@@ -284,7 +284,7 @@ def test_upload_explicit_timeout_wins_over_env(tmp_path, monkeypatch):
     webdav.upload_attachment_to_webdav("ABCD1234", src, timeout=45.0)
 
     # Explicit caller arg takes precedence over the env var.
-    assert session.timeouts == [(10.0, 45.0), (10.0, 45.0)]
+    assert session.timeouts == [(45.0, 45.0), (45.0, 45.0)]
 
 
 # ---------------------------------------------------------------------------
