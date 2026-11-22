@@ -13,7 +13,7 @@ from zotero_mcp import utils as _utils
 from zotero_mcp._app import mcp
 from zotero_mcp._context import Context, ToolError
 from zotero_mcp.config import load_config
-from zotero_mcp.extract import extract_pdf, pdf_page_count
+from zotero_mcp.extract import _read_text, categorize_attachment, extract_pdf, pdf_page_count
 from zotero_mcp.tools import _helpers
 
 _TMPDIR_PREFIX = "zotero_pdf_"
@@ -167,6 +167,10 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
 
 #: Most pages one text read returns.
 _TEXT_MAX_PAGES = 50
+#: A Markdown or plain-text attachment has no pages: ``read`` takes it in
+#: blocks of this many lines, numbered like pages, so page ranges, --find and
+#: zotero_read_pdf_pages work on it unchanged.
+_TEXT_BLOCK_LINES = 50
 #: Most pages one image read returns. A page image costs a vision model a few
 #: thousand tokens, so an image read is for the pages that need one.
 _IMAGE_MAX_PAGES = 10
@@ -193,6 +197,70 @@ _IMAGE_HINTS = {
 }
 
 
+def _text_attachment(item_key: str) -> tuple[str, str] | None:
+    """``(path, title)`` when ``item_key`` names a Markdown or plain-text
+    attachment whose file is on disk (local mode), else None.
+
+    Only a key that names the attachment itself: a parent item still means
+    its PDF, so nothing changes for existing callers.
+    """
+    if not _utils.is_local_mode():
+        return None
+    try:
+        from zotero_mcp.local_db import LocalZoteroReader
+
+        with LocalZoteroReader(db_path=load_config().resolve_zotero_db_path()) as reader:
+            attachment = reader.get_attachment_by_key(item_key)
+            if not attachment or categorize_attachment(
+                attachment["zotero_path"] or "", attachment["content_type"]
+            ) not in ("markdown", "text"):
+                return None
+            resolved = reader.resolve_attachment_file(item_key)
+    except Exception:
+        return None
+    return (str(resolved), attachment["title"] or item_key) if resolved else None
+
+
+def _line_blocks(path: str) -> tuple[list[str], int]:
+    """The file's text in blocks of ``_TEXT_BLOCK_LINES`` lines, and its number of lines."""
+    lines = _read_text(path).splitlines()
+    if not any(line.strip() for line in lines):
+        raise PdfReadError("This text attachment is empty.", code="empty_text_attachment")
+    return ["\n".join(lines[i:i + _TEXT_BLOCK_LINES])
+            for i in range(0, len(lines), _TEXT_BLOCK_LINES)], len(lines)
+
+
+def _block_lines(block: int, total_lines: int) -> str:
+    """The line range of 1-based block ``block``, e.g. "lines 51-100"; the last block ends at the last line."""
+    return f"lines {(block - 1) * _TEXT_BLOCK_LINES + 1}-{min(block * _TEXT_BLOCK_LINES, total_lines)}"
+
+
+def _read_text_attachment(item_key, path, title, start_page, end_page) -> str:
+    """``read_pdf_text`` for a text attachment: blocks start_page..end_page."""
+    blocks, total_lines = _line_blocks(path)
+    total = len(blocks)
+    if end_page is not None and end_page < start_page:
+        raise PdfReadError("Error: end_page must be greater than or equal to start_page.",
+                           code="invalid_page_range")
+    if start_page < 1 or start_page > total:
+        raise PdfReadError(
+            f"Start page {start_page} is out of range. This text attachment has {total} blocks "
+            f"of {_TEXT_BLOCK_LINES} lines (1-{total}).", code="page_out_of_range")
+    end = min(end_page or start_page, total)
+    if end - start_page + 1 > _TEXT_MAX_PAGES:
+        raise PdfReadError(
+            f"Requested {end - start_page + 1} blocks (max {_TEXT_MAX_PAGES}). Please narrow your range.",
+            code="page_limit_exceeded")
+    output = [f"# {title}, lines {(start_page - 1) * _TEXT_BLOCK_LINES + 1}-"
+              f"{min(end * _TEXT_BLOCK_LINES, total_lines)} of {total_lines}",
+              f"**Item Key:** {item_key}",
+              f"**Text attachment:** {total} blocks of {_TEXT_BLOCK_LINES} lines; "
+              "page numbers count blocks", ""]
+    for block in range(start_page, end + 1):
+        output += [f"## Block {block} ({_block_lines(block, total_lines)})", "", blocks[block - 1].strip(), ""]
+    return "\n".join(output)
+
+
 @mcp.tool(
     name="zotero_read_pdf_pages",
     description=(
@@ -203,7 +271,9 @@ _IMAGE_HINTS = {
         "whose equations, figures or tables the text garbles; format='image' "
         "returns PNG page images (up to 10) to read those exactly. rect=[x, "
         "y, width, height] (normalized 0-1, e.g. from zotero_get_page_layout) "
-        "returns just that region of start_page, zoomed in."
+        "returns just that region of start_page, zoomed in. item_key may also "
+        "name a Markdown or plain-text attachment: its text is read in blocks "
+        "of 50 lines that stand in for pages (text format only)."
     ),
     # Text or a list of text and images, so no single structured schema fits.
     output_schema=None,
@@ -320,8 +390,12 @@ def read_pdf_text(
     """Markdown for a page range, with pages the text garbles flagged.
 
     ``surface`` picks whether the closing advice names the MCP tool's image
-    format or the zotero-cli flag.
+    format or the zotero-cli flag. A key naming a Markdown or plain-text
+    attachment reads that file in blocks of ``_TEXT_BLOCK_LINES`` lines.
     """
+    text_attachment = _text_attachment(item_key) if item_key and item_key.strip() else None
+    if text_attachment:
+        return _read_text_attachment(item_key, *text_attachment, start_page, end_page)
     try:
         with _page_range(item_key, start_page, end_page,
                          max_pages=_TEXT_MAX_PAGES, ctx=ctx) as (pdf_path, title, total_pages,
@@ -513,7 +587,10 @@ def format_find(result: dict) -> str:
     """The compact Markdown answer for a ``find_in_pdf`` result."""
     query, key, title = result["query"], result["item_key"], result["title"]
     total, searched = result["total_pages"], result["pages_searched"]
-    scope = f"{total} pages" if searched == total else f"{searched} of {total} pages"
+    text_file = "block_lines" in result
+    unit = f"blocks of {result['block_lines']} lines" if text_file else "pages"
+    where = (lambda page: _block_lines(page, result["text_lines"])) if text_file else (lambda page: f"p.{page}")
+    scope = f"{total} {unit}" if searched == total else f"{searched} of {total} {unit}"
     if not result["matches"]:
         return f'No match for "{query}" in {title} ({scope}).'
     shown = result["matches"]
@@ -521,9 +598,10 @@ def format_find(result: dict) -> str:
     how = "" if result["mode"] == "phrase" else "no exact phrase; pages with all words: "
     lines = [f'# "{query}" in {title} ({key}): {how}{_hits(result["hits"])} on {pages_hit} of {scope}']
     for match in shown:
-        lines.append(f'p.{match["page"]} ({_hits(match["hits"])}): ' + " | ".join(match["snippets"]))
+        lines.append(f'{where(match["page"])} ({_hits(match["hits"])}): ' + " | ".join(match["snippets"]))
     if result["more_pages"]:
-        lines.append("Also on pages " + ", ".join(map(str, result["more_pages"])))
+        lines.append(("Also in " + ", ".join(map(where, result["more_pages"]))) if text_file
+                     else "Also on pages " + ", ".join(map(str, result["more_pages"])))
     lines.append(f"Read one: zotero-cli read {key} --start-page {shown[0]['page']}")
     return "\n".join(lines)
 
@@ -549,6 +627,19 @@ def find_in_pdf(
     if start_page is not None and end_page is not None and end_page < start_page:
         raise PdfReadError("Error: end_page must be greater than or equal to start_page.",
                            code="invalid_page_range")
+    text_attachment = _text_attachment(item_key)
+    if text_attachment:
+        path, title = text_attachment
+        blocks, total_lines = _line_blocks(path)
+        first = start_page or 1
+        if first > len(blocks):
+            raise PdfReadError(
+                f"Start page {first} is out of range. This text attachment has {len(blocks)} "
+                f"blocks of {_TEXT_BLOCK_LINES} lines (1-{len(blocks)}).", code="page_out_of_range")
+        last = min(end_page or len(blocks), len(blocks))
+        result = find_in_pages(range(first - 1, last), blocks[first - 1:last], query, context=context)
+        return {"item_key": item_key, "title": title, "total_pages": len(blocks),
+                "block_lines": _TEXT_BLOCK_LINES, "text_lines": total_lines, **result}
     resolved = _get_pdf_path(item_key, ctx)
     if resolved is None:
         raise PdfReadError(f"No PDF attachment found for item: {item_key}", code="no_pdf_attachment")
@@ -638,6 +729,10 @@ def render_pdf_pages(
         (header, pages): a Markdown header naming what was rendered, and one
         ``{"page", "png", "width", "height"}`` per image.
     """
+    if item_key and item_key.strip() and _text_attachment(item_key):
+        raise PdfReadError(
+            f"{item_key} is a Markdown or text attachment: it has no page images. "
+            "Read it as text, or render its parent item's PDF.", code="not_a_pdf")
     box = None
     if rect is not None:
         box = _helpers._normalize_float_list_input(rect, 4, "rect")

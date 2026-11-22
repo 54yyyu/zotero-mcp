@@ -2080,7 +2080,7 @@ def build_parser() -> argparse.ArgumentParser:
     out_p.add_argument("item_key")
 
     # read -- page ranges out of an item's PDF
-    rd_p = sub.add_parser("read", help="Read a page range from an item's PDF")
+    rd_p = sub.add_parser("read", help="Read a page range from an item's PDF, or a Markdown or text attachment by its key (pages = blocks of 50 lines)")
     rd_p.add_argument("item_key")
     rd_p.add_argument("--start-page", type=int, default=None,
                       help="First page (required unless --find is given)")
