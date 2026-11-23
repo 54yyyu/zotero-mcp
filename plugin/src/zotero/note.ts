@@ -13,8 +13,14 @@ function target(win: any, context: ContextTracker): { libraryID: number; parent:
   const picked = reader ? reader._item : win.ZoteroPane?.getSelectedItems?.()[0];
   const parent = picked ? (picked.isRegularItem() ? picked : picked.parentItem ?? null) : null;
   if (parent) return { libraryID: parent.libraryID, parent, collection: null };
-  const libraryID: number = picked?.libraryID ?? win.ZoteroPane?.getSelectedLibraryID?.() ?? Zotero.Libraries.userLibraryID;
-  return { libraryID, parent: null, collection: reader ? null : win.ZoteroPane?.getSelectedCollections?.()?.[0] ?? null };
+  const pane = win.ZoteroPane;
+  const collection = reader ? null : pane?.getSelectedCollections?.()?.[0] ?? null;
+  const libraryID: number = picked?.libraryID ?? collection?.libraryID
+    ?? (typeof pane?.getSelectedLibraryIDs === "function"
+      ? pane.getSelectedLibraryIDs()[0]
+      : pane?.getSelectedLibraryID?.() || undefined)
+    ?? Zotero.Libraries.userLibraryID;
+  return { libraryID, parent: null, collection };
 }
 
 export async function saveNote(win: any, context: ContextTracker, req: NoteRequest): Promise<SavedNote> {
