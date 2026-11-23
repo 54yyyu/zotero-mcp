@@ -2117,10 +2117,18 @@ def _annotation_payload(
         # The quote runs across a page break; one annotation holds both parts.
         details["continues_on_page"] = page_found + 1
     if with_text:
+        from zotero_mcp.pdf_utils import zotero_rects_to_shown
+
         details["matched_text"] = text_in_rects(source, position["pageIndex"], position["rects"])
+        # The boxes covered, as [x, y, w, h] on the page as shown (the form
+        # --rect, candidates and `list --positions` use), to check coverage
+        # without rendering.
+        details["rects"] = zotero_rects_to_shown(source[position["pageIndex"]], position["rects"])
         if position.get("nextPageRects"):
             details["matched_text"] += " " + text_in_rects(
                 source, position["pageIndex"] + 1, position["nextPageRects"])
+            details["next_page_rects"] = zotero_rects_to_shown(
+                source[position["pageIndex"] + 1], position["nextPageRects"])
     return payload, details
 
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`annotations batch --dry-run` gives each highlight's `rects`** (x,y,w,h on the page as shown, `next_page_rects` for the part on the next page), so a caller can check what a quote covers without rendering.
+
 ### Fixed
 
 - **Highlights work on PDFs whose fonts have no Unicode map.** On papers like Elowitz & Leibler 2000 (Nature) every character the matcher read came back as U+FFFD, so every `--text` highlight and batch `text` entry failed with "Could not find text" and `matched_text` printed as `�`. The text extraction behind the matcher, the dry-run read-back and equation detection now asks PyMuPDF to fall back to the font's character codes, as its default extraction already does; all 69 entries of a real plan now match. When a page's text layer is still unreadable, a batch says so once (`FAIL  #1, #2: Page 1 has a broken text layer ...`) instead of one "not found" per row, and a dry run shows `[unreadable text layer]` instead of U+FFFD.

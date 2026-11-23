@@ -854,6 +854,9 @@ class TestOfflineDryRun:
         ], ctx=MagicMock(), dry_run=True)
         assert all(r["ok"] for r in results), results
         assert results[0]["matched_text"] == "synthetic paper"
+        # Its boxes, as x,y,w,h on the page: one line, near the top left.
+        (x, y, w, h), = results[0]["rects"]
+        assert 0.1 < x < 0.5 and 0.1 < y < 0.15 and 0 < w < 0.3 and 0 < h < 0.03
 
     def test_a_parent_key_is_not_read_as_one_of_its_attachments(self, pdf_path, monkeypatch):
         """The real write refuses a parent key, so the dry run must not pass it on a guessed PDF."""
