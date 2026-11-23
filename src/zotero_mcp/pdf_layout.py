@@ -810,7 +810,8 @@ def _page_regions(doc, page_num: int, panels: bool = False) -> dict:
             "confidence": "high" if equation["label"] else "medium",
         })
     if panels:
-        regions.extend(panel_regions(page, regions, drawings=drawings, words=words or None))
+        regions.extend(panel_regions(page, regions, drawings=drawings, words=words or None,
+                                     captions=captions))
     regions.sort(key=lambda r: (r["bbox"][1], r["bbox"][0]))
 
     for idx, region in enumerate(regions, start=1):
@@ -833,6 +834,12 @@ _PANEL_ROW_TOLERANCE = 0.02       # letters this close in y share a row
 _PANEL_LETTER_SIZE = (6.0, 16.0)  # a panel letter is a ~9pt bold span
 _PANEL_FIGURE_REACH = 0.03        # a figure region this near a letter belongs to its figure
 _BOLD_FLAG = 16                   # PyMuPDF span flag
+_PANEL_MARGIN = 0.02              # page margin when no figure region gives the edges
+_PANEL_MIN_SIZE = 0.03            # a panel is at least this wide and tall
+_PANEL_MAX_HEIGHT = 0.6           # and no taller than this (a full-width row may be wider)
+_PANEL_LEFT_REACH = 0.02          # ink this far left of or above a letter still belongs to it
+_PANEL_COLUMN = 0.1               # a lower letter this near in x starts the next panel down
+_PANEL_SPILL = 0.03               # ink past a cell's edge by more than this is cut through
 
 
 def _shown_points(page, bbox) -> tuple[float, float, float, float]:
@@ -912,25 +919,41 @@ def _centre_in(box, outer) -> bool:
 
 
 def panel_regions(page, figure_regions: list[dict], *, drawings: list | None = None,
-                  words: list | None = None) -> list[dict]:
+                  words: list | None = None, captions: list[dict] | None = None) -> list[dict]:
     """One region per panel letter on a page, boxed to the ink in its cell.
 
     The letters cut the figure into cells: a panel runs from its letter to the
-    next letter on its right (in rows) and the next below it, or to the
-    figure's edge. The cell is then trimmed to the drawings, images and words
-    inside it. Needs two or more letters. Confidence is "high" when the
-    letters run A, B, C ... without a gap or repeat and the figure's edges are
-    known from a detected figure region, "medium" when they run in order but
-    the figure's edges are guessed, and "low" otherwise.
+    next letter on its right in its row (or a lower row, for a panel beside
+    it), and down to the next letter in its column or one whose cell spans
+    it, else to the top of the figure caption under it, else to the figure's
+    edge. The cell is then trimmed to the drawings, images and
+    words inside it, and the box never starts more than _PANEL_LEFT_REACH left
+    of or above its letter. Needs two or more letters.
 
-    ``figure_regions`` is detect_page_regions' list. ``drawings`` and
-    ``words`` are the page's, when the caller has already read them.
+    A box under _PANEL_MIN_SIZE on a side or taller than _PANEL_MAX_HEIGHT is
+    not a panel and is dropped, and so is a letter inside another panel's box
+    or one seen before it in reading order (a label in a bar chart or
+    legend). Confidence is "high" when the letters
+    run A, B, C ... without a gap or repeat and the figure's edges are known
+    from a detected figure region and its caption, "medium" when they run in
+    order but an edge is guessed, and "low" otherwise or when the ink had to
+    be cut at the cell's edge.
+
+    ``figure_regions`` is detect_page_regions' list, ``captions`` the page's
+    caption blocks (``{"bbox": [x, y, w, h]}``). ``drawings`` and ``words``
+    are the page's, when the caller has already read them.
     """
-    letters = panel_letters(page)
+    # A letter that comes again further down is a label inside a panel (a bar
+    # chart's "B", a legend's "C"), not a second panel B: keep the first.
+    letters, seen = [], set()
+    for letter in sorted(panel_letters(page), key=lambda m: (m["box"][1], m["box"][0])):
+        if letter["letter"].upper() not in seen:
+            seen.add(letter["letter"].upper())
+            letters.append(letter)
     if len(letters) < 2:
         return []
     marks = sorted(letter["letter"].upper() for letter in letters)
-    in_order = len(set(marks)) == len(marks) and marks[0] == "A" and all(
+    in_order = marks[0] == "A" and all(
         ord(b) - ord(a) == 1 for a, b in zip(marks, marks[1:]))
     confidence = "high" if in_order else "low"
 
@@ -947,41 +970,84 @@ def panel_regions(page, figure_regions: list[dict], *, drawings: list | None = N
         bounds = [min(b[0] for b in near), min(b[1] for b in near),
                   max(b[2] for b in near), max(b[3] for b in near)]
     else:
-        bounds = [0.02, 0.02, 0.98, 0.98]
+        bounds = [_PANEL_MARGIN, _PANEL_MARGIN, 1 - _PANEL_MARGIN, 1 - _PANEL_MARGIN]
         confidence = "medium" if confidence == "high" else confidence
     bounds = [min(bounds[0], *(m["box"][0] for m in letters)), min(bounds[1], *(m["box"][1] for m in letters)),
               max(bounds[2], *(m["box"][2] for m in letters)), max(bounds[3], *(m["box"][3] for m in letters))]
+    caption_tops = [c["bbox"][1] for c in captions or []]
 
     tolerance = _PANEL_ROW_TOLERANCE
     ink = _ink_boxes(page, drawings, words)
+
+    def right_of(letter) -> float:
+        lx, ly = letter["box"][0], letter["box"][1]
+        return min([o["box"][0] for o in letters
+                    if o["box"][0] > lx + tolerance and abs(o["box"][1] - ly) < tolerance]
+                   + [bounds[2]])
+
     regions = []
     for letter in letters:
         lx, ly = letter["box"][0], letter["box"][1]
-        right = min([o["box"][0] for o in letters
-                     if o is not letter and o["box"][0] > lx + tolerance and o["box"][1] < ly + tolerance]
-                    + [bounds[2]])
-        bottom = min([o["box"][1] for o in letters
-                      if o["box"][1] > ly + tolerance and lx - 0.03 <= o["box"][0] < right]
-                     + [bounds[3]])
+        right = right_of(letter)
+        # Down to the next letter in this column (starting within
+        # _PANEL_COLUMN of this one, or whose cell spans it), then the caption, then the figure's edge if it lies
+        # below the letter at all.
+        lower = [o for o in letters if o["box"][1] > ly + tolerance]
+        below = [o["box"][1] for o in lower if o["box"][0] <= lx + _PANEL_COLUMN and right_of(o) > lx + tolerance]
+        caption = [top for top in caption_tops if top > ly + _PANEL_MIN_SIZE]
+        edge = bounds[3] if bounds[3] > ly + _PANEL_MIN_SIZE else 1 - _PANEL_MARGIN
+        bottom = min(below + caption + [edge])
+        # A letter lower down and to the right starts a panel beside this one.
+        right = min([right] + [o["box"][0] for o in lower
+                               if o["box"][0] > lx + _PANEL_COLUMN and o["box"][1] < bottom - tolerance])
+        agree = bool(below or caption)
         # The letter's own word is not the panel's ink: a stray bold letter on a
         # text page would otherwise come back as a confident letter-sized panel.
+        limits = [lx - _PANEL_LEFT_REACH, ly - _PANEL_LEFT_REACH, right, bottom]
         inside = [b for b in ink if lx <= (b[0] + b[2]) / 2 <= right and ly <= (b[1] + b[3]) / 2 <= bottom
-                  and not _centre_in(b, letter["box"])]
-        if inside:
-            cell = [min(b[0] for b in inside), min(b[1] for b in inside),
-                    max(b[2] for b in inside), max(b[3] for b in inside)]
+                  and not _centre_in(b, letter["box"])
+                  # A backdrop or clip larger than the cell both ways is not its ink.
+                  and not (b[2] - b[0] > right - lx and b[3] - b[1] > bottom - ly)]
+        # Ink spilling well past the cell is cut through: the box leaves it out
+        # and says the panel's edges are a guess.
+        fits = [b for b in inside if max(limits[0] - b[0], limits[1] - b[1],
+                                         b[2] - limits[2], b[3] - limits[3]) <= _PANEL_SPILL]
+        cut = len(fits) < len(inside)
+        if fits:
+            cell = [min(b[0] for b in fits), min(b[1] for b in fits),
+                    max(b[2] for b in fits), max(b[3] for b in fits)]
         else:
             cell = [lx, ly, right, bottom]
-        x0, y0 = max(min(cell[0], lx), 0.0), max(min(cell[1], ly), 0.0)
+        x0 = max(min(cell[0], lx), limits[0], 0.0)
+        y0 = max(min(cell[1], ly), limits[1], 0.0)
         x1, y1 = min(cell[2], right), min(cell[3], bottom)
+        level = confidence if fits and not cut else "low"
+        if level == "high" and not (near and agree):
+            level = "medium"
         regions.append({
             "source": "panel",
             "bbox": [x0, y0, max(x1 - x0, 0.0), max(y1 - y0, 0.0)],
             "caption_label": f"Panel {letter['letter']}",
             "caption_text": f"Panel {letter['letter']}",
-            "confidence": confidence if inside else "low",
+            "confidence": level,
+            "_letter": letter["box"],
         })
-    return regions
+
+    def holds(region, box) -> bool:
+        x, y, w, h = region["bbox"]
+        return _centre_in(box, [x, y, x + w, y + h])
+
+    kept = []
+    for region in regions:
+        _x, _y, w, h = region["bbox"]
+        if min(w, h) < _PANEL_MIN_SIZE or h > _PANEL_MAX_HEIGHT:
+            continue
+        if any(other is not region and holds(other, region["_letter"]) for other in regions):
+            continue
+        kept.append(region)
+    for region in regions:
+        del region["_letter"]
+    return kept
 
 
 #: How far ``rect: "auto"`` may move any edge of the near hint, and how much

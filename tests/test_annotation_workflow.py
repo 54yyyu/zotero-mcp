@@ -514,6 +514,43 @@ class TestPanels:
         layout = pdf_layout.detect_page_regions(panel_pdf(tmp_path, letters="A"), 1, panels=True)
         assert not [r for r in layout["regions"] if r["source"] == "panel"]
 
+    def test_a_two_by_three_figure_is_bounded_by_neighbours_and_caption(self, tmp_path):
+        """Moeller 2026: the last row ran to the page foot or came back 0.012
+        tall, and a letter in a bar-chart label became a panel of its own."""
+        from zotero_mcp import pdf_layout
+
+        doc = fitz.open()
+        page = doc.new_page(width=612, height=792)
+        cells = {}
+        for row in range(2):
+            for col in range(3):
+                letter = "ABCDEF"[row * 3 + col]
+                x, y = 50 + col * 175, 80 + row * 170
+                page.insert_text((x, y + 9), letter, fontsize=9, fontname="hebo")
+                page.draw_rect(fitz.Rect(x + 10, y + 14, x + 160, y + 150), width=1)
+                page.draw_line((x + 10, y + 120), (x + 160, y + 40), width=2)
+                cells[letter] = [(x + 10) / 612, (y + 14) / 792, 150 / 612, 136 / 792]
+        page.insert_text((410, 380), "B", fontsize=9, fontname="hebo")   # a bar label inside panel E
+        page.insert_text((50, 440), "Figure 1. A synthetic figure with six panels.", fontsize=9)
+        for line in range(20):                                           # body text down the page
+            page.insert_text((50, 470 + line * 14), "Body text of the paper continues here.", fontsize=9)
+        path = str(tmp_path / "grid.pdf")
+        doc.save(path)
+        doc.close()
+
+        with fitz.open(path) as doc:
+            layout = pdf_layout.detect_page_regions(doc, 1, panels=True)
+        panels = {r["caption_label"][-1]: r for r in layout["regions"] if r["source"] == "panel"}
+        assert sorted(panels) == list("ABCDEF")
+        caption_top = 430 / 792
+        for letter, region in panels.items():
+            x, y, w, h = region["bbox"]
+            assert pdf_layout._PANEL_MIN_SIZE <= h <= pdf_layout._PANEL_MAX_HEIGHT, letter
+            assert contains(region["bbox"], cells[letter]), letter
+            assert y + h <= caption_top, letter
+            assert all(not overlaps(region["bbox"], other["bbox"])
+                       for o, other in panels.items() if o != letter), letter
+
     def test_a_landscape_page_stored_turned_gives_the_same_panels_as_when_upright(self):
         """Landscape figure pages are usually portrait pages with /Rotate set, the
         text laid out sideways in the file. Panels are found in the frame the

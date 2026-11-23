@@ -180,7 +180,8 @@ To annotate, plan everything, check it, then write it in one run:
 
 1. `zotero-cli --json layout ATTACHMENT_KEY` lists figure, table and
    equation boxes with their captions and a paste-ready `rect_arg`;
-   `--panels` adds a box per panel letter (A, B, C ...) when the text has them.
+   `--panels` adds a box per panel letter (A, B, C ...) when the text has them;
+   check `low` ones by eye (an L-shaped panel or ink cut at a neighbour).
 2. Write one JSON object per line: `{"page": 4, "text": "exact words",
    "comment": "...", "color": "yellow"}` for a highlight (add
    `"underline": true` to underline instead), or
