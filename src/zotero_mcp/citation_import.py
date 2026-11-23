@@ -168,11 +168,17 @@ def _parse_bibtex_author_list(raw: str) -> list[dict[str, str]]:
     parts = _split_bibtex_authors(raw)
     creators = []
     for part in parts:
-        name = part.strip().strip("{}").strip()
+        part = part.strip()
+        # A name in one brace group is a single token to BibTeX
+        # ("{Centers for Disease Control and Prevention}"): one name field.
+        braced = _is_brace_group(part)
+        name = part.strip("{}").strip()
         # "and others" is BibTeX for et al., not a person named Others.
         if not name or name.lower() == "others":
             continue
-        if "," in name and name.count(",") == 1 and not _looks_corporate(name):
+        if braced and not _is_person_in_braces(name):
+            creators.append({"creatorType": "author", "name": name})
+        elif "," in name and name.count(",") == 1 and not _looks_corporate(name):
             last, first = [x.strip() for x in name.split(",", 1)]
             creators.append({
                 "creatorType": "author",
@@ -194,6 +200,39 @@ def _parse_bibtex_author_list(raw: str) -> list[dict[str, str]]:
 # BibTeX separates names with "and" between any whitespace, newlines
 # included: exported .bib files wrap long author lists mid-field.
 _AND_SEPARATOR = re.compile(r"\s+and\s+", re.IGNORECASE)
+
+
+def _is_brace_group(s: str) -> bool:
+    """True when ``s`` is one ``{...}`` group: its first brace closes at the end."""
+    if not (s.startswith("{") and s.endswith("}")):
+        return False
+    depth = 0
+    for i, ch in enumerate(s):
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i == len(s) - 1
+    return False
+
+
+def _is_person_in_braces(name: str) -> bool:
+    """Unchanged behaviour for "{Doe, Jane}": a braced ``Last, First`` stays a person."""
+    return name.count(",") == 1 and not _looks_corporate(name) and " and " not in name
+
+
+def _decode_names(raw: str, decode: Callable[[str], str]) -> str:
+    """Decode LaTeX in a name list one name at a time. Decoding the whole list
+    drops the braces that keep "{Barnes and Noble}" one name, and the later
+    split on ``and`` then cuts it in two. A name that was one brace group
+    keeps its outer braces."""
+    out = []
+    for part in _split_bibtex_authors(raw):
+        text = part.strip()
+        decoded = decode(text)
+        out.append("{" + decoded + "}" if _is_brace_group(text) else decoded)
+    return " and ".join(out)
 
 
 def _split_bibtex_authors(raw: str) -> list[str]:
@@ -318,6 +357,7 @@ def _format_csl_date(issued: Any) -> str:
 # Fields whose value is not LaTeX: decoding a URL turns its ``&`` into spaces,
 # and a page range's ``--`` into a dash the converter no longer recognises.
 _BIBTEX_VERBATIM_FIELDS = frozenset({"url", "doi", "file", "eprint", "pages"})
+_BIBTEX_NAME_FIELDS = frozenset({"author", "editor", "translator"})
 
 
 def _parse_bibtex_v1(text: str) -> list[tuple[str, str, dict]]:
@@ -325,7 +365,15 @@ def _parse_bibtex_v1(text: str) -> list[tuple[str, str, dict]]:
     from bibtexparser.customization import convert_to_unicode
 
     parser = BibTexParser(common_strings=True)
-    parser.customization = convert_to_unicode
+    def customization(record):
+        names = {k: record.pop(k) for k in _BIBTEX_NAME_FIELDS if k in record}
+        record = convert_to_unicode(dict(record))
+        for k, v in names.items():
+            one = {"ID": "x", "ENTRYTYPE": "misc"}
+            record[k] = _decode_names(v, lambda t: convert_to_unicode({**one, "t": t})["t"])
+        return record
+
+    parser.customization = customization
     parser.ignore_nonstandard_types = False
     db = bibtexparser.loads(text, parser=parser)
     return [
@@ -352,7 +400,8 @@ def _parse_bibtex_v2(text: str) -> list[tuple[str, str, dict]]:
             key, value = f.key.lower(), f.value
             if isinstance(value, str) and key not in _BIBTEX_VERBATIM_FIELDS:
                 try:
-                    value = decode(value)
+                    value = (_decode_names(value, decode) if key in _BIBTEX_NAME_FIELDS
+                             else decode(value))
                 except Exception:
                     pass  # keep the raw text over losing the field
             fields[key] = value
