@@ -379,7 +379,8 @@ def scan_math(page) -> tuple[list[dict], int]:
     boxes: list[list[float]] = []
     numbers: list[tuple[tuple, str]] = []
     inline_math_chars = 0
-    for block in page.get_text("dict", flags=0)["blocks"]:
+    # 128 = TEXT_CID_FOR_UNKNOWN_UNICODE: without it a font with no Unicode map reads as U+FFFD.
+    for block in page.get_text("dict", flags=128)["blocks"]:
         body = None
         total = mathy = real_math = 0
         for line in block.get("lines", []):

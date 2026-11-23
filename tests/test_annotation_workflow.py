@@ -932,3 +932,40 @@ class TestNearestCandidates:
         assert result["candidates"][0]["page"] == 1
         assert "NEAREST MATCHES" in result["error"] and "p1" in result["error"]
         assert "Could not find text" in result["error"]
+
+
+class TestBrokenTextLayer:
+    """A page whose characters all extract as U+FFFD (Elowitz & Leibler 2000)."""
+
+    def test_cli_says_it_once_instead_of_a_miss_per_row(self, store, tmp_path, monkeypatch, capsys):
+        import argparse
+
+        from zotero_mcp import cli_standalone
+
+        real = fitz.Page.get_text
+
+        def unreadable(self, option="text", *args, **kwargs):
+            result = real(self, option, *args, **kwargs)
+            if option == "rawdict":
+                for block in result["blocks"]:
+                    for line in block.get("lines", []):
+                        for span in line["spans"]:
+                            for char in span.get("chars", []):
+                                char["c"] = "�"
+            return result
+
+        monkeypatch.setattr(fitz.Page, "get_text", unreadable)
+        plan = tmp_path / "plan.jsonl"
+        plan.write_text("\n".join(json.dumps(s) for s in [
+            {"page": 1, "text": "synthetic paper"},
+            {"page": 1, "text": "Page 1 of"},
+            {"page": 1, "rect": [0.1, 0.3, 0.2, 0.1]},
+        ]))
+        args = argparse.Namespace(verbose=False, json_out=False, subcommand="batch", attachment_key=ATTACHMENT,
+                                  file=str(plan), dry_run=True, render=None)
+        with pytest.raises(SystemExit):
+            cli_standalone._annotations_batch(args, annotations, MagicMock())
+        out = capsys.readouterr().out
+        fails = [line for line in out.splitlines() if line.startswith("FAIL")]
+        assert len(fails) == 1 and fails[0].startswith("FAIL  #1, #2:") and "broken text layer" in fails[0]
+        assert "Could not find text" not in out and "ok    #3 p1 area" in out

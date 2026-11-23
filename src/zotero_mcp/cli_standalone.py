@@ -729,8 +729,17 @@ def _annotations_batch(args, annotations, ctx) -> None:
                 print("      The PDF could not be fetched. Start Zotero (with 'Allow other applications "
                       "on this computer to communicate with Zotero' on), or set ZOTERO_LOCAL=true so "
                       "the file is read from disk.")
+        # A broken text layer fails every highlight on its page the same way.
+        unreadable: dict[str, list[str]] = {}
+        for r in [] if collapsed else failed:
+            if r.get("unreadable_text"):
+                unreadable.setdefault(r["error"], []).append(f"#{r['index']}")
+        for error, rows in unreadable.items():
+            print(f"FAIL  {', '.join(rows)}: {error}")
         for r in [] if collapsed else results:
             where = f"#{r['index']} p{r['page']}"
+            if r.get("unreadable_text"):
+                continue
             if r.get("skipped"):
                 print(f"skip  {where} already there as {r['annotation_key']}")
                 continue

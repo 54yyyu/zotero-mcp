@@ -2091,6 +2091,8 @@ def _annotation_payload(
         return payload, details
 
     position = find_text_position(source, page, text, cache=cache)
+    if position.get("unreadable"):
+        return None, {"error": f"Error: {position['error']}", "unreadable_text": True}
     if "error" in position:
         return None, {"error": _describe_text_miss(position, text, file_type),
                       "candidates": position.get("candidates") or []}
