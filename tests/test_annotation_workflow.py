@@ -548,11 +548,41 @@ class TestAutoBox:
             return pdf_layout.auto_box(doc, 1, near)
 
     def test_snaps_to_the_panel_under_the_hint(self, tmp_path):
-        near = [0.60, 0.15, 0.30, 0.15]                    # roughly panel B, sloppy
+        near = [0.53, 0.14, 0.33, 0.19]                    # roughly panel B
         found = self.box_of(tmp_path, near)
         assert found["source"].startswith("panel") and "Panel B" in found["source"]
         assert contains(found["rect"], panel_inner("B"))
         assert not overlaps(found["rect"], panel_inner("A")) and not overlaps(found["rect"], panel_inner("D"))
+
+    def test_a_snap_far_from_the_hint_keeps_the_hint(self, tmp_path):
+        """Moeller 2026 Fig 1: on a dense figure the region under a hint is often
+        bigger than what the hint asks for. The hint wins and the note says so."""
+        near = [0.60, 0.15, 0.30, 0.15]                    # inside panel B, an edge 0.077 off
+        found = self.box_of(tmp_path, near)
+        assert found["source"] == "hint" and found["rect"] == near
+        assert found["note"].startswith("kept hint, snap too large")
+
+    def test_two_adjacent_panels_each_stay_on_their_hint(self, tmp_path):
+        from zotero_mcp import pdf_layout
+
+        hints = {"A": [0.10, 0.13, 0.36, 0.19], "B": [0.53, 0.14, 0.33, 0.19]}
+        with fitz.open(panel_pdf(tmp_path)) as doc:
+            found = {letter: pdf_layout.auto_box(doc, 1, near, [other for o, other in hints.items() if o != letter])
+                     for letter, near in hints.items()}
+        for letter, near in hints.items():
+            assert f"Panel {letter}" in found[letter]["source"]
+            fit, hint = pdf_layout._edges(found[letter]["rect"]), pdf_layout._edges(near)
+            assert max(abs(a - b) for a, b in zip(fit, hint)) <= pdf_layout.AUTO_EDGE_SLACK + 1e-9
+            assert contains(found[letter]["rect"], panel_inner(letter))
+        assert not overlaps(found["A"]["rect"], found["B"]["rect"])
+
+    def test_a_fit_never_reaches_into_another_entrys_box(self):
+        from zotero_mcp.pdf_layout import _fit_to_hint
+
+        snap, near = [0.10, 0.10, 0.40, 0.20], [0.12, 0.12, 0.36, 0.18]
+        assert _fit_to_hint(snap, near, [])[0] == pytest.approx([0.10, 0.10, 0.40, 0.20])
+        rect, note = _fit_to_hint(snap, near, [[0.49, 0.10, 0.69, 0.30]])  # x0, y0, x1, y1
+        assert rect[0] + rect[2] == pytest.approx(0.48) and note == "trimmed to the hint"
 
     def test_a_hint_that_matches_nothing_is_kept_and_says_so(self, tmp_path):
         found = self.box_of(tmp_path, [0.05, 0.85, 0.2, 0.1])
@@ -573,7 +603,7 @@ class TestAutoBox:
         monkeypatch.setattr(annotations, "_fetch_attachment_file",
                             lambda key, tmp, **kw: (path, "figure.pdf", "pdf", None))
         results = annotations.create_annotations(ATTACHMENT, [
-            {"page": 1, "rect": "auto", "near": [0.60, 0.15, 0.30, 0.15], "comment": "FIG 1B"},
+            {"page": 1, "rect": "auto", "near": [0.53, 0.14, 0.33, 0.19], "comment": "FIG 1B"},
             {"page": 1, "rect": "auto", "near": [0.05, 0.85, 0.2, 0.1], "comment": "nothing here"},
             {"page": 1, "rect": "auto", "comment": "no hint"},
             {"page": 1, "rect": "auto", "near": [2, 2, 2, 2]},
@@ -596,7 +626,7 @@ class TestAutoBox:
         monkeypatch.setattr(annotations, "_fetch_attachment_file",
                             lambda key, tmp, **kw: (path, "figure.pdf", "pdf", None))
         args = argparse.Namespace(verbose=False, json_out=False, subcommand="create", attachment_key=ATTACHMENT,
-                                  page=1, rect="auto", near="0.60,0.15,0.30,0.15", text=None, note=None,
+                                  page=1, rect="auto", near="0.53,0.14,0.33,0.19", text=None, note=None,
                                   comment="FIG 1B", color="purple", tags=None, open=False)
         monkeypatch.setattr(cli_standalone, "setup_zotero_environment", lambda: None)
         cli_standalone.cmd_annotations(args)

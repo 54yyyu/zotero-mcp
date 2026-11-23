@@ -112,8 +112,8 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--page` -- **required**
  - `--text` -- Exact text to highlight
  - `--underline` -- Underline --text instead of highlighting it
- - `--rect` -- Area box x,y,width,height, normalized 0-1; `zotero-cli layout` prints boxes for figures and tables; `auto` fits the figure or panel at --near
- - `--near` -- With --rect auto: x,y,width,height hint, kept if nothing matches
+ - `--rect` -- Area box x,y,width,height, normalized 0-1; `zotero-cli layout` prints boxes for figures and tables; `auto` tightens --near to the figure or panel under it
+ - `--near` -- With --rect auto: x,y,width,height hint, kept if the fit moves an edge over 0.03
  - `--note` -- Sticky note centered at x,y, normalized 0-1; its text is --comment
  - `--comment`
  - `--color` -- default `#ffd400` -- Hex, or a Zotero color name: yellow, red, green, blue, purple, magenta, orange, gray

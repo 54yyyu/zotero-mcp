@@ -984,14 +984,63 @@ def panel_regions(page, figure_regions: list[dict], *, drawings: list | None = N
     return regions
 
 
-def auto_box(doc, page_num: int, near: list[float] | None = None) -> dict:
+#: How far ``rect: "auto"`` may move any edge of the near hint, and how much
+#: it may change its area. A snap past either keeps the hint: on a dense
+#: figure the detected region is often a neighbouring panel or two merged.
+AUTO_EDGE_SLACK = 0.03
+AUTO_AREA_SLACK = 0.25
+
+
+def _edges(box: list[float]) -> list[float]:
+    x, y, w, h = box
+    return [x, y, x + w, y + h]
+
+
+def _overlap_area(a: list[float], b: list[float]) -> float:
+    """Area shared by two ``[x0, y0, x1, y1]`` boxes."""
+    return max(min(a[2], b[2]) - max(a[0], b[0]), 0.0) * max(min(a[3], b[3]) - max(a[1], b[1]), 0.0)
+
+
+def _fit_to_hint(snap: list[float], near: list[float], avoid: list[list[float]]) -> tuple[list[float] | None, str]:
+    """Keep a snapped box close to its hint: (box, note), or (None, why) to keep the hint.
+
+    The snap is trimmed so no edge lies more than AUTO_EDGE_SLACK outside the
+    hint, and to the hint itself where it would reach into a box in ``avoid``
+    (``[x0, y0, x1, y1]``: the other boxes the same batch asks for on the
+    page). Shrinking toward the
+    hint is preferred to growing past it, but a box that still moves an edge
+    inward by more than the slack, or changes the area by more than
+    AUTO_AREA_SLACK, is not a fit of the hint.
+    """
+    slack = AUTO_EDGE_SLACK
+    hint, box = _edges(near), _edges(snap)
+    trimmed = [max(box[0], hint[0] - slack), max(box[1], hint[1] - slack),
+               min(box[2], hint[2] + slack), min(box[3], hint[3] + slack)]
+    if any(_overlap_area(trimmed, other) > _overlap_area(hint, other) + 1e-9 for other in avoid):
+        trimmed = [max(box[0], hint[0]), max(box[1], hint[1]), min(box[2], hint[2]), min(box[3], hint[3])]
+    moved = max(abs(a - b) for a, b in zip(trimmed, hint))
+    width, height = trimmed[2] - trimmed[0], trimmed[3] - trimmed[1]
+    area = max(width, 0.0) * max(height, 0.0) / max(near[2] * near[3], 1e-9)
+    if width <= 0 or height <= 0 or moved > slack + 1e-9 or abs(area - 1) > AUTO_AREA_SLACK:
+        grew = any(b < h - slack for b, h in zip(box[:2], hint[:2])) or any(
+            b > h + slack for b, h in zip(box[2:], hint[2:]))
+        size = "large" if grew or (box[2] - box[0]) * (box[3] - box[1]) > near[2] * near[3] else "small"
+        return None, f"kept hint, snap too {size} (an edge moves {moved:.3f}, area x{area:.2f})"
+    note = "trimmed to the hint" if trimmed != box else ""
+    return [trimmed[0], trimmed[1], width, height], note
+
+
+def auto_box(doc, page_num: int, near: list[float] | None = None,
+             avoid: list[list[float]] | None = None) -> dict:
     """Fit an area box to a figure or panel on a page.
 
     With ``near`` (``[x, y, w, h]``, normalized, a hint of roughly where the
     box goes) the detected region that overlaps it most is used, panels
-    first. Without a hint a page with exactly one detected region uses that
-    one. A region is only used when its confidence is not "low"; otherwise the
-    hint is kept and the note says so.
+    first, then kept close to the hint (see ``_fit_to_hint``). Without a hint
+    a page with exactly one detected region uses that one. A region is only
+    used when its confidence is not "low"; otherwise the hint is kept and the
+    note says so. ``avoid`` holds the ``[x, y, w, h]`` boxes other entries of
+    the same batch ask for on this page; the fit never reaches into one.
 
     Returns:
         ``{"rect", "source", "confidence", "note"}``, or ``{"error"}`` when there
@@ -1001,6 +1050,7 @@ def auto_box(doc, page_num: int, near: list[float] | None = None) -> dict:
     if "error" in layout:
         return layout
     regions = [r for r in layout["regions"] if r["source"] != "equation"]
+    avoid = [_edges(box) for box in avoid or []]
 
     def fall_back(why: str) -> dict:
         if near is None:
@@ -1013,6 +1063,9 @@ def auto_box(doc, page_num: int, near: list[float] | None = None) -> dict:
         if len(regions) != 1 or not usable:
             return fall_back(f"{len(regions)} candidate regions on page {page_num}")
         chosen = usable[0]
+        rect, note = list(chosen["bbox"]), ""
+        if any(_overlap_area(_edges(rect), other) > 0 for other in avoid):
+            return fall_back("the only region overlaps another box this batch asks for")
     else:
         def score(region):
             return _bbox_iou(near, region["bbox"]) * (1.15 if region["source"] == "panel" else 1.0)
@@ -1021,6 +1074,9 @@ def auto_box(doc, page_num: int, near: list[float] | None = None) -> dict:
             return fall_back("no detected figure or panel overlaps the hint")
         if chosen["confidence"] == "low":
             return fall_back(f"{chosen['caption_label'] or chosen['source']} is a low-confidence match")
+        rect, note = _fit_to_hint(chosen["bbox"], near, avoid)
+        if rect is None:
+            return {"rect": list(near), "source": "hint", "confidence": "low", "note": note}
     label = chosen.get("caption_label") or chosen["source"]
-    return {"rect": list(chosen["bbox"]), "source": f"{chosen['source']} ({label})",
-            "confidence": chosen["confidence"], "note": ""}
+    return {"rect": rect, "source": f"{chosen['source']} ({label})",
+            "confidence": chosen["confidence"], "note": note}

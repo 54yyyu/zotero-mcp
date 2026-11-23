@@ -1868,8 +1868,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Underline --text instead of highlighting it")
     ac.add_argument("--rect", help="Area box x,y,width,height, normalized 0-1; "
                                    "`zotero-cli layout` prints boxes for figures and tables; "
-                                   "`auto` fits the figure or panel at --near")
-    ac.add_argument("--near", help="With --rect auto: x,y,width,height hint, kept if nothing matches")
+                                   "`auto` tightens --near to the figure or panel under it")
+    ac.add_argument("--near", help="With --rect auto: x,y,width,height hint, kept if the fit moves an edge over 0.03")
     ac.add_argument("--note", help="Sticky note centered at x,y, normalized 0-1; "
                                    "its text is --comment")
     ac.add_argument("--comment")

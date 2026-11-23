@@ -1734,12 +1734,15 @@ def create_annotations(
 
             try:
                 page_labels: dict[int, str] = {}
-                for result, spec in zip(results, specs):
+                asked = [(spec.get("page"), _asked_box(spec)) for spec in specs]
+                for position, (result, spec) in enumerate(zip(results, specs)):
                     result["file_type"] = file_type
                     try:
                         payload, details = _annotation_payload(
                             source, file_type, attachment_key, spec, page_labels,
                             with_text=dry_run, cache=cache,
+                            avoid=[box for other, (page, box) in enumerate(asked)
+                                   if other != position and box and page == spec.get("page")],
                         )
                     except Exception as e:
                         payload, details = None, {"error": f"Error creating annotation: {e}"}
@@ -1958,12 +1961,14 @@ def _annotation_payload(
     *,
     with_text: bool = False,
     cache=None,
+    avoid=None,
 ) -> tuple[dict | None, dict]:
     """Zotero annotation data for one spec, and what to report about it.
 
     ``source`` is the open PDF document, or the EPUB's path. ``cache`` is
     what the specs of one file share: a ``pdf_utils.PageCache`` for a PDF, a
-    dict for an EPUB.
+    dict for an EPUB. ``avoid`` is the boxes the other specs ask for on the
+    same page, which ``rect: "auto"`` must not reach into.
 
     Returns:
         (payload, details). ``payload`` is None when the spec cannot be
@@ -2019,7 +2024,7 @@ def _annotation_payload(
             return None, {"error": "Error: area annotations need a PDF attachment"}
         auto = None
         if isinstance(rect, str) and rect.strip().lower() == "auto":
-            rect, auto, error = _fit_box(source, page, spec.get("near"))
+            rect, auto, error = _fit_box(source, page, spec.get("near"), avoid)
             if error:
                 return None, {"error": error}
         box = _helpers._normalize_float_list_input(rect, 4, "rect")
@@ -2119,10 +2124,11 @@ def _annotation_payload(
     return payload, details
 
 
-def _fit_box(source, page: int, near) -> tuple[list[float] | None, dict | None, str | None]:
+def _fit_box(source, page: int, near, avoid=None) -> tuple[list[float] | None, dict | None, str | None]:
     """Resolve ``"rect": "auto"``: (rect, how it was chosen, error).
 
-    ``near`` is the optional ``[x, y, w, h]`` hint. See ``pdf_layout.auto_box``.
+    ``near`` is the optional ``[x, y, w, h]`` hint, ``avoid`` the boxes other
+    entries ask for on the page. See ``pdf_layout.auto_box``.
     """
     from zotero_mcp import pdf_layout
 
@@ -2130,12 +2136,19 @@ def _fit_box(source, page: int, near) -> tuple[list[float] | None, dict | None, 
         near = _helpers._normalize_float_list_input(near, 4, "near")
         if near is None or _rect_error(*near):
             return None, None, "Error: near must be four numbers x,y,width,height, normalized to 0-1"
-    found = pdf_layout.auto_box(source, page, near)
+    found = pdf_layout.auto_box(source, page, near, avoid)
     if "error" in found:
         return None, None, f"Error: rect auto: {found['error']}"
     rect = [round(v, 4) for v in found["rect"]]
     return rect, {"rect": rect, "source": found["source"], "confidence": found["confidence"],
                   "note": found["note"]}, None
+
+
+def _asked_box(spec: dict) -> list[float] | None:
+    """The ``[x, y, w, h]`` box an area spec asks for: its rect, or for ``auto`` its hint."""
+    rect = spec.get("rect")
+    box = spec.get("near") if isinstance(rect, str) else rect
+    return _helpers._normalize_float_list_input(box, 4, "rect") if box is not None else None
 
 
 def _spec_type(spec: dict) -> str:

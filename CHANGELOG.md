@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Highlights work on PDFs whose fonts have no Unicode map.** On papers like Elowitz & Leibler 2000 (Nature) every character the matcher read came back as U+FFFD, so every `--text` highlight and batch `text` entry failed with "Could not find text" and `matched_text` printed as `�`. The text extraction behind the matcher, the dry-run read-back and equation detection now asks PyMuPDF to fall back to the font's character codes, as its default extraction already does; all 69 entries of a real plan now match. When a page's text layer is still unreadable, a batch says so once (`FAIL  #1, #2: Page 1 has a broken text layer ...`) instead of one "not found" per row, and a dry run shows `[unreadable text layer]` instead of U+FFFD.
+- **`rect: "auto"` stays on the hint.** On a dense figure the region found under a `near` hint was often a neighbouring panel or two merged, and the box grew over them (Moeller 2026 Fig 1C swallowed the left half of the figure). A fit may now move no edge of the hint by more than 0.03 of the page and change its area by at most 25%: growth past the hint is trimmed, and a fit that would go further keeps the hint and says `kept hint, snap too large`. A fit never reaches into a box another entry of the same batch asks for on that page.
 
 ## [0.17.3] - 2026-11-19
 
