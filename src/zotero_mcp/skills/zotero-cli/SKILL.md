@@ -205,6 +205,10 @@ first 40 characters of comment). Check what is stored with `annotations preview
 --attachment-key K --out DIR` (PNGs of the real boxes) and `annotations list
 --positions` (stored `rect`s). Fix an area box in place, same key:
 `annotations update KEY --rect x,y,w,h` (or `--page N`).
+Zotero draws an area box's sidebar thumbnail only when something asks for it
+(the reader, or `annotations list`). If thumbnails stay missing and the CLI
+warns that Zotero failed to render one, restart Zotero; the boxes themselves
+are stored correctly.
 
 Colors take Zotero's names: yellow, red, green, blue, purple, magenta,
 orange, gray.
