@@ -5781,13 +5781,13 @@ class ZoteroSemanticSearch:
                 }
             reranker = self._get_reranker()
             multiplier = max(1, int(self._reranker_config.get("candidate_multiplier", 3) or 3))
-            # As 0.17 asked: `limit` candidates, or four per wanted result where
-            # hits are passages (several of one item collapse to it). Where
-            # hits still collapse or drop out (an item's records, trashed
-            # items) and leave fewer than `limit`, a further round asks for more.
-            fetch_limit = limit
-            if chunked:
-                fetch_limit = limit * 4
+            # Four candidates per wanted result where hits are passages
+            # (several of one item collapse to it), else two: an item's own
+            # record and its file's record collapse into one result. That
+            # leaves one query and one lookup round in the common case; where
+            # hits still collapse or drop out (trashed items) and leave fewer
+            # than `limit`, a further round asks for more.
+            fetch_limit = limit * 4 if chunked else limit * 2
             if reranker:
                 fetch_limit = max(fetch_limit, limit * multiplier)
 

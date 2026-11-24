@@ -375,10 +375,10 @@ def test_passage_search_fetches_enough_for_grouping(build):
     search.search("q", limit=5, level="passages")
     assert seen["n_results"] == 20
 
-    # Articles ask for `limit`, as 0.17 did; a round that falls short of it
-    # (hits collapsing to their owner, trashed ones) asks again for more.
+    # Articles ask for twice `limit` (an item's record and its file's collapse);
+    # a round still short of it (trashed hits) asks again for more.
     search.search("q", limit=5, level="articles")
-    assert seen["n_results"] == 5
+    assert seen["n_results"] == 10
 
 
 # --- an unmigrated index ---------------------------------------------------------
