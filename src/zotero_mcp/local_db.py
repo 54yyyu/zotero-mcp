@@ -37,6 +37,7 @@ from .extract import (
     normalize_attachment_priority,
     pick_by_priority,
 )
+from .semantic_filters import equality_clauses
 from .utils import _generate_search_variants, is_local_mode
 
 logger = logging.getLogger(__name__)
@@ -3274,7 +3275,44 @@ class LocalZoteroReader:
     #: The owner fields semantic-search filters read (semantic_filters.live_fields).
     _FILTER_OWNER_FIELDS = ("title", "DOI", "publicationTitle", "extra")
 
-    def get_filter_owners(self, *, group_id: int | None = PERSONAL_LIBRARY_GROUP_ID) -> list[dict]:
+    @staticmethod
+    def _owner_condition_item_type(values: list[str]) -> tuple[str, list[str]]:
+        return f"it.typeName IN ({','.join('?' * len(values))})", values
+
+    @staticmethod
+    def _owner_condition_item_key(values: list[str]) -> tuple[str, list[str]]:
+        return f"i.key IN ({','.join('?' * len(values))})", values
+
+    @staticmethod
+    def _owner_condition_tags(values: list[str]) -> tuple[str, list[str]] | None:
+        # A filter's ``tags`` is the space-joined tag string, so a value
+        # without a space equals it only for an item with that one tag: having
+        # the tag is a superset. A value with a space could equal a joined
+        # pair, so it is not pushed down.
+        if any(" " in v for v in values):
+            return None
+        return (
+            "EXISTS (SELECT 1 FROM itemTags itg JOIN tags t ON t.tagID = itg.tagID"
+            f" WHERE itg.itemID = i.itemID AND t.name IN ({','.join('?' * len(values))}))",
+            values,
+        )
+
+    #: Filter fields get_filter_owners narrows in SQL, each with the builder of
+    #: its condition over ``i`` (items) and ``it`` (itemTypes): ``(sql, params)``
+    #: that holds for every item the filter could match, or None to skip it.
+    #: Adding a field here is all it takes to push it down.
+    _OWNER_PUSHDOWN = {
+        "item_type": _owner_condition_item_type,
+        "item_key": _owner_condition_item_key,
+        "tags": _owner_condition_tags,
+    }
+
+    def get_filter_owners(
+        self,
+        *,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        where: dict[str, Any] | None = None,
+    ) -> list[dict]:
         """Every item a semantic hit can resolve to, for filtering by live data (#826).
 
         An owner is a regular item or a standalone attachment that is not in
@@ -3282,6 +3320,11 @@ class LocalZoteroReader:
         pyzotero-shaped with just the filterable fields, plus
         ``attachment_keys``: its non-trashed child attachments, whose records
         a filter on the owner must also let through.
+
+        ``where`` (a Chroma-style filter) narrows the candidates in SQLite:
+        the ``$eq`` / ``$in`` conditions on the fields of ``_OWNER_PUSHDOWN``
+        that it ANDs at its top level. The result is a superset of what
+        ``where`` matches; the caller still evaluates ``where`` on each owner.
 
         Scoped by library rather than by an id list, so a large library does
         not run into SQLite's bound-parameter limit.
@@ -3291,8 +3334,14 @@ class LocalZoteroReader:
         if not lib_ids:
             return []
         lib_ph = ",".join("?" * len(lib_ids))
-        rows = conn.execute(
-            f"""
+        narrow_sql, narrow_params = "", []
+        for field, clauses in equality_clauses(where, tuple(self._OWNER_PUSHDOWN)).items():
+            for values in clauses:
+                built = self._OWNER_PUSHDOWN[field].__func__(values)
+                if built is not None:
+                    narrow_sql += f" AND {built[0]}"
+                    narrow_params += built[1]
+        owner_select = f"""
             SELECT i.itemID, i.key, it.typeName
             FROM items i
             JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
@@ -3300,10 +3349,10 @@ class LocalZoteroReader:
             LEFT JOIN itemAttachments ia ON ia.itemID = i.itemID
             WHERE i.libraryID IN ({lib_ph}) AND del.itemID IS NULL
               AND it.typeName NOT IN ('note', 'annotation')
-              AND ia.parentItemID IS NULL
-            """,
-            lib_ids,
-        ).fetchall()
+              AND ia.parentItemID IS NULL{narrow_sql}
+            """
+        owner_params = list(lib_ids) + narrow_params
+        rows = conn.execute(owner_select, owner_params).fetchall()
         owners: dict[int, dict] = {
             row["itemID"]: {
                 "key": row["key"],
@@ -3312,6 +3361,15 @@ class LocalZoteroReader:
             }
             for row in rows
         }
+        # The detail queries read the narrowed owners only.
+        if narrow_sql:
+            owner_scope = f"i.itemID IN (SELECT itemID FROM ({owner_select}))"
+            scope_params = owner_params
+            attachment_scope = f"ia.parentItemID IN (SELECT itemID FROM ({owner_select}))"
+        else:
+            owner_scope = f"i.libraryID IN ({lib_ph})"
+            scope_params = list(lib_ids)
+            attachment_scope = f"i.libraryID IN ({lib_ph})"
         field_ph = ",".join("?" * len(self._FILTER_OWNER_FIELDS))
         for row in conn.execute(
             f"""
@@ -3320,9 +3378,9 @@ class LocalZoteroReader:
             JOIN items i ON i.itemID = id.itemID
             JOIN fields f ON f.fieldID = id.fieldID
             JOIN itemDataValues idv ON idv.valueID = id.valueID
-            WHERE i.libraryID IN ({lib_ph}) AND f.fieldName IN ({field_ph})
+            WHERE {owner_scope} AND f.fieldName IN ({field_ph})
             """,
-            list(lib_ids) + list(self._FILTER_OWNER_FIELDS),
+            scope_params + list(self._FILTER_OWNER_FIELDS),
         ):
             if (owner := owners.get(row["itemID"])) is not None:
                 owner["data"][row["fieldName"]] = row["value"]
@@ -3332,9 +3390,9 @@ class LocalZoteroReader:
             FROM itemTags itg
             JOIN items i ON i.itemID = itg.itemID
             JOIN tags t ON t.tagID = itg.tagID
-            WHERE i.libraryID IN ({lib_ph})
+            WHERE {owner_scope}
             """,
-            lib_ids,
+            scope_params,
         ):
             if (owner := owners.get(row["itemID"])) is not None:
                 owner["data"]["tags"].append({"tag": row["name"]})
@@ -3344,10 +3402,10 @@ class LocalZoteroReader:
             FROM itemAttachments ia
             JOIN items i ON i.itemID = ia.itemID
             LEFT JOIN deletedItems del ON del.itemID = i.itemID
-            WHERE i.libraryID IN ({lib_ph}) AND ia.parentItemID IS NOT NULL AND del.itemID IS NULL
+            WHERE {attachment_scope} AND ia.parentItemID IS NOT NULL AND del.itemID IS NULL
             ORDER BY i.itemID
             """,
-            lib_ids,
+            scope_params,
         ):
             if (owner := owners.get(row["parentItemID"])) is not None:
                 owner["attachment_keys"].append(row["key"])

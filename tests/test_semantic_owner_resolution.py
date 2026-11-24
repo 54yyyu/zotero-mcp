@@ -160,7 +160,7 @@ class FakeReader:
         self.full_calls.append((list(keys), group_id))
         return {k: self._items[k] for k in keys if k in self._items}
 
-    def get_filter_owners(self, *, group_id=0):
+    def get_filter_owners(self, *, group_id=0, where=None):
         self.owner_calls.append(group_id)
         return self._owners
 

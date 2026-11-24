@@ -315,6 +315,32 @@ def _tag_operands(where: dict[str, Any]) -> list[str]:
     return out
 
 
+def equality_clauses(where: dict[str, Any] | None, fields: tuple[str, ...]) -> dict[str, list[list[str]]]:
+    """The ``$eq`` / ``$in`` conditions on ``fields`` that ``where`` ANDs at its top level.
+
+    ``{field: [values, ...]}``, one list of alternatives per clause, so
+    repeated clauses on a field all apply. A clause is left out unless it is
+    a single-field condition whose operand is non-empty strings: the caller
+    narrows candidates with what is returned and still evaluates ``where``
+    in full, so a clause left out only means less narrowing.
+    """
+    out: dict[str, list[list[str]]] = {}
+    for clause in _conjuncts(where) if where else []:
+        if not isinstance(clause, dict) or len(clause) != 1:
+            continue
+        ((field, cond),) = clause.items()
+        if field not in fields:
+            continue
+        try:
+            op, operand = _condition(cond)
+        except ValueError:
+            continue
+        values = [operand] if op == "$eq" else list(operand) if op == "$in" else []
+        if values and all(isinstance(v, str) and v for v in values):
+            out.setdefault(field, []).append(values)
+    return out
+
+
 def web_query_plan(where: dict[str, Any] | None) -> dict[str, Any] | None:
     """What the Zotero web API can answer of a live filter, or None if it cannot answer it (#826).
 
