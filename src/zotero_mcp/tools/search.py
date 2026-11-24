@@ -1476,7 +1476,7 @@ def advanced_search(
         "timestamp), creators (one 'Last, First' string, creators joined by semicolons, "
         "compared whole) and url, all read from current Zotero data, and "
         "section, page; combine with {'$and': [{...}, {...}]}; there is no "
-        "year filter. level: 'articles' (works on a topic) or 'passages' (where something is stated); default follows the "
+        "year filter. Filters changed in 0.18 (tags is has-that-tag, keys in one dict are ANDed, unknown fields raise an error): see the CHANGELOG section 'Upgrading: search filters change in 0.18'. level: 'articles' (works on a topic) or 'passages' (where something is stated); default follows the "
         "chunking setting. Searches the active library; "
         "library_id picks another (0 or 'user', or a group ID), "
         "search_all_libraries=True searches every indexed library (not with "

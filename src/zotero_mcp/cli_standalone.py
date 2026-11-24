@@ -1738,7 +1738,14 @@ def build_parser() -> argparse.ArgumentParser:
     s_p.add_argument("--join-mode", choices=["all", "any"], default="all")
     s_p.add_argument("--sort-by")
     s_p.add_argument("--sort-direction", choices=["asc", "desc"], default="asc")
-    s_p.add_argument("--filters", help='JSON filters for semantic mode')
+    s_p.add_argument(
+        "--filters",
+        help=(
+            'JSON filters for semantic mode, e.g. \'{"item_type": "book", "tags": "to-read"}\'. '
+            "Changed in 0.18: tags means has-that-tag, several keys in one object are ANDed, and an "
+            "unknown field is an error. See CHANGELOG.md, 'Upgrading: search filters change in 0.18'."
+        ),
+    )
     s_p.add_argument("--all-libraries", action="store_true",
                      help="Search every accessible library at once instead of "
                           "the active one, labelling each result with its "
