@@ -219,6 +219,32 @@ class TestAuthorParsing:
             ("Smith", "John"), ("Doe", "Jane"), ("Roe", "Richard"),
         ]
 
+    @pytest.mark.parametrize("corporate", [
+        "Centers for Disease Control and Prevention",
+        "Johnson and Johnson",
+        "Department of Health and Human Services",
+    ])
+    def test_brace_protected_author_with_and_survives_full_import(self, corporate):
+        """A corporate name written ``{{Name}}`` stays one creator after
+        ``parse_bibtex``, which decodes the field values."""
+        bib = (
+            "@misc{k,\n"
+            f"  author = {{{{{corporate}}} and {{Doe, Jane}}}},\n"
+            "  title = {T}, year = {2020}\n}"
+        )
+        item = bibtex_entry_to_zotero(parse_bibtex(bib)[0], make_template)
+        assert item["creators"] == [
+            {"creatorType": "author", "name": corporate},
+            {"creatorType": "author", "firstName": "Jane", "lastName": "Doe"},
+        ]
+
+    def test_accented_author_survives_full_import(self):
+        bib = r"@article{k, author = {M{\"u}ller, Hans and {\'E}mile Zola}, title = {T}, year = {2020}}"
+        item = bibtex_entry_to_zotero(parse_bibtex(bib)[0], make_template)
+        assert [(c["firstName"], c["lastName"]) for c in item["creators"]] == [
+            ("Hans", "Müller"), ("Émile", "Zola"),
+        ]
+
 
 # ---------------------------------------------------------------------------
 # Date parsing
