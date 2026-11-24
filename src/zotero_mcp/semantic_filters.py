@@ -107,6 +107,7 @@ def split_filters(where: dict[str, Any] | None) -> tuple[dict[str, Any] | None, 
     """
     if not where:
         return None, None
+    validate(where)
     where = _normalise(where)
     referenced = referenced_fields(where)
     supported = ", ".join(sorted(CHROMA_FIELDS | LIVE_FIELDS))
@@ -149,44 +150,81 @@ def matches(where: dict[str, Any] | None, fields: dict[str, Any]) -> bool:
         elif key == "$or":
             ok = any(matches(c, fields) for c in cond)
         else:
-            ok = _field_matches(fields.get(key, _MISSING), cond)
+            ok = _field_matches(fields.get(key, _MISSING), cond, key)
         if not ok:
             return False
     return True
 
 
 _OPERATORS = ("$eq", "$ne", "$in", "$nin", "$gt", "$gte", "$lt", "$lte")
+_SCALARS = (str, int, float, bool)
 
 
-def _condition(cond: Any) -> tuple[str, Any]:
-    """``(operator, operand)`` of one field condition, validated as Chroma would."""
-    if isinstance(cond, dict) and any(str(k).startswith("$") for k in cond):
+def _scalar(value: Any) -> bool:
+    return isinstance(value, _SCALARS)
+
+
+def _condition(cond: Any, field: str = "") -> tuple[str, Any]:
+    """``(operator, operand)`` of one field condition, validated as Chroma would.
+
+    A plain value means ``$eq``. ``$eq``, ``$ne`` and the range operators take
+    one string, number or boolean; ``$in`` and ``$nin`` take a non-empty list
+    of them. Anything else raises ValueError naming the field and operator.
+    """
+    where = f"filter on {field!r}: " if field else "filter: "
+    if isinstance(cond, dict):
+        if not cond:
+            raise ValueError(f"{where}an empty condition; give a value or one operator such as $eq")
+        if not any(str(k).startswith("$") for k in cond):
+            raise ValueError(
+                f"{where}a nested object {cond!r} is not a condition; use a value or one operator such as $eq"
+            )
         if len(cond) != 1:
-            raise ValueError(f"A filter condition takes one operator, got {sorted(cond)}; combine them with $and")
+            raise ValueError(f"{where}a condition takes one operator, got {sorted(cond)}; combine them with $and")
         ((op, operand),) = cond.items()
     else:
         op, operand = "$eq", cond
     if op not in _OPERATORS:
-        raise ValueError(f"Unsupported filter operator {op!r}")
-    if op in ("$in", "$nin") and not isinstance(operand, (list, tuple)):
-        raise ValueError(f"{op} takes a list, got {operand!r}")
+        raise ValueError(f"{where}unsupported operator {op!r}; supported: {', '.join(_OPERATORS)}")
+    if op in ("$in", "$nin"):
+        if not isinstance(operand, (list, tuple)):
+            raise ValueError(f"{where}{op} takes a list of values, got {operand!r}")
+        if not operand:
+            raise ValueError(f"{where}{op} takes a non-empty list")
+        if not all(_scalar(v) for v in operand):
+            raise ValueError(f"{where}{op} takes a list of strings, numbers or booleans, got {list(operand)!r}")
+    elif not _scalar(operand):
+        raise ValueError(f"{where}{op} takes a single string, number or boolean, got {operand!r}")
     return op, operand
 
 
 def validate(where: dict[str, Any] | None) -> None:
-    """Raise ValueError for a condition ``matches`` cannot evaluate, at any depth."""
-    for key, cond in (where or {}).items():
+    """Raise ValueError for a condition ``matches`` cannot evaluate, at any depth.
+
+    The shapes are the ones ChromaDB accepts: a dict of field conditions and
+    ``$and`` / ``$or`` lists of non-empty dicts, and per field a value or one
+    operator with a correctly shaped operand (see ``_condition``).
+    """
+    if where is None:
+        return
+    if not isinstance(where, dict):
+        raise ValueError(f"filters must be an object, got {where!r}")
+    for key, cond in where.items():
         if key in ("$and", "$or"):
-            if not isinstance(cond, list):
-                raise ValueError(f"{key} takes a list of conditions, got {cond!r}")
+            if not isinstance(cond, list) or not cond:
+                raise ValueError(f"{key} takes a non-empty list of conditions, got {cond!r}")
             for sub in cond:
+                if not isinstance(sub, dict) or not sub:
+                    raise ValueError(f"{key} takes a list of non-empty objects, got {sub!r}")
                 validate(sub)
+        elif str(key).startswith("$"):
+            raise ValueError(f"unsupported operator {key!r} at the top of a filter; use $and or $or")
         else:
-            _condition(cond)
+            _condition(cond, key)
 
 
-def _field_matches(value: Any, cond: Any) -> bool:
-    op, operand = _condition(cond)
+def _field_matches(value: Any, cond: Any, field: str = "") -> bool:
+    op, operand = _condition(cond, field)
     if value is _MISSING or value is None:
         return False
     if isinstance(value, (set, frozenset)):
@@ -300,7 +338,7 @@ def web_query_plan(where: dict[str, Any] | None) -> dict[str, Any] | None:
         if field not in ("item_type", "tags", "item_key"):
             return None
         try:
-            op, operand = _condition(cond)
+            op, operand = _condition(cond, field)
         except ValueError:
             return None
         if op == "$eq":

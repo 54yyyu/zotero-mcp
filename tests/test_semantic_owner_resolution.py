@@ -1151,3 +1151,41 @@ def test_get_filter_owners_reads_date_added_date_creators_and_url(tmp_path):
     assert fields["creators"] == "Lovelace, Ada; Acme Lab"
     assert fields["url"] == "https://example.org/paper"
     assert live_fields(bare["PAPER001"])["creators"] == "No authors listed"
+
+
+# ---------------------------------------------------------------------------
+# Malformed filters fail with a message naming the field and operator
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("where,message", [
+    ({"tags": {"$eq": ["a", "b"]}}, r"filter on 'tags': \$eq takes a single string, number or boolean"),
+    ({"doi": {"$ne": ["a"]}}, r"filter on 'doi': \$ne takes a single"),
+    ({"page": {"$gt": [1]}}, r"filter on 'page': \$gt takes a single"),
+    ({"page": {"$lte": None}}, r"filter on 'page': \$lte takes a single"),
+    ({"tags": ["a", "b"]}, r"filter on 'tags': \$eq takes a single"),
+    ({"tags": {"$in": "a"}}, r"filter on 'tags': \$in takes a list"),
+    ({"tags": {"$nin": []}}, r"filter on 'tags': \$nin takes a non-empty list"),
+    ({"tags": {"$in": [["a"]]}}, r"filter on 'tags': \$in takes a list of strings"),
+    ({"tags": {"$in": [{"x": 1}]}}, r"filter on 'tags': \$in takes a list of strings"),
+    ({"tags": {"$like": "a"}}, r"filter on 'tags': unsupported operator '\$like'"),
+    ({"tags": {"$regex": "a"}}, r"unsupported operator '\$regex'"),
+    ({"tags": {"x": 1}}, r"filter on 'tags': a nested object"),
+    ({"tags": {}}, r"filter on 'tags': an empty condition"),
+    ({"$and": {"tags": "a"}}, r"\$and takes a non-empty list of conditions"),
+    ({"$or": []}, r"\$or takes a non-empty list of conditions"),
+    ({"$and": ["tags"]}, r"\$and takes a list of non-empty objects"),
+    ({"$or": [{}]}, r"\$or takes a list of non-empty objects"),
+    ({"$and": [{"tags": {"$eq": ["a"]}}]}, r"filter on 'tags': \$eq takes a single"),
+    ({"$not": {"tags": "a"}}, r"unsupported operator '\$not' at the top"),
+])
+def test_malformed_filters_raise_a_clear_value_error(monkeypatch, tmp_path, where, message):
+    with pytest.raises(ValueError, match=message):
+        split_filters(where)
+    s, _ = _search(monkeypatch, tmp_path, [], [])
+    assert "error" in s.search("q", limit=5, filters=where)
+
+
+def test_well_formed_filters_still_pass_validation():
+    where = {"$and": [{"tags": {"$in": ["a", "b"]}}, {"page": {"$gte": 3}}, {"doi": "10.1/x"}, {"page": True}]}
+    split_filters(where)
