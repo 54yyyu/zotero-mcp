@@ -577,7 +577,7 @@ def _rekey_together(
         )
         _after_rekey_upsert()
         for _item, attachment, _ids in writing:
-            sources.remember_hash(attachment)
+            sources.remember_stamp(attachment)
     # The article records say their passages moved, so they are not "missing".
     # The whole metadata goes back: not every ChromaDB version merges.
     # The old passages go only once the marks are read back: without one the
