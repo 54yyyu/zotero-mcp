@@ -655,5 +655,6 @@ class TestReranking:
 
         s.search("test", limit=5)
 
-        # As 0.17; a round that falls short asks again for more (#826).
-        assert s.chroma_client._last_query_kwargs["n_results"] == 5
+        # Twice the limit, as an item's record and its file's collapse; a round
+        # that still falls short asks again for more (#826).
+        assert s.chroma_client._last_query_kwargs["n_results"] == 10

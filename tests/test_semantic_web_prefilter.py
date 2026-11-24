@@ -243,8 +243,8 @@ def test_one_keys_request_per_library_one_query_and_exact_results(monkeypatch, t
             {"parent_hint": {"$in": ["BOOK0000", "BOOK0001", "BOOK0002"]}},
         ]
     }
-    # The lookups are the batched ones: the hits, then their parents; one request each.
-    assert len(zot.batch_calls) == 2 and zot.single_calls == []
+    # One batched lookup: the hits and the parents their hints name.
+    assert len(zot.batch_calls) == 1 and zot.single_calls == []
 
 
 def test_the_pre_filter_combines_with_the_library_and_the_chroma_filters(monkeypatch, tmp_path):
