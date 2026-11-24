@@ -365,6 +365,7 @@ def _parse_bibtex_v1(text: str) -> list[tuple[str, str, dict]]:
     from bibtexparser.customization import convert_to_unicode
 
     parser = BibTexParser(common_strings=True)
+
     def customization(record):
         names = {k: record.pop(k) for k in _BIBTEX_NAME_FIELDS if k in record}
         record = convert_to_unicode(dict(record))

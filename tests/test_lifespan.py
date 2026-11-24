@@ -209,7 +209,8 @@ def test_initialize_answers_while_startup_update_runs(tmp_path):
 
         # The update really was running alongside, in another process.
         deadline = time.monotonic() + 30
-        while not pid_file.exists() and time.monotonic() < deadline:
+        # The child creates the file before it writes the pid: wait for the pid.
+        while not (pid_file.exists() and pid_file.read_text().strip()) and time.monotonic() < deadline:
             time.sleep(0.05)
         child_pid = int(pid_file.read_text())
         assert child_pid != server.pid
