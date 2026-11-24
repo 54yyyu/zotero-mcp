@@ -11,6 +11,7 @@ if sys.version_info >= (3, 14):
     pytest.skip("chromadb is incompatible with Python 3.14+", allow_module_level=True)
 if importlib.util.find_spec("chromadb") is None:
     pytest.skip("chromadb not installed", allow_module_level=True)
+
 if sys.platform == "win32":
     pytest.skip("ChromaDB keeps the index files open in this process on Windows", allow_module_level=True)
 
@@ -114,6 +115,23 @@ def test_an_attachment_record_beside_its_passages_in_one_collection_is_not_mixed
     assert {"ATT00001", "ATT00001#0", "ATT00001#1", "ATT00001#2", "BIB00001"} <= set(_ids(persist, "zotero_library"))
 
 
+def test_a_new_bibliographic_record_beside_legacy_chunks_loses_neither(tmp_path):
+    # A rewritten item whose old passages are not cleaned up yet: two units under one key.
+    bib = {"item_key": "BIB00001", "group_id": 1, "date_modified": "2026-01-01"}
+    chunk = {"item_key": "BIB00001", "title": "Old", "group_id": 1, "n_chunks": 3}
+    persist, config = _make(
+        tmp_path,
+        {
+            "zotero_library": [("BIB00001", bib)] + [(f"BIB00001#{n}", {**chunk, "chunk_index": n}) for n in range(3)],
+        },
+    )
+
+    report = repair_index(config, **QUIET)
+
+    assert report.excluded == {}
+    assert {"BIB00001", "BIB00001#0", "BIB00001#1", "BIB00001#2"} <= set(_ids(persist, "zotero_library"))
+
+
 def test_a_bare_legacy_record_with_chunks_is_still_mixed(tmp_path):
     legacy = {"item_key": "ATT00001", "title": "Old"}
     _, config = _make(
@@ -127,6 +145,21 @@ def test_a_bare_legacy_record_with_chunks_is_still_mixed(tmp_path):
     report = repair_index(config, dry_run=True, **QUIET)
 
     assert report.excluded == {"ATT00001": "mixed chunked and unchunked ids"}
+
+
+def test_a_bare_record_beside_incomplete_legacy_chunks_is_still_left_out(tmp_path):
+    legacy = {"item_key": "ATT00001", "group_id": 1}
+    _, config = _make(
+        tmp_path,
+        {
+            "zotero_library": [("ATT00001", legacy)] + [(f"ATT00001#{n}", _passage(n)) for n in (0, 2)],
+            PASSAGES: [("OTHER001#0", {"item_key": "OTHER001", "chunk_index": 0, "n_chunks": 1})],
+        },
+    )
+
+    report = repair_index(config, dry_run=True, **QUIET)
+
+    assert report.excluded == {"ATT00001": "chunks missing"}
 
 
 def test_legacy_records_beside_item_keyed_passages_are_repaired_as_before(tmp_path):

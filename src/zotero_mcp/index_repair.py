@@ -257,14 +257,20 @@ def _check_item(
     ``KEY#n``, the metadata names the same item and chunk, the chunks run
     0..n_chunks-1 without gaps, and every chunk has a document and a vector.
     """
-    # An attachment's own record ``ATT`` may sit beside its passages ``ATT#n``
-    # (an index whose passages are not split off yet). Only the attachment
-    # record may: a bare legacy record with chunks is a half-written item.
+    # A bare record ``KEY`` may sit beside passages ``KEY#n`` when it is an
+    # attachment's own record (``file_stamp``), or a current-shape record of a
+    # rewritten item next to legacy passages not cleaned up yet. The record and
+    # the passages are two units, each checked on its own below. A legacy
+    # whole-document record beside passages is a half-written item.
+    from .semantic_search import _is_legacy_record
+
     bare = [d for d in doc_ids if _chunk_number(d) is None]
     own = None
-    if bare and len(bare) < len(doc_ids) and len(bare) == 1 and "file_stamp" in (metadata.get(bare[0]) or {}):
-        own = bare[0]
-        doc_ids = [d for d in doc_ids if d != own]
+    if len(bare) == 1 and len(bare) < len(doc_ids):
+        record = metadata.get(bare[0]) or {}
+        if "file_stamp" in record or not _is_legacy_record(record):
+            own = bare[0]
+            doc_ids = [d for d in doc_ids if d != own]
     numbers = [_chunk_number(d) for d in doc_ids]
     chunked = numbers[0] is not None
     if any((n is not None) != chunked for n in numbers) or (not chunked and len(doc_ids) > 1):
