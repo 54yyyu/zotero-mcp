@@ -14,6 +14,7 @@ Path.home and the config path all point into tmp_path.
 import importlib.util
 import json
 import sys
+import traceback
 from pathlib import Path
 
 import pytest
@@ -1171,3 +1172,30 @@ def test_a_full_web_scan_purges_stale_note_and_annotation_records(env):
 
     assert records(search) == {"ITEM0001", "ITEM0002", "ITEM0003"}
     assert not {"NOTE0001", "ANNO0001"} & set(all_ids(search))
+
+
+def test_a_clean_full_web_scan_reads_no_metadata_to_type_unlisted_records(env, monkeypatch):
+    """An attachment's own record is accounted for by the scan, so it is not asked about (#604)."""
+    library(
+        env,
+        paper("ITEM0001"),
+        attachment("PDFAAAAA", "ITEM0001"),
+        attachment("PDFBBBBB", "ITEM0001", ctype="text/html"),
+        PDFAAAAA=TEXT,
+    )
+    env.update()
+    env.forget_sync_version()
+    asked: list[list[str]] = []
+    original = RecordingClient.get_metadatas
+
+    def spy(self, ids):
+        if any(frame.name == "_type_unlisted_records" for frame in traceback.extract_stack()):
+            asked.append(list(ids))
+        return original(self, ids)
+
+    monkeypatch.setattr(RecordingClient, "get_metadatas", spy)
+
+    search, _stats = env.update()
+
+    assert "PDFAAAAA" in records(search)
+    assert asked == []

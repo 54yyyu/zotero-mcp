@@ -4570,11 +4570,9 @@ class ZoteroSemanticSearch:
         if limit:
             all_items = all_items[:limit]
 
-        if not limit and list_page is not self.zotero_client.items:
-            self._type_unlisted_records(seen_keys)
-
         self._tag_group_id(all_items)
 
+        accounted = seen_keys
         if include_fulltext:
             whole_library = not limit
             listing = None
@@ -4594,6 +4592,8 @@ class ZoteroSemanticSearch:
             if whole_library and complete and not self._automatic_run:
                 self._standalone_covered = True
             all_items.extend(standalone)
+            # The files the scan chose or passed over have records of their own.
+            accounted = seen_keys | selected | outranked | self._api_textless
             if whole_library and complete:
                 # Every record key this library should have: what is not here
                 # (trashed, outranked or textless files) goes in the deletion
@@ -4608,6 +4608,9 @@ class ZoteroSemanticSearch:
                 )
             self._api_outranked = self._api_outranked | outranked
 
+        if not limit and list_page is not self.zotero_client.items:
+            self._type_unlisted_records(accounted)
+
         logger.info(f"Retrieved {len(all_items)} items from API")
         return all_items
 
@@ -4615,10 +4618,9 @@ class ZoteroSemanticSearch:
         """Find the stored records of child notes and annotations, which a top-level listing never shows (#604).
 
         A listing of top-level items cannot type them, so a stale record of
-        one would stay (``item_versions()`` lists the item). Only records no
-        listed item accounts for are asked about, 50 keys to a request: an
-        attachment's own record (it has a ``file_stamp``) is never one, so on
-        a clean index this asks nothing.
+        one would stay (``item_versions()`` lists the item). Only records that
+        neither a listed item nor a file the scan chose or passed over
+        accounts for are asked about, so on a clean index this asks nothing.
         """
         try:
             group_id = int(self._run_group_id) if self._run_group_id is not None else None
