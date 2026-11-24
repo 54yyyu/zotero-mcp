@@ -12,12 +12,9 @@ if sys.version_info >= (3, 14):
 if importlib.util.find_spec("chromadb") is None:
     pytest.skip("chromadb not installed", allow_module_level=True)
 
-if sys.platform == "win32":
-    pytest.skip("ChromaDB keeps the index files open in this process on Windows", allow_module_level=True)
-
 import chromadb
 import numpy as np
-from chromadb.api.client import SharedSystemClient
+from _fresh_process import as_fresh_process
 from chromadb.config import Settings
 
 from zotero_mcp.index_repair import repair_index
@@ -45,7 +42,7 @@ def _isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     yield
-    SharedSystemClient.clear_system_cache()
+    as_fresh_process()
 
 
 def _make(tmp_path, collections):
@@ -72,14 +69,15 @@ def _make(tmp_path, collections):
             metadatas=[m for _, m in rows],
         )
     del client
-    SharedSystemClient.clear_system_cache()
+    as_fresh_process()
     return persist, str(config)
 
 
 def _ids(persist, name):
     client = chromadb.PersistentClient(path=str(persist), settings=Settings(anonymized_telemetry=False))
     got = client.get_collection(name).get(include=[])["ids"]
-    SharedSystemClient.clear_system_cache()
+    del client
+    as_fresh_process()
     return sorted(got)
 
 
