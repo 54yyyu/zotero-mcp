@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Zotero Agent on Zotero 11 searches and saves notes in the library you are in** (#867, #868, #869, #870). Zotero 11 replaced `getSelectedLibraryID` with `getSelectedLibraryIDs`, so with a group library selected, `@` search and Save as note quietly used My Library. Both use the new call now, with the old one as a fallback. Thanks @KaguraSayuki.
 - **A brace-protected corporate author imports as one creator** (#871, #872). BibTeX `author = {{Centers for Disease Control and Prevention}}` was split into a first and last name; author, editor and translator names are now decoded one at a time, and a name in its own braces becomes a single-field creator. Thanks @goranai.
 - **Batch tag and Extra edits that Zotero refuses are reported as failed, not skipped** (#861). `zotero_batch_update_tags`, the batch Extra edit and `zotero-cli batch` counted a refused write as "skipped" and still listed its tags as applied; the result now has an `Items failed` count and a `Failed` section naming each item and the reason. Thanks @lots-o.
 - **WebDAV uploads over 10 seconds no longer time out** (#864, #344). The request body was sent under a fixed 10-second connect timeout, so a large PDF on a slow server always failed; uploads now get the configured timeout throughout. An unreachable server now takes up to that timeout to fail. Thanks @jaehho.
