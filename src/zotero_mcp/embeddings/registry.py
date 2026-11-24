@@ -152,6 +152,7 @@ def _openai_ef_factory(config: dict[str, Any]) -> Any:
             base_url=config.get("base_url"),
             request_batch_size=config.get("request_batch_size"),
             dimensions=config.get("dimensions"),
+            query_instruction=config.get("query_instruction"),
             **_remote_pacing_kwargs(config),
         ),
         config,

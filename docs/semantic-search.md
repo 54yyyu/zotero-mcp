@@ -33,8 +33,9 @@ zotero-mcp setup --semantic-config-only
 
 For instruction-tuned models such as Qwen3-Embedding, set an optional
 `query_instruction` under `semantic_search.embedding_config`. This works with
-`embedding_model: "ollama"` and HuggingFace models (`"qwen"` or a HuggingFace
-model name):
+`embedding_model: "ollama"`, HuggingFace models (`"qwen"` or a HuggingFace
+model name) and `"openai"`, including OpenAI-compatible servers such as LM
+Studio, vLLM or llama-server reached through `base_url`:
 
 ```json
 {
@@ -47,6 +48,25 @@ model name):
   }
 }
 ```
+
+The same key with an instruction-tuned model behind an OpenAI-compatible server:
+
+```json
+{
+  "semantic_search": {
+    "embedding_model": "openai",
+    "embedding_config": {
+      "model_name": "text-embedding-qwen3-embedding-0.6b",
+      "base_url": "http://127.0.0.1:1234/v1",
+      "api_key": "lm-studio",
+      "query_instruction": "Given a research question or topic, retrieve relevant passages from scientific papers"
+    }
+  }
+}
+```
+
+Leave it unset for models that are not instruction-tuned, such as OpenAI's
+`text-embedding-3-*`.
 
 Queries become `Instruct: <instruction>\nQuery: <query>`. Document text is
 unchanged, so changing only this setting does not require re-indexing. Omit it,

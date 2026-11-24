@@ -69,8 +69,15 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
                  max_parallel_requests: int | None = None,
                  max_retries: int | None = None,
                  tokens_per_minute: float | None = None,
-                 dimensions: int | None = None):
+                 dimensions: int | None = None,
+                 query_instruction: str | None = None):
         import threading
+        if query_instruction is not None and not isinstance(query_instruction, str):
+            raise ValueError("query_instruction must be a string or null")
+        # Optional task instruction for instruction-tuned models served over an
+        # OpenAI-compatible API (Qwen3-Embedding, Harrier, ... on LM Studio,
+        # vLLM, llama-server). Applied to queries only, as for Ollama (#614).
+        self.query_instruction = (query_instruction or "").strip()
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self._rate_lock = threading.Lock()
         self._last_request_ts: float = 0.0
@@ -123,6 +130,7 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             "api_key_env_var": "OPENAI_API_KEY",
             "api_base": self.base_url,
             "dimensions": getattr(self, "dimensions", None),
+            "query_instruction": getattr(self, "query_instruction", ""),
             **self._common_config(),
         }
 
@@ -145,7 +153,16 @@ class OpenAIEmbeddingFunction(RemoteEmbeddingFunction):
             max_retries=config.get("max_retries"),
             tokens_per_minute=config.get("tokens_per_minute"),
             dimensions=config.get("dimensions"),
+            query_instruction=config.get("query_instruction"),
         )
+
+    def _prepare_query(self, text: str) -> str:
+        # Runs after the base class's query truncation, as for Ollama. getattr
+        # keeps instances built via __new__ (tests) on plain queries.
+        instruction = getattr(self, "query_instruction", "")
+        if instruction:
+            return f"Instruct: {instruction}\nQuery: {text}"
+        return text
 
     def _wait_for_rate_limit(self) -> None:
         """Fixed-interval pacing to keep requests under ``rate_limit_rps``.
