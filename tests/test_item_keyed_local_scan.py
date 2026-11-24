@@ -28,6 +28,7 @@ if sys.version_info >= (3, 14):
 if importlib.util.find_spec("chromadb") is None:
     pytest.skip("chromadb not installed", allow_module_level=True)
 
+from _fresh_process import as_fresh_process  # noqa: E402
 from _scan_fakes import ScanReader, target  # noqa: E402
 from chromadb import EmbeddingFunction  # noqa: E402
 
@@ -134,11 +135,18 @@ def env(monkeypatch, tmp_path):
         )
     )
 
+    searches = []
+
     def run(reader, update=True, **kwargs):
+        # Each step ends as a process exit would: the previous step's clients are
+        # released before the same directory is opened again (Windows keeps the files open).
+        as_fresh_process(*searches)
+        searches.clear()
         monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda *a, **kw: reader)
         monkeypatch.setattr(semantic_search, "get_zotero_client", lambda: FakeZotero(reader))
         client = RecordingClient(collection_name=NAME, persist_directory=str(tmp_path / "chroma"))
         search = semantic_search.ZoteroSemanticSearch(chroma_client=client, config_path=str(config_path))
+        searches.append(search)
         if not update:
             return search, None
         reader.extracted.clear()
@@ -146,7 +154,8 @@ def env(monkeypatch, tmp_path):
         assert stats.get("error") is None, stats
         return search, stats
 
-    return run
+    yield run
+    as_fresh_process(*searches)
 
 
 def _ids(search, name=NAME):
