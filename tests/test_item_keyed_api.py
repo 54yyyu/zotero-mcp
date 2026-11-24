@@ -1199,3 +1199,40 @@ def test_a_clean_full_web_scan_reads_no_metadata_to_type_unlisted_records(env, m
 
     assert "PDFAAAAA" in records(search)
     assert asked == []
+
+
+def test_a_parent_that_could_not_be_fetched_is_not_asked_for_again_for_its_changed_file(env, monkeypatch):
+    library(
+        env,
+        paper("ITEM0001"),
+        paper("ITEM0002"),
+        attachment("PDFAAAAA", "ITEM0001"),
+        attachment("PDFBBBBB", "ITEM0002"),
+        PDFAAAAA=TEXT,
+        PDFBBBBB=TEXT,
+    )
+    env.update()
+    env.zot.put(attachment("PDFAAAAA", "ITEM0001", mtime="200"), attachment("PDFBBBBB", "ITEM0002", mtime="200"), version=6)
+    original = env.zot.item
+
+    def flaky(key):
+        if key in ("ITEM0001", "ITEM0002"):
+            env.zot.calls.append(("item", key))
+            raise RuntimeError("503 service unavailable")
+        return original(key)
+
+    monkeypatch.setattr(env.zot, "item", flaky)
+    original_items = env.zot.items
+
+    def flaky_items(*args, **kwargs):
+        if "ITEM0001" in str(kwargs.get("itemKey")):
+            raise RuntimeError("503 service unavailable")
+        return original_items(*args, **kwargs)
+
+    monkeypatch.setattr(env.zot, "items", flaky_items)
+
+    search, _stats = env.update()
+
+    for parent in ("ITEM0001", "ITEM0002"):
+        assert env.zot.calls.count(("item", parent)) == 1
+    assert _watermark(env) == 5

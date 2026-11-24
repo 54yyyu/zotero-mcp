@@ -4733,8 +4733,7 @@ class ZoteroSemanticSearch:
             changed_items.append(item)
 
         if include_fulltext and changed_attachments:
-            owners, unresolved = self._owners_of_changed_attachments(changed_attachments, changed_items)
-            changed_items.extend(owners)
+            unresolved = self._flag_owners_of_changed_attachments(changed_attachments, changed_items)
         else:
             unresolved = set()
         self._tag_group_id(changed_items)
@@ -4830,20 +4829,20 @@ class ZoteroSemanticSearch:
     # for the deletion pass of the same run. Reset per run by update_database.
     _library_keys_seen: set[str] | None = None
 
-    def _owners_of_changed_attachments(
+    def _flag_owners_of_changed_attachments(
         self, attachments: list[dict[str, Any]], changed_items: list[dict[str, Any]]
-    ) -> tuple[list[dict[str, Any]], set[str]]:
-        """``(parents not yet in changed_items, keys of attachments whose parent is unknown)``.
+    ) -> set[str]:
+        """Flag the parents in ``changed_items`` of the changed ``attachments``; return the keys of attachments whose parent is unknown.
 
         A changed file changes what its parent's selection is, though the
-        parent itself did not change, so the parent is fetched and judged
-        again; it is flagged so a legacy parent counts as changed too. A
-        parent that is gone or trashed has no selection: its attachment's
-        records go. One that can't be fetched leaves its attachment's records
-        alone (the key comes back in the second set).
+        parent itself did not change. The caller has fetched every such
+        parent with the other changed items, in batches; each is flagged so a
+        legacy parent counts as changed too. A parent that is gone or trashed
+        has no selection: its attachment's records go. One whose fetch failed
+        (``_fetch_failed_keys``) is not asked for again and leaves its
+        attachment's records alone (the attachment's key is in the result).
         """
         by_key = {item.get("key"): item for item in changed_items}
-        owners: list[dict[str, Any]] = []
         unresolved: set[str] = set()
         for row in attachments:
             parent = (row.get("data") or {}).get("parentItem")
@@ -4851,23 +4850,15 @@ class ZoteroSemanticSearch:
                 continue
             owner = by_key.get(parent)
             if owner is None:
-                try:
-                    owner = self.zotero_client.item(parent)
-                except ResourceNotFoundError:
-                    continue
-                except Exception as e:
-                    logger.debug(f"item({parent}) failed while following a changed attachment: {e}")
+                # The caller asked for every parent in one batched pass: one
+                # missing from it and from its failures is gone or trashed.
+                if parent in self._fetch_failed_keys:
                     unresolved.add(self._row_key(row))
                     self._api_fetch_failures += 1
-                    continue
-                data = (owner or {}).get("data") or {}
-                if not owner or data.get("deleted") or data.get("itemType") in _NON_INDEXED_ITEM_TYPES:
-                    continue
-                by_key[parent] = owner
-                owners.append(owner)
+                continue
             if self._changes_selection(row, owner):
                 owner["_attachments_changed"] = True
-        return owners, unresolved
+        return unresolved
 
     def _changes_selection(self, row: dict[str, Any], owner: dict[str, Any]) -> bool:
         """Whether a changed attachment changes what its parent's legacy records stand for.
