@@ -107,7 +107,9 @@ class World:
         )
 
     def migrate(self, reader):
-        return migrate_index(self.config, sources=LocalSources(reader, self.config), **QUIET)
+        report = migrate_index(self.config, sources=LocalSources(reader, self.config), **QUIET)
+        assert report.failed_items == 0, "the migration these tests start from succeeded"
+        return report
 
     def search(self, reader, as_migration_source=True):
         self.monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda *a, **kw: reader)

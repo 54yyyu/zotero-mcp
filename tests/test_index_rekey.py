@@ -183,6 +183,7 @@ def test_a_split_index_is_rekeyed_to_the_attachment_without_touching_a_vector(in
     vectors = _seed_split(directory)
 
     report = migrate_index(config, sources=_sources(config), **QUIET)
+    assert report.failed_items == 0
 
     stored = _read(directory, PASSAGES)
     assert set(stored) == {f"{ATT}#{n}" for n in range(3)}
@@ -236,6 +237,7 @@ def test_pre_0_17_chunked_index_is_split_and_rekeyed_in_one_run(index):
     _seed_split(directory, client=legacy, bare=False)
 
     report = migrate_index(config, sources=_sources(config), **QUIET)
+    assert report.failed_items == 0
 
     assert report.renamed is True
     assert set(_read(directory, PASSAGES)) == {f"{ATT}#{n}" for n in range(3)}
@@ -253,6 +255,7 @@ def test_pre_0_17_unchunked_index_has_nothing_to_rekey(index):
     )
 
     report = migrate_index(config, **QUIET)
+    assert report.failed_items == 0
 
     assert report.needed is False
     assert report.legacy_passages == 0
@@ -274,6 +277,7 @@ def test_an_item_whose_attachment_is_uncertain_loses_its_passages(index, why):
         reader = MigReader([], targets={})
 
     report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+    assert report.failed_items == 0
 
     assert (report.rekeyed_items, report.dropped_items, report.dropped_passages) == (0, 1, 3)
     assert _read(directory, PASSAGES) == {}
@@ -288,6 +292,7 @@ def test_the_web_api_source_names_the_attachment(index):
 
     # No Zotero database at all: only the stored source can say.
     report = migrate_index(config, sources=LocalSources(None, config), **QUIET)
+    assert report.failed_items == 0
 
     assert report.rekeyed_items == 1
     assert set(_read(directory, PASSAGES)) == {f"{ATT}#{n}" for n in range(3)}
@@ -309,6 +314,7 @@ def test_a_run_that_stopped_after_writing_the_new_ids_finishes_on_the_next(index
     monkeypatch.setattr(index_migration, "_after_rekey_upsert", real_hook)
 
     report = migrate_index(config, sources=_sources(config), **QUIET)
+    assert report.failed_items == 0
 
     stored = _read(directory, PASSAGES)
     assert set(stored) == {f"{ATT}#{n}" for n in range(3)}
@@ -355,6 +361,7 @@ def test_a_local_record_without_a_stored_fingerprint_is_rekeyed_when_one_file_is
     _seed_split(directory, att_keys=None)
 
     report = migrate_index(config, sources=_sources(config), **QUIET)
+    assert report.failed_items == 0
 
     assert (report.rekeyed_items, report.dropped_items) == (1, 0)
     assert set(_read(directory, PASSAGES)) == {f"{ATT}#{n}" for n in range(3)}
@@ -371,6 +378,7 @@ def test_a_local_record_without_a_stored_fingerprint_and_two_files_is_left_as_it
     assert (dry.skipped_items, dry.skipped_passages, dry.dropped_items, dry.rekeyed_items) == (1, 3, 0, 0)
 
     report = migrate_index(config, sources=sources, **QUIET)
+    assert report.failed_items == 0
 
     assert (report.rekeyed_items, report.dropped_items, report.skipped_items) == (0, 0, 1)
     assert set(_read(directory, PASSAGES)) == {f"{ITEM}#{n}" for n in range(3)}
@@ -393,6 +401,7 @@ def test_nothing_is_dropped_while_zotero_cannot_be_asked(index, why):
     assert _all_files(directory) == before
 
     report = migrate_index(config, sources=sources, **QUIET)
+    assert report.failed_items == 0
 
     assert (report.skipped_items, report.skipped_passages, report.dropped_items) == (1, 3, 0)
     stored = _read(directory, PASSAGES)
@@ -408,6 +417,7 @@ def test_the_source_is_read_from_a_surviving_passage_when_the_first_is_gone(inde
     ChromaClient(collection_name=NAME, persist_directory=directory).delete_records([f"{ITEM}#0"])
 
     report = migrate_index(config, sources=LocalSources(None, config), **QUIET)
+    assert report.failed_items == 0
 
     assert (report.rekeyed_items, report.dropped_items, report.skipped_items) == (1, 0, 0)
     assert set(_read(directory, PASSAGES)) == {f"{ATT}#1", f"{ATT}#2"}
@@ -505,6 +515,7 @@ def test_a_file_missing_on_disk_leaves_the_passages_where_they_are(index):
     directory, config, sources = _unreachable(index, [PDF_ROW], [])
 
     report = migrate_index(config, sources=sources, **QUIET)
+    assert report.failed_items == 0
 
     assert (report.skipped_items, report.skipped_passages, report.dropped_items) == (1, 3, 0)
     assert set(_read(directory, PASSAGES)) == {f"{ITEM}#{n}" for n in range(3)}
@@ -516,6 +527,7 @@ def test_one_of_two_selected_files_out_of_reach_leaves_the_passages_where_they_a
     )
 
     report = migrate_index(config, sources=sources, **QUIET)
+    assert report.failed_items == 0
 
     assert (report.skipped_items, report.dropped_items, report.rekeyed_items) == (1, 0, 0)
     assert len(_read(directory, PASSAGES)) == 3
@@ -525,6 +537,7 @@ def test_an_item_without_any_attachment_still_loses_its_passages(index):
     directory, config, sources = _unreachable(index, [], [], att_keys="")
 
     report = migrate_index(config, sources=sources, **QUIET)
+    assert report.failed_items == 0
 
     assert (report.dropped_items, report.skipped_items) == (1, 0)
 
@@ -543,6 +556,7 @@ def test_a_legacy_item_with_two_files_is_rekeyed_to_the_larger_when_nothing_chan
     reader = MigReader([_item()], targets={1: [_sized(ATT, 100), _sized("ATTACH02", 900)]})
 
     report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+    assert report.failed_items == 0
 
     assert (report.rekeyed_items, report.dropped_items) == (1, 0)
     assert set(_read(directory, PASSAGES)) == {f"ATTACH02#{n}" for n in range(3)}
@@ -554,6 +568,7 @@ def test_a_legacy_item_with_two_files_and_a_changed_fingerprint_is_dropped(index
     reader = MigReader([_item()], targets={1: [_sized(ATT, 100), _sized("ATTACH02", 900)]})
 
     report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+    assert report.failed_items == 0
 
     assert (report.rekeyed_items, report.dropped_items) == (0, 1)
 
@@ -571,6 +586,7 @@ def test_a_zotero_cache_item_is_filed_under_the_attachment_whose_cache_was_read(
     )
 
     report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+    assert report.failed_items == 0
 
     assert (report.rekeyed_items, report.dropped_items, report.skipped_items) == (1, 0, 0)
     assert set(_read(directory, PASSAGES)) == {f"ATTACH02#{n}" for n in range(3)}
@@ -588,6 +604,7 @@ def test_a_zotero_cache_item_whose_cache_belongs_to_a_file_the_scan_does_not_ind
     )
 
     report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+    assert report.failed_items == 0
 
     assert (report.rekeyed_items, report.dropped_items, report.skipped_items) == (0, 0, 1)
     assert set(_read(directory, PASSAGES)) == {f"{ITEM}#{n}" for n in range(3)}
@@ -599,6 +616,7 @@ def test_a_zotero_cache_item_with_one_file_is_filed_under_it(index):
     reader = MigReader([_item()], targets={1: [target(ATT)]}, ft_caches={ATT: "cached text"})
 
     report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+    assert report.failed_items == 0
 
     assert report.rekeyed_items == 1
     assert set(_read(directory, PASSAGES)) == {f"{ATT}#{n}" for n in range(3)}
@@ -655,6 +673,7 @@ def test_an_item_without_an_article_record_is_rekeyed_and_its_old_passages_go(in
     _seed_split(directory, bare=False)
 
     report = migrate_index(config, sources=_sources(config), **QUIET)
+    assert report.failed_items == 0
 
     assert (report.rekeyed_items, report.failed_items) == (1, 0)
     assert set(_read(directory, PASSAGES)) == {f"{ATT}#{n}" for n in range(3)}
