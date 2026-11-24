@@ -107,7 +107,8 @@ Teach the agent to drive `zotero-cli` (the cheaper route, see [below](#mcp-serve
 zotero-mcp install-skill
 ```
 
-Or use the MCP server: for Claude Code, add the same `mcpServers` entry as above to `~/.claude.json`.
+To use the MCP server with Claude Code, add the same `mcpServers` entry as above to `~/.claude.json`.
+For Codex and the ChatGPT desktop app, see the [local stdio setup](https://github.com/54yyyu/zotero-mcp/blob/main/docs/getting-started.md#integrating-with-the-chatgpt-desktop-app-and-codex).
 
 </details>
 

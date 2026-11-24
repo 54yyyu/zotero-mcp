@@ -180,7 +180,8 @@ To annotate, plan everything, check it, then write it in one run:
 
 1. `zotero-cli --json layout ATTACHMENT_KEY` lists figure, table and
    equation boxes with their captions and a paste-ready `rect_arg`;
-   `--panels` adds a box per panel letter (A, B, C ...) when the text has them.
+   `--panels` adds a box per panel letter (A, B, C ...) when the text has them;
+   check `low` ones by eye (an L-shaped panel or ink cut at a neighbour).
 2. Write one JSON object per line: `{"page": 4, "text": "exact words",
    "comment": "...", "color": "yellow"}` for a highlight (add
    `"underline": true` to underline instead), or
@@ -189,8 +190,10 @@ To annotate, plan everything, check it, then write it in one run:
    centered on a point (its text is the comment). Copy
    highlight text exactly from `read`; it is searched for on that page and
    two pages either side. A miss lists the nearest `candidates`.
-   `"rect": "auto"` with `"near": "x,y,w,h"` fits the nearest panel or figure
-   (a fallback to your hint is printed).
+   `"rect": "auto"` with `"near": "x,y,w,h"` tightens the hint to the panel or
+   figure under it, moving no edge more than 0.03 and never into another
+   entry's box; a snap that would go further keeps your hint (printed as
+   `kept hint, snap too large`).
 3. `zotero-cli annotations batch --attachment-key ATTACHMENT_KEY --file plan.jsonl --dry-run`
    shows the words each highlight would cover. Fix every miss. `--render DIR`
    also draws the plan as it would be stored; look at the PNGs.
@@ -202,6 +205,10 @@ first 40 characters of comment). Check what is stored with `annotations preview
 --attachment-key K --out DIR` (PNGs of the real boxes) and `annotations list
 --positions` (stored `rect`s). Fix an area box in place, same key:
 `annotations update KEY --rect x,y,w,h` (or `--page N`).
+Zotero draws an area box's sidebar thumbnail only when something asks for it
+(the reader, or `annotations list`). If thumbnails stay missing and the CLI
+warns that Zotero failed to render one, restart Zotero; the boxes themselves
+are stored correctly.
 
 Colors take Zotero's names: yellow, red, green, blue, purple, magenta,
 orange, gray.

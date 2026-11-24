@@ -163,7 +163,7 @@ class TestBatchUpdateTagsHybridMode:
         final_tags = {t["tag"] for t in write_zot.update_calls[-1]["data"]["tags"]}
         assert final_tags == {"old", "new"}
 
-    def test_reports_skip_when_retries_exhausted(self, monkeypatch, dummy_ctx):
+    def test_reports_failure_when_retries_exhausted(self, monkeypatch, dummy_ctx):
         item = {
             "key": "ITEM1",
             "version": 1,
@@ -183,7 +183,9 @@ class TestBatchUpdateTagsHybridMode:
         )
 
         assert "Items updated: 0" in result
-        assert "Items skipped: 1" in result
+        assert "Items skipped: 0" in result
+        assert "Items failed: 1" in result
+        assert "- `new`: 0 items" in result
 
 
 class TestBatchUpdateExtraHybridMode:

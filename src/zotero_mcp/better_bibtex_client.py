@@ -14,6 +14,28 @@ import requests
 logger = logging.getLogger(__name__)
 
 
+
+_warned: set[str] = set()
+
+
+def _warn_once(message: str) -> None:
+    """Log a warning the first time this process sees it, not on every call."""
+    if message not in _warned:
+        _warned.add(message)
+        logger.warning(message)
+
+
+def _attachments_failure(error: Exception) -> str:
+    """One line on why item.attachments failed; the caller then reads Zotero directly."""
+    if "renderAnnotations" in str(error) or "rendered annotation" in str(error):
+        # Better BibTeX has Zotero render missing area-annotation thumbnails
+        # first, and that step can fail inside Zotero (2026-11-20).
+        return ("Better BibTeX could not list attachments: Zotero failed to render an area "
+                "annotation thumbnail. Annotations are read from Zotero instead; to get the "
+                "thumbnails, open the PDF in Zotero's reader, or restart Zotero.")
+    first = str(error).strip().splitlines()[0] if str(error).strip() else type(error).__name__
+    return f"Better BibTeX could not list attachments ({first[:160]}); annotations are read from Zotero instead."
+
 class BetterBibTexError(Exception):
     """A Better BibTeX JSON-RPC call could not produce a result.
 
@@ -193,7 +215,7 @@ class ZoteroBetterBibTexAPI:
             params = [citekey] if library_id is None else [citekey, library_id]
             return self._make_request("item.attachments", params)
         except Exception as e:
-            logger.warning(f"Could not get attachments: {e}")
+            _warn_once(_attachments_failure(e))
             return []
 
     def get_annotations_from_attachment(self, attachment: dict[str, Any]) -> list[dict[str, Any]]:

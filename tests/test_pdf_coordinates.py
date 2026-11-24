@@ -226,3 +226,53 @@ def test_build_note_position_rotated_page():
         corners = [(text_rect[0], text_rect[1]), (text_rect[0], text_rect[3]),
                    (text_rect[2], text_rect[1]), (text_rect[2], text_rect[3])]
         assert any(centre == pytest.approx(c, abs=0.5) for c in corners)
+
+
+def _fffd_without_cid_flag(monkeypatch, always=False):
+    """Make rawdict extraction read every character as U+FFFD, like a font with
+    no ToUnicode map: unless TEXT_CID_FOR_UNKNOWN_UNICODE (128) is passed, or
+    with ``always`` even then (a text layer nothing can read)."""
+    import fitz
+
+    real = fitz.Page.get_text
+
+    def get_text(self, option="text", *args, **kwargs):
+        result = real(self, option, *args, **kwargs)
+        if option == "rawdict" and (always or not kwargs.get("flags", 199) & 128):
+            for block in result["blocks"]:
+                for line in block.get("lines", []):
+                    for span in line["spans"]:
+                        for char in span.get("chars", []):
+                            if char["c"] != " ":
+                                char["c"] = "�"
+        return result
+
+    monkeypatch.setattr(fitz.Page, "get_text", get_text)
+
+
+def test_find_text_position_font_without_unicode_map(monkeypatch):
+    """Elowitz & Leibler 2000: with the matcher's own flags every character
+    came back as U+FFFD and no highlight could be placed."""
+    _fffd_without_cid_flag(monkeypatch)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path, reference_rects = _make_pdf(tmpdir)
+        result = find_text_position(path, 1, SENTENCE)
+
+        assert "error" not in result
+        _assert_rects_close(result["rects"], reference_rects)
+
+
+def test_find_text_position_unreadable_page_says_so(monkeypatch):
+    import fitz
+
+    from zotero_mcp.pdf_utils import UNREADABLE_TEXT
+
+    _fffd_without_cid_flag(monkeypatch, always=True)
+    monkeypatch.setattr(fitz.Page, "get_textbox", lambda self, rect, textpage=None: "��")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path, reference_rects = _make_pdf(tmpdir)
+        result = find_text_position(path, 1, SENTENCE)
+
+        assert result["unreadable"] is True
+        assert "broken text layer" in result["error"]
+        assert text_in_rects(path, 0, reference_rects) == UNREADABLE_TEXT

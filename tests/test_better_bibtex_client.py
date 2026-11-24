@@ -214,3 +214,23 @@ class TestGetItemByCitekey:
         with patch("requests.post", side_effect=_capture_post(captured, results)):
             with pytest.raises(Exception, match="No items returned"):
                 client.get_item_by_citekey("missing")
+
+
+class TestAttachmentsFailure:
+    """2026-11-20: every `annotations list` logged Zotero's whole worker error."""
+
+    RENDER_ERROR = ('Worker action \'pdf.renderAnnotations\' failed: {"name":"Error",'
+                    '"message":"Failed to save rendered annotation","stack":"..."}')
+
+    def test_a_render_failure_is_one_short_line_per_run(self, caplog, monkeypatch):
+        from zotero_mcp import better_bibtex_client as bbt
+
+        monkeypatch.setattr(bbt, "_warned", set())
+        client = bbt.ZoteroBetterBibTexAPI()
+        with patch.object(client, "_make_request", side_effect=Exception(self.RENDER_ERROR)):
+            with caplog.at_level("WARNING", logger=bbt.__name__):
+                assert client.get_attachments("elowitz2000", None) == []
+                assert client.get_attachments("moeller2026", None) == []
+        records = [r.getMessage() for r in caplog.records]
+        assert len(records) == 1
+        assert "thumbnail" in records[0] and "restart Zotero" in records[0] and "stack" not in records[0]

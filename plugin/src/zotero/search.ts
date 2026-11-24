@@ -8,7 +8,11 @@ const MAX_ITEMS = 8;
 export async function search(win: any, query: string, activeAttachment: any | null): Promise<ItemHit[]> {
   const q = query.trim();
   const hits: ItemHit[] = [];
-  const libs = [...new Set([win.ZoteroPane.getSelectedLibraryID?.() ?? Zotero.Libraries.userLibraryID, Zotero.Libraries.userLibraryID])];
+  const pane = win.ZoteroPane;
+  const selectedLibraries: number[] = typeof pane.getSelectedLibraryIDs === "function"
+    ? pane.getSelectedLibraryIDs()
+    : [pane.getSelectedLibraryID?.()].filter((id) => typeof id === "number");
+  const libs = [...new Set([...selectedLibraries, Zotero.Libraries.userLibraryID])];
 
   for (const libraryID of libs) {
     if (hits.length >= MAX_ITEMS) break;
