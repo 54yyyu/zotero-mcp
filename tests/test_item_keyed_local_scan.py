@@ -207,7 +207,11 @@ def test_every_pdf_is_indexed_under_its_own_key_and_the_snapshot_is_skipped(env,
         (storage / key / name).write_bytes(f"file bytes of {key}".encode())
     real = LocalZoteroReader(db_path=str(db))
     real._get_storage_dir = lambda: storage
-    reader = LibReader([Item("ITEM0001", 1)], texts={"PDFAAAAA": (TEXT, "pdf"), "PDFBBBBB": (TEXT, "pdf")})
+    reader = LibReader(
+        [Item("ITEM0001", 1)],
+        texts={"PDFAAAAA": (TEXT, "pdf"), "PDFBBBBB": (TEXT, "pdf")},
+        rows={1: real.get_fulltext_meta_for_item(1)},
+    )
     reader._resolve_extraction_targets = real._resolve_extraction_targets
     try:
         search, _ = env(reader)
@@ -784,3 +788,31 @@ def test_a_scan_reads_stored_state_per_slice_not_per_item(env, monkeypatch):
     assert search.chroma_client.embedded == []
     assert single == []
     assert len(batched) == 3, "25 items in slices of 10"
+
+
+def test_a_local_scan_reads_an_items_attachment_rows_once(env):
+    reader = LibReader([Item("ITEM0001", 1)], targets={1: [target("PDFAAAAA")]})
+    reads = []
+    original = reader.get_fulltext_meta_for_item
+    reader.get_fulltext_meta_for_item = lambda item_id: reads.append(item_id) or original(item_id)
+
+    env(reader)
+
+    assert reads == [1]
+
+
+def test_the_reader_loads_every_attachment_path_in_one_query(tmp_path):
+    db = tmp_path / "zotero.sqlite"
+    _make_db(db)
+    storage = tmp_path / "storage"
+    (storage / "PDFAAAAA").mkdir(parents=True)
+    (storage / "PDFAAAAA" / "a.pdf").write_bytes(b"x")
+    reader = LocalZoteroReader(db_path=str(db))
+    reader._get_storage_dir = lambda: storage
+    try:
+        files = reader.get_attachment_files()
+        assert files["PDFAAAAA"] == ("storage:a.pdf", "application/pdf")
+        assert reader.resolve_attachment_file("PDFAAAAA", files["PDFAAAAA"]) == storage / "PDFAAAAA" / "a.pdf"
+        assert reader.resolve_attachment_file("PDFBBBBB", files["PDFBBBBB"]) is None
+    finally:
+        reader.close()

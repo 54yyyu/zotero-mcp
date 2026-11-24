@@ -753,6 +753,66 @@ def test_a_file_on_this_machine_gets_the_local_stamp(env, monkeypatch, tmp_path)
     assert stored["file_stamp"] == f"{stat.st_mtime_ns}:{stat.st_size}"
 
 
+class CountingFiles:
+    """LocalFiles that counts attachment queries, like the real reader's one-query map."""
+
+    def __init__(self, files):
+        self.files = files
+        self.queries = 0
+        self.single_lookups = 0
+
+    def get_attachment_files(self):
+        self.queries += 1
+        return {key: (f"storage:{path.name}", "application/pdf") for key, path in self.files.items()}
+
+    def resolve_attachment_file(self, key, row=None):
+        if row is None:
+            self.single_lookups += 1
+            self.queries += 1
+        return self.files.get(key)
+
+    def close(self):
+        pass
+
+
+def test_a_full_local_update_asks_for_the_attachments_once(env, monkeypatch, tmp_path):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    pdfs = {}
+    for n in range(3):
+        pdf = tmp_path / f"{n}.pdf"
+        pdf.write_bytes(b"pdf bytes %d" % n)
+        pdfs[f"PDFAAAA{n}"] = pdf
+    readers = []
+
+    def make_reader(*a, **kw):
+        readers.append(CountingFiles(pdfs))
+        return readers[-1]
+
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+    monkeypatch.setattr(semantic_search, "LocalZoteroReader", make_reader)
+    rows = [paper("ITEM0001")] + [attachment(key, "ITEM0001") for key in pdfs]
+    library(env, *rows, **{key: TEXT for key in pdfs})
+    env.update()
+    readers.clear()
+    env.forget_sync_version()
+
+    env.update()
+
+    assert [(r.queries, r.single_lookups) for r in readers] == [(1, 0)]
+
+    pdfs["PDFAAAA1"].write_bytes(b"a replacement, longer")
+    env.forget_sync_version()
+    env.zot.put(attachment("PDFAAAA1", "ITEM0001"), version=7)
+    readers.clear()
+    before = env.zot.fulltext_keys()
+
+    env.update()
+
+    assert readers[0].queries == 1
+    assert env.zot.fulltext_keys()[len(before):] == ["PDFAAAA1"]
+
+
 def test_a_replaced_local_file_is_embedded_again(env, monkeypatch, tmp_path):
     pdf = tmp_path / "a.pdf"
     pdf.write_bytes(b"pdf bytes")

@@ -1784,17 +1784,23 @@ class LocalZoteroReader:
             ft_cache=True,
         )
 
-    def _resolve_extraction_targets(self, item_id: int) -> list[ExtractionTarget]:
+    def _resolve_extraction_targets(
+        self, item_id: int, rows: list[list[str | None]] | None = None
+    ) -> list[ExtractionTarget]:
         """Every attachment of an item to index, by configured priority.
 
         All readable, non-trashed files in the first priority category that
         has any, in the database's order (PDFs first, then by item id). An attachment whose file cannot be
         read but has its own ``.zotero-ft-cache`` counts too, with that cache
         as its text. Same cheap, parent-process-only resolution as
-        :meth:`_resolve_extraction_target`.
+        :meth:`_resolve_extraction_target`. ``rows`` are the item's
+        attachment rows when the caller has read them already
+        (:meth:`get_fulltext_meta_for_item`).
         """
         candidates = []
-        for key, path, ctype in self._iter_parent_attachments(item_id):
+        if rows is None:
+            rows = list(self._iter_parent_attachments(item_id))
+        for key, path, ctype in rows:
             target = self._build_target(key, path, ctype, unreadable_ok=True)
             if target is not None:
                 candidates.append((target.category, target.size, target))
@@ -2581,19 +2587,44 @@ class LocalZoteroReader:
             })
         return out
 
-    def resolve_attachment_file(self, attachment_key: str) -> Path | None:
+    def get_attachment_files(self) -> dict[str, tuple[str | None, str | None]]:
+        """``{attachment key: (stored path, content type)}`` for every attachment not in the trash.
+
+        One query over every local library, for callers that resolve many
+        files by key (see :meth:`resolve_attachment_file`).
+        """
+        rows = self._get_connection().execute(
+            """
+            SELECT att.key, ia.path, ia.contentType
+            FROM itemAttachments ia
+            JOIN items att ON att.itemID = ia.itemID
+            LEFT JOIN deletedItems d ON d.itemID = ia.itemID
+            WHERE d.itemID IS NULL
+            """
+        ).fetchall()
+        return {row[0]: (row[1], row[2]) for row in rows}
+
+    def resolve_attachment_file(
+        self, attachment_key: str, row: tuple[str | None, str | None] | None = None
+    ) -> Path | None:
         """The file on disk for an attachment addressed by its own key, or None.
 
         Resolves the stored path, and scans the attachment's storage folder
         when the recorded filename no longer matches the file (#291). None
         when the key is not a live attachment or its file is not on disk.
+        ``row`` is the attachment's ``(stored path, content type)`` when the
+        caller already has it (:meth:`get_attachment_files`); without it the
+        database is asked.
         """
-        attachment = self.get_attachment_by_key(attachment_key)
-        if attachment is None:
-            return None
-        resolved = self._resolve_attachment_path(attachment_key, attachment["zotero_path"] or "")
+        if row is None:
+            attachment = self.get_attachment_by_key(attachment_key)
+            if attachment is None:
+                return None
+            row = (attachment["zotero_path"], attachment["content_type"])
+        zotero_path, content_type = row
+        resolved = self._resolve_attachment_path(attachment_key, zotero_path or "")
         if not (resolved and resolved.exists()):
-            resolved = self._scan_storage_for_attachment(attachment_key, attachment["content_type"])
+            resolved = self._scan_storage_for_attachment(attachment_key, content_type)
         return resolved if resolved and resolved.exists() else None
 
     def get_attachment_by_key(self, attachment_key: str) -> dict | None:

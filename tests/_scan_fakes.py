@@ -61,7 +61,7 @@ class ScanReader:
     def get_date_modified_by_key(self):
         return dict(self.dates)
 
-    def _resolve_extraction_targets(self, item_id):
+    def _resolve_extraction_targets(self, item_id, rows=None):
         return list(self.targets.get(item_id, []))
 
     def _iter_standalone_attachments(self, library_ids=None):

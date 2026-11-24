@@ -2722,9 +2722,17 @@ class ZoteroSemanticSearch:
                 stamps_seen = fulltext_cache.rekeyed_stamps(self.config_path)
             return stamps_seen
 
+        attachment_rows: dict[int, list[list[str | None]]] = {}
+
+        def rows_of(item: Any) -> list[list[str | None]]:
+            """The item's attachment rows in Zotero's database, read once per scan."""
+            if item.item_id not in attachment_rows:
+                attachment_rows[item.item_id] = reader.get_fulltext_meta_for_item(item.item_id)
+            return attachment_rows[item.item_id]
+
         def selected_keys(item: Any) -> list[str]:
             """The files the priority selects for ``item`` in Zotero's database, on disk or not."""
-            return select_attachment_rows(reader.get_fulltext_meta_for_item(item.item_id), reader.attachment_priority)
+            return select_attachment_rows(rows_of(item), reader.attachment_priority)
 
         def queue_file(target: Any, *, group_id: int | None, owner: str | None, label: str,
                        date_modified: str | None, rewrite: bool, levels: set[str] | None = None) -> None:
@@ -2785,8 +2793,9 @@ class ZoteroSemanticSearch:
                 self._scan_progress(item_idx, total, up_to_date, len(planned), display)
 
                 if (item_idx - 1) % _SCAN_SLICE == 0:
+                    attachment_rows.clear()
                     resolved = {
-                        other.key: reader._resolve_extraction_targets(other.item_id)
+                        other.key: reader._resolve_extraction_targets(other.item_id, rows_of(other))
                         for other in local_items[item_idx - 1:item_idx - 1 + _SCAN_SLICE]
                     }
                     if check:
@@ -2810,7 +2819,7 @@ class ZoteroSemanticSearch:
                 if legacy is not None:
                     gap = self._scan_gaps.get(it.key)
                     att_keys = ",".join(
-                        sorted(k for k, _p, _c in reader.get_fulltext_meta_for_item(it.item_id))
+                        sorted(k for k, _p, _c in rows_of(it))
                     )
                     # Only text has passages: a legacy item indexed without
                     # any (none found, or extraction failed) lacks none.
@@ -3995,9 +4004,10 @@ class ZoteroSemanticSearch:
         """
         reader: Any = None
         tried = False
+        files: dict[str, Any] | None = None
 
         def locate(key: str) -> tuple[str, Path] | None:
-            nonlocal reader, tried
+            nonlocal reader, tried, files
             if not is_local_mode():
                 return None
             if not tried:
@@ -4011,7 +4021,15 @@ class ZoteroSemanticSearch:
             if reader is None:
                 return None
             try:
-                path = reader.resolve_attachment_file(key)
+                if files is None:
+                    # Every attachment's stored path in one query, not one per file.
+                    files = reader.get_attachment_files() if hasattr(reader, "get_attachment_files") else {}
+                if files:
+                    if key not in files:
+                        return None
+                    path = reader.resolve_attachment_file(key, files[key])
+                else:
+                    path = reader.resolve_attachment_file(key)
                 if path is None:
                     return None
                 st = Path(path).stat()
