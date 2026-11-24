@@ -848,3 +848,32 @@ def test_one_failing_item_in_a_round_does_not_hold_back_the_others(index, monkey
     stored = _read(directory, PASSAGES)
     assert {f"{keys[0]}#{k}" for k in range(3)} <= set(stored)
     assert {f"ATTA{n:04d}#{k}" for n in (2, 3, 4) for k in range(3)} <= set(stored)
+
+
+def test_the_client_is_released_and_reopened_between_the_split_and_the_rekey(index, monkeypatch):
+    """After the rename the re-key must not reuse the client that did it: on Windows it reads "nothing found on disk"."""
+    from zotero_mcp import chroma_client
+
+    directory, config = index
+    legacy = ChromaClient(collection_name=NAME, persist_directory=directory)
+    legacy.route_passages = False
+    _seed_split(directory, client=legacy, bare=False)
+    events: list[str] = []
+
+    def note(event, real):
+        def wrapper(*args, **kwargs):
+            events.append(event)
+            return real(*args, **kwargs)
+
+        return wrapper
+
+    monkeypatch.setattr(chroma_client, "release_chroma_clients", note("release", chroma_client.release_chroma_clients))
+    monkeypatch.setattr(ChromaClient, "_open", note("open", ChromaClient._open))
+    monkeypatch.setattr(ChromaClient, "read_records", note("rekey", ChromaClient.read_records))
+    monkeypatch.setattr(index_migration, "_after_rename", note("renamed", index_migration._after_rename))
+
+    report = migrate_index(config, sources=_sources(config), **QUIET)
+
+    assert (report.renamed, report.rekeyed_items, report.failed_items) == (True, 1, 0)
+    after = events[events.index("renamed"):]
+    assert after.index("release") < after.index("open") < after.index("rekey"), events

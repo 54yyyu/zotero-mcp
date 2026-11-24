@@ -635,7 +635,7 @@ def _split(
     progress: Callable[[str], None],
 ) -> None:
     """The split proper: rename an unmigrated index's collection, then move what is in the wrong one."""
-    from .chroma_client import passage_collection_name
+    from .chroma_client import passage_collection_name, release_chroma_clients
 
     collection_name = client.collection_name
     passages_name = passage_collection_name(collection_name)
@@ -648,8 +648,11 @@ def _split(
         report.renamed = True
         _after_rename()
         progress(f"Creating a new {collection_name} for article vectors ...")
-        client.collection = client._open_collection(collection_name)
-        client._passage_collection = None
+        # The rename left this client's handles pointing at the old state; on
+        # Windows the re-key then reads "nothing found on disk". Release
+        # ChromaDB's cached client and reopen, which creates the new collection.
+        release_chroma_clients()
+        client._open()
         client._unmigrated = False
 
     if stray_articles:
