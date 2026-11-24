@@ -588,3 +588,42 @@ def test_configured_persist_directory_is_written_and_read(monkeypatch, tmp_path)
     status = read_collection_status(str(config_path))
     assert status["persist_directory"] == str(index_dir)
     assert status["count"] == 3
+
+
+# ---------------------------------------------------------------------------
+# owners_with_text: which owners have file text in the index (has_fulltext filter)
+# ---------------------------------------------------------------------------
+
+def test_owners_with_text_reads_records_and_passages_by_key_and_hint(client, tmp_path):
+    vector = [[1.0, 0.0, 0.0, 0.0]]
+
+    def put(doc_id, **meta):
+        client.upsert_embeddings(documents=["d"], metadatas=[meta], ids=[doc_id], embeddings=vector)
+
+    put("BIB1", item_key="BIB1")                                              # bibliographic only
+    put("BIB2", item_key="BIB2")                                              # owner of a file record below
+    put("ATT2", item_key="ATT2", file_stamp="1:2", parent_hint="BIB2")
+    put("BIB3", item_key="BIB3")                                              # owner of passages only
+    put("ATT3#0", item_key="ATT3", chunk_index=0, n_chunks=1, parent_hint="BIB3")
+    put("STAND1", item_key="STAND1", file_stamp="1:2", parent_hint="")        # standalone file
+    put("OLD1", item_key="OLD1", has_fulltext=True)                           # legacy with text
+    put("OLD2", item_key="OLD2", has_fulltext="failed")                       # legacy, extraction failed
+    put("BIB4", item_key="BIB4", has_fulltext=False)
+
+    found = client.owners_with_text(["BIB1", "BIB2", "BIB3", "BIB4", "STAND1", "OLD1", "OLD2", "NONE"])
+
+    assert found == {"BIB2", "BIB3", "STAND1", "OLD1"}
+    assert client.owners_with_text([]) == set()
+
+
+def test_owners_with_text_chunks_a_long_owner_list(client, monkeypatch):
+    monkeypatch.setattr(ChromaClient, "_OWNER_TEXT_CHUNK", 2)
+    for n in range(5):
+        client.upsert_embeddings(
+            documents=["d"],
+            metadatas=[{"item_key": f"ATT{n}", "file_stamp": "1:2", "parent_hint": f"OWN{n}"}],
+            ids=[f"ATT{n}"],
+            embeddings=[[1.0, 0.0, 0.0, 0.0]],
+        )
+
+    assert client.owners_with_text([f"OWN{n}" for n in (0, 2, 4, 7)]) == {"OWN0", "OWN2", "OWN4"}

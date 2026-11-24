@@ -18,7 +18,7 @@ import os
 import sqlite3
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -781,6 +781,41 @@ class ChromaClient:
                             found.setdefault(doc_id.split("#", 1)[0], meta)
         except Exception as e:
             logger.debug(f"Error reading document metadata: {e}")
+        return found
+
+    #: Owners per ``get`` of ``owners_with_text``: each is named twice (key and hint) in one ``$or``.
+    _OWNER_TEXT_CHUNK = 1000
+
+    def owners_with_text(self, owner_keys: Iterable[str]) -> set[str]:
+        """The owners among ``owner_keys`` whose index holds text from a file (#826).
+
+        One metadata-only ``get`` per collection (per ``_OWNER_TEXT_CHUNK``
+        owners) for the records that name an owner by their own key or by
+        ``parent_hint``. A record is file text when it is an attachment's
+        article record (``file_stamp``), a passage (``chunk_index``) or a
+        legacy record built with full text (``has_fulltext`` true); a
+        bibliographic record alone is not. An attachment record's owner is its
+        ``parent_hint``, or itself when the hint is empty (a standalone file);
+        a legacy record's owner is its ``item_key``.
+        """
+        wanted = sorted(set(owner_keys))
+        found: set[str] = set()
+        for collection in self.collections():
+            for start in range(0, len(wanted), self._OWNER_TEXT_CHUNK):
+                part = wanted[start:start + self._OWNER_TEXT_CHUNK]
+                result = collection.get(
+                    where={"$or": [{"item_key": {"$in": part}}, {"parent_hint": {"$in": part}}]},
+                    include=["metadatas"],
+                )
+                names = set(part)
+                for meta in result.get("metadatas") or []:
+                    meta = meta or {}
+                    if (
+                        meta.get("has_fulltext") is True
+                        or meta.get("file_stamp") is not None
+                        or meta.get("chunk_index") is not None
+                    ):
+                        found.update(names & {meta.get("item_key"), meta.get("parent_hint")})
         return found
 
     def get_existing_ids(self, ids: list[str]) -> set[str]:

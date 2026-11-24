@@ -8225,10 +8225,19 @@ class ZoteroSemanticSearch:
         """The resolved hits that pass ``live_where``, in order (all of them without one)."""
         if not live_where:
             return resolved
-        fulltext_owners = {
-            h["owner_key"] for h in resolved
-            if "owner" in h and self._hit_has_fulltext(h["meta"], h["record"])
-        }
+        fulltext_owners: set[str] = set()
+        if "has_fulltext" in referenced_fields(live_where):
+            # What the hits show is a lower bound: an owner whose file records
+            # ranked below the candidates still has text. The index says, in
+            # one read for the owners the hits did not already settle.
+            fulltext_owners = {
+                h["owner_key"] for h in resolved
+                if "owner" in h and self._hit_has_fulltext(h["meta"], h["record"])
+            }
+            unknown = {h["owner_key"] for h in resolved if "owner" in h} - fulltext_owners
+            owners_with_text = getattr(self.chroma_client, "owners_with_text", None)
+            if unknown and owners_with_text is not None:
+                fulltext_owners |= owners_with_text(unknown)
         kept = []
         for hit in resolved:
             if "owner" not in hit:

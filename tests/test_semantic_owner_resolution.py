@@ -1189,3 +1189,68 @@ def test_malformed_filters_raise_a_clear_value_error(monkeypatch, tmp_path, wher
 def test_well_formed_filters_still_pass_validation():
     where = {"$and": [{"tags": {"$in": ["a", "b"]}}, {"page": {"$gte": 3}}, {"doi": "10.1/x"}, {"page": True}]}
     split_filters(where)
+
+
+# ---------------------------------------------------------------------------
+# has_fulltext is decided from the index, not from this search's candidates
+# ---------------------------------------------------------------------------
+
+
+class _IndexedChroma(FakeChroma):
+    """FakeChroma that also knows which owners have file text in the index."""
+
+    def __init__(self, hits, with_text=()):
+        super().__init__(hits)
+        self.with_text = set(with_text)
+        self.text_calls: list[set[str]] = []
+
+    def owners_with_text(self, owner_keys):
+        self.text_calls.append(set(owner_keys))
+        return self.with_text & set(owner_keys)
+
+
+def _fulltext_search(monkeypatch, tmp_path, with_text):
+    # PAR1's file record exists in the index but ranks below the candidates:
+    # only its bibliographic record is a hit. PAR2 has no file at all.
+    hits = [_hit("PAR1", item_key="PAR1"), _hit("PAR2", item_key="PAR2")]
+    zot = [_regular("PAR1"), _regular("PAR2"), _attachment("ATT1", "PAR1")]
+    s, _ = _search(monkeypatch, tmp_path, hits, zot, chunking=False)
+    s.chroma_client = _IndexedChroma(hits, with_text)
+    return s
+
+
+def test_has_fulltext_false_excludes_an_item_whose_file_record_is_not_among_the_hits(monkeypatch, tmp_path):
+    s = _fulltext_search(monkeypatch, tmp_path, with_text={"PAR1"})
+
+    assert _keys(s.search("q", limit=5, filters={"has_fulltext": False})) == ["PAR2"]
+
+
+def test_has_fulltext_true_includes_an_item_whose_file_record_is_not_among_the_hits(monkeypatch, tmp_path):
+    s = _fulltext_search(monkeypatch, tmp_path, with_text={"PAR1"})
+
+    assert _keys(s.search("q", limit=5, filters={"has_fulltext": True})) == ["PAR1"]
+
+
+def test_the_index_is_asked_once_a_round_and_only_for_has_fulltext(monkeypatch, tmp_path):
+    s = _fulltext_search(monkeypatch, tmp_path, with_text={"PAR1"})
+
+    s.search("q", limit=5, filters={"item_type": "journalArticle"})
+    assert s.chroma_client.text_calls == []
+
+    out = s.search("q", limit=5, filters={"has_fulltext": True})
+    rounds = len(s.chroma_client.calls) - 1
+    assert _keys(out) == ["PAR1"]
+    assert len(s.chroma_client.text_calls) == rounds == 1
+    assert s.chroma_client.text_calls[0] == {"PAR1", "PAR2"}
+
+
+def test_owners_the_hits_already_show_to_have_text_are_not_asked_about(monkeypatch, tmp_path):
+    hits = [_hit("ATT1#0", item_key="ATT1", chunk_index=0, n_chunks=1), _hit("PAR2", item_key="PAR2")]
+    zot = [_regular("PAR1"), _regular("PAR2"), _attachment("ATT1", "PAR1")]
+    s, _ = _search(monkeypatch, tmp_path, hits, zot)
+    s.chroma_client = _IndexedChroma(hits)
+
+    out = s.search("q", limit=5, filters={"has_fulltext": True})
+
+    assert _keys(out) == ["PAR1"]
+    assert s.chroma_client.text_calls == [{"PAR2"}]
