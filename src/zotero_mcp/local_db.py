@@ -2166,7 +2166,7 @@ class LocalZoteroReader:
 
         return KeyGroupMap(groups, excluded_keys)
 
-    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False, key_filter: str | None = None, collection_keys: list[str] | None = None) -> list[ZoteroItem]:
+    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False, key_filter: str | None = None, collection_keys: list[str] | None = None, key_filters: list[str] | None = None, library_ids: list[int] | None = None) -> list[ZoteroItem]:
         """
         Get all items with their text content for semantic search.
 
@@ -2175,6 +2175,10 @@ class LocalZoteroReader:
             collection_keys: Optional list of collection keys; when set, only
                 items in those collections (or any of their subcollections)
                 are returned.
+            key_filters: Optional item keys; only those items are returned.
+            library_ids: Optional ``libraryID``s the items must belong to;
+                with ``key_filters`` the lookup uses the (libraryID, key)
+                unique index instead of scanning ``items``.
 
         Returns:
             List of ZoteroItem objects with text content.
@@ -2259,6 +2263,13 @@ class LocalZoteroReader:
         if key_filter:
             query += " AND i.key = ?"
             params.append(key_filter)
+
+        if library_ids:
+            query += f" AND i.libraryID IN ({','.join('?' * len(library_ids))})"
+            params.extend(library_ids)
+        if key_filters:
+            query += f" AND i.key IN ({','.join('?' * len(key_filters))})"
+            params.extend(key_filters)
 
         query += " ORDER BY i.dateModified DESC"
 
@@ -2603,6 +2614,26 @@ class LocalZoteroReader:
         """
         items = self.get_items_with_text(key_filter=key)
         return items[0] if items else None
+
+    def get_text_items_by_keys(self, keys: list[str], group_id: int | None = None) -> dict[str, ZoteroItem]:
+        """``{key: item}`` for the regular items among ``keys``, in one keyed query.
+
+        ``group_id`` (0 = personal) names the library the keys belong to;
+        None looks in every user and group library. The query names the
+        library, so SQLite finds each key through the (libraryID, key) unique
+        index rather than scanning every item. Keys that are not there are
+        left out.
+        """
+        if not keys:
+            return {}
+        library_ids = self._resolve_scope_library_ids(group_id)
+        if library_ids is None:
+            return {}
+        found: dict[str, ZoteroItem] = {}
+        for start in range(0, len(keys), 500):
+            for item in self.get_items_with_text(key_filters=keys[start:start + 500], library_ids=library_ids):
+                found[item.key] = item
+        return found
 
     def search_notes_local(
         self, query: str, limit: int = 20, group_id: int | None = None

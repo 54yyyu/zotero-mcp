@@ -186,6 +186,15 @@ def test_explicit_update_of_an_unmigrated_pre_0_17_index_splits_it_and_rekeys_wi
     assert len(world.embedded) == 2, "article records only"
 
 
+def test_an_explicit_update_tells_the_user_how_the_rekey_goes(world, capsys):
+    world.seed_pre_0_17()
+
+    world.update(_reader())
+
+    err = capsys.readouterr().err
+    assert "re-keyed 1/1 items" in err
+
+
 def test_a_file_that_yields_no_text_for_its_missing_record_keeps_its_passages(world):
     reader = _reader(texts={ATT: None})
     world.seed_pre_0_17()

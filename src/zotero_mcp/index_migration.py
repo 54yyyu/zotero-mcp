@@ -46,6 +46,8 @@ from .extract import select_attachment_rows
 logger = logging.getLogger(__name__)
 
 _MOVE_BATCH = 500
+# Items re-keyed per round: a handful of ChromaDB calls for the whole round.
+_REKEY_BATCH = 200
 
 
 class MigrationError(Exception):
@@ -205,6 +207,31 @@ class LocalSources:
         self.config_path = config_path
         self._targets: dict[str, Any] = {}
         self._prefixes: dict[str, str] = {}
+        self._looked_up: dict[str, Any] = {}
+
+    def prefetch(self, items: list[LegacyItem]) -> None:
+        """Look the items up in Zotero together: one keyed query per library, not one scan per item.
+
+        Without it (or when the reader cannot, or the query fails) each item
+        is looked up on its own in ``attachment_for``.
+        """
+        by_many = getattr(self.reader, "get_text_items_by_keys", None)
+        if by_many is None:
+            return
+        libraries: dict[int | None, list[str]] = {}
+        for item in items:
+            group = item.first.get("group_id")
+            libraries.setdefault(None if group is None else int(group), []).append(item.key)
+        try:
+            for group, keys in libraries.items():
+                found = by_many(keys, group)
+                if not isinstance(found, dict):
+                    return
+                for key in keys:
+                    self._looked_up[key] = found.get(key)
+        except Exception as e:
+            logger.warning(f"Could not look the items up in Zotero together ({e}); one by one instead")
+            self._looked_up.clear()
 
     def attachment_for(self, item: LegacyItem) -> str | None | _Unknown:
         """The attachment ``item``'s passages came from, if it can be told for certain.
@@ -233,7 +260,11 @@ class LocalSources:
         if self.reader is None or not item.first:
             return UNKNOWN
         try:
-            local = self.reader.get_item_by_key(item.key)
+            local = (
+                self._looked_up.pop(item.key)
+                if item.key in self._looked_up
+                else self.reader.get_item_by_key(item.key)
+            )
             if local is None:
                 return None
             rows = self.reader.get_fulltext_meta_for_item(local.item_id)
@@ -441,43 +472,126 @@ def rekey_legacy_passages(
     are left as they are and counted in ``held_items``.
 
     ``client`` is None for a dry run, which only decides what would happen.
-    Each item is its own step: its passages are written under the attachment
-    key, its article record (if any) marked ``rekeyed_to``, and only then the
-    old ids deleted, so an interrupted run finds either both or only the new
-    ones, and a rerun carries on. Nothing is embedded.
+    Items go in rounds of 200, a few ChromaDB calls per round. In each round
+    the passages are written under the attachment keys, the article records
+    (if any) marked ``rekeyed_to`` and read back, and only then are the old
+    ids deleted, so an interrupted run leaves every item either with its old
+    passages (and maybe the new ones beside them) or fully re-keyed, and a
+    rerun carries on. Nothing is embedded.
     """
     items = legacy_items(persist_dir, collection_name)
     report.legacy_items = len(items)
     report.legacy_passages = sum(len(item.passages) for item in items)
-    for number, item in enumerate(items, 1):
-        attachment = sources.attachment_for(item)
-        ids = [doc_id for doc_id, _name in item.passages]
-        if attachment is UNKNOWN:
-            report.skipped_items += 1
-            report.skipped_passages += len(ids)
-        elif attachment is None and not drop:
-            report.held_items += 1
-            report.held_passages += len(ids)
-        elif attachment is None:
-            report.dropped_items += 1
-            report.dropped_passages += len(ids)
-            if client is not None:
-                client.delete_records(ids)
+    for start in range(0, len(items), _REKEY_BATCH):
+        batch = items[start:start + _REKEY_BATCH]
+        sources.prefetch(batch)
+        to_rekey: list[tuple[LegacyItem, str, list[str]]] = []
+        to_drop: list[str] = []
+        for item in batch:
+            attachment = sources.attachment_for(item)
+            ids = [doc_id for doc_id, _name in item.passages]
+            if attachment is UNKNOWN:
+                report.skipped_items += 1
+                report.skipped_passages += len(ids)
+            elif attachment is None and not drop:
+                report.held_items += 1
+                report.held_passages += len(ids)
+            elif attachment is None:
+                report.dropped_items += 1
+                report.dropped_passages += len(ids)
+                to_drop.extend(ids)
+            else:
+                report.rekeyed_items += 1
+                report.rekeyed_passages += len(ids)
+                to_rekey.append((item, str(attachment), ids))
+        if client is not None:
+            if to_drop:
+                client.delete_records(to_drop)
+            for item, ids in _rekey_batch(client, sources, to_rekey):
+                # Its old passages are still there, so nothing is lost and
+                # a rerun carries on from this item; the others go on.
+                report.rekeyed_items -= 1
+                report.rekeyed_passages -= len(ids)
+                report.failed_items += 1
+        progress(f"  re-keyed {min(start + _REKEY_BATCH, len(items))}/{len(items)} items")
+
+
+def _rekey_batch(
+    client: Any, sources: LocalSources, batch: list[tuple[LegacyItem, str, list[str]]]
+) -> list[tuple[LegacyItem, list[str]]]:
+    """Re-key ``batch`` together; the items that failed (their old passages are untouched), with their old ids.
+
+    One read and one write of the passages, one read, update and read back of
+    the marks, one delete. Where the batch as a whole fails, its items are
+    tried one at a time, so one bad item does not hold the others back.
+    """
+    if not batch:
+        return []
+    try:
+        return _rekey_together(client, sources, batch)
+    except Exception as e:
+        logger.warning(f"Could not re-key {len(batch)} items together ({e}); one at a time instead")
+    failed = []
+    for item, attachment, ids in batch:
+        try:
+            _rekey_item(client, sources, item, attachment, ids)
+        except Exception as e:
+            logger.error(f"Could not re-key the passages of {item.key} ({e}); they stay as they are")
+            failed.append((item, ids))
+    return failed
+
+
+def _rekey_together(
+    client: Any, sources: LocalSources, batch: list[tuple[LegacyItem, str, list[str]]]
+) -> list[tuple[LegacyItem, list[str]]]:
+    # An attachment record exists only when an update has already written the
+    # file in the new shape: its passages are the current ones.
+    present = client.get_metadatas([attachment for _item, attachment, _ids in batch])
+    writing = [entry for entry in batch if entry[1] not in present]
+    if writing:
+        records = {r["id"]: r for r in client.read_records([i for _item, _att, ids in writing for i in ids])}
+        written: list[dict[str, Any]] = []
+        for item, attachment, ids in writing:
+            mine = [records[i] for i in ids if i in records]
+            first = next((r for r in mine if r["id"].endswith("#0")), None)
+            offset = (
+                file_text_offset(first["document"], item.first, sources.live_prefix(item.key)) if first else 0
+            )
+            written.extend(_rekeyed(item, attachment, mine, offset))
+        client.upsert_embeddings(
+            documents=[r["document"] for r in written],
+            metadatas=[r["metadata"] for r in written],
+            ids=[r["id"] for r in written],
+            embeddings=[r["embedding"] for r in written],
+        )
+        _after_rekey_upsert()
+        for _item, attachment, _ids in writing:
+            sources.remember_stamp(attachment)
+    # The article records say their passages moved, so they are not "missing".
+    # The whole metadata goes back: not every ChromaDB version merges.
+    # The old passages go only once the marks are read back: without one the
+    # item would have none and be embedded again by the next update.
+    stored = client.get_metadatas([item.key for item, _att, _ids in batch])
+    marks = {
+        item.key: {**stored[item.key], "rekeyed_to": attachment}
+        for item, attachment, _ids in batch
+        if item.key in stored and stored[item.key].get("rekeyed_to") != attachment
+    }
+    if marks:
+        client.update_metadatas(list(marks), list(marks.values()))
+        landed = client.get_metadatas(list(marks))
+    else:
+        landed = {}
+    failed = []
+    deletable: list[str] = []
+    for item, attachment, ids in batch:
+        if item.key in marks and landed.get(item.key, {}).get("rekeyed_to") != attachment:
+            logger.error(f"The mark that {item.key}'s passages moved to {attachment} did not land; they stay as they are")
+            failed.append((item, ids))
         else:
-            report.rekeyed_items += 1
-            report.rekeyed_passages += len(ids)
-            if client is not None:
-                try:
-                    _rekey_item(client, sources, item, attachment, ids)
-                except Exception as e:
-                    # Its old passages are still there, so nothing is lost and
-                    # a rerun carries on from this item; the others go on.
-                    report.rekeyed_items -= 1
-                    report.rekeyed_passages -= len(ids)
-                    report.failed_items += 1
-                    logger.error(f"Could not re-key the passages of {item.key} ({e}); they stay as they are")
-        if client is not None and number % 200 == 0:
-            progress(f"  re-keyed {number}/{len(items)} items")
+            deletable.extend(ids)
+    client.delete_records(deletable)
+    return failed
 
 
 def _rekey_item(client: Any, sources: LocalSources, item: LegacyItem, attachment: str, ids: list[str]) -> None:

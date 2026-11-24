@@ -621,10 +621,12 @@ def test_old_passages_stay_when_the_rekeyed_to_mark_does_not_land(index, monkeyp
     real = ChromaClient.update_metadatas
 
     def update(self, ids, metadatas):
-        if ids == [ITEM]:
+        if ITEM in ids:
             if how == "raises":
                 raise RuntimeError("disk full")
-            return  # what a swallowed error looks like to the caller
+            # What a swallowed error looks like to the caller: this item's mark is not written.
+            keep = [n for n, doc_id in enumerate(ids) if doc_id != ITEM]
+            return real(self, [ids[n] for n in keep], [metadatas[n] for n in keep]) if keep else None
         return real(self, ids, metadatas)
 
     monkeypatch.setattr(ChromaClient, "update_metadatas", update)
@@ -718,3 +720,112 @@ def test_the_mcp_update_tool_passes_the_note_on(monkeypatch, tmp_path):
     ) else search_tools.update_search_database(ctx=ctx)
 
     assert "migrate-index" in out
+
+
+# --- the re-key goes in rounds: ChromaDB calls scale per round, not per item (review of #840, item 4) ---
+
+def _many_items(directory, count):
+    keys = [f"ITEM{n:04d}" for n in range(count)]
+    items, targets = [], {}
+    for n, key in enumerate(keys, 1):
+        att = f"ATTA{n:04d}"
+        _seed_split(directory, key=key, att_keys=att)
+        items.append(_item(key, n))
+        targets[n] = [target(att)]
+    return MigReader(items, targets=targets), keys
+
+
+def _count_chroma_calls(monkeypatch):
+    calls: dict[str, int] = {}
+    for name in ("get_metadatas", "read_records", "upsert_embeddings", "update_metadatas", "delete_records"):
+        real = getattr(ChromaClient, name)
+
+        def counted(self, *args, _real=real, _name=name, **kwargs):
+            calls[_name] = calls.get(_name, 0) + 1
+            return _real(self, *args, **kwargs)
+
+        monkeypatch.setattr(ChromaClient, name, counted)
+    return calls
+
+
+def test_chroma_calls_grow_with_the_rounds_not_with_the_items(index, monkeypatch):
+    directory, config = index
+    reader, keys = _many_items(directory, 12)
+    calls = _count_chroma_calls(monkeypatch)
+    messages: list[str] = []
+
+    report = migrate_index(config, sources=LocalSources(reader, config), progress=messages.append)
+
+    assert (report.rekeyed_items, report.failed_items) == (12, 0)
+    assert set(_read(directory, PASSAGES)) == {f"ATTA{n:04d}#{k}" for n in range(1, 13) for k in range(3)}
+    # One round: a read of the records, one write, a mark read/write/read-back, one delete.
+    assert calls == {
+        "get_metadatas": 3, "read_records": 1, "upsert_embeddings": 1, "update_metadatas": 1, "delete_records": 1
+    }
+    assert "  re-keyed 12/12 items" in messages
+
+
+def test_a_second_round_costs_the_same_calls_again(index, monkeypatch):
+    directory, config = index
+    reader, _keys = _many_items(directory, 12)
+    monkeypatch.setattr(index_migration, "_REKEY_BATCH", 4)
+    calls = _count_chroma_calls(monkeypatch)
+    messages: list[str] = []
+
+    report = migrate_index(config, sources=LocalSources(reader, config), progress=messages.append)
+
+    assert (report.rekeyed_items, report.failed_items) == (12, 0)
+    assert calls["read_records"] == calls["upsert_embeddings"] == calls["delete_records"] == 3
+    assert [m for m in messages if "re-keyed" in m] == [f"  re-keyed {n}/12 items" for n in (4, 8, 12)]
+
+
+def test_a_kill_in_the_middle_of_a_round_leaves_every_item_old_or_rekeyed(index, monkeypatch):
+    directory, config = index
+    reader, keys = _many_items(directory, 6)
+    monkeypatch.setattr(index_migration, "_REKEY_BATCH", 3)
+    rounds = []
+
+    def die_in_the_second_round():
+        rounds.append(1)
+        if len(rounds) == 2:
+            raise KeyboardInterrupt("killed")
+
+    monkeypatch.setattr(index_migration, "_after_rekey_upsert", die_in_the_second_round)
+    with pytest.raises(KeyboardInterrupt):
+        migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+
+    stored = _read(directory, PASSAGES)
+    for n, key in enumerate(keys, 1):
+        old = {f"{key}#{k}" for k in range(3)}
+        new = {f"ATTA{n:04d}#{k}" for k in range(3)}
+        if n <= 3:
+            assert set(stored) >= new and not (old & set(stored)), "a finished round is fully re-keyed"
+        else:
+            assert old <= set(stored), "the interrupted round still has every old passage"
+    monkeypatch.setattr(index_migration, "_after_rekey_upsert", lambda: None)
+
+    report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+
+    assert (report.rekeyed_items, report.failed_items) == (3, 0)
+    assert set(_read(directory, PASSAGES)) == {f"ATTA{n:04d}#{k}" for n in range(1, 7) for k in range(3)}
+
+
+def test_one_failing_item_in_a_round_does_not_hold_back_the_others(index, monkeypatch):
+    directory, config = index
+    reader, keys = _many_items(directory, 4)
+    real = ChromaClient.read_records
+
+    def read(self, ids):
+        # The round as a whole fails; of the single items only the first cannot be read.
+        if len(ids) > 3 or ids[0].startswith(keys[0]):
+            raise RuntimeError("unreadable")
+        return real(self, ids)
+
+    monkeypatch.setattr(ChromaClient, "read_records", read)
+
+    report = migrate_index(config, sources=LocalSources(reader, config), **QUIET)
+
+    assert (report.rekeyed_items, report.failed_items) == (3, 1)
+    stored = _read(directory, PASSAGES)
+    assert {f"{keys[0]}#{k}" for k in range(3)} <= set(stored)
+    assert {f"ATTA{n:04d}#{k}" for n in (2, 3, 4) for k in range(3)} <= set(stored)

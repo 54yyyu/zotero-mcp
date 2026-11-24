@@ -2997,7 +2997,7 @@ class ZoteroSemanticSearch:
                     self.chroma_client,
                     sources,
                     report,
-                    lambda _message: None,
+                    lambda message: _report(message + "\n"),
                     config_path=self.config_path,
                     # Dropping is irreversible and costs embeddings: only
                     # ``migrate-index``, after its dry run, does it.
