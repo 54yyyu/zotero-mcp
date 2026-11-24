@@ -5039,6 +5039,9 @@ class ZoteroSemanticSearch:
         metadata = _own_metadata(key, group_id, entry.get("date_modified"))
         metadata["file_stamp"] = entry["file_stamp"]
         metadata["file_hash"] = entry["file_hash"]
+        # The copy is as cut short as its source; None otherwise, as upsert
+        # merges (a flag the key's earlier record had must not survive).
+        metadata["text_truncated"] = True if (article["metadata"] or {}).get("text_truncated") else None
         # A manifest written before hints existed has no owner: no hint then.
         hinted = "owner_key" in entry
         if hinted:

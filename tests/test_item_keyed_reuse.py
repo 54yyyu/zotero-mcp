@@ -31,7 +31,7 @@ from chromadb import EmbeddingFunction  # noqa: E402
 from test_item_keyed_local_scan import FakeZotero, Item, LibReader  # noqa: E402
 
 from zotero_mcp import file_hash, semantic_search  # noqa: E402
-from zotero_mcp.chroma_client import ChromaClient  # noqa: E402
+from zotero_mcp.chroma_client import ChromaClient, read_index_layout  # noqa: E402
 from zotero_mcp.local_db import ExtractionTarget  # noqa: E402
 
 NAME = "item_keyed_reuse"
@@ -712,3 +712,52 @@ def test_a_copy_that_fails_without_text_is_counted_for_the_next_run(env, home, m
 
     assert stats["reuse_left_for_next_run"] == 1
     assert records(search, "ATT00002") == {}
+
+
+# --- the truncation flag of a copy ---------------------------------------------------
+
+
+def truncated_count(search):
+    return read_index_layout(str(search.chroma_client.persist_directory), NAME)["truncated_text_records"]
+
+
+def set_truncated(search, key, value, *, cache_made=False):
+    """Flag a record; ``cache_made`` also makes it look made from a text cache (no file hash)."""
+    meta = {"text_truncated": value}
+    if cache_made:
+        meta.update(file_hash=None, file_stamp="cache:1")
+    search.chroma_client.client.get_collection(NAME).update(ids=[key], metadatas=[meta])
+
+
+def test_a_copy_of_a_full_text_file_clears_a_stale_truncation_flag(env, home):
+    reader = two_items(home)
+    search, _ = env(reader)
+    set_truncated(search, "ATT00002", True, cache_made=True)
+    assert truncated_count(search) == 1
+
+    # An explicit run re-extracts a cut-short record whose file is readable; the
+    # file is identical to ATT00001's, so the record is copied, and the flag goes.
+    search, stats = env(reader)
+
+    assert reader.extracted == []
+    assert stats["reused_from_hash"]["attachments"] == 1
+    assert "text_truncated" not in records(search, "ATT00002")["ATT00002"][2]
+    assert truncated_count(search) == 0
+
+    search, stats = env(reader)
+    assert "reused_from_hash" not in stats or stats["reused_from_hash"]["attachments"] == 0
+    assert truncated_count(search) == 0
+
+
+def test_a_copy_of_a_truncated_record_is_truncated(env, home):
+    reader = Reader([Item("ITEM0001", 1)], targets={1: [real_target(home, "ATT00001")]})
+    search, _ = env(reader)
+    set_truncated(search, "ATT00001", True)
+
+    reader.items.append(Item("ITEM0002", 2))
+    reader.targets[2] = [real_target(home, "ATT00002")]
+    search, _ = env(reader, automatic=True)
+
+    assert reader.extracted == []
+    assert records(search, "ATT00002")["ATT00002"][2].get("text_truncated") is True
+    assert truncated_count(search) == 2
