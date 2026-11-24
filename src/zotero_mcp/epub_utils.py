@@ -91,6 +91,16 @@ class TextSearchResult:
     matched_text: str
 
 
+# HTML void elements never have children or a closing tag. In HTML5 EPUB
+# chapters, <meta> / <link> in <head> have no '/>' and must not increment
+# skip_depth, while <br> / <img> / <hr> in <body> must still count as an
+# element sibling without being pushed onto the open-element stack.
+_VOID_ELEMENTS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "param", "source", "track", "wbr",
+})
+
+
 class CFITextParser(HTMLParser):
     """
     HTML parser that extracts text while tracking precise positions for CFI generation.
@@ -140,6 +150,11 @@ class CFITextParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]):
         tag = tag.lower()
 
+        if tag in _VOID_ELEMENTS:
+            if self.skip_depth == 0 and self.element_child_counts and not self.at_root:
+                self.element_child_counts[-1] += 1
+            return
+
         # If we're already inside a skipped element, don't count children
         if self.skip_depth > 0:
             if tag in self.skip_elements:
@@ -177,6 +192,9 @@ class CFITextParser(HTMLParser):
 
     def handle_endtag(self, tag: str):
         tag = tag.lower()
+
+        if tag in _VOID_ELEMENTS:
+            return
 
         if tag in self.skip_elements:
             self.skip_depth = max(0, self.skip_depth - 1)

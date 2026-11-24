@@ -168,3 +168,86 @@ def test_sort_index_is_the_spine_position_and_the_offset_in_that_chapter(tmp_pat
     assert created[0]["annotationSortIndex"] == f"00001|{len(before):08d}"
     cfi = json.loads(created[0]["annotationPosition"])["value"]
     assert resolved_text(body, cfi) == "the needle"
+
+
+class TestVoidElements:
+    """HTML5 void elements (<meta>, <link>, <br>, <img>, <hr>) have no closing tag."""
+
+    def test_html5_head_meta_and_link_do_not_swallow_body(self, tmp_path):
+        html5 = (
+            '<!DOCTYPE html><html>'
+            '<head><meta charset="utf-8"><link rel="stylesheet" href="s.css"><title>t</title></head>'
+            '<body><p>Hello brave new world</p></body></html>'
+        )
+        epub_path = tmp_path / "html5.epub"
+        with zipfile.ZipFile(epub_path, "w") as archive:
+            archive.writestr("mimetype", "application/epub+zip")
+            archive.writestr("META-INF/container.xml", _CONTAINER)
+            archive.writestr(
+                "OEBPS/content.opf",
+                '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0">'
+                '<manifest><item id="c0" href="c0.xhtml" media-type="application/xhtml+xml"/></manifest>'
+                '<spine><itemref idref="c0"/></spine></package>',
+            )
+            archive.writestr("OEBPS/c0.xhtml", html5)
+
+        found = find_text_in_epub(str(epub_path), 1, "brave new")
+        assert "error" not in found, found
+        assert found["chapter_found"] == 1
+        assert resolved_text("<p>Hello brave new world</p>", found["cfi"]) == "brave new"
+
+    @pytest.mark.parametrize("html5_body, xhtml_body, quote", [
+        (
+            "<p>First line<br>Second line</p><p>Next paragraph</p>",
+            "<p>First line<br/>Second line</p><p>Next paragraph</p>",
+            "Second line",
+        ),
+        (
+            "<p>First line<br>Second line</p><p>Next paragraph</p>",
+            "<p>First line<br/>Second line</p><p>Next paragraph</p>",
+            "Next paragraph",
+        ),
+        (
+            '<p>Before<img src="fig.png" alt="fig"><b>bold target</b> after</p>',
+            '<p>Before<img src="fig.png" alt="fig"/><b>bold target</b> after</p>',
+            "bold target",
+        ),
+        (
+            '<meta itemprop="author" content="Ada"><hr><p>After divider</p>',
+            '<meta itemprop="author" content="Ada"/><hr/><p>After divider</p>',
+            "After divider",
+        ),
+    ])
+    def test_body_void_elements_match_xhtml_cfi_and_resolve(self, html5_body, xhtml_body, quote):
+        html5_doc = (
+            f'<!DOCTYPE html><html><head><meta charset="utf-8"><title>t</title></head>'
+            f'<body>{html5_body}</body></html>'
+        )
+        p_html5 = epub_utils.CFITextParser()
+        p_html5.feed(html5_doc)
+        p_html5.close()
+
+        p_xhtml = epub_utils.CFITextParser()
+        p_xhtml.feed(_chapter(xhtml_body))
+        p_xhtml.close()
+
+        r_html5 = epub_utils.find_text_in_document(p_html5, quote)
+        r_xhtml = epub_utils.find_text_in_document(p_xhtml, quote)
+        assert r_html5 is not None and r_xhtml is not None
+
+        cfi_html5 = epub_utils.build_cfi(r_html5, 0)
+        cfi_xhtml = epub_utils.build_cfi(r_xhtml, 0)
+        assert cfi_html5 == cfi_xhtml
+        assert resolved_text(xhtml_body, cfi_html5) == quote
+
+    def test_stray_void_end_tags_do_not_corrupt_stack(self):
+        doc = (
+            '<html><head><meta charset="utf-8"></meta><title>t</title></head>'
+            '<body><p>One<br></br>Two</p><p>Three</p></body></html>'
+        )
+        parser = epub_utils.CFITextParser()
+        parser.feed(doc)
+        parser.close()
+        result = epub_utils.find_text_in_document(parser, "Three")
+        assert result is not None
+        assert resolved_text("<p>One<br/>Two</p><p>Three</p>", epub_utils.build_cfi(result, 0)) == "Three"
