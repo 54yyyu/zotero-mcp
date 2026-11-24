@@ -48,7 +48,6 @@ FILTERS = [
     {"item_type": "journalArticle"},
     {"item_type": {"$eq": "book"}},
     {"item_type": {"$in": ["book", "attachment"]}},
-    {"item_type": {"$in": []}},
     {"item_type": {"$ne": "book"}},
     {"item_type": 5},
     {"tags": "keep"},
