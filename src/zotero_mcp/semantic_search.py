@@ -6420,8 +6420,8 @@ class ZoteroSemanticSearch:
     ) -> list[dict[str, Any]]:
         """Attach ``record``, ``owner`` and ``owner_key`` to each hit, in place.
 
-        Two batched lookups per library: the hits' own keys, then the parents
-        not already fetched. Trashed or missing hits and owners are left out
+        One batched lookup per library for the hits' own keys and their parent
+        hints, then a second for the parents not already fetched. Trashed or missing hits and owners are left out
         of the returned list. A hit that could not be looked up at all, such
         as one from a library this configuration cannot reach, stays with an
         ``error`` and its record key as owner, so the failure is reported
@@ -6430,6 +6430,12 @@ class ZoteroSemanticSearch:
         wanted: dict[int | None, set[str]] = {}
         for hit in hits:
             wanted.setdefault(hit["library"], set()).add(hit["record_key"])
+            # An attachment's record names its parent: asked in the same batch
+            # as a guess, so the parent needs a second lookup only when the
+            # guess was wrong or missing.
+            hint = hit["meta"].get("parent_hint")
+            if isinstance(hint, str) and hint:
+                wanted[hit["library"]].add(hint)
         items, errors = self._resolve_items(wanted, memo)
 
         parents: dict[int | None, set[str]] = {}
