@@ -276,23 +276,30 @@ def test_trashed_owner_is_dropped_and_limit_still_filled(monkeypatch, tmp_path, 
 
 
 def test_article_level_overfetches_so_collapsing_still_fills_limit(monkeypatch, tmp_path):
-    # Not chunked: a bibliographic record and its attachment's record are
-    # both article-level hits of one owner.
+    # Not chunked: a bibliographic record and its attachments' records are
+    # all article-level hits of one owner.
     hits = [
         _hit("PAR1", item_key="PAR1"),
         _hit("ATT1", item_key="ATT1", file_stamp="1:2"),
+        _hit("ATT1B", item_key="ATT1B", file_stamp="1:2"),
         _hit("PAR2", item_key="PAR2"),
+        _hit("ATT2", item_key="ATT2", file_stamp="1:2"),
+        _hit("ATT2B", item_key="ATT2B", file_stamp="1:2"),
         _hit("PAR3", item_key="PAR3"),
     ]
-    zot = [_regular("PAR1"), _attachment("ATT1", "PAR1"), _regular("PAR2"), _regular("PAR3")]
+    zot = [
+        _regular("PAR1"), _attachment("ATT1", "PAR1"), _attachment("ATT1B", "PAR1"),
+        _regular("PAR2"), _attachment("ATT2", "PAR2"), _attachment("ATT2B", "PAR2"),
+        _regular("PAR3"),
+    ]
     s, _ = _search(monkeypatch, tmp_path, hits, zot, chunking=False)
 
     out = s.search("q", limit=3)
 
     assert _keys(out) == ["PAR1", "PAR2", "PAR3"]
-    # As 0.17: `limit` candidates first; the collapse leaves two owners, so a
+    # Twice `limit` candidates first; the collapse leaves two owners, so a
     # second round asks for more.
-    assert [c["n_results"] for c in s.chroma_client.calls] == [3, 12]
+    assert [c["n_results"] for c in s.chroma_client.calls] == [6, 24]
 
 
 class _FailingBatchZot(FakeZot):
