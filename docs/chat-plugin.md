@@ -67,6 +67,8 @@ Install OpenCode (`npm i -g opencode-ai`, or any of the ways its site lists) and
 
 ### Custom ACP agents
 
+To use Zotero from a WorkBuddy chat, configure the [WorkBuddy MCP connector](getting-started.md#integrating-with-tencent-workbuddy) in WorkBuddy.
+
 In **Settings > Agent**, choose **Custom**. Enter a display name, the executable
 command, arguments as a JSON array of strings, and optional extra environment
 variables as a JSON object of strings. Press **Save custom agent**. For example,
