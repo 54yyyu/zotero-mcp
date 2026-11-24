@@ -1236,3 +1236,42 @@ def test_a_parent_that_could_not_be_fetched_is_not_asked_for_again_for_its_chang
     for parent in ("ITEM0001", "ITEM0002"):
         assert env.zot.calls.count(("item", parent)) == 1
     assert _watermark(env) == 5
+
+
+def test_changed_files_read_their_parents_stored_metadata_in_one_request(env, monkeypatch):
+    parents = [f"ITEM000{i}" for i in range(1, 4)]
+    files = [f"PDFAAAA{i}" for i in range(1, 4)]
+    library(
+        env,
+        *[paper(p) for p in parents],
+        *[attachment(f, p) for f, p in zip(files, parents)],
+        **{f: TEXT for f in files},
+    )
+    search = env.search()
+    for p in parents:
+        _legacy_with_files(search, p, "")
+    for p in parents:
+        env.zot.put(paper(p), version=5)
+    env.zot.put(*[attachment(f, p, mtime="200") for f, p in zip(files, parents)], version=6)
+    config = json.loads(Path(env.config).read_text())
+    config["semantic_search"]["last_sync_version"] = 5
+    Path(env.config).write_text(json.dumps(config))
+    reads: list[str] = []
+
+    def spy(name):
+        original = getattr(RecordingClient, name)
+
+        def wrapper(self, *args, **kwargs):
+            if any(f.name == "_flag_owners_of_changed_attachments" for f in traceback.extract_stack()):
+                reads.append(name)
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(RecordingClient, name, wrapper)
+
+    spy("get_document_metadata")
+    spy("get_documents_metadata")
+
+    search, _stats = env.update()
+
+    assert reads == ["get_documents_metadata"]
+    assert all("title" not in meta(search, p) for p in parents)

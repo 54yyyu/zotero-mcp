@@ -4844,6 +4844,13 @@ class ZoteroSemanticSearch:
         """
         by_key = {item.get("key"): item for item in changed_items}
         unresolved: set[str] = set()
+        stored = self._stored_metadata_of(
+            {
+                parent for row in attachments
+                if not (row.get("data") or {}).get("deleted")
+                and (parent := (row.get("data") or {}).get("parentItem")) in by_key
+            }
+        )
         for row in attachments:
             parent = (row.get("data") or {}).get("parentItem")
             if not parent:
@@ -4856,11 +4863,20 @@ class ZoteroSemanticSearch:
                     unresolved.add(self._row_key(row))
                     self._api_fetch_failures += 1
                 continue
-            if self._changes_selection(row, owner):
+            if self._changes_selection(row, owner, stored):
                 owner["_attachments_changed"] = True
         return unresolved
 
-    def _changes_selection(self, row: dict[str, Any], owner: dict[str, Any]) -> bool:
+    def _stored_metadata_of(self, keys: set[str]) -> dict[str, dict[str, Any]]:
+        """``_stored_metadata`` of every key in ``keys`` that is indexed, in one read where the client can."""
+        many = getattr(self.chroma_client, "get_documents_metadata", None)
+        if many is not None:
+            return many(sorted(keys))
+        return {key: meta for key in sorted(keys) if (meta := self._stored_metadata(key))}
+
+    def _changes_selection(
+        self, row: dict[str, Any], owner: dict[str, Any], stored_by_key: dict[str, dict[str, Any]]
+    ) -> bool:
         """Whether a changed attachment changes what its parent's legacy records stand for.
 
         A legacy record fingerprints the item's files by key
@@ -4869,11 +4885,12 @@ class ZoteroSemanticSearch:
         does not, and re-embedding the item for that would cost money for the
         same text, as the local scan's check (``_legacy_changed``) already
         knows. Without a fingerprint to compare, the file counts.
+        ``stored_by_key`` is the owners' stored metadata, read once for all of them.
         """
         key = self._row_key(row)
         if (row.get("data") or {}).get("deleted"):
             return True
-        stored = self._stored_metadata((owner or {}).get("key") or "")
+        stored = stored_by_key.get((owner or {}).get("key") or "")
         legacy = self._legacy_metadata((owner or {}).get("key") or "", stored) if stored else None
         known = (legacy or {}).get("attachment_keys")
         if known is None:
