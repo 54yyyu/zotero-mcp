@@ -8077,7 +8077,9 @@ class ZoteroSemanticSearch:
         if reader is None:
             return None
         try:
-            owners = reader.get_filter_owners(group_id=group_id, where=live_where)
+            owners = reader.get_filter_owners(
+                group_id=group_id, where=live_where, with_creators="creators" in referenced_fields(live_where)
+            )
         except Exception as e:
             logger.warning(f"Filter pre-check against zotero.sqlite failed: {e}")
             return None

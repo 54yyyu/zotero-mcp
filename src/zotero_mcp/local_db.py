@@ -3593,7 +3593,7 @@ class LocalZoteroReader:
         return {item["key"]: item for item in self._build_full_items(conn, rows)}
 
     #: The owner fields semantic-search filters read (semantic_filters.live_fields).
-    _FILTER_OWNER_FIELDS = ("title", "DOI", "publicationTitle", "extra", "citationKey")
+    _FILTER_OWNER_FIELDS = ("title", "DOI", "publicationTitle", "extra", "citationKey", "date", "url")
 
     @staticmethod
     def _owner_condition_item_type(values: list[str]) -> tuple[str, list[str]]:
@@ -3628,6 +3628,7 @@ class LocalZoteroReader:
         *,
         group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
         where: dict[str, Any] | None = None,
+        with_creators: bool = False,
     ) -> list[dict]:
         """Every item a semantic hit can resolve to, for filtering by live data (#826).
 
@@ -3635,7 +3636,8 @@ class LocalZoteroReader:
         the trash; notes and annotations are never indexed. Each is
         pyzotero-shaped with just the filterable fields, plus
         ``attachment_keys``: its non-trashed child attachments, whose records
-        a filter on the owner must also let through.
+        a filter on the owner must also let through. ``creators`` are read
+        only on request (``with_creators``), as they cost a query of their own.
 
         ``where`` (a Chroma-style filter) narrows the candidates in SQLite:
         the ``$eq`` / ``$in`` conditions on the fields of ``_OWNER_PUSHDOWN``
@@ -3658,7 +3660,7 @@ class LocalZoteroReader:
                     narrow_sql += f" AND {built[0]}"
                     narrow_params += built[1]
         owner_select = f"""
-            SELECT i.itemID, i.key, it.typeName
+            SELECT i.itemID, i.key, it.typeName, i.dateAdded
             FROM items i
             JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
             LEFT JOIN deletedItems del ON del.itemID = i.itemID
@@ -3672,7 +3674,12 @@ class LocalZoteroReader:
         owners: dict[int, dict] = {
             row["itemID"]: {
                 "key": row["key"],
-                "data": {"key": row["key"], "itemType": row["typeName"], "tags": []},
+                "data": {
+                    "key": row["key"],
+                    "itemType": row["typeName"],
+                    "dateAdded": _api_timestamp(row["dateAdded"]),
+                    "tags": [],
+                },
                 "attachment_keys": [],
             }
             for row in rows
@@ -3699,7 +3706,13 @@ class LocalZoteroReader:
             scope_params + list(self._FILTER_OWNER_FIELDS),
         ):
             if (owner := owners.get(row["itemID"])) is not None:
-                owner["data"][row["fieldName"]] = row["value"]
+                value = _api_date_field(row["value"]) if row["fieldName"] == "date" else row["value"]
+                owner["data"][row["fieldName"]] = value
+        if with_creators:
+            ids = list(owners)
+            for start in range(0, len(ids), _ID_CHUNK):
+                for item_id, creators in self._fetch_creators(conn, ids[start:start + _ID_CHUNK]).items():
+                    owners[item_id]["data"]["creators"] = creators
         for row in conn.execute(
             f"""
             SELECT itg.itemID, t.name

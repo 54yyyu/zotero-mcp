@@ -12,12 +12,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from zotero_mcp.utils import format_creators
+
 #: Stored in every record and never stale: filtered by Chroma.
 CHROMA_FIELDS = frozenset({"group_id", "section", "page", "chunk_index", "n_chunks", "char_start", "char_end"})
 
 #: Evaluated against the owner item's live data.
 LIVE_FIELDS = frozenset(
-    {"item_type", "item_key", "doi", "citation_key", "publication", "tags", "title", "has_fulltext"}
+    {"item_type", "item_key", "doi", "citation_key", "publication", "tags", "title", "has_fulltext",
+     "date", "date_added", "creators", "url"}
 )
 
 #: Live fields that zotero.sqlite can answer for an owner alone. has_fulltext
@@ -26,8 +29,7 @@ OWNER_FIELDS = LIVE_FIELDS - {"has_fulltext"}
 
 #: Copied into legacy records only; a filter on one would silently match nothing but them.
 LEGACY_ONLY_FIELDS = frozenset(
-    {"date", "date_added", "creators", "url", "parent_item_key", "fulltext_source", "attachment_keys",
-     "attachment_priority"}
+    {"parent_item_key", "fulltext_source", "attachment_keys", "attachment_priority"}
 )
 
 _MISSING = object()
@@ -237,6 +239,13 @@ def live_fields(item: dict[str, Any]) -> dict[str, Any]:
         "publication": data.get("publicationTitle", ""),
         "citation_key": _citation_key(data),
         "tags": frozenset(t.get("tag", "") for t in data.get("tags") or []),
+        # As 0.17 stored them: Zotero's date text, the ISO 8601 UTC timestamp
+        # the item was added, "Last, First; Last, First" (what
+        # ``format_creators`` makes, "No authors listed" for none), the URL.
+        "date": data.get("date", ""),
+        "date_added": data.get("dateAdded", ""),
+        "creators": format_creators(data.get("creators") or []),
+        "url": data.get("url", ""),
     }
 
 

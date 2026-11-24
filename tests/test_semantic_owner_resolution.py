@@ -160,7 +160,7 @@ class FakeReader:
         self.full_calls.append((list(keys), group_id))
         return {k: self._items[k] for k in keys if k in self._items}
 
-    def get_filter_owners(self, *, group_id=0, where=None):
+    def get_filter_owners(self, *, group_id=0, where=None, with_creators=False):
         self.owner_calls.append(group_id)
         return self._owners
 
@@ -425,7 +425,7 @@ def test_split_filters_routes_stored_fields_to_chroma_and_bibliographic_ones_liv
     assert live == {"item_type": "book"}
 
 
-@pytest.mark.parametrize("field", ["date", "creators", "url"])
+@pytest.mark.parametrize("field", ["parent_item_key", "fulltext_source", "attachment_keys"])
 def test_split_filters_rejects_fields_only_legacy_records_carry(field):
     with pytest.raises(ValueError, match=f"{field}.*Supported fields:.*item_type"):
         split_filters({"$and": [{"item_type": "book"}, {field: "x"}]})
@@ -1055,3 +1055,99 @@ def test_get_attachment_parents_maps_every_live_attachment_to_its_parent(tmp_pat
 
     # A standalone file has no parent; a trashed attachment is not listed.
     assert parents == {"ATTCHLD1": "PAPER001", "STANDATT": None}
+
+
+# ---------------------------------------------------------------------------
+# date, date_added, creators and url are live filters (#826)
+# ---------------------------------------------------------------------------
+
+_BIBLIO = {
+    "date": "March 2011",
+    "dateAdded": "2024-03-05T10:00:00Z",
+    "url": "https://example.org/paper",
+    "creators": [
+        {"creatorType": "author", "firstName": "Ada", "lastName": "Lovelace"},
+        {"creatorType": "author", "name": "Acme Lab"},
+    ],
+}
+
+
+def _biblio_corpus():
+    zot = [
+        _regular("PAR0001", "Match", **_BIBLIO),
+        _attachment("ATT0001", "PAR0001"),
+        _regular("PAR0002", "Other", date="2019", dateAdded="2023-01-01T00:00:00Z", url="https://other.test/x"),
+        _attachment("ATT0002", "PAR0002"),
+    ]
+    hits = [_hit(f"ATT000{n}#0", item_key=f"ATT000{n}", chunk_index=0, n_chunks=1) for n in (1, 2)]
+    return hits, zot
+
+
+@pytest.mark.parametrize("filters,expected", [
+    ({"date": "March 2011"}, ["PAR0001"]),
+    ({"date": {"$ne": "March 2011"}}, ["PAR0002"]),
+    ({"date_added": {"$gte": "2024-01-01T00:00:00Z"}}, ["PAR0001"]),
+    ({"date_added": {"$lt": "2024-01-01"}}, ["PAR0002"]),
+    ({"creators": "Lovelace, Ada; Acme Lab"}, ["PAR0001"]),
+    ({"creators": {"$in": ["Lovelace, Ada; Acme Lab", "nobody"]}}, ["PAR0001"]),
+    ({"creators": "No authors listed"}, ["PAR0002"]),
+    ({"url": "https://example.org/paper"}, ["PAR0001"]),
+    ({"url": {"$nin": ["https://example.org/paper"]}}, ["PAR0002"]),
+])
+def test_bibliographic_fields_are_live_filters_on_the_web(monkeypatch, tmp_path, filters, expected):
+    hits, zot = _biblio_corpus()
+    s, _ = _search(monkeypatch, tmp_path, hits, zot)
+
+    assert _keys(s.search("q", limit=5, filters=filters)) == expected
+
+
+@pytest.mark.parametrize("filters,expected", [
+    ({"date": "March 2011"}, ["PAR0001"]),
+    ({"date_added": {"$gt": "2024-01-01"}}, ["PAR0001"]),
+    ({"creators": "Lovelace, Ada; Acme Lab"}, ["PAR0001"]),
+    ({"url": "https://other.test/x"}, ["PAR0002"]),
+])
+def test_bibliographic_fields_are_prefiltered_in_local_mode(monkeypatch, tmp_path, filters, expected):
+    hits, zot = _biblio_corpus()
+    owners = [{**z, "attachment_keys": [f"ATT{z['key'][3:]}"]} for z in zot if z["key"].startswith("PAR")]
+    reader = FakeReader(zot, owners)
+    s, _ = _search(monkeypatch, tmp_path, hits, [], local=True, reader=reader)
+
+    out = s.search("q", limit=5, filters=filters)
+
+    assert _keys(out) == expected
+    assert reader.owner_calls, "the owner list was not consulted"
+    assert "item_key" in s.chroma_client.calls[0]["where"]
+
+
+def test_get_filter_owners_reads_date_added_date_creators_and_url(tmp_path):
+    db = tmp_path / "zotero.sqlite"
+    _owner_db(db)
+    conn = sqlite3.connect(db)
+    conn.execute("INSERT INTO fields VALUES (6, 'date')")
+    conn.execute("INSERT INTO fields VALUES (13, 'url')")
+    conn.execute("INSERT INTO itemDataValues VALUES (100, '2011-03-00 March 2011')")
+    conn.execute("INSERT INTO itemDataValues VALUES (101, 'https://example.org/paper')")
+    conn.execute("INSERT INTO itemData VALUES (1, 6, 100)")
+    conn.execute("INSERT INTO itemData VALUES (1, 13, 101)")
+    conn.execute("UPDATE items SET dateAdded = '2024-03-05 10:00:00' WHERE itemID = 1")
+    conn.execute("INSERT INTO creatorTypes VALUES (1, 'author')")
+    conn.execute("INSERT INTO creators VALUES (1, 'Ada', 'Lovelace')")
+    conn.execute("INSERT INTO creators VALUES (2, NULL, 'Acme Lab')")
+    conn.execute("INSERT INTO itemCreators VALUES (1, 1, 1, 0)")
+    conn.execute("INSERT INTO itemCreators VALUES (1, 2, 1, 1)")
+    conn.commit()
+    conn.close()
+    reader = LocalZoteroReader(db_path=str(db))
+    try:
+        owners = {o["key"]: o for o in reader.get_filter_owners(group_id=0, with_creators=True)}
+        bare = {o["key"]: o for o in reader.get_filter_owners(group_id=0)}
+    finally:
+        reader.close()
+
+    fields = live_fields(owners["PAPER001"])
+    assert fields["date"] == "March 2011"
+    assert fields["date_added"] == "2024-03-05T10:00:00Z"
+    assert fields["creators"] == "Lovelace, Ada; Acme Lab"
+    assert fields["url"] == "https://example.org/paper"
+    assert live_fields(bare["PAPER001"])["creators"] == "No authors listed"
