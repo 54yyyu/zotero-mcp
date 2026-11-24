@@ -49,6 +49,18 @@ FUZZY_THRESHOLD_LONG = 0.65    # For text > 150 chars
 # Search behavior
 DEFAULT_NEIGHBOR_PAGES = 2  # How many pages to search on either side
 
+#: PyMuPDF's TEXT_CID_FOR_UNKNOWN_UNICODE. Without it, a font with no usable
+#: ToUnicode map extracts as U+FFFD, every character of it. All of PyMuPDF's
+#: default flag sets include it; every custom set here must too.
+TEXT_CID_FOR_UNKNOWN_UNICODE = 128
+#: TEXT_PRESERVE_LIGATURES | TEXT_PRESERVE_WHITESPACE | TEXT_INHIBIT_SPACES,
+#: plus the above: the spans the matcher works on.
+_SPAN_FLAGS = 1 | 2 | 8 | TEXT_CID_FOR_UNKNOWN_UNICODE
+#: PyMuPDF's TEXTFLAGS_TEXT (195): what the sort index and read-back use.
+_CHAR_FLAGS = 1 | 2 | 64 | TEXT_CID_FOR_UNKNOWN_UNICODE
+#: Shown instead of text that extracts as U+FFFD.
+UNREADABLE_TEXT = "[unreadable text layer]"
+
 # Performance optimization
 SLIDING_WINDOW_STEP_THRESHOLD = 10000  # Use stepping for texts longer than this
 
@@ -159,7 +171,7 @@ def _extract_page_spans(page) -> list[dict[str, Any]]:
     Returns:
         List of dicts with 'text', 'bbox', 'chars' and 'line' keys
     """
-    blocks = page.get_text("rawdict", flags=11)["blocks"]
+    blocks = page.get_text("rawdict", flags=_SPAN_FLAGS)["blocks"]
     spans = []
 
     for block_no, block in enumerate(blocks):
@@ -425,7 +437,7 @@ def _extract_page_char_rects(page) -> list[list[float]]:
     try:
         # The default flags (199) clip text to the page. Leave out
         # TEXT_PRESERVE_IMAGES (4): image data has no characters and is slow.
-        raw = page.get_text("rawdict", flags=195)
+        raw = page.get_text("rawdict", flags=_CHAR_FLAGS)
     except Exception:
         return []
 
@@ -958,6 +970,11 @@ def page_label(page, page_num: int) -> str:
     return str(page_num)
 
 
+def _is_unreadable(text: str) -> bool:
+    """True when most of a page's characters are U+FFFD: a text layer that cannot be read."""
+    return bool(text) and text.count("\ufffd") * 2 > len(text)
+
+
 def find_text_position(pdf, page_num: int, search_text: str, cache: PageCache | None = None) -> dict:
     """
     Search for text in a PDF and return position data for Zotero annotation.
@@ -1023,6 +1040,14 @@ def find_text_position(pdf, page_num: int, search_text: str, cache: PageCache | 
             if result:
                 return result
 
+        spans = cache.text_index(doc[target_index], target_index)[0]
+        if _is_unreadable("".join(span["text"] for span in spans)):
+            return {
+                "error": (f"Page {page_num} has a broken text layer (its characters extract as "
+                          "U+FFFD), so text cannot be matched on it; use an area box (rect) instead"),
+                "unreadable": True, "best_match": None, "best_score": 0,
+                "pages_searched": [p + 1 for p in pages_to_search],
+            }
         return {
             "error": f"Could not find text on page {page_num} or neighboring pages",
             "best_match": best_debug["match"],
@@ -1116,6 +1141,8 @@ def text_in_rects(pdf, page_index: int, rects: list[list[float]]) -> str:
     with open_pdf(pdf) as doc:
         page = doc[page_index]
         to_page = fitz.Matrix(*_pdf_to_page_transform(page))
+        # get_textbox's own text page has no TEXT_CID_FOR_UNKNOWN_UNICODE.
+        textpage = page.get_textpage(flags=_CHAR_FLAGS)
         parts = []
         for x0, y0, x1, y1 in rects:
             box = fitz.Rect(x0, y0, x1, y1) * to_page
@@ -1123,8 +1150,9 @@ def text_in_rects(pdf, page_index: int, rects: list[list[float]]) -> str:
             inset = box.height * _TEXT_BAND_INSET
             box.y0 += inset
             box.y1 -= inset
-            parts.append(page.get_textbox(box))
-        return normalize_text(" ".join(parts))
+            parts.append(page.get_textbox(box, textpage=textpage))
+        text = normalize_text(" ".join(parts))
+        return UNREADABLE_TEXT if "\ufffd" in text else text
 
 
 def build_annotation_position(page_index: int, rects: list[list[float]],

@@ -514,6 +514,43 @@ class TestPanels:
         layout = pdf_layout.detect_page_regions(panel_pdf(tmp_path, letters="A"), 1, panels=True)
         assert not [r for r in layout["regions"] if r["source"] == "panel"]
 
+    def test_a_two_by_three_figure_is_bounded_by_neighbours_and_caption(self, tmp_path):
+        """Moeller 2026: the last row ran to the page foot or came back 0.012
+        tall, and a letter in a bar-chart label became a panel of its own."""
+        from zotero_mcp import pdf_layout
+
+        doc = fitz.open()
+        page = doc.new_page(width=612, height=792)
+        cells = {}
+        for row in range(2):
+            for col in range(3):
+                letter = "ABCDEF"[row * 3 + col]
+                x, y = 50 + col * 175, 80 + row * 170
+                page.insert_text((x, y + 9), letter, fontsize=9, fontname="hebo")
+                page.draw_rect(fitz.Rect(x + 10, y + 14, x + 160, y + 150), width=1)
+                page.draw_line((x + 10, y + 120), (x + 160, y + 40), width=2)
+                cells[letter] = [(x + 10) / 612, (y + 14) / 792, 150 / 612, 136 / 792]
+        page.insert_text((410, 380), "B", fontsize=9, fontname="hebo")   # a bar label inside panel E
+        page.insert_text((50, 440), "Figure 1. A synthetic figure with six panels.", fontsize=9)
+        for line in range(20):                                           # body text down the page
+            page.insert_text((50, 470 + line * 14), "Body text of the paper continues here.", fontsize=9)
+        path = str(tmp_path / "grid.pdf")
+        doc.save(path)
+        doc.close()
+
+        with fitz.open(path) as doc:
+            layout = pdf_layout.detect_page_regions(doc, 1, panels=True)
+        panels = {r["caption_label"][-1]: r for r in layout["regions"] if r["source"] == "panel"}
+        assert sorted(panels) == list("ABCDEF")
+        caption_top = 430 / 792
+        for letter, region in panels.items():
+            x, y, w, h = region["bbox"]
+            assert pdf_layout._PANEL_MIN_SIZE <= h <= pdf_layout._PANEL_MAX_HEIGHT, letter
+            assert contains(region["bbox"], cells[letter]), letter
+            assert y + h <= caption_top, letter
+            assert all(not overlaps(region["bbox"], other["bbox"])
+                       for o, other in panels.items() if o != letter), letter
+
     def test_a_landscape_page_stored_turned_gives_the_same_panels_as_when_upright(self):
         """Landscape figure pages are usually portrait pages with /Rotate set, the
         text laid out sideways in the file. Panels are found in the frame the
@@ -548,11 +585,41 @@ class TestAutoBox:
             return pdf_layout.auto_box(doc, 1, near)
 
     def test_snaps_to_the_panel_under_the_hint(self, tmp_path):
-        near = [0.60, 0.15, 0.30, 0.15]                    # roughly panel B, sloppy
+        near = [0.53, 0.14, 0.33, 0.19]                    # roughly panel B
         found = self.box_of(tmp_path, near)
         assert found["source"].startswith("panel") and "Panel B" in found["source"]
         assert contains(found["rect"], panel_inner("B"))
         assert not overlaps(found["rect"], panel_inner("A")) and not overlaps(found["rect"], panel_inner("D"))
+
+    def test_a_snap_far_from_the_hint_keeps_the_hint(self, tmp_path):
+        """Moeller 2026 Fig 1: on a dense figure the region under a hint is often
+        bigger than what the hint asks for. The hint wins and the note says so."""
+        near = [0.60, 0.15, 0.30, 0.15]                    # inside panel B, an edge 0.077 off
+        found = self.box_of(tmp_path, near)
+        assert found["source"] == "hint" and found["rect"] == near
+        assert found["note"].startswith("kept hint, snap too large")
+
+    def test_two_adjacent_panels_each_stay_on_their_hint(self, tmp_path):
+        from zotero_mcp import pdf_layout
+
+        hints = {"A": [0.10, 0.13, 0.36, 0.19], "B": [0.53, 0.14, 0.33, 0.19]}
+        with fitz.open(panel_pdf(tmp_path)) as doc:
+            found = {letter: pdf_layout.auto_box(doc, 1, near, [other for o, other in hints.items() if o != letter])
+                     for letter, near in hints.items()}
+        for letter, near in hints.items():
+            assert f"Panel {letter}" in found[letter]["source"]
+            fit, hint = pdf_layout._edges(found[letter]["rect"]), pdf_layout._edges(near)
+            assert max(abs(a - b) for a, b in zip(fit, hint)) <= pdf_layout.AUTO_EDGE_SLACK + 1e-9
+            assert contains(found[letter]["rect"], panel_inner(letter))
+        assert not overlaps(found["A"]["rect"], found["B"]["rect"])
+
+    def test_a_fit_never_reaches_into_another_entrys_box(self):
+        from zotero_mcp.pdf_layout import _fit_to_hint
+
+        snap, near = [0.10, 0.10, 0.40, 0.20], [0.12, 0.12, 0.36, 0.18]
+        assert _fit_to_hint(snap, near, [])[0] == pytest.approx([0.10, 0.10, 0.40, 0.20])
+        rect, note = _fit_to_hint(snap, near, [[0.49, 0.10, 0.69, 0.30]])  # x0, y0, x1, y1
+        assert rect[0] + rect[2] == pytest.approx(0.48) and note == "trimmed to the hint"
 
     def test_a_hint_that_matches_nothing_is_kept_and_says_so(self, tmp_path):
         found = self.box_of(tmp_path, [0.05, 0.85, 0.2, 0.1])
@@ -573,7 +640,7 @@ class TestAutoBox:
         monkeypatch.setattr(annotations, "_fetch_attachment_file",
                             lambda key, tmp, **kw: (path, "figure.pdf", "pdf", None))
         results = annotations.create_annotations(ATTACHMENT, [
-            {"page": 1, "rect": "auto", "near": [0.60, 0.15, 0.30, 0.15], "comment": "FIG 1B"},
+            {"page": 1, "rect": "auto", "near": [0.53, 0.14, 0.33, 0.19], "comment": "FIG 1B"},
             {"page": 1, "rect": "auto", "near": [0.05, 0.85, 0.2, 0.1], "comment": "nothing here"},
             {"page": 1, "rect": "auto", "comment": "no hint"},
             {"page": 1, "rect": "auto", "near": [2, 2, 2, 2]},
@@ -596,7 +663,7 @@ class TestAutoBox:
         monkeypatch.setattr(annotations, "_fetch_attachment_file",
                             lambda key, tmp, **kw: (path, "figure.pdf", "pdf", None))
         args = argparse.Namespace(verbose=False, json_out=False, subcommand="create", attachment_key=ATTACHMENT,
-                                  page=1, rect="auto", near="0.60,0.15,0.30,0.15", text=None, note=None,
+                                  page=1, rect="auto", near="0.53,0.14,0.33,0.19", text=None, note=None,
                                   comment="FIG 1B", color="purple", tags=None, open=False)
         monkeypatch.setattr(cli_standalone, "setup_zotero_environment", lambda: None)
         cli_standalone.cmd_annotations(args)
@@ -787,6 +854,9 @@ class TestOfflineDryRun:
         ], ctx=MagicMock(), dry_run=True)
         assert all(r["ok"] for r in results), results
         assert results[0]["matched_text"] == "synthetic paper"
+        # Its boxes, as x,y,w,h on the page: one line, near the top left.
+        (x, y, w, h), = results[0]["rects"]
+        assert 0.1 < x < 0.5 and 0.1 < y < 0.15 and 0 < w < 0.3 and 0 < h < 0.03
 
     def test_a_parent_key_is_not_read_as_one_of_its_attachments(self, pdf_path, monkeypatch):
         """The real write refuses a parent key, so the dry run must not pass it on a guessed PDF."""
@@ -932,3 +1002,40 @@ class TestNearestCandidates:
         assert result["candidates"][0]["page"] == 1
         assert "NEAREST MATCHES" in result["error"] and "p1" in result["error"]
         assert "Could not find text" in result["error"]
+
+
+class TestBrokenTextLayer:
+    """A page whose characters all extract as U+FFFD (Elowitz & Leibler 2000)."""
+
+    def test_cli_says_it_once_instead_of_a_miss_per_row(self, store, tmp_path, monkeypatch, capsys):
+        import argparse
+
+        from zotero_mcp import cli_standalone
+
+        real = fitz.Page.get_text
+
+        def unreadable(self, option="text", *args, **kwargs):
+            result = real(self, option, *args, **kwargs)
+            if option == "rawdict":
+                for block in result["blocks"]:
+                    for line in block.get("lines", []):
+                        for span in line["spans"]:
+                            for char in span.get("chars", []):
+                                char["c"] = "�"
+            return result
+
+        monkeypatch.setattr(fitz.Page, "get_text", unreadable)
+        plan = tmp_path / "plan.jsonl"
+        plan.write_text("\n".join(json.dumps(s) for s in [
+            {"page": 1, "text": "synthetic paper"},
+            {"page": 1, "text": "Page 1 of"},
+            {"page": 1, "rect": [0.1, 0.3, 0.2, 0.1]},
+        ]))
+        args = argparse.Namespace(verbose=False, json_out=False, subcommand="batch", attachment_key=ATTACHMENT,
+                                  file=str(plan), dry_run=True, render=None)
+        with pytest.raises(SystemExit):
+            cli_standalone._annotations_batch(args, annotations, MagicMock())
+        out = capsys.readouterr().out
+        fails = [line for line in out.splitlines() if line.startswith("FAIL")]
+        assert len(fails) == 1 and fails[0].startswith("FAIL  #1, #2:") and "broken text layer" in fails[0]
+        assert "Could not find text" not in out and "ok    #3 p1 area" in out
