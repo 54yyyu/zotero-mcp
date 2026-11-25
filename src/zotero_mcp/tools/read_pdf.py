@@ -97,8 +97,14 @@ def _get_pdf_path(item_key: str, ctx: Context) -> tuple[str, str, bool] | None:
     must clean up. It is False for a file resolved out of the user's Zotero
     storage, which must be left alone: those paths point into the real
     library, and deleting one takes the user's copy of the PDF with it.
+
+    Raises ``_TextAttachment`` when the key names a Markdown or plain-text
+    attachment, so the item is looked up once for either kind of file.
     """
     item = _library.get_library_backend().get_item(item_key)
+    text = _text_attachment(item_key, item)
+    if text:
+        raise _TextAttachment(item_key, *text)
 
     # Try local storage first (persists on disk — no cleanup needed)
     try:
@@ -197,28 +203,43 @@ _IMAGE_HINTS = {
 }
 
 
-def _text_attachment(item_key: str) -> tuple[str, str] | None:
-    """``(path, title)`` when ``item_key`` names a Markdown or plain-text
-    attachment whose file is on disk (local mode), else None.
+class _TextAttachment(PdfReadError):
+    """The key names a Markdown or plain-text attachment, not a PDF.
 
-    Only a key that names the attachment itself: a parent item still means
-    its PDF, so nothing changes for existing callers.
+    Raised by ``_get_pdf_path``. Text reads and ``--find`` catch it and read
+    the file in blocks of lines; page images let it surface as ``not_a_pdf``.
     """
-    if not _utils.is_local_mode():
-        return None
-    try:
-        from zotero_mcp.local_db import LocalZoteroReader
 
-        with LocalZoteroReader(db_path=load_config().resolve_zotero_db_path()) as reader:
-            attachment = reader.get_attachment_by_key(item_key)
-            if not attachment or categorize_attachment(
-                attachment["zotero_path"] or "", attachment["content_type"]
-            ) not in ("markdown", "text"):
-                return None
-            resolved = reader.resolve_attachment_file(item_key)
-    except Exception:
+    def __init__(self, item_key: str, path: str, title: str):
+        super().__init__(
+            f"{item_key} is a Markdown or text attachment: it has no page images. "
+            "Read it as text, or render its parent item's PDF.", code="not_a_pdf")
+        self.path, self.title = path, title
+
+
+def _text_attachment(item_key: str, item: dict | None) -> tuple[str, str] | None:
+    """``(path, title)`` when ``item`` (from ``backend.get_item``) is a
+    Markdown or plain-text attachment in local mode, else None.
+
+    Decided from the item already loaded, so a PDF read opens no extra
+    reader. Only a key that names the attachment itself: a parent item still
+    means its PDF.
+    """
+    data = (item or {}).get("data") or {}
+    if not _utils.is_local_mode() or data.get("itemType") != "attachment":
         return None
-    return (str(resolved), attachment["title"] or item_key) if resolved else None
+    # The API gives a stored file's ``filename`` and a linked file's ``path``.
+    name = data.get("filename") or data.get("path") or ""
+    if categorize_attachment(name, data.get("contentType")) not in ("markdown", "text"):
+        return None
+    from zotero_mcp.local_db import LocalZoteroReader
+
+    with LocalZoteroReader(db_path=load_config().resolve_zotero_db_path()) as reader:
+        resolved = reader.resolve_attachment_file(item_key)
+    if resolved is None:
+        raise PdfReadError(f"Text attachment {item_key} could not be resolved to a file on disk.",
+                           code="attachment_file_missing")
+    return str(resolved), data.get("title") or item_key
 
 
 def _line_blocks(path: str) -> tuple[list[str], int]:
@@ -393,9 +414,6 @@ def read_pdf_text(
     format or the zotero-cli flag. A key naming a Markdown or plain-text
     attachment reads that file in blocks of ``_TEXT_BLOCK_LINES`` lines.
     """
-    text_attachment = _text_attachment(item_key) if item_key and item_key.strip() else None
-    if text_attachment:
-        return _read_text_attachment(item_key, *text_attachment, start_page, end_page)
     try:
         with _page_range(item_key, start_page, end_page,
                          max_pages=_TEXT_MAX_PAGES, ctx=ctx) as (pdf_path, title, total_pages,
@@ -440,6 +458,8 @@ def read_pdf_text(
             "Consider using zotero_semantic_search to find specific content instead of reading full pages.",
         )
 
+    except _TextAttachment as text:
+        return _read_text_attachment(item_key, text.path, text.title, start_page, end_page)
     except PdfReadError:
         # Already carries the specific code; re-wrapping it here would bury
         # that under the generic one and repeat the message.
@@ -627,20 +647,19 @@ def find_in_pdf(
     if start_page is not None and end_page is not None and end_page < start_page:
         raise PdfReadError("Error: end_page must be greater than or equal to start_page.",
                            code="invalid_page_range")
-    text_attachment = _text_attachment(item_key)
-    if text_attachment:
-        path, title = text_attachment
-        blocks, total_lines = _line_blocks(path)
+    try:
+        resolved = _get_pdf_path(item_key, ctx)
+    except _TextAttachment as text:
+        blocks, total_lines = _line_blocks(text.path)
         first = start_page or 1
         if first > len(blocks):
             raise PdfReadError(
                 f"Start page {first} is out of range. This text attachment has {len(blocks)} "
-                f"blocks of {_TEXT_BLOCK_LINES} lines (1-{len(blocks)}).", code="page_out_of_range")
+                f"blocks of {_TEXT_BLOCK_LINES} lines (1-{len(blocks)}).", code="page_out_of_range") from None
         last = min(end_page or len(blocks), len(blocks))
         result = find_in_pages(range(first - 1, last), blocks[first - 1:last], query, context=context)
-        return {"item_key": item_key, "title": title, "total_pages": len(blocks),
+        return {"item_key": item_key, "title": text.title, "total_pages": len(blocks),
                 "block_lines": _TEXT_BLOCK_LINES, "text_lines": total_lines, **result}
-    resolved = _get_pdf_path(item_key, ctx)
     if resolved is None:
         raise PdfReadError(f"No PDF attachment found for item: {item_key}", code="no_pdf_attachment")
     pdf_path, title, is_temp = resolved
@@ -729,10 +748,6 @@ def render_pdf_pages(
         (header, pages): a Markdown header naming what was rendered, and one
         ``{"page", "png", "width", "height"}`` per image.
     """
-    if item_key and item_key.strip() and _text_attachment(item_key):
-        raise PdfReadError(
-            f"{item_key} is a Markdown or text attachment: it has no page images. "
-            "Read it as text, or render its parent item's PDF.", code="not_a_pdf")
     box = None
     if rect is not None:
         box = _helpers._normalize_float_list_input(rect, 4, "rect")
