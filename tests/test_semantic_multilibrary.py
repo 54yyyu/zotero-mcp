@@ -587,8 +587,16 @@ def test_search_group_id_personal_filter_is_not_falsy_none(monkeypatch):
 def test_search_merges_group_id_with_user_filters(monkeypatch):
     chroma = _FakeChromaClient()
     search = _build_search(monkeypatch, chroma)
+    search.search(query="q", filters={"section": "Methods"}, group_id=GROUP_ID)
+    assert chroma.last_search_where == {"$and": [{"section": "Methods"}, {"group_id": GROUP_ID}]}
+
+
+def test_search_keeps_bibliographic_filters_out_of_chroma(monkeypatch):
+    """item_type is evaluated against live Zotero data, not stored metadata (#826)."""
+    chroma = _FakeChromaClient()
+    search = _build_search(monkeypatch, chroma)
     search.search(query="q", filters={"item_type": "note"}, group_id=GROUP_ID)
-    assert chroma.last_search_where == {"$and": [{"item_type": "note"}, {"group_id": GROUP_ID}]}
+    assert chroma.last_search_where == {"group_id": GROUP_ID}
 
 
 # ---------------------------------------------------------------------------
@@ -607,10 +615,23 @@ class _ScopedZot:
         self.library_id = library_id
         self._items = items_by_key
 
+    def items(self, itemKey="", start=0, limit=100, **kw):
+        found = [self._items[k] for k in itemKey.split(",") if k in self._items]
+        return found[start : start + limit]
+
     def item(self, key):
         if key not in self._items:
             raise LookupError(f"404: {key} is not in this library")
         return self._items[key]
+
+
+class _UnreadableZot(_ScopedZot):
+    """A library these credentials are refused (403)."""
+
+    def items(self, **kw):
+        from pyzotero.zotero_errors import UserNotAuthorisedError
+
+        raise UserNotAuthorisedError("\nCode: 403")
 
 
 class _FakeReader:
@@ -620,7 +641,7 @@ class _FakeReader:
         self._items = items_by_key
         self.asked_for: list[list[str]] = []
 
-    def get_items_by_keys(self, keys):
+    def get_full_items(self, keys, *, group_id=0, include_trashed=True, library_id=None):
         self.asked_for.append(list(keys))
         return {k: self._items[k] for k in keys if k in self._items}
 
@@ -667,11 +688,27 @@ def test_group_hit_is_hydrated_from_the_local_db_not_the_scoped_client(monkeypat
     assert reader.asked_for == [["GRPKEY01"]]
 
 
-def test_same_library_hit_still_uses_the_zotero_client(monkeypatch):
-    """The local DB is for foreign libraries only — an in-scope key must keep
-    coming from the API client, which is the authority on it."""
+def test_same_library_hit_is_read_live_from_the_local_db(monkeypatch):
+    """In local mode zotero.sqlite serves every library, the client's own
+    included: it is Zotero's live data, and one batched read (#826)."""
+    reader = _FakeReader({"MYKEY001": {"key": "MYKEY001", "data": {"title": "From SQLite"}}})
+    monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
+    monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda **kw: reader)
+
+    search = _build_search(
+        monkeypatch, _FakeChromaClient(), is_local=True,
+        get_zotero_client_fn=lambda: _ScopedZot("user", "0", {}),
+    )
+
+    enriched = search._enrich_search_results(_chroma_hit("MYKEY001", 0), "quantum")
+
+    assert enriched[0]["zotero_item"]["data"]["title"] == "From SQLite"
+    assert reader.asked_for == [["MYKEY001"]]
+
+
+def test_same_library_hit_the_local_db_lacks_comes_from_the_zotero_client(monkeypatch):
     own_item = {"key": "MYKEY001", "data": {"itemType": "journalArticle", "title": "My Paper"}}
-    reader = _FakeReader({"MYKEY001": {"key": "MYKEY001", "data": {"title": "STALE"}}})
+    reader = _FakeReader({})  # the snapshot predates the item
     monkeypatch.setattr(semantic_search, "is_local_mode", lambda: True)
     monkeypatch.setattr(semantic_search, "LocalZoteroReader", lambda **kw: reader)
 
@@ -683,7 +720,6 @@ def test_same_library_hit_still_uses_the_zotero_client(monkeypatch):
     enriched = search._enrich_search_results(_chroma_hit("MYKEY001", 0), "quantum")
 
     assert enriched[0]["zotero_item"]["data"]["title"] == "My Paper"
-    assert reader.asked_for == []
 
 
 def test_foreign_hit_web_mode_is_served_by_a_client_scoped_to_its_library(monkeypatch):
@@ -737,7 +773,7 @@ def test_foreign_hit_credentials_cannot_see_the_group_names_the_library(monkeypa
     monkeypatch.setenv("ZOTERO_API_KEY", "test-key")
     monkeypatch.setattr(
         semantic_search, "_new_scoped_client",
-        lambda *a: _ScopedZot("group", str(GROUP_ID), {}),  # key not visible
+        lambda *a: _UnreadableZot("group", str(GROUP_ID), {}),  # key not visible
     )
     search = _build_search(
         monkeypatch, _FakeChromaClient(),

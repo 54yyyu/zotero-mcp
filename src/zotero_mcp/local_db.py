@@ -6,6 +6,7 @@ when running in local mode.
 """
 
 import atexit
+import contextlib
 import json
 import logging
 import os
@@ -20,6 +21,7 @@ import weakref
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -29,12 +31,16 @@ from . import schema as _schema
 from . import search_semantics as _semantics
 from .config import load_config
 from .extract import (
+    UNREADABLE_CATEGORY,
     ExtractedDoc,
     categorize_attachment,
     extract_file,
     normalize_attachment_priority,
     pick_by_priority,
+    row_category,
+    select_by_priority,
 )
+from .semantic_filters import equality_clauses
 from .utils import _generate_search_variants, is_local_mode
 
 logger = logging.getLogger(__name__)
@@ -60,6 +66,22 @@ DEFAULT_PDF_MAX_PAGES = 50
 # else the Zotero server-assigned groupID. This matches Zotero's own
 # sentinel for the account-less personal library.
 PERSONAL_LIBRARY_GROUP_ID = 0
+
+
+@dataclass(frozen=True)
+class ExtractionTarget:
+    """One attachment file resolved for extraction (see
+    ``_resolve_extraction_targets``). ``file_stamp`` is ``"<mtime_ns>:<size>"``."""
+
+    key: str
+    path: Path
+    content_type: str | None
+    category: str
+    file_stamp: str
+    size: int
+    #: ``path`` is the attachment's own ``.zotero-ft-cache``, because its file is
+    #: not on disk (or in a format only that cache covers). Its text is that cache.
+    ft_cache: bool = False
 
 
 class KeyGroupMap(NamedTuple):
@@ -241,6 +263,50 @@ def _source_for_path(path: Path) -> str:
     if suffix in {".html", ".htm"}:
         return "html"
     return "file"
+
+
+def _pool_context():
+    """Multiprocessing context for the extraction pool.
+
+    Never plain ``fork`` where something safer exists: by the time a pool
+    starts, the parent has threads of its own (ChromaDB, the embedding
+    clients), and a child forked while another thread holds a lock can wait
+    for it forever. A hung worker then blocks the pool's shutdown, and with it
+    the whole run. ``forkserver`` forks from a clean single-threaded helper.
+    The worker needs nothing from the parent (a path and an int in, text out;
+    the initializer only sets log levels), so it behaves the same under it.
+    Returns None, the platform default, where there is no forkserver (Windows;
+    macOS already spawns) and in a frozen/packaged app, whose executable
+    cannot be re-entered as a forkserver helper.
+    """
+    import multiprocessing
+    import sys
+
+    if getattr(sys, "frozen", False) or "forkserver" not in multiprocessing.get_all_start_methods():
+        return None
+    return multiprocessing.get_context("forkserver")
+
+
+@contextmanager
+def _extraction_pool(workers: int):
+    """A process pool that cannot outlive an interrupted or failed run.
+
+    A normal exit waits for the workers. On any exception (a timeout, Ctrl-C, a
+    consumer that stops reading) queued work is cancelled and the workers are
+    killed rather than joined, so a stuck worker cannot hang the shutdown.
+    """
+    pool = ProcessPoolExecutor(max_workers=workers, initializer=_init_extraction_worker, mp_context=_pool_context())
+    try:
+        yield pool
+    except BaseException:
+        procs = list((getattr(pool, "_processes", None) or {}).values())
+        pool.shutdown(wait=False, cancel_futures=True)
+        for proc in procs:
+            with contextlib.suppress(Exception):
+                proc.kill()
+        raise
+    else:
+        pool.shutdown(wait=True)
 
 
 def _init_extraction_worker() -> None:
@@ -1650,6 +1716,144 @@ class LocalZoteroReader:
         # rather than a stub or thumbnail.
         return max(candidates, key=lambda p: p.stat().st_size)
 
+    def _resolve_attachment_file(
+        self, key: str, path: str | None, ctype: str | None
+    ) -> tuple[Path, str] | None:
+        """``(resolved_path, category)`` for one attachment row, or None when
+        the file is missing or not in a readable category."""
+        resolved = self._resolve_attachment_path(key, path or "")
+        if not resolved or not resolved.exists():
+            # Filename drift fallback: scan the storage folder.
+            resolved = self._scan_storage_for_attachment(key, ctype)
+            if not resolved or not resolved.exists():
+                return None
+        category = categorize_attachment(resolved, ctype)
+        if category is None:
+            return None
+        return resolved, category
+
+    def _build_target(
+        self, key: str, path: str | None, ctype: str | None, *, unreadable_ok: bool = False
+    ) -> ExtractionTarget | None:
+        found = self._resolve_attachment_file(key, path, ctype)
+        if found is None:
+            return self._build_cache_target(key, path, ctype, unreadable_ok=unreadable_ok)
+        resolved, category = found
+        try:
+            st = resolved.stat()
+        except OSError:
+            return None
+        return ExtractionTarget(
+            key=key,
+            path=resolved,
+            content_type=ctype,
+            category=category,
+            file_stamp=f"{st.st_mtime_ns}:{st.st_size}",
+            size=st.st_size,
+        )
+
+    def _build_cache_target(
+        self, key: str, path: str | None, ctype: str | None, *, unreadable_ok: bool
+    ) -> ExtractionTarget | None:
+        """Target for an attachment whose file we cannot read, from its own ``.zotero-ft-cache``.
+
+        The file is missing (unmounted drive, kept on demand) or in no
+        format we parse (an EPUB), but Zotero extracted its text. Never
+        another attachment's cache. The stamp is the cache file's, so the
+        record follows the text it was made from. ``unreadable_ok`` lets an
+        attachment of an unreadable kind in (a regular item's child can be
+        chosen for its cache; a standalone file is indexed only if readable).
+        """
+        category = row_category(path, ctype)
+        if category == UNREADABLE_CATEGORY and not unreadable_ok:
+            return None
+        try:
+            cache = self._get_storage_dir() / key / ".zotero-ft-cache"
+            st = cache.stat()
+        except Exception:
+            return None
+        if not cache.is_file() or st.st_size == 0:
+            return None
+        return ExtractionTarget(
+            key=key,
+            path=cache,
+            content_type=ctype,
+            category=category,
+            file_stamp=f"{st.st_mtime_ns}:{st.st_size}",
+            size=st.st_size,
+            ft_cache=True,
+        )
+
+    def _resolve_extraction_targets(
+        self, item_id: int, rows: list[list[str | None]] | None = None
+    ) -> list[ExtractionTarget]:
+        """Every attachment of an item to index, by configured priority.
+
+        All readable, non-trashed files in the first priority category that
+        has any, in the database's order (PDFs first, then by item id). An attachment whose file cannot be
+        read but has its own ``.zotero-ft-cache`` counts too, with that cache
+        as its text. Same cheap, parent-process-only resolution as
+        :meth:`_resolve_extraction_target`. ``rows`` are the item's
+        attachment rows when the caller has read them already
+        (:meth:`get_fulltext_meta_for_item`).
+        """
+        candidates = []
+        if rows is None:
+            rows = list(self._iter_parent_attachments(item_id))
+        for key, path, ctype in rows:
+            target = self._build_target(key, path, ctype, unreadable_ok=True)
+            if target is not None:
+                candidates.append((target.category, target.size, target))
+        # In the order Zotero's database lists them, as before #826: of two
+        # files of one size the first is the one ``max`` picks.
+        order = {c[2].key: n for n, c in enumerate(candidates)}
+        return select_by_priority(
+            candidates, self.attachment_priority, sort_key=lambda t: order[t.key]
+        )
+
+    def _resolve_standalone_target(
+        self, key: str, path: str | None, ctype: str | None
+    ) -> ExtractionTarget | None:
+        """Target for a standalone attachment, or None when its file is
+        missing or in no readable category."""
+        return self._build_target(key, path, ctype)
+
+    def _iter_standalone_attachments(self, library_ids: list[int] | None = None):
+        """Yield ``(attachment_key, path, content_type, date_modified,
+        library_id)`` for attachments with no parent item.
+
+        Trashed attachments are excluded (the attachment's own deletedItems
+        row, as in :meth:`_iter_parent_attachments`). ``library_ids`` limits
+        the scan to those local libraries; None means all.
+        """
+        conn = self._get_connection()
+        query = (
+            """
+            SELECT att.key as attachmentKey, ia.path as path,
+                   ia.contentType as contentType,
+                   att.dateModified as dateModified,
+                   att.libraryID as libraryID
+            FROM itemAttachments ia
+            JOIN items att ON att.itemID = ia.itemID
+            LEFT JOIN deletedItems d ON d.itemID = ia.itemID
+            WHERE ia.parentItemID IS NULL AND d.itemID IS NULL
+            """
+        )
+        params: list[Any] = []
+        if library_ids is not None:
+            placeholders = ",".join("?" * len(library_ids))
+            query += f" AND att.libraryID IN ({placeholders})"
+            params.extend(library_ids)
+        query += " ORDER BY att.libraryID, att.key"
+        for row in conn.execute(query, params):
+            yield (
+                row["attachmentKey"],
+                row["path"],
+                row["contentType"],
+                row["dateModified"],
+                row["libraryID"],
+            )
+
     def _resolve_extraction_target(self, item_id: int) -> tuple[Path, str] | None:
         """Pick the attachment to extract for an item, by configured priority.
 
@@ -1663,15 +1867,10 @@ class LocalZoteroReader:
         candidates = []
         keys: dict[Path, str] = {}
         for key, path, ctype in self._iter_parent_attachments(item_id):
-            resolved = self._resolve_attachment_path(key, path or "")
-            if not resolved or not resolved.exists():
-                # Filename drift fallback: scan the storage folder.
-                resolved = self._scan_storage_for_attachment(key, ctype)
-                if not resolved or not resolved.exists():
-                    continue
-            category = categorize_attachment(resolved, ctype)
-            if category is None:
+            found = self._resolve_attachment_file(key, path, ctype)
+            if found is None:
                 continue
+            resolved, category = found
             try:
                 size = resolved.stat().st_size
             except OSError:
@@ -1755,13 +1954,19 @@ class LocalZoteroReader:
         in a library to parse. Keying on the chosen attachment keeps the
         entry invalidating normally when the file changes.
         """
+        if chosen:
+            # Only the chosen attachment's own cache: another attachment's
+            # text stored under this key would index the wrong document.
+            cached = self._read_zotero_ft_cache(chosen[1])
+            if not cached:
+                return None
+            self._cache_store(chosen[0], chosen[1], item_key, cached, "zotero-cache")
+            return cached, "zotero-cache"
+        # Nothing resolvable on disk: any attachment's cache will do.
         for key, _path, _ctype in self._iter_parent_attachments(item_id):
             cached = self._read_zotero_ft_cache(key)
             if cached:
-                result = (cached, "zotero-cache")
-                if chosen:
-                    self._cache_store(chosen[0], chosen[1], item_key, cached, "zotero-cache")
-                return result
+                return cached, "zotero-cache"
         return None
 
     def extract_fulltext_detailed(
@@ -2006,7 +2211,7 @@ class LocalZoteroReader:
 
         return KeyGroupMap(groups, excluded_keys)
 
-    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False, key_filter: str | None = None, collection_keys: list[str] | None = None) -> list[ZoteroItem]:
+    def get_items_with_text(self, limit: int | None = None, include_fulltext: bool = False, key_filter: str | None = None, collection_keys: list[str] | None = None, key_filters: list[str] | None = None, library_ids: list[int] | None = None) -> list[ZoteroItem]:
         """
         Get all items with their text content for semantic search.
 
@@ -2015,6 +2220,10 @@ class LocalZoteroReader:
             collection_keys: Optional list of collection keys; when set, only
                 items in those collections (or any of their subcollections)
                 are returned.
+            key_filters: Optional item keys; only those items are returned.
+            library_ids: Optional ``libraryID``s the items must belong to;
+                with ``key_filters`` the lookup uses the (libraryID, key)
+                unique index instead of scanning ``items``.
 
         Returns:
             List of ZoteroItem objects with text content.
@@ -2100,6 +2309,13 @@ class LocalZoteroReader:
             query += " AND i.key = ?"
             params.append(key_filter)
 
+        if library_ids:
+            query += f" AND i.libraryID IN ({','.join('?' * len(library_ids))})"
+            params.extend(library_ids)
+        if key_filters:
+            query += f" AND i.key IN ({','.join('?' * len(key_filters))})"
+            params.extend(key_filters)
+
         query += " ORDER BY i.dateModified DESC"
 
         if limit:
@@ -2176,9 +2392,7 @@ class LocalZoteroReader:
         deferred: list[tuple[int, str | None, tuple[Path, str] | None]] = []
         # Outstanding work at the moment the pool died, to redo in-process.
         stranded: list[tuple[int, str | None]] = []
-        with ProcessPoolExecutor(
-            max_workers=self.extraction_workers, initializer=_init_extraction_worker
-        ) as pool:
+        with _extraction_pool(self.extraction_workers) as pool:
             for item_id, item_key in items:
                 chosen = self._resolve_extraction_target(item_id)
                 if not chosen:
@@ -2243,6 +2457,112 @@ class LocalZoteroReader:
         for item_id, item_key, chosen in deferred:
             yield item_id, self._zotero_ft_cache_fallback(item_id, chosen, item_key)
 
+    def _extract_target(self, target: ExtractionTarget) -> tuple[str, str] | None:
+        """``(text, source)`` of one attachment file, or None.
+
+        The transient cache, then the parser, then that attachment's own
+        ``.zotero-ft-cache``, never a sibling's. Cache entries are stored under
+        the attachment's key, which is also its record key (#826).
+        """
+        hit = self._cache_lookup(target.path, target.key)
+        if hit:
+            return hit
+        doc = None if target.ft_cache else self._extract_doc_from_file(target.path)
+        if doc:
+            source = _source_for_path(target.path)
+            self._cache_store(target.path, target.key, target.key, doc.text, source)
+            return doc.text, source
+        return self._zotero_ft_cache_fallback(
+            item_id=0,  # unused: ``chosen`` names the file
+            chosen=(target.path, target.key),
+            item_key=target.key,
+        )
+
+    def extract_targets(
+        self, targets: list[ExtractionTarget]
+    ) -> Iterator[tuple[str, tuple[str, str] | None]]:
+        """Extract many attachment files, fanning out over ``extraction_workers``.
+
+        Yields ``(attachment_key, (text, source) | None)`` as results arrive;
+        the order is not the input order once workers > 1. Same division of
+        labour as :meth:`extract_fulltext_for_items`: sqlite, the filesystem
+        index and the caches stay in this process, workers get a path.
+        """
+        if self.extraction_workers <= 1:
+            for target in targets:
+                yield target.key, self._extract_target(target)
+            return
+
+        max_pages = self._resolve_pdf_max_pages()
+        pending: dict[Any, ExtractionTarget] = {}
+        deferred: list[ExtractionTarget] = []
+        stranded: list[ExtractionTarget] = []
+        with _extraction_pool(self.extraction_workers) as pool:
+            for target in targets:
+                hit = self._cache_lookup(target.path, target.key)
+                if hit:
+                    yield target.key, hit
+                    continue
+                if target.ft_cache:
+                    deferred.append(target)  # nothing to parse: its text is the cache
+                    continue
+                pending[pool.submit(_extract_worker, str(target.path), max_pages)] = target
+
+            settled: set[Any] = set()
+            for future in as_completed(pending):
+                target = pending[future]
+                try:
+                    text = future.result()
+                except BrokenProcessPool as e:
+                    # As in extract_fulltext_for_items: redo what is left here.
+                    logger.warning(
+                        f"Extraction worker pool died ({e}); re-extracting the "
+                        f"remaining {len(pending) - len(settled)} file(s) in-process"
+                    )
+                    stranded = [t for f, t in pending.items() if f not in settled]
+                    break
+                except Exception as e:
+                    logger.debug(f"Extraction worker failed for {target.key}: {e}")
+                    text = ""
+                settled.add(future)
+                if text:
+                    source = _source_for_path(target.path)
+                    self._cache_store(target.path, target.key, target.key, text, source)
+                    yield target.key, (text, source)
+                else:
+                    deferred.append(target)
+
+        for target in stranded:
+            yield target.key, self._extract_target(target)
+        for target in deferred:
+            yield target.key, self._zotero_ft_cache_fallback(
+                item_id=0,  # unused: ``chosen`` names the file
+                chosen=(target.path, target.key),
+                item_key=target.key,
+            )
+
+    def get_date_modified_by_key(self) -> dict[str, str]:
+        """``dateModified`` of every item, by key: an attachment record's own version stamp."""
+        conn = self._get_connection()
+        return {row[0]: row[1] for row in conn.execute("SELECT key, dateModified FROM items")}
+
+    def get_collection_item_keys(self, collection_keys: list[str]) -> set[str]:
+        """Keys of the items in these collections or any of their subcollections."""
+        conn = self._get_connection()
+        seen: set[int] = set()
+        ids: list[int] = []
+        for ckey in collection_keys:
+            ids.extend(self._resolve_collection_ids(conn, ckey, seen=seen))
+        if not ids:
+            return set()
+        placeholders = ",".join("?" * len(ids))
+        rows = conn.execute(
+            f"SELECT DISTINCT i.key FROM collectionItems ci JOIN items i ON i.itemID = ci.itemID "
+            f"WHERE ci.collectionID IN ({placeholders})",
+            ids,
+        )
+        return {row[0] for row in rows}
+
     def get_attachment_paths(self, parent_key: str) -> list[dict]:
         """Return resolved filesystem paths for a parent item's attachments.
 
@@ -2265,19 +2585,44 @@ class LocalZoteroReader:
             })
         return out
 
-    def resolve_attachment_file(self, attachment_key: str) -> Path | None:
+    def get_attachment_files(self) -> dict[str, tuple[str | None, str | None]]:
+        """``{attachment key: (stored path, content type)}`` for every attachment not in the trash.
+
+        One query over every local library, for callers that resolve many
+        files by key (see :meth:`resolve_attachment_file`).
+        """
+        rows = self._get_connection().execute(
+            """
+            SELECT att.key, ia.path, ia.contentType
+            FROM itemAttachments ia
+            JOIN items att ON att.itemID = ia.itemID
+            LEFT JOIN deletedItems d ON d.itemID = ia.itemID
+            WHERE d.itemID IS NULL
+            """
+        ).fetchall()
+        return {row[0]: (row[1], row[2]) for row in rows}
+
+    def resolve_attachment_file(
+        self, attachment_key: str, row: tuple[str | None, str | None] | None = None
+    ) -> Path | None:
         """The file on disk for an attachment addressed by its own key, or None.
 
         Resolves the stored path, and scans the attachment's storage folder
         when the recorded filename no longer matches the file (#291). None
         when the key is not a live attachment or its file is not on disk.
+        ``row`` is the attachment's ``(stored path, content type)`` when the
+        caller already has it (:meth:`get_attachment_files`); without it the
+        database is asked.
         """
-        attachment = self.get_attachment_by_key(attachment_key)
-        if attachment is None:
-            return None
-        resolved = self._resolve_attachment_path(attachment_key, attachment["zotero_path"] or "")
+        if row is None:
+            attachment = self.get_attachment_by_key(attachment_key)
+            if attachment is None:
+                return None
+            row = (attachment["zotero_path"], attachment["content_type"])
+        zotero_path, content_type = row
+        resolved = self._resolve_attachment_path(attachment_key, zotero_path or "")
         if not (resolved and resolved.exists()):
-            resolved = self._scan_storage_for_attachment(attachment_key, attachment["content_type"])
+            resolved = self._scan_storage_for_attachment(attachment_key, content_type)
         return resolved if resolved and resolved.exists() else None
 
     def get_attachment_by_key(self, attachment_key: str) -> dict | None:
@@ -2337,6 +2682,26 @@ class LocalZoteroReader:
         """
         items = self.get_items_with_text(key_filter=key)
         return items[0] if items else None
+
+    def get_text_items_by_keys(self, keys: list[str], group_id: int | None = None) -> dict[str, ZoteroItem]:
+        """``{key: item}`` for the regular items among ``keys``, in one keyed query.
+
+        ``group_id`` (0 = personal) names the library the keys belong to;
+        None looks in every user and group library. The query names the
+        library, so SQLite finds each key through the (libraryID, key) unique
+        index rather than scanning every item. Keys that are not there are
+        left out.
+        """
+        if not keys:
+            return {}
+        library_ids = self._resolve_scope_library_ids(group_id)
+        if library_ids is None:
+            return {}
+        found: dict[str, ZoteroItem] = {}
+        for start in range(0, len(keys), 500):
+            for item in self.get_items_with_text(key_filters=keys[start:start + 500], library_ids=library_ids):
+                found[item.key] = item
+        return found
 
     def search_notes_local(
         self, query: str, limit: int = 20, group_id: int | None = None
@@ -3226,6 +3591,177 @@ class LocalZoteroReader:
             list(lib_ids) + list(keys),
         ).fetchall()
         return {item["key"]: item for item in self._build_full_items(conn, rows)}
+
+    #: The owner fields semantic-search filters read (semantic_filters.live_fields).
+    _FILTER_OWNER_FIELDS = ("title", "DOI", "publicationTitle", "extra", "citationKey", "date", "url")
+
+    @staticmethod
+    def _owner_condition_item_type(values: list[str]) -> tuple[str, list[str]]:
+        return f"it.typeName IN ({','.join('?' * len(values))})", values
+
+    @staticmethod
+    def _owner_condition_item_key(values: list[str]) -> tuple[str, list[str]]:
+        return f"i.key IN ({','.join('?' * len(values))})", values
+
+    @staticmethod
+    def _owner_condition_tags(values: list[str]) -> tuple[str, list[str]] | None:
+        # A filter's ``tags`` is the owner's set of tags and ``$eq`` / ``$in``
+        # mean membership, so having one of the values is exactly the condition.
+        return (
+            "EXISTS (SELECT 1 FROM itemTags itg JOIN tags t ON t.tagID = itg.tagID"
+            f" WHERE itg.itemID = i.itemID AND t.name IN ({','.join('?' * len(values))}))",
+            values,
+        )
+
+    #: Filter fields get_filter_owners narrows in SQL, each with the builder of
+    #: its condition over ``i`` (items) and ``it`` (itemTypes): ``(sql, params)``
+    #: that holds for every item the filter could match, or None to skip it.
+    #: Adding a field here is all it takes to push it down.
+    _OWNER_PUSHDOWN = {
+        "item_type": _owner_condition_item_type,
+        "item_key": _owner_condition_item_key,
+        "tags": _owner_condition_tags,
+    }
+
+    def get_filter_owners(
+        self,
+        *,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        where: dict[str, Any] | None = None,
+        with_creators: bool = False,
+    ) -> list[dict]:
+        """Every item a semantic hit can resolve to, for filtering by live data (#826).
+
+        An owner is a regular item or a standalone attachment that is not in
+        the trash; notes and annotations are never indexed. Each is
+        pyzotero-shaped with just the filterable fields, plus
+        ``attachment_keys``: its non-trashed child attachments, whose records
+        a filter on the owner must also let through. ``creators`` are read
+        only on request (``with_creators``), as they cost a query of their own.
+
+        ``where`` (a Chroma-style filter) narrows the candidates in SQLite:
+        the ``$eq`` / ``$in`` conditions on the fields of ``_OWNER_PUSHDOWN``
+        that it ANDs at its top level. The result is a superset of what
+        ``where`` matches; the caller still evaluates ``where`` on each owner.
+
+        Scoped by library rather than by an id list, so a large library does
+        not run into SQLite's bound-parameter limit.
+        """
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return []
+        lib_ph = ",".join("?" * len(lib_ids))
+        narrow_sql, narrow_params = "", []
+        for field, clauses in equality_clauses(where, tuple(self._OWNER_PUSHDOWN)).items():
+            for values in clauses:
+                built = self._OWNER_PUSHDOWN[field].__func__(values)
+                if built is not None:
+                    narrow_sql += f" AND {built[0]}"
+                    narrow_params += built[1]
+        owner_select = f"""
+            SELECT i.itemID, i.key, it.typeName, i.dateAdded
+            FROM items i
+            JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+            LEFT JOIN deletedItems del ON del.itemID = i.itemID
+            LEFT JOIN itemAttachments ia ON ia.itemID = i.itemID
+            WHERE i.libraryID IN ({lib_ph}) AND del.itemID IS NULL
+              AND it.typeName NOT IN ('note', 'annotation')
+              AND ia.parentItemID IS NULL{narrow_sql}
+            """
+        owner_params = list(lib_ids) + narrow_params
+        rows = conn.execute(owner_select, owner_params).fetchall()
+        owners: dict[int, dict] = {
+            row["itemID"]: {
+                "key": row["key"],
+                "data": {
+                    "key": row["key"],
+                    "itemType": row["typeName"],
+                    "dateAdded": _api_timestamp(row["dateAdded"]),
+                    "tags": [],
+                },
+                "attachment_keys": [],
+            }
+            for row in rows
+        }
+        # The detail queries read the narrowed owners only.
+        if narrow_sql:
+            owner_scope = f"i.itemID IN (SELECT itemID FROM ({owner_select}))"
+            scope_params = owner_params
+            attachment_scope = f"ia.parentItemID IN (SELECT itemID FROM ({owner_select}))"
+        else:
+            owner_scope = f"i.libraryID IN ({lib_ph})"
+            scope_params = list(lib_ids)
+            attachment_scope = f"i.libraryID IN ({lib_ph})"
+        field_ph = ",".join("?" * len(self._FILTER_OWNER_FIELDS))
+        for row in conn.execute(
+            f"""
+            SELECT id.itemID, f.fieldName, idv.value
+            FROM itemData id
+            JOIN items i ON i.itemID = id.itemID
+            JOIN fields f ON f.fieldID = id.fieldID
+            JOIN itemDataValues idv ON idv.valueID = id.valueID
+            WHERE {owner_scope} AND f.fieldName IN ({field_ph})
+            """,
+            scope_params + list(self._FILTER_OWNER_FIELDS),
+        ):
+            if (owner := owners.get(row["itemID"])) is not None:
+                value = _api_date_field(row["value"]) if row["fieldName"] == "date" else row["value"]
+                owner["data"][row["fieldName"]] = value
+        if with_creators:
+            ids = list(owners)
+            for start in range(0, len(ids), _ID_CHUNK):
+                for item_id, creators in self._fetch_creators(conn, ids[start:start + _ID_CHUNK]).items():
+                    owners[item_id]["data"]["creators"] = creators
+        for row in conn.execute(
+            f"""
+            SELECT itg.itemID, t.name
+            FROM itemTags itg
+            JOIN items i ON i.itemID = itg.itemID
+            JOIN tags t ON t.tagID = itg.tagID
+            WHERE {owner_scope}
+            """,
+            scope_params,
+        ):
+            if (owner := owners.get(row["itemID"])) is not None:
+                owner["data"]["tags"].append({"tag": row["name"]})
+        for row in conn.execute(
+            f"""
+            SELECT ia.parentItemID, i.key
+            FROM itemAttachments ia
+            JOIN items i ON i.itemID = ia.itemID
+            LEFT JOIN deletedItems del ON del.itemID = i.itemID
+            WHERE {attachment_scope} AND ia.parentItemID IS NOT NULL AND del.itemID IS NULL
+            ORDER BY i.itemID
+            """,
+            scope_params,
+        ):
+            if (owner := owners.get(row["parentItemID"])) is not None:
+                owner["attachment_keys"].append(row["key"])
+        return list(owners.values())
+
+    def get_attachment_parents(self, *, group_id: int | None = PERSONAL_LIBRARY_GROUP_ID) -> dict[str, str | None]:
+        """``{attachment key: parent key or None}`` for every attachment not in the trash (#826).
+
+        None is a standalone file. One query over ``group_id``'s library
+        (every library for None), for the ``parent_hint`` backfill.
+        """
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return {}
+        lib_ph = ",".join("?" * len(lib_ids))
+        rows = self._get_connection().execute(
+            f"""
+            SELECT i.key, p.key
+            FROM itemAttachments ia
+            JOIN items i ON i.itemID = ia.itemID
+            LEFT JOIN items p ON p.itemID = ia.parentItemID
+            LEFT JOIN deletedItems del ON del.itemID = i.itemID
+            WHERE i.libraryID IN ({lib_ph}) AND del.itemID IS NULL
+            """,
+            lib_ids,
+        ).fetchall()
+        return {row[0]: row[1] for row in rows}
 
     def get_children_of(
         self,
