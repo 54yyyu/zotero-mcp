@@ -1,7 +1,7 @@
 // The panel: `mountPanel(root, host)` renders into a shadow root and returns its handle. This file wires
 // the parts together: header, the feed and composer (the chat), and the other screens. The conversation is
 // in chat.ts, setup health in health.ts, and the DOM of each part in messages / composer / views.
-import type { BackendId, Catalog, MountPanel, PanelHost, ZoteroRef } from "../types.ts";
+import type { BackendId, Catalog, MountPanel, PanelHost, SavedSession, ZoteroRef } from "../types.ts";
 import { STYLES } from "./styles.ts";
 import { Look } from "./appearance.ts";
 import { clear, cleanTitle, clip, copyText, env, errMessage, h, icon, initEnv, setKids } from "./dom.ts";
@@ -10,6 +10,7 @@ import { imageChips, imageFiles } from "./images.ts";
 import { chatStats, contextFill, sentLine } from "./economy.ts";
 import type { Choices, SlashItem } from "./composer.ts";
 import { Chat } from "./chat.ts";
+import { Conversations } from "./conversations.ts";
 import { ChipState } from "./context.ts";
 import { BLOCKING, Health } from "./health.ts";
 import { Feed } from "./messages.ts";
@@ -34,7 +35,8 @@ class Panel {
   readonly handle: ReturnType<MountPanel>;
   private root: ShadowRoot;
   private host: PanelHost;
-  private chat: Chat;
+  private conversations: Conversations;
+  private get chat(): Chat { return this.conversations.current; }
   private health: Health;
   private chips: ChipState;
   // Drawn by build(), and again when the interface language changes (relabel).
@@ -70,22 +72,18 @@ class Panel {
     this.chips = new ChipState(host);
     this.seenImage = host.getSettings().appearance.image;
     this.health = new Health(host, () => this.onHealth());
-    this.chat = new Chat({
-      host,
-      onChange: () => this.scheduleRender(),
-      blockReason: () => this.health.blockReason(),
-      turnEnded: (stop) => this.feed.announce(stop === "end_turn" ? t("chat.answerFinished") : t("chat.turnEnded")),
-      setupFailed: () => void this.health.refresh(),
-      sessionChanged: () => void this.loadCatalog(false), // the pickers; a session that came up has also said what its agent offers
-      shownChanged: () => this.refreshChips(),
-      expand: (text, cwd) => this.expand(text, cwd),
+    this.conversations = new Conversations({
+      makeChat: (onChange) => this.makeChat(onChange),
+      limit: () => host.getSettings().backgroundChatLimit,
+      foregroundChanged: () => this.scheduleRender(),
+      backgroundChanged: () => { if (this.view === "history") this.activeView?.render?.(); },
     });
     this.applyLanguage();
     this.agentKey = this.readAgentKey();
     this.build();
 
     this.disposers.push(host.onContextChange(() => this.refreshChips()), host.onThemeChange(() => { this.app.dataset.theme = host.theme(); }),
-      host.onSettingsChange(() => this.onOutsideSettings()));
+      host.onSettingsChange(() => this.onOutsideSettings()), host.onHistoryClear(() => this.onCleared()));
     this.refreshChips();
     this.onHealth();
     this.applyBehavior();
@@ -99,6 +97,21 @@ class Panel {
       focusComposer: () => { this.show("chat"); this.composer.focus(); },
       runPrompt: (slot) => this.runPinned(slot),
     };
+  }
+
+  private makeChat(onChange: () => void): Chat {
+    const foreground = () => this.conversations.isCurrent(chat);
+    const chat = new Chat({
+      host: this.host, onChange,
+      blockReason: () => this.health.blockReason(),
+      turnEnded: (stop) => { if (foreground()) this.feed.announce(stop === "end_turn" ? t("chat.answerFinished") : t("chat.turnEnded")); },
+      setupFailed: () => { if (foreground()) void this.health.refresh(); },
+      sessionChanged: () => { if (foreground()) void this.loadCatalog(false); },
+      shownChanged: () => { if (foreground()) this.refreshChips(); },
+      expand: (text, cwd) => this.expand(text, cwd),
+      beforeStart: () => this.conversations.waitForClose(),
+    });
+    return chat;
   }
 
   /** The DOM: header, feed, composer, the view host. The chat, its session and the chips live outside it. */
@@ -207,10 +220,15 @@ class Panel {
     const back = () => this.show("chat");
     const host = this.host;
     const screen =
-      v === "history" ? historyView(host, { current: () => this.chat.saved?.id ?? null, back, resume: (s) => void this.openSaved(s), deleted: (id) => { if (this.chat.saved?.id === id) void this.newChat(); }, renamed: (s) => this.chat.adoptRename(s.id, s.title) })
+      v === "history" ? historyView(host, {
+        current: () => this.chat.saved?.id ?? null, back, resume: (s) => void this.openSaved(s),
+        background: (id) => this.conversations.isBackground(id),
+        deleting: (id) => { if (this.conversations.remove(id)) this.resetChatView(); },
+        renamed: (s) => this.conversations.rename(s),
+      })
       : v === "welcome" ? welcomeView(host, this.health, { done: () => void this.finishWelcome(), recheck: () => void this.health.refresh(), changed: () => this.onSettings(), openSettings: () => this.show("settings") })
       : v === "status" ? statusView(host, { back, initial: this.health.checks, openSettings: () => this.show("settings"), changed: (c) => this.health.set(c) })
-      : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), cleared: () => this.onCleared(), look: this.look,
+      : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), look: this.look,
         createSkill: () => void this.newChat().then(() => { this.composer.setText("/create-skill "); this.composer.focus(); }) });
     this.activeView = screen;
     this.viewEl.append(screen.el);
@@ -275,32 +293,34 @@ class Panel {
   }
 
   private async newChat(): Promise<void> {
-    await this.chat.reset();
+    this.conversations.newChat();
+    this.resetChatView();
+    this.show("chat");
+  }
+
+  /** Forget every live transcript before clearing the saved history. */
+  private onCleared(): void {
+    if (this.conversations.clear()) this.resetChatView();
+  }
+
+  private resetChatView(): void {
     this.chips.clearAll();
     this.composer.clearDraft();
     this.feed.clear();
-    this.show("chat");
     this.refreshChips();
     this.render();
+    void this.loadCatalog(false);
   }
 
-  /**
-   * Clear history deletes the open chat with the rest, as deleting it in the history list does. Left open it would keep
-   * saving: the list would get it back holding only what came after the clear.
-   */
-  private onCleared(): void {
-    if (!this.chat.saved) return;
-    this.chat.forget();
-    void this.chat.reset();
-    this.chips.clearAll();
-    this.feed.clear();
-    this.refreshChips();
-    this.render();
-  }
-
-  private async openSaved(s: Parameters<Chat["load"]>[0]): Promise<void> {
-    this.feed.clear();
-    await this.chat.load(s);
+  private async openSaved(s: SavedSession): Promise<void> {
+    const previous = this.chat;
+    if (!(await this.conversations.open(s))) return;
+    if (this.chat !== previous) {
+      this.composer.clearDraft();
+      this.feed.clear();
+      this.refreshChips();
+      void this.loadCatalog(false);
+    }
     this.show("chat");
     this.render();
     this.feed.toBottom(false);
@@ -347,6 +367,7 @@ class Panel {
   }
 
   private onSettings(): void {
+    this.conversations.trim();
     if (this.applyLanguage()) this.relabel();
     this.onHealth();
     this.applyBehavior();
@@ -535,7 +556,7 @@ class Panel {
   }
 
   private dispose(): void {
-    void this.chat.dispose();
+    void this.conversations.dispose();
     for (const d of this.disposers.splice(0)) { try { d(); } catch { /* ignore */ } }
     this.composer.dispose();
     this.pendingRender = false;

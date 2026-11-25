@@ -109,7 +109,10 @@ export function frame(title: string, back: () => void, ...body: (HTMLElement | n
 
 // ───────────────────────────── history ─────────────────────────────
 
-export function historyView(host: PanelHost, o: { current(): string | null; back(): void; resume(s: SavedSession): void; deleted(id: string): void; renamed?(s: SavedSession): void }): { el: HTMLElement; refresh(): void } {
+export function historyView(host: PanelHost, o: {
+  current(): string | null; background(id: string): boolean; back(): void;
+  resume(s: SavedSession): void; deleting(id: string): void; renamed?(s: SavedSession): void;
+}): { el: HTMLElement; refresh(): void; render(): void } {
   const list = h("div.hist__list");
   const q = h("input.input", { type: "search", placeholder: t("history.search"), "aria-label": t("history.search") }) as HTMLInputElement;
   let all: SavedSession[] | null = null;
@@ -186,7 +189,10 @@ export function historyView(host: PanelHost, o: { current(): string | null; back
       out.push(h(`div.hrow${isCur ? ".hrow--on" : ""}`, null,
         h("button.hrow__main", { type: "button", onclick: () => o.resume(s), ...(isCur ? { "aria-current": "true" } : {}) },
           h("span.hrow__t", null, s.title || t("history.untitled")),
-          h("span.hrow__m", null, `${BACKEND_LABEL[s.backend] ?? s.backend} · ${relTime(s.updatedAt)}`),
+          h("span.hrow__m", null, [
+            BACKEND_LABEL[s.backend] ?? s.backend, relTime(s.updatedAt),
+            ...(o.background(s.id) ? [t("history.background")] : []),
+          ].join(" · ")),
           s.cwd ? h("span.hrow__f", { title: s.cwd }, icon("folder"), h("span", null, shortPath(s.cwd, 30))) : null),
         cmd ? h(`button.${done ? "lnk.hrow__copied" : "iconbtn.iconbtn.iconbtn--sm.hrow__cmd"}`, { type: "button", title: t("history.copyCmd"), "aria-label": done ? t("common.copied") : t("history.copyCmdFor", { title: s.title || t("history.chat") }), onclick: () => void copyCmd(s, cmd) }, icon(done ? "check" : "terminal"), done ? t("common.copied") : null) : null,
         h("button.iconbtn.iconbtn--sm.hrow__ren", { type: "button", "aria-label": t("history.renameFor", { title: s.title || t("history.chat") }), title: t("history.rename"), onclick: () => { renaming = s.id; renameDraft = s.title; paint(); env.win.setTimeout(() => (list.querySelector(".hrow__edit") as HTMLInputElement | null)?.select(), 0); } }, icon("pencil")),
@@ -195,10 +201,10 @@ export function historyView(host: PanelHost, o: { current(): string | null; back
     setKids(list, out);
   };
   const del = async (s: SavedSession) => {
+    o.deleting(s.id);
     try { await host.deleteSession(s.id); } catch (e) { confirming = null; all = (all ?? []); setKids(list, h("div.vwerr", { role: "alert" }, t("history.deleteFailed", { error: errMessage(e) }))); env.win.setTimeout(paint, 2500); return; }
     all = (all ?? []).filter((x) => x.id !== s.id);
     confirming = null;
-    o.deleted(s.id);
     paint();
   };
   const refresh = () => {
@@ -210,7 +216,7 @@ export function historyView(host: PanelHost, o: { current(): string | null; back
   };
   q.addEventListener("input", paint);
   const el = frame(t("history.title"), o.back, h("div.hist__search", null, q), list);
-  return { el, refresh };
+  return { el, refresh, render: paint };
 }
 
 // ───────────────────────────── status (the doctor) ─────────────────────────────

@@ -183,7 +183,7 @@ class FakeSession implements AgentSession {
   private emit(ev: ChatEvent) { for (const l of [...this.listeners]) l(ev); }
   async cancel() { this.cancelled = true; for (const [, r] of this.waiting) r(null); }
   respondPermission(id: string, optionId: string | null) { this.waiting.get(id)?.(optionId); this.waiting.delete(id); }
-  async close() { this.sim.closed++; this.listeners.clear(); }
+  async close() { this.sim.closed++; this.listeners.clear(); await this.cancel(); }
   /** As claude-agent-acp's /compact: a short wait, then one notice with the fill after it (and later turns report that). */
   get canCompact() { return this.backend === "claude-code"; }
   async compact() {
@@ -256,6 +256,7 @@ class FakeSession implements AgentSession {
       this.emit({ t: "plan", turn, entries: [{ content: "Find audit studies in the library", status: "completed" }, { content: "Read the callback table", status: "completed" }, { content: "Compare effect sizes", status: "in_progress" }] });
     }
 
+    if (this.cancelled) return this.end(turn, "cancelled");
     if (q.includes("permission") || q.includes("edit") || q.includes("note")) {
       const options: PermissionOption[] = [
         { id: "allow", name: "Allow once", kind: "allow_once" },
@@ -382,7 +383,13 @@ export class FakeHost implements PanelHost {
   // --- settings
   getSettings() { return this.settings; }
   async setSettings(patch: Partial<PanelSettings>) { this.settings = { ...this.settings, ...patch }; }
-  async clearHistory() { this.store.clear(); this.sim.data.cleared++; }
+  private historyCbs = new Set<() => void>();
+  async clearHistory() {
+    for (const cb of this.historyCbs) cb();
+    this.store.clear();
+    this.sim.data.cleared++;
+  }
+  onHistoryClear(cb: () => void) { this.historyCbs.add(cb); return () => { this.historyCbs.delete(cb); }; }
   async revealWorkspace() { this.sim.data.revealed++; }
   async resetSettings() { this.settings = defaultSettings(); this.sim.image = null; this.sim.data.resets++; }
   private folder() { return this.settings.chatFolder || DEFAULT_FOLDER; }

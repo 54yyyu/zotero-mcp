@@ -32,6 +32,7 @@ export const DEFAULT_SETTINGS: PanelSettings = {
   openAtStart: false,
   welcomed: false,
   scrollOnSend: true,
+  backgroundChatLimit: 0,
   titleSource: "agent",
   chatFolder: "",
   translate: true,
@@ -55,6 +56,8 @@ export function withDefaults(saved: Partial<PanelSettings>, locale?: string): Pa
     skills: saved.skills && typeof saved.skills === "object" ? saved.skills : {},
     translate: typeof saved.translate === "boolean" ? saved.translate : d.translate,
     scrollOnSend: typeof saved.scrollOnSend === "boolean" ? saved.scrollOnSend : d.scrollOnSend,
+    backgroundChatLimit: typeof saved.backgroundChatLimit === "number" && Number.isSafeInteger(saved.backgroundChatLimit) && saved.backgroundChatLimit >= 0
+      ? saved.backgroundChatLimit : d.backgroundChatLimit,
     titleSource: saved.titleSource === "paper" || saved.titleSource === "question" ? saved.titleSource : d.titleSource,
     translateTo: LANGUAGES.some((l) => l.id === saved.translateTo) ? saved.translateTo! : languageForLocale(locale),
     translateModel: { ...d.translateModel, ...saved.translateModel },
