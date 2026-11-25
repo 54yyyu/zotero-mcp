@@ -27,7 +27,7 @@ but not follow a sub-command: `get --json metadata KEY` parses and
  - `--join-mode` -- one of `all`, `any` -- default `all`
  - `--sort-by`
  - `--sort-direction` -- one of `asc`, `desc` -- default `asc`
- - `--filters` -- JSON filters for semantic mode
+ - `--filters` -- JSON filters for semantic mode, e.g. '{"item_type": "book", "tags": "to-read"}'. Changed in 0.18: tags means has-that-tag, several keys in one object are ANDed, and an unknown field is an error. See CHANGELOG.md, 'Upgrading: search filters change in 0.18'.
  - `--all-libraries` -- Search every accessible library at once instead of the active one, labelling each result with its library (items, advanced and semantic modes). Requires the SQLite backend (the default in local mode).
  - `--detail` -- one of `keys_only`, `summary`, `full` -- default `summary` -- How much of each item --json returns (no effect on markdown output)
 

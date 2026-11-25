@@ -53,13 +53,13 @@ class BatchChroma(FakeChromaClient):
         self.single_lookups += 1
         return self._by_key.get(key)
 
-    def get_documents_metadata(self, item_keys):
-        self.batch_lookups.append(list(item_keys))
-        return {key: self._by_key[key] for key in item_keys if key in self._by_key}
+    def get_metadatas(self, ids):
+        self.batch_lookups.append(list(ids))
+        return {doc_id: self._by_key[doc_id] for doc_id in ids if doc_id in self._by_key}
 
 
 class SingleChroma(BatchChroma):
-    get_documents_metadata = None  # a client that can only answer per item
+    get_metadatas = None  # a client that can only answer per record
 
 
 def _scan(monkeypatch, chroma, keys):
@@ -91,7 +91,10 @@ def test_the_local_scan_asks_about_every_item_in_one_read(monkeypatch):
 
     items = _scan(monkeypatch, chroma, KEYS)
 
-    assert chroma.batch_lookups == [KEYS]
+    # One read for the slice: each item's record and, where it may have
+    # passages, its first passage (the item-keyed scan reads state per slice).
+    assert len(chroma.batch_lookups) == 1
+    assert set(KEYS) <= set(chroma.batch_lookups[0])
     assert chroma.single_lookups == 0
     assert [item["key"] for item in items] == ["NEW", "UNTAGGED"]
 
@@ -101,5 +104,5 @@ def test_the_scan_decides_the_same_either_way(monkeypatch):
     single_client = SingleChroma(_stored())
     single = _scan(monkeypatch, single_client, KEYS)
 
-    assert single_client.single_lookups == len(KEYS)
+    assert single_client.single_lookups >= len(KEYS)
     assert [item["key"] for item in single] == [item["key"] for item in batched]
