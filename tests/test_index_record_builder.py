@@ -37,21 +37,9 @@ class _FakeChroma:
         return set()
 
 
-def _item(key="ITEM0001", fulltext=LONG_TEXT, title="A paper"):
-    return {
-        "key": key,
-        "version": 1,
-        "data": {
-            "key": key,
-            "itemType": "journalArticle",
-            "title": title,
-            "abstractNote": "An abstract.",
-            "creators": [],
-            "dateAdded": "2024-01-01T00:00:00Z",
-            "dateModified": "2024-01-01T00:00:00Z",
-            "fulltext": fulltext,
-        },
-    }
+def _item(key="ITEM0001", fulltext=LONG_TEXT):
+    """A file's work unit: text, and so passages, belong to attachments (#826)."""
+    return semantic_search._attachment_unit(key, fulltext, file_stamp="1:1", group_id=0)
 
 
 @pytest.fixture
@@ -81,12 +69,12 @@ def test_item_level_builds_one_record_under_the_item_key(make_search):
 
 
 def test_chunked_builds_numbered_passages_with_provenance(make_search):
-    records = make_search(chunking=True)._build_item_records(_item(), chunking=True)
+    records = make_search(chunking=True)._build_item_records(_item(), chunking=True, article=False)
 
     assert [r["id"] for r in records] == [f"ITEM0001#{i}" for i in range(5)]
     for index, record in enumerate(records):
         meta = record["metadata"]
-        assert meta["parent_item_key"] == "ITEM0001"
+        assert meta["item_key"] == "ITEM0001"
         assert meta["chunk_index"] == index
         assert meta["n_chunks"] == 5
         assert meta["char_end"] > meta["char_start"]
@@ -112,7 +100,8 @@ def test_realtime_path_writes_what_the_builder_builds(make_search):
     assert prepared["documents"] == [r["document"] for r in expected]
     assert prepared["metadatas"] == [r["metadata"] for r in expected]
     assert prepared["item_keys_order"] == ["ITEM0001"]
-    assert prepared["item_doc_counts"] == [5]
+    # The article record and its five passages.
+    assert prepared["item_doc_counts"] == [6]
 
 
 def test_batch_path_submits_what_the_builder_builds(make_search):
@@ -147,5 +136,5 @@ def test_failure_part_way_through_an_item_keeps_later_items_aligned(make_search)
 
     assert prepared["prep_stats"]["errors"] == 1
     assert prepared["item_keys_order"] == ["ITEM0001"]
-    assert all(doc_id.startswith("ITEM0001#") for doc_id in prepared["ids"])
+    assert all(doc_id.startswith("ITEM0001") for doc_id in prepared["ids"])
     assert len(prepared["ids"]) == sum(prepared["item_doc_counts"])
