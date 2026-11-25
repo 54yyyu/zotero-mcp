@@ -52,6 +52,21 @@ The container entrypoint supports both MCP server and CLI usage.
   - Runs `zotero-cli` with provided arguments
   - Defaults to `zotero-cli --help` if no args are passed
 
+## Docker Desktop MCP Toolkit
+
+Docker Desktop 4.62 or later can run this project's published `core` image through an [MCP Toolkit profile](https://docs.docker.com/ai/mcp-catalog-and-toolkit/profiles/). This example uses the [Zotero Web API](configuration.md), so your library must be synced to Zotero. The container's loopback address and filesystem are separate from the desktop Zotero application and its local library.
+
+1. Enable MCP Toolkit in Docker Desktop. Download [`docker/mcp-toolkit.yaml`](../docker/mcp-toolkit.yaml) and save it as `zotero-mcp.yaml` in `~/.docker/mcp/catalogs` (on Windows, `%USERPROFILE%\.docker\mcp\catalogs`). Create the directory if needed.
+2. Open a terminal in that directory, then create a profile and add the server definition:
+
+   ```sh
+   docker mcp profile create --name zotero
+   docker mcp profile server add zotero --server file://zotero-mcp.yaml
+   ```
+
+3. In Docker Desktop, open **MCP Toolkit → Profiles → zotero → Zotero MCP**. Set `library_id` to your numeric Zotero user ID or group ID and `library_type` to `user` or `group`, respectively. You can find your user ID and create an API key at [Zotero's security settings](https://www.zotero.org/settings/security#applications). Enter the key as the Toolkit secret `zotero-mcp.api_key`. A key with read access is sufficient for searching and reading items.
+4. Connect your client to the `zotero` profile using the [MCP Toolkit client instructions](https://docs.docker.com/ai/mcp-catalog-and-toolkit/get-started/#connect-clients). For manual setup, start the gateway over stdio with `docker mcp gateway run --profile zotero`. In the connected client, list recent Zotero items to verify that the server can read your library.
+
 ## Environment variables for containers
 
 Container-specific runtime variables:

@@ -189,7 +189,7 @@ A plugin that adds a chat panel to Zotero itself, driven by your own Claude Code
 | [Tools](https://github.com/54yyyu/zotero-mcp/blob/main/docs/tools.md) | Every MCP tool, tool groups (`ZOTERO_MCP_TOOLSETS`), related items, PDF annotation extraction |
 | [CLI and agent skill](https://github.com/54yyyu/zotero-mcp/blob/main/docs/cli.md) | `zotero-cli` command reference, `--json` output, `install-skill` |
 | [Zotero Agent plugin](https://github.com/54yyyu/zotero-mcp/blob/main/docs/chat-plugin.md) | The chat panel inside Zotero: install, first run, agents and sign-in, privacy |
-| [Docker](https://github.com/54yyyu/zotero-mcp/blob/main/docs/docker-images.md) | Container images and runtime modes |
+| [Docker](https://github.com/54yyyu/zotero-mcp/blob/main/docs/docker-images.md) | Container images, runtime modes, and Docker Desktop MCP Toolkit |
 | [Troubleshooting](https://github.com/54yyyu/zotero-mcp/blob/main/docs/troubleshooting.md) | Common problems and fixes |
 | [For AI agents](https://github.com/54yyyu/zotero-mcp/blob/main/docs/for-agents.md) | One guide for an agent setting up or using Zotero MCP |
 
