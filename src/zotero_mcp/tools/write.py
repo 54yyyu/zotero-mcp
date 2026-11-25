@@ -1701,11 +1701,25 @@ def _crossref_to_item_data(cr: dict, normalized: str, template_fn,
         "pages": cr.get("page", ""),
         "publisher": cr.get("publisher", ""),
         "ISSN": (cr.get("ISSN") or [""])[0],
+        # Zotero keeps several ISBNs (print, electronic) in one field.
+        "ISBN": " ".join(cr.get("ISBN") or []),
+        "place": cr.get("publisher-location", ""),
     }
 
     # A chapter's container is bookTitle and a conference paper's is
     # proceedingsTitle; neither template has publicationTitle.
-    container = (cr.get("container-title") or [""])[0]
+    titles = [t for t in (cr.get("container-title") or []) if t]
+    container = titles[0] if titles else ""
+    # A chapter or proceedings paper in a book series: CrossRef lists the
+    # series first and the book last (Springer: ["Lecture Notes in Computer
+    # Science", "Medical Image Computing and Computer-Assisted Intervention -
+    # MICCAI 2015"] for U-Net, 10.1007/978-3-319-24574-4_28),
+    # and the ISSN is the series'. Taking the first title filed the series
+    # as the book. Without an ISSN two titles are read as variants of one
+    # name, and the first stays.
+    if zot_type in ("bookSection", "conferencePaper") and len(titles) > 1 and cr.get("ISSN"):
+        container = titles[-1]
+        field_map["series"] = titles[0]
     container_field = _citation_import._pick_container_field(zot_type, item_data)
     if container and container_field:
         field_map[container_field] = container
@@ -1936,6 +1950,28 @@ def _fetch_one_doi_metadata(normalized: str, ctx) -> tuple[str, dict | str]:
         return ("final", f"Error fetching from CrossRef: {e}")
     except Exception as e:
         return ("final", f"Error adding by DOI: {_helpers.format_zotero_error(e)}")
+
+
+def _with_parent_editors(cr: dict, ctx) -> dict:
+    """A chapter's or proceedings paper's record with its book's editors.
+
+    CrossRef often deposits a chapter without the book's editors (Springer
+    chapters among them) but links the book through ``relation.is-part-of``;
+    Zotero's bookSection then lacked its editors. One extra request, only
+    when the editors are missing and the book's DOI is known; on any error
+    the record comes back unchanged.
+    """
+    if cr.get("type") not in ("book-chapter", "proceedings-article") or cr.get("editor"):
+        return cr
+    parents = [r.get("id", "") for r in (cr.get("relation") or {}).get("is-part-of", [])
+               if r.get("id-type") == "doi"]
+    if not parents:
+        return cr
+    parent_doi = re.sub(r"^https?://(dx\.)?doi\.org/", "", parents[0])
+    kind, book = _fetch_one_doi_metadata(parent_doi, ctx)
+    if kind != "fetched" or not book.get("editor"):
+        return cr
+    return {**cr, "editor": book["editor"]}
 
 
 def _fetch_doi_metadata_batch(normalized_dois: list[str], ctx) -> dict[str, tuple[str, dict | str]]:
@@ -2198,6 +2234,7 @@ def add_by_doi(
                     fetch_payload, normalized, ctx,
                     policy="thin_only" if is_batch else page_check,
                 )
+            fetch_payload = _with_parent_editors(fetch_payload, ctx)
             built = _build_one_doi_item_data(fetch_payload, normalized, template_fn,
                                              tags, coll_keys, page_meta)
             pending.append((i, built))
