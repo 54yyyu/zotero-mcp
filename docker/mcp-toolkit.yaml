@@ -1,0 +1,27 @@
+name: zotero-mcp
+type: server
+title: Zotero MCP
+description: Search, read, and organize a synced Zotero library through the Zotero Web API.
+image: ghcr.io/54yyyu/zotero-mcp:latest-core
+env:
+  - name: ZOTERO_LIBRARY_ID
+    value: "{{zotero-mcp.library_id}}"
+  - name: ZOTERO_LIBRARY_TYPE
+    value: "{{zotero-mcp.library_type}}"
+secrets:
+  - name: zotero-mcp.api_key
+    env: ZOTERO_API_KEY
+    example: your_zotero_api_key
+config:
+  - name: zotero-mcp
+    description: Zotero Web API library to connect to.
+    type: object
+    properties:
+      library_id:
+        type: string
+        description: Numeric Zotero user ID or group ID.
+      library_type:
+        type: string
+        description: Use user for a personal library or group for a group library.
+        enum: [user, group]
+    required: [library_id, library_type]
