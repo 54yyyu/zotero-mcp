@@ -26,6 +26,8 @@ export interface ChatDeps {
   expand(text: string, cwd: string): Promise<string>;
   /** Which chips count as already shown changed (a send, a new chat, a compaction): repaint the composer's chips. */
   shownChanged(): void;
+  /** Wait for chats the panel has stopped before starting another agent process. */
+  beforeStart?(): Promise<void>;
 }
 
 export class Chat {
@@ -101,6 +103,7 @@ export class Chat {
     };
     const p = (async () => {
       await this.closing;
+      await this.d.beforeStart?.();
       current();
       const resume = this.resume?.agentSessionId ? this.resume : null;
       const folder = this.resume?.cwd;

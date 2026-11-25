@@ -52,14 +52,15 @@ export function createStore(dir: string) {
   return {
     sessions: () => serial(async () => (await readIndex()).sort((a, b) => b.updatedAt - a.updatedAt)),
 
-    async loadEvents(id: string): Promise<ChatEvent[]> {
+    // A background chat may have queued the end of its turn just before it was reopened.
+    loadEvents: (id: string) => serial(async (): Promise<ChatEvent[]> => {
       try {
         const text = await IOUtils.readUTF8(file(id));
         return text.split("\n").filter(Boolean).flatMap((l: string) => { try { return [JSON.parse(l) as ChatEvent]; } catch { return []; } });
       } catch {
         return [];
       }
-    },
+    }),
 
     appendEvent: (session: SavedSession, ev: ChatEvent) => serial(async () => {
       await append(file(session.id), JSON.stringify(ev) + "\n");

@@ -68,6 +68,7 @@ const en = {
   "history.rename": "Rename",
   "history.renameFor": "Rename {title}",
   "history.renameFailed": "Couldn't rename: {error}",
+  "history.background": "Running in background",
   "history.title": "History",
   // status
   "status.attention": { one: "{n} thing needs attention", other: "{n} things need attention" },
@@ -194,6 +195,8 @@ const en = {
   "settings.chat.usage": "Show tokens and cost",
   "settings.chat.usageHint": "A small line under each answer. Off by default.",
   "settings.chat.openAtStart": "Open the panel when Zotero starts",
+  "settings.chat.background": "Background chats",
+  "settings.chat.backgroundHint": "How many other chats can keep running in this panel. At the limit, leaving another chat stops its turn.",
   "settings.chat.scroll": "Scroll to the newest message on send",
   "settings.chat.scrollHint": "Off: the feed stays where you are reading; the jump button, or scrolling down, brings you back to the newest message.",
   "settings.chat.titleSource": "Name new chats by",

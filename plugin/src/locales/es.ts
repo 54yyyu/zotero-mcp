@@ -68,6 +68,7 @@ const es: Catalog = {
   "history.rename": "Renombrar",
   "history.renameFor": "Renombrar {title}",
   "history.renameFailed": "No se pudo renombrar: {error}",
+  "history.background": "En segundo plano",
   "history.title": "Historial",
   // status
   "status.attention": { one: "{n} punto requiere atención", other: "{n} puntos requieren atención" },
@@ -194,6 +195,8 @@ const es: Catalog = {
   "settings.chat.usage": "Mostrar tokens y coste",
   "settings.chat.usageHint": "Una línea pequeña bajo cada respuesta. Desactivado de forma predeterminada.",
   "settings.chat.openAtStart": "Abrir el panel al iniciar Zotero",
+  "settings.chat.background": "Chats en segundo plano",
+  "settings.chat.backgroundHint": "Cuántos chats pueden seguir activos en este panel. Al llegar al límite, se detiene la respuesta del siguiente chat que dejes.",
   "settings.chat.scroll": "Ir al mensaje más reciente al enviar",
   "settings.chat.scrollHint": "Desactivado: la conversación se queda donde estás leyendo; el botón de salto, o bajar, te devuelve al mensaje más reciente.",
   "settings.chat.titleSource": "Título de los chats nuevos",

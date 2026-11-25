@@ -176,6 +176,10 @@ It uses the agent you chat with, in a session of its own: it is told only to tra
 
 Once the agent reports it, a small ring beside the permission mode shows how much of the agent's context window this chat uses (amber from 70%, red from 85%). Hover it for the number; click it for details: tokens used, messages, the last turn's tokens (and cost, if "Show tokens and cost" is on), how often the agent summarised older parts, and what context your last message sent. From there, New chat starts fresh, and with Claude, Summarise now asks the agent to summarise the conversation so far and keep going.
 
+## Background chats
+
+In **Settings → Chat**, set **Background chats** to the number of other chats that may keep answering in the panel. The default is 0, so leaving a chat stops its turn. At the limit, a chat you leave stops while the chats already in the background continue. In **History**, choose a chat marked **Running in background** to return to it. You can answer permission requests or stop the turn there just as in any open chat.
+
 ## The chat folder, and continuing a chat in a terminal
 
 Every chat is a normal agent session that runs in a folder, by default `~/Documents/Zotero-Agent`. The panel installs the `zotero-cli` skill there (under `.claude/skills` and `.agents/skills`, plus a marked block in `AGENTS.md`; it only changes what it marked, so if you pick a folder you already use, the rest of your files are left alone). Change the folder in the settings; it applies to new chats. Each chat remembers the folder it started in, so changing the setting never breaks an old one.

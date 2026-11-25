@@ -31,6 +31,10 @@ export function createSettingsHost(opts: { version: string; win: any; dataDir: s
   let cached: PanelSettings | null = null;
   const settings = (): PanelSettings => (cached ??= withDefaults(prefs.json<Partial<PanelSettings>>("settings", {}), Zotero.locale));
   const listeners = new Set<() => void>();
+  const historyListeners = new Set<() => void>();
+  const historyObserver = Zotero.Prefs.registerObserver(`${PREFIX}historyClear`, () => {
+    for (const cb of [...historyListeners]) cb();
+  }, true);
   let writing = false;
   const observer = Zotero.Prefs.registerObserver(`${PREFIX}settings`, () => {
     cached = null;
@@ -50,7 +54,14 @@ export function createSettingsHost(opts: { version: string; win: any; dataDir: s
     async resetSettings() { write(""); await images.remove(); },
     setApiKey: keychain.setApiKey,
     hasApiKey: async (b: BackendId) => !!(await keychain.getApiKey(b)),
-    clearHistory: () => store.clearAll(),
+    clearHistory() {
+      prefs.set("historyClear", (Number(prefs.get("historyClear")) || 0) + 1);
+      return store.clearAll();
+    },
+    onHistoryClear(cb) {
+      historyListeners.add(cb);
+      return () => historyListeners.delete(cb);
+    },
     async revealWorkspace() {
       await IOUtils.makeDirectory(chatFolder(), { createAncestors: true, ignoreExisting: true });
       Zotero.File.reveal(chatFolder());
@@ -80,6 +91,11 @@ export function createSettingsHost(opts: { version: string; win: any; dataDir: s
   };
   return {
     host, settings, store, images, skills, chatFolder, defaultFolder,
-    dispose() { Zotero.Prefs.unregisterObserver(observer); listeners.clear(); },
+    dispose() {
+      Zotero.Prefs.unregisterObserver(observer);
+      Zotero.Prefs.unregisterObserver(historyObserver);
+      listeners.clear();
+      historyListeners.clear();
+    },
   };
 }

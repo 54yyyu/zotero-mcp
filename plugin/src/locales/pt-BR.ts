@@ -68,6 +68,7 @@ const ptBR: Catalog = {
   "history.rename": "Renomear",
   "history.renameFor": "Renomear {title}",
   "history.renameFailed": "Não foi possível renomear: {error}",
+  "history.background": "Em execução em segundo plano",
   "history.title": "Histórico",
   // status
   "status.attention": { one: "{n} ponto precisa de atenção", other: "{n} pontos precisam de atenção" },
@@ -194,6 +195,8 @@ const ptBR: Catalog = {
   "settings.chat.usage": "Mostrar tokens e custo",
   "settings.chat.usageHint": "Uma linha pequena abaixo de cada resposta. Desativado por padrão.",
   "settings.chat.openAtStart": "Abrir o painel quando o Zotero iniciar",
+  "settings.chat.background": "Conversas em segundo plano",
+  "settings.chat.backgroundHint": "Quantas outras conversas podem continuar neste painel. Ao atingir o limite, a resposta da próxima conversa que você deixar será interrompida.",
   "settings.chat.scroll": "Rolar até a mensagem mais recente ao enviar",
   "settings.chat.scrollHint": "Desativado: a conversa fica onde você está lendo; o botão de salto, ou rolar para baixo, traz você de volta à mensagem mais recente.",
   "settings.chat.titleSource": "Título dos novos chats",

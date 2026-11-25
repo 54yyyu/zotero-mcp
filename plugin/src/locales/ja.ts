@@ -68,6 +68,7 @@ const ja: Catalog = {
   "history.rename": "名前を変更",
   "history.renameFor": "{title} の名前を変更",
   "history.renameFailed": "名前を変更できませんでした：{error}",
+  "history.background": "バックグラウンドで実行中",
   "history.title": "履歴",
   // status
   "status.attention": { other: "確認が必要な項目が {n} 件あります" },
@@ -194,6 +195,8 @@ const ja: Catalog = {
   "settings.chat.usage": "トークン数と料金を表示",
   "settings.chat.usageHint": "各回答の下に小さく表示します。デフォルトはオフです。",
   "settings.chat.openAtStart": "Zotero の起動時にパネルを開く",
+  "settings.chat.background": "バックグラウンドのチャット数",
+  "settings.chat.backgroundHint": "このパネルでバックグラウンド実行できるチャット数です。上限に達すると、次に離れたチャットの応答が停止します。",
   "settings.chat.scroll": "送信時に最新メッセージまでスクロール",
   "settings.chat.scrollHint": "オフにすると、読んでいる位置で会話が止まります。ジャンプボタンまたは下へスクロールで最新メッセージに戻れます。",
   "settings.chat.titleSource": "新しいチャットの名前",

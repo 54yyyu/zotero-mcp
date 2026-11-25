@@ -68,6 +68,7 @@ const fr: Catalog = {
   "history.rename": "Renommer",
   "history.renameFor": "Renommer {title}",
   "history.renameFailed": "Renommage impossible : {error}",
+  "history.background": "En cours en arrière-plan",
   "history.title": "Historique",
   // status
   "status.attention": { one: "{n} point demande votre attention", other: "{n} points demandent votre attention" },
@@ -194,6 +195,8 @@ const fr: Catalog = {
   "settings.chat.usage": "Afficher les jetons et le coût",
   "settings.chat.usageHint": "Une petite ligne sous chaque réponse. Désactivé par défaut.",
   "settings.chat.openAtStart": "Ouvrir le panneau au démarrage de Zotero",
+  "settings.chat.background": "Conversations en arrière-plan",
+  "settings.chat.backgroundHint": "Nombre d’autres conversations qui peuvent continuer dans ce panneau. Une fois la limite atteinte, quitter une autre conversation arrête sa réponse.",
   "settings.chat.scroll": "Aller au message le plus récent à l'envoi",
   "settings.chat.scrollHint": "Désactivé : la conversation reste là où vous lisez ; le bouton de saut, ou le défilement vers le bas, vous ramène au message le plus récent.",
   "settings.chat.titleSource": "Titre des nouvelles conversations",

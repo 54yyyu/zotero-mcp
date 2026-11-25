@@ -324,6 +324,8 @@ export interface PanelSettings {
   welcomed: boolean;
   /** true: sending scrolls the feed to the newest message. false: the feed holds the reader's position (a reader at the bottom still follows the stream). */
   scrollOnSend: boolean;
+  /** How many other chats may keep answering in this panel. Zero stops a chat when leaving it. */
+  backgroundChatLimit: number;
   /** How a new chat is first named: the agent's own summary (falling back to the focused paper, then the question), the paper focused at the first question, or the question text. Snapshotted onto each chat when it is named. */
   titleSource: "agent" | "paper" | "question";
   /** Where new chats run: the agent's working directory, and where the zotero-cli skill is installed. "" = the default folder. */
@@ -423,6 +425,8 @@ export interface PanelHost {
 
   /** Delete every saved chat. */
   clearHistory(): Promise<void>;
+  /** Called before saved history is deleted, including from Zotero's Settings pane. */
+  onHistoryClear(cb: () => void): () => void;
   /** Show the chat folder in the file manager. */
   revealWorkspace(): Promise<void>;
   /** Back to the defaults (keeps API keys and history). */
@@ -456,7 +460,7 @@ export interface PanelHost {
 }
 
 /** What the settings screen needs, and all that Zotero's Settings pane provides (zotero/settings-host.ts). */
-export type SettingsHost = Pick<PanelHost, "getSettings" | "setSettings" | "resetSettings" | "setApiKey" | "hasApiKey" | "clearHistory" | "revealWorkspace"
+export type SettingsHost = Pick<PanelHost, "getSettings" | "setSettings" | "resetSettings" | "setApiKey" | "hasApiKey" | "clearHistory" | "onHistoryClear" | "revealWorkspace"
   | "about" | "chooseFolder" | "chooseImage" | "loadImage" | "removeImage" | "locale" | "theme" | "onThemeChange" | "onSettingsChange" | "skills"> & { runtime: Pick<AgentRuntime, "detect" | "catalog" | "cached"> };
 
 /** The only function the UI layer exports to the bootstrap: render into a shadow root, return a disposer. `runPrompt` runs the prompt or skill pinned to that slot. */
