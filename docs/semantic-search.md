@@ -56,6 +56,26 @@ when the collection is reopened. Instructions are per embedding-function
 instance, even when HuggingFace instances share the same loaded model. No
 instruction is selected automatically; choose one appropriate for your model.
 
+### HuggingFace models on a small GPU
+
+A long-context model such as Qwen3-Embedding (32k tokens) can run out of GPU
+memory during a full-text `update-db`, because each batch is padded to its
+longest text. Two optional `semantic_search.embedding_config` keys cap it:
+
+```jsonc
+"embedding_config": {
+  "model_name": "Qwen/Qwen3-Embedding-0.6B",
+  "max_seq_length": 2048,   // tokens kept per text (the model's own limit if unset or larger)
+  "batch_size": 8           // texts encoded at once (sentence-transformers' default, 32, if unset)
+}
+```
+
+Qwen3-Embedding-0.6B with these values indexes a full-text library within
+about 3.5 GB of GPU memory. On a CUDA GPU the model is also loaded in its own
+dtype (bfloat16 for Qwen3) instead of float32. Changing `max_seq_length` changes
+what is embedded, so rebuild the index afterwards (`update-db --force-rebuild`);
+`batch_size` only changes speed and memory.
+
 ### Ollama
 
 Install and start Ollama, then pull an embedding model before running `zotero-mcp update-db`:

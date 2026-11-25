@@ -183,9 +183,13 @@ def _ollama_ef_factory(config: dict[str, Any]) -> Any:
 
 
 def _huggingface_ef_factory(config: dict[str, Any]) -> Any:
+    # The caps (embedding_config max_seq_length / batch_size) are optional and
+    # passed only when set.
+    caps = {k: config[k] for k in ("max_seq_length", "batch_size") if config.get(k)}
     return HuggingFaceEmbeddingFunction(
         model_name=config.get("model_name", "Qwen/Qwen3-Embedding-0.6B"),
         query_instruction=config.get("query_instruction"),
+        **caps,
     )
 
 
