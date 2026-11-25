@@ -98,6 +98,46 @@ reports an input that is too large, for example llama-server's
 tokenizer, so leave headroom for the model's own: `3000` for a model served
 with a 4096-token batch.
 
+### Rapid-MLX
+
+[Rapid-MLX](https://github.com/raullenchai/Rapid-MLX) serves local models on
+Apple Silicon through an OpenAI-compatible API, including embeddings and
+re-ranking. Start it with an embedding and a reranker model loaded:
+
+```bash
+rapid-mlx serve qwen3.5-4b-4bit --port 8000 \
+  --embedding-model mlx-community/embeddinggemma-2-4bit \
+  --rerank-model mlx-community/Qwen3-Reranker-0.6B-4bit
+```
+
+Rapid-MLX needs no API key by default, but Zotero MCP's clients require a
+non-empty one, so set a placeholder (`export OPENAI_API_KEY=local`) in the
+environment Zotero MCP runs in. Then add this to
+`~/.config/zotero-mcp/config.json`:
+
+```json
+{
+  "semantic_search": {
+    "embedding_model": "openai",
+    "embedding_config": {
+      "model_name": "mlx-community/embeddinggemma-2-4bit",
+      "base_url": "http://localhost:8000/v1"
+    },
+    "reranker": {
+      "enabled": true,
+      "provider": "rapid-mlx",
+      "model": "mlx-community/Qwen3-Reranker-0.6B-4bit",
+      "base_url": "http://localhost:8000/v1/rerank",
+      "api_key_env": "OPENAI_API_KEY"
+    }
+  }
+}
+```
+
+`base_url` for embeddings is the API root (`/embeddings` is appended); the
+reranker's `base_url` is the full endpoint. Rebuild the index with
+`zotero-mcp update-db --force-rebuild` after switching embedding models.
+
 ### OpenAI Batch API
 
 When you choose OpenAI, setup also asks whether database updates should use
