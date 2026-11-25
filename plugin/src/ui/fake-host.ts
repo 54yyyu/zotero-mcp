@@ -1,6 +1,7 @@
 // A PanelHost with a scripted agent, so every state of the panel can be screenshotted and tested without
 // Zotero. The preview page and the Playwright scripts drive it through `host.sim`.
 import { CATALOGS, bigPiCatalog, defaultSettings } from "./fake-catalog.ts";
+import { customAgentIds, isCustomBackend } from "../custom-agent.ts";
 import { repeatLine } from "./economy.ts";
 import { t } from "../i18n.ts";
 import { DIAGRAM_ANSWER, MERMAID_ANSWER } from "./fake-diagrams.ts";
@@ -72,7 +73,7 @@ interface Sim {
   setSettingsElsewhere(patch: Partial<PanelSettings>): void;
   statuses: BackendStatus[];
   /** What each backend's catalog() and sessions offer. */
-  catalogs: Record<BackendId, Catalog>;
+  catalogs: typeof CATALOGS;
   writes: { session: string; ev: ChatEvent }[];
   keys: Partial<Record<BackendId, string>>;
   closed: number;
@@ -155,6 +156,7 @@ class FakeSession implements AgentSession {
   private waiting = new Map<string, (opt: string | null) => void>();
   private turnNo = 0;
   readonly sessionId: string;
+  private readonly catalog: Catalog;
 
   private sim: Sim;
 
@@ -162,19 +164,19 @@ class FakeSession implements AgentSession {
     this.sim = sim;
     this.backend = opts.backend;
     this.account = account;
-    const cat = sim.catalogs[opts.backend];
+    const cat = this.catalog = sim.catalogs[isCustomBackend(opts.backend) ? "custom" : opts.backend];
     this.def = opts.resumeSessionId ? undefined : cat.model;
     this.model = opts.model || cat.model || "";
     this.mode = opts.mode || cat.mode || "";
     this.effort = opts.effort || cat.effort || "";
     this.sessionId = opts.resumeSessionId ?? `agent-${Math.random().toString(36).slice(2, 8)}`;
   }
-  models() { return this.sim.catalogs[this.backend].models; }
+  models() { return this.catalog.models; }
   currentModel() { return this.model; }
   defaultModel() { return this.def; }
-  modes() { return this.sim.catalogs[this.backend].modes; }
+  modes() { return this.catalog.modes; }
   currentMode() { return this.mode || undefined; }
-  efforts() { return this.sim.catalogs[this.backend].efforts; }
+  efforts() { return this.catalog.efforts; }
   currentEffort() { return this.effort || undefined; }
   async setModel(id: string) { await sleep(20); this.model = id; }
   async setMode(id: string) { await sleep(20); this.mode = id; }
@@ -330,13 +332,13 @@ export class FakeHost implements PanelHost {
         const st = this.statuses().find((x) => x.id === b);
         if (st && !st.available) throw new Error(st.reason ?? `${st.label} is not available`);
         if (sim.catalogFails.includes(b)) throw new Error("the bridge did not answer within 20 s");
-        return sim.catalogs[b];
+        return sim.catalogs[isCustomBackend(b) ? "custom" : b];
       },
       // As in a profile that has chatted before: the host kept what the sessions said. A scenario about reading a catalog
       // (the `catalogDelay` option, a failing one, an agent that is not there) has none kept, and neither has a custom agent.
       cached: async (b) => {
         const st = this.statuses().find((x) => x.id === b);
-        return b === "custom" || o.catalogDelay !== undefined || sim.catalogFails.includes(b) || (st && !st.available) ? undefined : sim.catalogs[b];
+        return isCustomBackend(b) || o.catalogDelay !== undefined || sim.catalogFails.includes(b) || (st && !st.available) ? undefined : sim.catalogs[b];
       },
       start: async (opts) => {
         await sleep(sim.speed ? 250 : 0);
@@ -348,9 +350,13 @@ export class FakeHost implements PanelHost {
 
   private statuses(): BackendStatus[] {
     const m = this.sim.doctorMode;
+    const agents = this.settings.customAgents;
+    const ids = customAgentIds(agents);
     return [...this.sim.statuses.map((s) => (s.id === "claude-code" && (m === "backend" || m === "many") && !this.fixed.has("backend")
       ? { ...s, available: false, reason: "claude is not logged in", account: undefined } : s)),
-      { id: "custom", label: this.settings.customAgent?.label || t("agent.custom.label"), available: !!this.settings.customAgent?.command, reason: t("agent.custom.noCommand") }];
+      ...(ids.length ? ids : ["custom"] as const).map((id) => ({
+        id, label: agents[id]?.label || t("agent.custom.label"), available: !!agents[id]?.command, reason: t("agent.custom.noCommand"),
+      }))];
   }
 
   // --- context
@@ -478,7 +484,7 @@ export class FakeHost implements PanelHost {
   async removeImage() { this.sim.image = null; }
   /** What each backend's own CLI takes to continue a session; the folder is quoted for the shell. */
   resumeCommand(s: SavedSession) {
-    if (s.backend === "custom") return null;
+    if (isCustomBackend(s.backend)) return null;
     const cmd = { "claude-code": `claude --resume ${s.agentSessionId}`, codex: `codex resume ${s.agentSessionId}`, pi: `pi --session ${s.agentSessionId}`, opencode: `opencode --session ${s.agentSessionId}` }[s.backend];
     return s.agentSessionId ? `cd '${s.cwd.replace(/'/g, "'\\''")}' && ${cmd}` : null;
   }

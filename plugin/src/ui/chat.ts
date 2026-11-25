@@ -1,6 +1,7 @@
 // The conversation: the transcript state, the agent session behind it, and saving. No DOM here; the panel
 // renders `tr` whenever `onChange` fires.
 import type { AgentSession, BackendId, ChatEvent, ContextChip, PanelHost, PanelSettings, SavedSession } from "../types.ts";
+import { customLaunchKey, isCustomBackend } from "../custom-agent.ts";
 import { cleanTitle, clip, errMessage, nextId } from "./dom.ts";
 import { summary } from "./context.ts";
 import { chipHash, planContext } from "./economy.ts";
@@ -46,6 +47,7 @@ export class Chat {
   /** Sessions being closed: the next one starts once they are gone (a resumed chat's own old process, above all). Never awaited by the UI. */
   private closing: Promise<unknown> = Promise.resolve();
   private cwd = "";
+  private customSession: { launchKey?: string; label?: string } | null = null;
   /** Chips this agent session has already read (id -> fingerprint): unchanged ones are not sent again. */
   private sent = new Map<string, string>();
   /** Chips this chat has shown in a sent message (id -> fingerprint): the composer stops showing them (isShown). */
@@ -85,11 +87,16 @@ export class Chat {
 
   /** The agent a start would use now: a saved chat is resumed on the agent it was made with, a new one uses the setting. */
   get backend(): BackendId {
-    return this.session?.backend ?? (this.resume?.agentSessionId ? this.resume.backend : this.d.host.getSettings().backend);
+    return this.session?.backend ?? (this.resume && (this.resume.agentSessionId || this.cannotResumeCustom) ? this.resume.backend : this.d.host.getSettings().backend);
   }
+
+  get customLabel(): string | undefined { return this.customSession?.label || this.saved?.backendLabel; }
+
+  get cannotResumeCustom(): boolean { return !!this.resume && isCustomBackend(this.resume.backend); }
 
   async ensureSession(): Promise<AgentSession> {
     if (this.session) return this.session;
+    if (this.cannotResumeCustom) throw new Error(t("agent.custom.noResume"));
     if (this.starting) return this.starting;
     const gen = this.gen;
     const host = this.d.host;
@@ -105,15 +112,17 @@ export class Chat {
       const resume = this.resume?.agentSessionId ? this.resume : null;
       const folder = this.resume?.cwd;
       const start = async (set: PanelSettings, b: BackendId, resumeSessionId?: string) => {
+        const custom = isCustomBackend(b) ? set.customAgents[b] : undefined;
         const prep = await host.prepareSession(folder, b);
         current();
         this.cwd = prep.cwd;
         return host.runtime.start({
           backend: b, cwd: prep.cwd, brief: prep.brief, env: prep.env,
+          ...(custom ? { customAgent: custom } : {}),
           ...(set.model[b] ? { model: set.model[b] } : {}),
           ...(set.mode[b] ? { mode: set.mode[b] } : {}),
           ...(set.effort[b] ? { effort: set.effort[b] } : {}),
-          ...(!ownProviders(b) ? { auth: set.auth[b] } : {}),
+          ...(!custom && !ownProviders(b) ? { auth: set.auth[b] } : {}),
           ...(resumeSessionId ? { resumeSessionId } : {}),
         });
       };
@@ -137,19 +146,22 @@ export class Chat {
       current(sess);
       // The settings may have changed while this started (the panel starts a session as soon as it opens).
       const now = host.getSettings();
-      if (!resumed && now.backend !== sess.backend) {
+      const b = sess.backend;
+      const changedCustom = isCustomBackend(b) && customLaunchKey(set.customAgents[b]) !== customLaunchKey(now.customAgents[b]);
+      if (!resumed && (now.backend !== b || changedCustom)) {
         await sess.close().catch(() => {});
         current();
         sess = await start((set = now), now.backend);
         current(sess);
       } else {
-        const b = sess.backend;
         if (now.model[b] !== set.model[b]) { const m = now.model[b] || sess.defaultModel(); if (m && m !== sess.currentModel()) await sess.setModel(m).catch(() => {}); }
         if (now.mode[b] && now.mode[b] !== set.mode[b] && now.mode[b] !== sess.currentMode()) await sess.setMode(now.mode[b]).catch(() => {});
         if (now.effort[b] && now.effort[b] !== set.effort[b] && now.effort[b] !== sess.currentEffort()) await sess.setEffort(now.effort[b]).catch(() => {});
         current(sess);
       }
       this.session = sess;
+      const custom = isCustomBackend(sess.backend) ? set.customAgents[sess.backend] : undefined;
+      this.customSession = custom ? { launchKey: customLaunchKey(custom), label: custom.label } : null;
       this.sent.clear(); // a new or resumed session: everything goes in full once (DESIGN.md "Context budget")
       this.resume = null;
       this.unsub = sess.on((ev) => {
@@ -170,6 +182,7 @@ export class Chat {
     this.unsub?.();
     this.unsub = null;
     this.session = null;
+    this.customSession = null;
     this.starting = null;
     this.gen++;
     const before = this.closing;
@@ -204,7 +217,7 @@ export class Chat {
       const paper = host.paperContext(used, starting).catch(() => [] as ContextChip[]);
       const sess = await starting;
       if (!mine() || !this.saved) return;
-      this.saved = { ...this.saved, backend: sess.backend, agentSessionId: sess.sessionId, cwd: this.cwd || this.saved.cwd };
+      this.saved = { ...this.saved, backend: sess.backend, ...(this.customLabel ? { backendLabel: this.customLabel } : {}), agentSessionId: sess.sessionId, cwd: this.cwd || this.saved.cwd };
       let ctx = { text: "", images: [] as { mime: string; data: string }[] };
       const extra = await paper;
       if (!mine()) return;
@@ -327,9 +340,13 @@ export class Chat {
     const s = this.d.host.getSettings();
     const backend = this.session?.backend ?? s.backend;
     const live = this.session;
+    const source = isCustomBackend(backend)
+      ? this.customSession?.launchKey ?? customLaunchKey(s.customAgents[backend]) : undefined;
     const now = kind === "model" ? live?.currentModel() : kind === "effort" ? live?.currentEffort() : live?.currentMode();
     if (live && apply && apply !== now) await (kind === "model" ? live.setModel(apply) : kind === "effort" ? live.setEffort(apply) : live.setMode(apply));
-    await this.d.host.setSettings({ [kind]: { ...s[kind], [backend]: id } } as Partial<PanelSettings>);
+    const latest = this.d.host.getSettings();
+    if (isCustomBackend(backend) && (!latest.customAgents[backend] || source !== customLaunchKey(latest.customAgents[backend]))) return;
+    await this.d.host.setSettings({ [kind]: { ...latest[kind], [backend]: id } } as Partial<PanelSettings>);
   }
 
   /**

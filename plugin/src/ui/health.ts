@@ -14,6 +14,8 @@ export class Health {
   checks: DoctorCheck[] | null = null;
   statuses: BackendStatus[] | null = null;
   private checking = false;
+  private agentRevision = 0;
+  private statusRequest = 0;
   private host: PanelHost;
   private changed: () => void;
 
@@ -51,20 +53,31 @@ export class Health {
 
   set(checks: DoctorCheck[]): void { this.checks = checks; this.changed(); }
 
+  agentChanged(): void {
+    this.agentRevision++;
+    this.checks = this.checks && this.checks.filter((c) => !BLOCKING.has(c.id));
+    void this.refreshStatuses();
+  }
+
   async refreshStatuses(): Promise<void> {
-    try { this.statuses = await this.host.runtime.detect(); } catch { /* the doctor reports it */ }
-    this.changed();
+    const request = ++this.statusRequest;
+    try {
+      const statuses = await this.host.runtime.detect();
+      if (request === this.statusRequest) this.statuses = statuses;
+    } catch { /* the doctor reports it */ }
+    if (request === this.statusRequest) this.changed();
   }
 
   async refresh(): Promise<void> {
     if (this.checking) return;
     this.checking = true;
+    const agentRevision = this.agentRevision;
     this.changed();
     try {
       const [checks] = await Promise.all([this.host.doctor(), this.refreshStatuses()]);
-      this.checks = checks;
+      this.checks = agentRevision === this.agentRevision ? checks : checks.filter((c) => !BLOCKING.has(c.id));
     } catch (e) {
-      this.checks = [{ id: "backend", ok: false, label: t("health.statusCheck"), detail: errMessage(e) }];
+      if (agentRevision === this.agentRevision) this.checks = [{ id: "backend", ok: false, label: t("health.statusCheck"), detail: errMessage(e) }];
     } finally {
       this.checking = false;
       this.changed();

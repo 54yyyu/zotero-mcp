@@ -1,5 +1,6 @@
 // "Is everything the chat needs in place?" Each check says what is wrong and, where we can, fixes it.
 import type { AgentRuntime, DoctorCheck, PanelSettings, Spawner } from "../types.ts";
+import { isCustomBackend } from "../custom-agent.ts";
 import { BACKENDS, findBinary, forgetBinaries, isNative } from "../agent/index.ts";
 import { t } from "../i18n.ts";
 
@@ -118,11 +119,11 @@ export function createDoctor(deps: { win: any; spawner: Spawner; runtime: AgentR
       checks.push({ id: "cli", ok: false, label: t("doctor.cliMissing"), detail: t("doctor.cliMissingDetail"), fix: { label: t("doctor.installCli"), run: installCli(spawner) } });
     }
 
-    // 3. node: the bridges are Node programs (OpenCode is its own ACP agent: without Node it just goes unmentioned)
+    // 3. node: required for the bundled bridges. Native and custom ACP agents can run without it.
     const chosen = deps.settings().backend;
     const node = await findBinary(spawner, env, "node");
     if (node) checks.push({ id: "node", ok: true, label: t("doctor.nodeOk"), detail: node });
-    else if (chosen === "custom" || !isNative(BACKENDS[chosen])) checks.push({ id: "node", ok: false, label: t("doctor.nodeMissing"), detail: t("doctor.nodeMissingDetail") });
+    else if (!isCustomBackend(chosen) && !isNative(BACKENDS[chosen])) checks.push({ id: "node", ok: false, label: t("doctor.nodeMissing"), detail: t("doctor.nodeMissingDetail") });
 
     // 4. the chosen agent
     const status = (await runtime.detect()).find((s) => s.id === chosen);

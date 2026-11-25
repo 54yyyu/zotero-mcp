@@ -1,7 +1,7 @@
 // createRuntime: detect which backends can run here, and start a session on one.
 // Process spawning is injected (Spawner); this file has no node:*, DOM or Zotero imports.
-import type { AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, CustomAgentConfig, Spawner, StartOpts } from "../types.ts";
-import { readCustomAgent } from "../custom-agent.ts";
+import type { AgentRuntime, AgentSession, BackendId, BackendStatus, Catalog, CustomAgentConfig, CustomAgents, Spawner, StartOpts } from "../types.ts";
+import { customAgentIds, isCustomBackend, readCustomAgent } from "../custom-agent.ts";
 import { AcpClient } from "./acp.ts";
 import { ResumeError } from "./jsonrpc.ts";
 import { BACKENDS, BACKEND_IDS, backendOf, findClaudeExecutable, findCli, isNative, probeLogin, type BackendSpec } from "./backends.ts";
@@ -20,8 +20,8 @@ export interface RuntimeOpts {
   initTimeoutMs?: number;
   /** Progress text while a bridge installs ("Installing @agentclientprotocol/claude-agent-acp@0.85.1…"). */
   onProgress?: (message: string) => void;
-  /** Read at each launch so a changed command never reuses the old catalog. */
-  customAgent?: () => CustomAgentConfig | undefined;
+  /** The profiles currently saved in Zotero. */
+  customAgents?: () => CustomAgents;
 }
 
 const nodeMissing = () => t("agent.nodeMissing");
@@ -120,9 +120,9 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
     }
   }
 
-  let detecting: Promise<BackendStatus[]> | null = null;
+  let detecting: { source: string; statuses: Promise<BackendStatus[]> } | undefined;
 
-  async function detectAll(): Promise<BackendStatus[]> {
+  async function detectAll(agents?: CustomAgents): Promise<BackendStatus[]> {
     const env = await spawner.baseEnv();
     const node = await resolveNode(env);
     const nodeEnv = node ? withPathFirst(env, dirnameOf(node)) : env;
@@ -158,21 +158,25 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
         return { ...base, available: true, ...(login.account ? { account: login.account } : {}) };
       }),
     );
-    if (opts.customAgent) {
+    if (!agents) return statuses;
+    const ids = customAgentIds(agents);
+    if (!ids.length) return [...statuses, { id: "custom", label: t("agent.custom.label"), available: false, reason: t("agent.custom.noCommand") }];
+    statuses.push(...await Promise.all(ids.map(async (id): Promise<BackendStatus> => {
+      const label = agents[id]?.label || t("agent.custom.label");
       try {
-        const config = readCustomAgent(opts.customAgent());
+        const config = readCustomAgent(agents[id]);
         await customCommand(config, { ...env, ...config.env }, true);
-        statuses.push({ id: "custom", label: config.label || t("agent.custom.label"), available: true });
+        return { id, label, available: true };
       } catch (e) {
-        statuses.push({ id: "custom", label: t("agent.custom.label"), available: false, reason: e instanceof Error ? e.message : String(e) });
+        return { id, label, available: false, reason: e instanceof Error ? e.message : String(e) };
       }
-    }
+    })));
     return statuses;
   }
 
   const runtime: AgentRuntime = {
     catalog(id: BackendId): Promise<Catalog> {
-      if (id === "custom") return probeCatalog(id);
+      if (isCustomBackend(id)) return probeCatalog(id);
       let p = catalogs.get(id);
       if (!p) {
         p = probeCatalog(id);
@@ -186,22 +190,26 @@ export function createRuntime(opts: RuntimeOpts): AgentRuntime {
     },
 
     detect(): Promise<BackendStatus[]> {
-      // One at a time: the setup check and the agent list ask together, and each run starts a dozen or more processes
-      // (among them every agent's own CLI, for its sign-in).
-      return (detecting ??= detectAll().finally(() => { detecting = null; }));
+      // The setup check and the agent list ask together. Share a probe for the same settings.
+      const agents = opts.customAgents?.();
+      const source = JSON.stringify(agents ?? null);
+      if (detecting?.source === source) return detecting.statuses;
+      const statuses = detectAll(agents).finally(() => { if (detecting?.statuses === statuses) detecting = undefined; });
+      detecting = { source, statuses };
+      return statuses;
     },
 
     async start(start: StartOpts): Promise<AgentSession> {
-      if (start.backend === "custom") {
+      if (isCustomBackend(start.backend)) {
         if (start.locked) throw new Error(t("agent.custom.noTranslate"));
         if (start.resumeSessionId) throw new ResumeError(t("agent.custom.noResume"));
-        const config = readCustomAgent(opts.customAgent?.());
+        const config = readCustomAgent(start.customAgent ?? opts.customAgents?.()[start.backend]);
         const base = await spawner.baseEnv();
         const env = bridgeEnv({ ...base, ...config.env }, { extra: start.env });
         const withPath = (start.path ?? []).reduceRight((e, dir) => withPathFirst(e, dir), env);
         const client = await AcpClient.spawn({ spawner, command: await customCommand(config, withPath), args: config.args,
           cwd: start.cwd, env: withPath, ...(opts.initTimeoutMs !== undefined ? { initTimeoutMs: opts.initTimeoutMs } : {}) });
-        return AcpAgentSession.open(client, backendOf("custom"), start);
+        return AcpAgentSession.open(client, backendOf(start.backend), start);
       }
       const spec = BACKENDS[start.backend];
       const login = await spawner.baseEnv();

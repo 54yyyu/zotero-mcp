@@ -1,14 +1,15 @@
 // The first-run welcome: pick the agent, watch the setup check run (fixing what can be fixed in one click), then
 // start chatting. It is a screen like History, shown in place of the chat until the user has finished or skipped it.
-import type { BackendId, BackendStatus, DoctorCheck, PanelHost } from "../types.ts";
+import type { BackendId, BackendStatus, BuiltinBackendId, DoctorCheck, PanelHost } from "../types.ts";
+import { isCustomBackend } from "../custom-agent.ts";
 import { env, h, icon, setKids, svg } from "./dom.ts";
 import { PRIORITY } from "./health.ts";
 import type { Health } from "./health.ts";
-import { BACKENDS, BACKEND_LABEL, fixButton, mark, problem } from "./views.ts";
+import { agentIds, agentLabel, fixButton, mark, problem } from "./views.ts";
 import { t } from "../i18n.ts";
 import type { Key } from "../i18n.ts";
 
-const ABOUT: Record<BackendId, { sub: Key; signIn: Key }> = {
+const ABOUT: Record<BuiltinBackendId | "custom", { sub: Key; signIn: Key }> = {
   custom: { sub: "welcome.custom.sub", signIn: "welcome.custom.signIn" },
   "claude-code": { sub: "welcome.claude.sub", signIn: "welcome.claude.signIn" },
   codex: { sub: "welcome.codex.sub", signIn: "welcome.codex.signIn" },
@@ -44,20 +45,22 @@ export function welcomeView(host: PanelHost, health: Health, o: Handlers): { el:
   };
 
   const paintCards = () => {
-    const chosen = host.getSettings().backend;
+    const settings = host.getSettings();
+    const chosen = settings.backend;
+    const ids = agentIds(settings);
     const statuses = health.statuses;
-    if (!statuses) { setKids(cards, BACKENDS.map(() => h("div.sk.sk--card"))); setKids(hint, null); return; }
+    if (!statuses) { setKids(cards, ids.map(() => h("div.sk.sk--card"))); setKids(hint, null); return; }
     const status = (id: BackendId): BackendStatus | undefined => statuses.find((s) => s.id === id);
-    setKids(cards, BACKENDS.map((id) => {
+    setKids(cards, ids.map((id) => {
       const s = status(id);
       const on = id === chosen;
       return h(`button.wcard${on ? ".wcard--on" : ""}`, { type: "button", role: "radio", "aria-checked": String(on), onclick: () => void pick(id) },
         h("span.wcard__dot", { "aria-hidden": "true" }),
-        h("span.wcard__tx", null, h("span.wcard__t", null, BACKEND_LABEL[id]), h("span.wcard__d", null, t(ABOUT[id].sub))),
+        h("span.wcard__tx", null, h("span.wcard__t", null, agentLabel(settings, id)), h("span.wcard__d", null, t(ABOUT[isCustomBackend(id) ? "custom" : id].sub))),
         h(`span.wcard__st${s?.available ? ".wcard__st--ok" : ""}`, { title: s?.reason ?? "" }, h("span.wcard__led"), s?.available ? s.account || t("welcome.ready") : s?.reason ?? t("welcome.notSetUp")));
     }));
     const cur = status(chosen);
-    setKids(hint, cur && !cur.available ? t("welcome.thenRecheck", { signIn: t(ABOUT[chosen].signIn) }) : null);
+    setKids(hint, cur && !cur.available ? t("welcome.thenRecheck", { signIn: t(ABOUT[isCustomBackend(chosen) ? "custom" : chosen].signIn) }) : null);
   };
 
   const rowFor = (c: DoctorCheck, pending: boolean): HTMLElement => {
@@ -102,7 +105,8 @@ export function welcomeView(host: PanelHost, health: Health, o: Handlers): { el:
     const ready = settledAll && !bad.length && !blocked;
     const s = host.getSettings();
     const account = health.backend()?.account;
-    const who = account ? `${BACKEND_LABEL[s.backend]} (${account})` : BACKEND_LABEL[s.backend];
+    const label = agentLabel(s, s.backend);
+    const who = account ? `${label} (${account})` : label;
     const go = h(`button.btn.${ready ? "btn--solid" : "btn--quiet"}`, { type: "button", disabled: blocked || !settledAll ? true : null, onclick: o.done },
       ready || blocked ? t("welcome.start") : t("welcome.continue"));
     setKids(foot,

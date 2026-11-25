@@ -89,8 +89,10 @@ export type ChatEvent =
 // ───────────────────────────── agent/ ─────────────────────────────
 
 export type BuiltinBackendId = "claude-code" | "codex" | "pi" | "opencode";
-export type BackendId = BuiltinBackendId | "custom";
-export type BackendValues<T> = Record<BuiltinBackendId, T> & Partial<Record<"custom", T>>;
+/** "custom" is the original slot, also used to open the editor before any custom agents are saved. */
+export type CustomBackendId = "custom" | `custom-${string}`;
+export type BackendId = BuiltinBackendId | CustomBackendId;
+export type BackendValues<T> = Record<BuiltinBackendId, T> & Partial<Record<CustomBackendId, T>>;
 
 /** A user-installed stdio ACP agent. Arguments are literal argv entries, never a shell command. */
 export interface CustomAgentConfig {
@@ -99,6 +101,8 @@ export interface CustomAgentConfig {
   args: string[];
   env: Record<string, string>;
 }
+
+export type CustomAgents = Partial<Record<CustomBackendId, CustomAgentConfig>>;
 
 export interface ModelOption { id: string; name: string; description?: string }
 export interface ModeOption { id: string; name: string; description?: string }
@@ -116,6 +120,8 @@ export interface BackendStatus {
 
 export interface StartOpts {
   backend: BackendId;
+  /** Launch settings read together with the custom backend's model, effort and mode before preparing a chat. */
+  customAgent?: CustomAgentConfig;
   /** The agent's working directory (the chat workspace). */
   cwd: string;
   /** Append to the agent's system prompt (the brief: where it is, how to cite). */
@@ -291,7 +297,7 @@ export interface SkillHost {
 
 export interface PanelSettings {
   backend: BackendId;
-  customAgent?: CustomAgentConfig;
+  customAgents: CustomAgents;
   /** Per backend; "" means the backend's own default. Ids are the backend's, so they are never shared between backends. */
   model: BackendValues<string>;
   mode: BackendValues<string>;
@@ -367,6 +373,8 @@ export interface SavedSession {
   /** Set by a user rename: no automatic source ever changes the title again. */
   titleLocked?: boolean;
   backend: BackendId;
+  /** A custom agent's display name when it was first used in this chat. */
+  backendLabel?: string;
   /** The folder the chat ran in. Agents find a session by its folder, so resuming (here or in a terminal) needs this one, not the current setting. */
   cwd: string;
   /** The bridge's session id, for session/load. */

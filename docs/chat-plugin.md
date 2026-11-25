@@ -69,9 +69,13 @@ Install OpenCode (`npm i -g opencode-ai`, or any of the ways its site lists) and
 
 To use Zotero from a WorkBuddy chat, configure the [WorkBuddy MCP connector](getting-started.md#integrating-with-tencent-workbuddy) in WorkBuddy.
 
-In **Settings > Agent**, choose **Custom**. Enter a display name, the executable
-command, arguments as a JSON array of strings, and optional extra environment
-variables as a JSON object of strings. Press **Save custom agent**. For example,
+In **Settings > Agent**, click **Add custom agent** and enter a name, the
+executable command, arguments as a JSON array of strings, and optional extra
+environment variables as a JSON object of strings. Press **Save custom agent**.
+Each saved agent gets its own tab here and its own entry in the chat's model
+menu. Select its tab to edit or delete it. The tabs and the selected agent are
+kept in your Zotero profile across restarts. A Custom configuration saved in an
+older version appears as your first custom agent. For example,
 [Qoder's documented ACP command](https://docs.qoder.com/zh/cli/acp) is:
 
 - Name: `Qoder CLI`
@@ -92,12 +96,14 @@ the extra variables.
 Extras are saved in Zotero preferences, **not** the keychain; prefer the agent's
 own credential storage for secrets.
 
-**Show Custom's options** starts a short session to read the agent's advertised
+**Show …'s options** starts a short session to read the agent's advertised
 models, effort levels and modes. Missing options stay hidden. A mode's name and
 description come from the agent; custom modes are not assumed to have the same
-permission behavior as the built-in agents. Changing the command takes effect in
-new chats and clears the custom model/mode/effort choices. An existing chat keeps
-its running process.
+permission behavior as the built-in agents. Each custom agent remembers its own
+model, mode and effort. Changing its command, arguments or environment clears
+those choices for that agent. Changes in Settings apply to new chats. An open
+conversation keeps its running process, and switching agents from the chat's
+model menu asks before starting a new chat.
 
 Custom support is best-effort ACP, not a vendor compatibility certification. It
 uses the existing client's capabilities and does not add filesystem or terminal

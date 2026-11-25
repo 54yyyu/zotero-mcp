@@ -19,6 +19,8 @@ const suites = [
   ["ring", ["--mock-agent", ...welcomed]], // the context ring's tooltip and popover in real Gecko: shown, inside the window, light and dark
   ["appearance", ["--mock-agent", ...welcomed]],
   ["prefpane", ["--mock-agent", ...welcomed]], // the Zotero Chat pane in Zotero's Settings: lazy, no agent started, live both ways // glass, accent, a preset and a picture through the real host; persists across a remount
+  ["custom-profiles", ["--mock-agent", "--xpi"]],
+  ["custom-profiles-restart", ["--mock-agent", "--xpi", "--keep-settings", "--keep-data", "--pref", "extensions.zotero-chat.testCustomRestart=1"], "custom-profiles"],
   ["diagram", ["--mock-agent", ...welcomed]], // ```svg answers as themed figures; Copy and Save through the host
   ["notes", ["--mock-agent", ...welcomed]], // Save as note: real child/standalone notes, math and links in the HTML, diagrams as embedded images the editor renders
   ["translate", ["--mock-agent", ...welcomed]],
@@ -31,8 +33,8 @@ const suites = [
   ...(process.env.ZMC_LIVE ? [["live", []]] : []),
 ];
 let failed = 0;
-for (const [name, extra] of suites) {
-  const r = spawnSync("node", [join(root, "scripts", "dev.mjs"), "--script", `test/zotero/${name}.js`, "--build", ...extra], { cwd: root, encoding: "utf8" });
+for (const [name, extra, script = name] of suites) {
+  const r = spawnSync("node", [join(root, "scripts", "dev.mjs"), "--script", `test/zotero/${script}.js`, "--build", ...extra], { cwd: root, encoding: "utf8" });
   const ok = /"ok": true/.test(r.stdout);
   console.log(`${ok ? "ok  " : "FAIL"} ${name}`);
   if (!ok) { failed++; console.log((r.stdout + r.stderr).split("\n").filter((l) => /error|FAILED|dev:/.test(l)).slice(0, 6).join("\n")); }

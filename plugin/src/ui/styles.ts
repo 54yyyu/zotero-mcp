@@ -243,8 +243,8 @@ const BASE = `
 /* only the model list scrolls: the agents, a search field and the effort row stay put */
 .zmc :is(.mdd__body, .mdd__mods) { display: flex; flex-direction: column; min-height: 0; flex: 0 1 auto; }
 .zmc :is(.mdd__body:has(.mdd__mods--long), .mdd__mods--long) { flex: 1 1 auto; }
-.zmc .mdd__agents { display: flex; gap: 2px; margin: var(--s2) var(--s2) var(--s1); padding: 2px; border-radius: var(--pill); background: var(--paper-sunk); }
-.zmc .mdd__agent { flex: 1 1 auto; min-width: 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--h-chip); padding: 0 var(--s2); border: 0; border-radius: var(--pill); background: none; color: var(--ink-muted); font-size: var(--fs-2); white-space: nowrap; transition: background var(--ease), color var(--ease); }
+.zmc .mdd__agents { display: flex; flex-wrap: wrap; gap: 2px; margin: var(--s2) var(--s2) var(--s1); padding: 2px; max-height: calc(2 * var(--h-chip) + 6px); overflow-y: auto; border-radius: var(--r1); background: var(--paper-sunk); }
+.zmc .mdd__agent { flex: 1 1 auto; min-width: 0; max-width: 100%; display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: var(--h-chip); padding: 0 var(--s2); border: 0; border-radius: var(--pill); background: none; color: var(--ink-muted); font-size: var(--fs-2); white-space: nowrap; transition: background var(--ease), color var(--ease); }
 .zmc .mdd__agent:hover:not(.mdd__agent--on) { color: var(--ink); background: var(--tint-hover); }
 .zmc .mdd__agent--on { background: var(--paper-raised); color: var(--ink); font-weight: 500; box-shadow: 0 1px 2px rgb(0 0 0 / 0.1); }
 .zmc[data-theme="dark"] .mdd__agent--on { background: var(--rule); }
@@ -354,6 +354,8 @@ const BASE = `
 .zmc .radio__tx { display: flex; flex-direction: column; min-width: 0; } .zmc .radio__d { font-size: var(--fs-2); color: var(--ink-muted); line-height: 1.4; }
 .zmc .pe { display: grid; gap: var(--s2); padding: var(--s3); margin-bottom: var(--s2); border: 1px solid var(--rule); border-radius: var(--r2); background: var(--paper-raised); }
 .zmc .fields { display: grid; gap: var(--s4); margin-top: var(--s3); }
+.zmc :is(.set__agent-tabs, .custom__actions) { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.zmc .set__agent-tabs .seg__opt { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .zmc .field { display: grid; gap: var(--s2); }
 .zmc .field__l { font-weight: 500; }
 .zmc .select { position: relative; }

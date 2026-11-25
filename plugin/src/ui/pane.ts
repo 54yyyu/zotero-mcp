@@ -24,10 +24,22 @@ export function mountSettings(root: ShadowRoot, host: SettingsHost, catalogReady
   const look = new Look(app, host);
   look.apply();
   let statuses: BackendStatus[] | null = null;
+  let statusRequest = 0;
+  const customSource = () => JSON.stringify(host.getSettings().customAgents);
+  let agents = customSource();
+  const refreshStatuses = () => {
+    agents = customSource();
+    const request = ++statusRequest;
+    void host.runtime.detect().then((next) => {
+      if (request !== statusRequest) return;
+      statuses = next;
+      view.render();
+    }, () => {});
+  };
   let image = host.getSettings().appearance.image;
   const view = settingsView(host, {
     statuses: () => statuses,
-    refreshStatuses: () => void host.runtime.detect().then((s) => { statuses = s; view.render(); }, () => {}),
+    refreshStatuses,
     changed: () => { language(); }, // the next render is in the new language
     look, catalogReady,
   });
@@ -39,8 +51,9 @@ export function mountSettings(root: ShadowRoot, host: SettingsHost, catalogReady
       language();
       const now = host.getSettings().appearance.image;
       if (now !== image) { image = now; look.setImage(null); } else look.apply();
+      if (agents !== customSource()) refreshStatuses();
       view.render();
     }),
   ];
-  return { dispose() { for (const off of offs) off(); clear(root); } };
+  return { dispose() { statusRequest++; for (const off of offs) off(); clear(root); } };
 }

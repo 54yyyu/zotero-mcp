@@ -1,5 +1,17 @@
-import type { CustomAgentConfig } from "./types.ts";
+import type { CustomAgentConfig, CustomAgents, CustomBackendId } from "./types.ts";
 import { t } from "./i18n.ts";
+
+export const isCustomBackend = (id: unknown): id is CustomBackendId =>
+  typeof id === "string" && /^custom(?:-[a-z0-9-]+)?$/.test(id);
+
+export const customAgentIds = (agents: CustomAgents): CustomBackendId[] =>
+  Object.keys(agents).filter(isCustomBackend);
+
+/** Changing the display name or the order of environment keys does not change how the agent runs. */
+export function customLaunchKey(config?: CustomAgentConfig): string | undefined {
+  if (!config) return undefined;
+  return JSON.stringify([config.command, config.args, Object.entries(config.env ?? {}).sort(([a], [b]) => a.localeCompare(b))]);
+}
 
 /** Validate both saved preferences and the settings form before launching a process. */
 export function readCustomAgent(value: unknown): CustomAgentConfig {
