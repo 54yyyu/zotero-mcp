@@ -118,9 +118,11 @@ def test_a_pdf_attached_later_reindexes_its_parent(monkeypatch, tmp_path):
 
     _build_search(monkeypatch, zot, chroma, config_path=config_path).update_database()
 
-    assert _indexed(chroma) == ["P1"]
-    assert "the full body text" in chroma.added[0][0][0]
-    assert chroma.added[0][1][0]["has_fulltext"] is True
+    # The parent is written again, and its file's text is the file's own
+    # record (#826), keyed by the attachment.
+    assert _indexed(chroma) == ["P1", "ATT1"]
+    assert "the full body text" in chroma.added[0][0][1]
+    assert chroma.added[0][1][1]["parent_hint"] == "P1"
     assert _saved_version(config_path) == 8
 
 
@@ -142,8 +144,8 @@ def test_text_extracted_later_reindexes_the_parent(monkeypatch, tmp_path):
 
     _build_search(monkeypatch, zot, chroma, config_path=config_path).update_database()
 
-    assert _indexed(chroma) == ["P1"]
-    assert "text that arrived late" in chroma.added[0][0][0]
+    assert _indexed(chroma) == ["P1", "ATT1"]
+    assert "text that arrived late" in chroma.added[0][0][1]
 
 
 def test_an_attachment_change_is_ignored_when_text_is_not_indexed(monkeypatch, tmp_path):
