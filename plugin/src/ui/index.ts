@@ -74,6 +74,7 @@ class Panel {
     this.health = new Health(host, () => this.onHealth());
     this.conversations = new Conversations({
       makeChat: (onChange) => this.makeChat(onChange),
+      savedSessions: () => host.sessions(),
       limit: () => host.getSettings().backgroundChatLimit,
       foregroundChanged: () => this.scheduleRender(),
       backgroundChanged: () => { if (this.view === "history") this.activeView?.render?.(); },

@@ -125,3 +125,14 @@ describe("clear history", () => {
     assert.deepEqual((await store.sessions()).map((s) => s.id), ["c"]);
   });
 });
+
+it("reopening a finished background chat reads the queued last event", async () => {
+  const store = createStore("/chats/background");
+  const chat = session("a", "background");
+  await store.appendEvent(chat, firstMessage);
+  const end: ChatEvent = { t: "turn_end", turn: "t1", stop: "end_turn" };
+  const writing = store.appendEvent(chat, end);
+  const events = await store.loadEvents(chat.id);
+  await writing;
+  assert.deepEqual(events, [firstMessage, end]);
+});

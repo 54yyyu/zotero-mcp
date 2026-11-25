@@ -18,6 +18,7 @@ function setup(limit: number) {
       blockReason: () => null, turnEnded() {}, setupFailed() {}, sessionChanged() {}, shownChanged() {},
       expand: async (text) => text,
     }),
+    savedSessions: () => host.sessions(),
     limit: () => host.getSettings().backgroundChatLimit,
     foregroundChanged() {}, backgroundChanged() {},
   });
@@ -57,7 +58,7 @@ test("a running chat keeps answering offscreen and can be reopened and stopped",
   assert.equal(answer(stack.current), "Only the second answer");
   assert.ok(answer(first).length > before.length, "the first answer advanced in the background");
 
-  assert.equal(await stack.open(entry), true);
+  assert.equal(await stack.open({ ...entry, agentSessionId: "" }), true);
   assert.equal(stack.current, first);
   assert.equal(first.session, session);
   assert.equal(stack.isBackground(entry.id), false);
@@ -81,8 +82,9 @@ test("a completed background answer is saved and reopening it needs only the tra
   assert.equal(await stopOf(host, entry.id), "end_turn");
   assert.equal(stack.isBackground(entry.id), false);
   assert.equal(first.session, null, "the finished background agent was released");
-  assert.equal(await stack.open(entry), true);
+  assert.equal(await stack.open({ ...entry, agentSessionId: "" }), true);
   assert.equal(answer(stack.current), text);
+  assert.equal(stack.current.saved?.agentSessionId, first.saved?.agentSessionId);
   assert.equal(stack.current.session, null);
 });
 
@@ -119,7 +121,7 @@ test("deleting or clearing history stops live chats before the transcript is rem
     host.sim.nextAnswer = "answer ".repeat(600);
     const sending = chat.send("question", []);
     await streaming(chat);
-    return { id: chat.saved!.id, chat, sending };
+    return { id: chat.saved!.id, sending };
   };
   const first = await send();
   stack.newChat();

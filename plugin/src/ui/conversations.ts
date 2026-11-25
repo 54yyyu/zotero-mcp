@@ -3,6 +3,7 @@ import type { Chat } from "./chat.ts";
 
 interface ConversationDeps {
   makeChat(onChange: () => void): Chat;
+  savedSessions(): Promise<SavedSession[]>;
   limit(): number;
   foregroundChanged(): void;
   backgroundChanged(): void;
@@ -40,8 +41,11 @@ export class Conversations {
       this.switchTo(live);
       return true;
     }
+    // The history row may have been painted before the background chat saved its final metadata.
+    const entries = await this.deps.savedSessions().catch(() => []);
+    if (navigation !== this.navigation) return false;
     const chat = this.create();
-    await chat.load(saved);
+    await chat.load(entries.find((entry) => entry.id === saved.id) ?? saved);
     if (navigation !== this.navigation) { this.close(chat); return false; }
     this.switchTo(chat);
     return true;
