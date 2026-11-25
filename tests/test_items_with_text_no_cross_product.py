@@ -46,3 +46,26 @@ def test_every_regular_item_is_returned_once(tmp_path):
     with LocalZoteroReader(db_path=str(_db(tmp_path))) as reader:
         keys = [item.key for item in reader.get_items_with_text()]
     assert sorted(keys) == ["PAPER001", "PAPER002"]
+
+
+def test_text_items_by_keys_is_one_query_that_uses_the_library_key_index(tmp_path):
+    """The re-key looks a batch of items up in one query per library, through Zotero's (libraryID, key) index."""
+    db = _db(tmp_path)
+    conn = sqlite3.connect(db)
+    conn.execute("CREATE UNIQUE INDEX itemsUnique ON items (libraryID, key)")  # as Zotero's schema has it
+    conn.commit()
+    conn.close()
+    with LocalZoteroReader(db_path=str(db)) as reader:
+        statements: list[str] = []
+        reader._get_connection().set_trace_callback(statements.append)
+        found = reader.get_text_items_by_keys(["PAPER001", "NOSUCH01", "PAPER002"], 0)
+        reader._get_connection().set_trace_callback(None)
+        assert set(found) == {"PAPER001", "PAPER002"}
+        assert reader.get_text_items_by_keys(["PAPER001"], 999) == {}, "a library that is not here has no items"
+
+        queries = [s for s in statements if "i.key IN" in s]
+        assert len(queries) == 1 and "i.libraryID IN" in queries[0]
+        plan = reader._get_connection().execute("EXPLAIN QUERY PLAN " + queries[0]).fetchall()
+        items_steps = [row[3] for row in plan if " items" in f" {row[3]}" and "itemData" not in row[3]]
+        assert any("SEARCH" in step and "libraryID" in step for step in items_steps), items_steps
+        assert not any(step.startswith("SCAN") and "i" == step.split()[-1] for step in items_steps), items_steps

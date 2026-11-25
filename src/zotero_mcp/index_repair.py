@@ -37,6 +37,8 @@ from typing import Any
 
 import numpy as np
 
+from .chroma_client import record_key
+
 logger = logging.getLogger(__name__)
 
 # Rows read per query. A query that hits a damaged page is split in half until
@@ -257,6 +259,20 @@ def _check_item(
     ``KEY#n``, the metadata names the same item and chunk, the chunks run
     0..n_chunks-1 without gaps, and every chunk has a document and a vector.
     """
+    # A bare record ``KEY`` may sit beside passages ``KEY#n`` when it is an
+    # attachment's own record (``file_stamp``), or a current-shape record of a
+    # rewritten item next to legacy passages not cleaned up yet. The record and
+    # the passages are two units, each checked on its own below. A legacy
+    # whole-document record beside passages is a half-written item.
+    from .semantic_search import _is_legacy_record
+
+    bare = [d for d in doc_ids if _chunk_number(d) is None]
+    own = None
+    if len(bare) == 1 and len(bare) < len(doc_ids):
+        record = metadata.get(bare[0]) or {}
+        if "file_stamp" in record or not _is_legacy_record(record):
+            own = bare[0]
+            doc_ids = [d for d in doc_ids if d != own]
     numbers = [_chunk_number(d) for d in doc_ids]
     chunked = numbers[0] is not None
     if any((n is not None) != chunked for n in numbers) or (not chunked and len(doc_ids) > 1):
@@ -268,7 +284,9 @@ def _check_item(
             return "chunks missing"
 
     ids, rows, documents, metadatas = [], [], [], []
-    for n, doc_id in enumerate(doc_ids):
+    for n, doc_id in enumerate(([own] if own else []) + doc_ids):
+        if own:
+            n -= 1  # the attachment record is not chunk 0
         meta = dict(metadata.get(doc_id) or {})
         document = meta.pop("chroma:document", None)
         meta = {k: v for k, v in meta.items() if not k.startswith("chroma:")}
@@ -276,9 +294,9 @@ def _check_item(
             return "chunk without document"
         if meta.get("item_key", item_key) != item_key:
             return "metadata names another item"
-        if chunked and meta.get("chunk_index", n) != n:
+        if chunked and doc_id != own and meta.get("chunk_index", n) != n:
             return "metadata names another chunk"
-        if chunked and n == 0 and meta.get("n_chunks", len(doc_ids)) != len(doc_ids):
+        if chunked and doc_id != own and n == 0 and meta.get("n_chunks", len(doc_ids)) != len(doc_ids):
             return "chunks missing"
         row = vectors.label_to_row.get(vectors.id_to_label.get(doc_id, -1))
         if row is None:
@@ -330,7 +348,7 @@ def _pending_item_keys(
     keys = set()
     for seq_id, topic, doc_id in _scan_rows(con, "embeddings_queue", "seq_id, topic, id", on_skip):
         if topic and topic.endswith(collection_id) and _seq_id(seq_id) > cutoff and doc_id:
-            keys.add(doc_id.split("#", 1)[0])
+            keys.add(record_key(doc_id))
     return keys
 
 
@@ -416,7 +434,7 @@ def _copy_collection(
             row_ids[doc_id] = rid
     by_item: dict[str, list[str]] = defaultdict(list)
     for doc_id in row_ids:
-        by_item[doc_id.split("#", 1)[0]].append(doc_id)
+        by_item[record_key(doc_id)].append(doc_id)
     progress(f"Found {len(row_ids)} chunks in {len(by_item)} items in {source.name}.")
 
     excluded: dict[str, str] = {}
@@ -445,11 +463,11 @@ def _copy_collection(
             continue
         embeddings = source.vectors.get(rows)
         norms = np.linalg.norm(embeddings, axis=1)
-        bad = {ids[i].split("#", 1)[0] for i in np.flatnonzero(~np.isfinite(norms) | (norms == 0))}
+        bad = {record_key(ids[i]) for i in np.flatnonzero(~np.isfinite(norms) | (norms == 0))}
         if bad:
             for key in bad:
                 excluded[key] = "invalid vector"
-            keep = [i for i, d in enumerate(ids) if d.split("#", 1)[0] not in bad]
+            keep = [i for i, d in enumerate(ids) if record_key(d) not in bad]
             ids = [ids[i] for i in keep]
             documents = [documents[i] for i in keep]
             metadatas = [metadatas[i] for i in keep]
