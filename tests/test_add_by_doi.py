@@ -1527,3 +1527,68 @@ class TestPagePdfUrlReachesTheCascade:
 
         write.add_by_doi(doi="10.1234/x", ctx=dummy_ctx)
         assert calls == [None]
+
+
+# ---------------------------------------------------------------------------
+# A chapter in a book series, end to end
+# ---------------------------------------------------------------------------
+
+class TestChapterInBookSeries:
+    """zotero_add_item with the DOI of a chapter in a book series.
+
+    CrossRef's record of U-Net (Ronneberger, Fischer and Brox 2015, a chapter
+    of the MICCAI 2015 proceedings in Lecture Notes in Computer Science, record
+    trimmed) lists the series before the book, carries the series' ISSN, and
+    has no editors; the book's record, linked through relation.is-part-of,
+    has them. The item used to come out with "Lecture Notes in Computer
+    Science" as its bookTitle and no editors.
+    """
+
+    CHAPTER = "10.1007/978-3-319-24574-4_28"
+    BOOK = "10.1007/978-3-319-24574-4"
+    BOOK_TITLE = "Medical Image Computing and Computer-Assisted Intervention – MICCAI 2015"
+
+    def _messages(self):
+        chapter = {
+            "type": "book-chapter", "DOI": self.CHAPTER,
+            "URL": f"https://doi.org/{self.CHAPTER}",
+            "title": ["U-Net: Convolutional Networks for Biomedical Image Segmentation"],
+            "container-title": ["Lecture Notes in Computer Science", self.BOOK_TITLE],
+            "ISSN": ["0302-9743", "1611-3349"], "ISBN": ["9783319245737", "9783319245744"],
+            "publisher": "Springer International Publishing", "publisher-location": "Cham",
+            "page": "234-241", "published-print": {"date-parts": [[2015]]},
+            "author": [{"given": "Olaf", "family": "Ronneberger", "sequence": "first"},
+                       {"given": "Philipp", "family": "Fischer", "sequence": "additional"},
+                       {"given": "Thomas", "family": "Brox", "sequence": "additional"}],
+            "relation": {"is-part-of": [{"id-type": "doi", "id": f"https://doi.org/{self.BOOK}",
+                                         "asserted-by": "object"}]},
+        }
+        book = {
+            "type": "book", "DOI": self.BOOK, "title": [self.BOOK_TITLE],
+            "editor": [{"given": "Nassir", "family": "Navab"},
+                       {"given": "Joachim", "family": "Hornegger"},
+                       {"given": "William M.", "family": "Wells"},
+                       {"given": "Alejandro F.", "family": "Frangi"}],
+        }
+        return {self.CHAPTER: chapter, self.BOOK: book}
+
+    def test_book_series_editors_isbn_and_place(self, monkeypatch, fake_zot, dummy_ctx):
+        monkeypatch.setattr(
+            "zotero_mcp.tools._helpers._get_write_client", lambda ctx: (fake_zot, fake_zot)
+        )
+        monkeypatch.setattr("requests.get", fake_crossref_get(self._messages().get))
+
+        write.add_item(source=self.CHAPTER, source_type="doi", attach_mode="none", ctx=dummy_ctx)
+
+        assert len(fake_zot.created) == 1
+        item = fake_zot.created[0]
+        assert item["itemType"] == "bookSection"
+        assert item["bookTitle"] == self.BOOK_TITLE
+        assert item["series"] == "Lecture Notes in Computer Science"
+        assert item["ISBN"] == "9783319245737 9783319245744"
+        assert item["place"] == "Cham"
+        assert item["pages"] == "234-241"
+        roles = [(c["creatorType"], c["lastName"]) for c in item["creators"]]
+        assert roles == [("author", "Ronneberger"), ("author", "Fischer"), ("author", "Brox"),
+                         ("editor", "Navab"), ("editor", "Hornegger"), ("editor", "Wells"),
+                         ("editor", "Frangi")]

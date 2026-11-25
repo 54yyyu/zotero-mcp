@@ -231,6 +231,8 @@ class FakeZotero:
         if item_type == "bookSection":
             base.update({
                 "bookTitle": "",
+                "series": "",
+                "seriesNumber": "",
                 "publisher": "",
                 "place": "",
                 "ISBN": "",
