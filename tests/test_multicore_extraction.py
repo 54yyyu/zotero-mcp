@@ -204,7 +204,7 @@ class DeadPool:
 
     survive = 0  # submissions served normally before the pool dies
 
-    def __init__(self, max_workers=None, initializer=None):
+    def __init__(self, max_workers=None, initializer=None, mp_context=None):
         self.submitted = 0
 
     def __enter__(self):
@@ -212,6 +212,9 @@ class DeadPool:
 
     def __exit__(self, *exc_info):
         return False
+
+    def shutdown(self, wait=True, cancel_futures=False):
+        pass
 
     def submit(self, fn, *args):
         future = Future()
@@ -303,3 +306,51 @@ def test_worker_count_is_clamped_to_at_least_one():
     reader = LocalZoteroReader.__new__(LocalZoteroReader)
     assert LocalZoteroReader.extraction_workers == 1
     assert reader.fulltext_cache_enabled is False
+
+
+def test_a_stuck_worker_cannot_hang_the_pool_shutdown(files, monkeypatch):
+    """An exception mid-run (a timeout, Ctrl-C) kills the workers instead of joining them."""
+    import time
+
+    killed = []
+
+    class StuckProc:
+        def kill(self):
+            killed.append(True)
+
+    class StuckPool(DeadPool):
+        _processes = {1: StuckProc(), 2: StuckProc()}
+        shut = None
+
+        def shutdown(self, wait=True, cancel_futures=False):
+            StuckPool.shut = (wait, cancel_futures)
+
+        def submit(self, fn, *args):
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(local_db, "ProcessPoolExecutor", StuckPool)
+    items = [(i, f"KEY{i}") for i in range(1, len(files) + 1)]
+    start = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        list(FakeReader(files, workers=3).extract_fulltext_for_items(items))
+    assert time.monotonic() - start < 5
+    assert StuckPool.shut == (False, True)
+    assert len(killed) == 2
+
+
+def test_the_pool_never_forks_a_threaded_parent():
+    assert local_db._pool_context() is None or local_db._pool_context().get_start_method() != "fork"
+
+
+def test_the_pool_uses_the_platform_default_without_forkserver(monkeypatch):
+    import multiprocessing
+
+    monkeypatch.setattr(multiprocessing, "get_all_start_methods", lambda: ["spawn"])
+    assert local_db._pool_context() is None
+
+
+def test_the_pool_uses_the_platform_default_when_frozen(monkeypatch):
+    import sys
+
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert local_db._pool_context() is None

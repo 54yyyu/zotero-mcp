@@ -56,6 +56,11 @@ def passage_collection_name(collection_name: str) -> str:
     return f"{collection_name}_passages"
 
 
+def record_key(doc_id: str) -> str:
+    """The item key a record belongs to: ``KEY`` for ``KEY`` and ``KEY#n``."""
+    return doc_id.split("#", 1)[0]
+
+
 class ChromaClient:
     """ChromaDB client for Zotero semantic search.
 
@@ -403,7 +408,8 @@ class ChromaClient:
                n_results: int = 10,
                where: dict[str, Any] | None = None,
                where_document: dict[str, Any] | None = None,
-               level: str = ARTICLES) -> dict[str, Any]:
+               level: str = ARTICLES,
+               query_embeddings: list[list[float]] | None = None) -> dict[str, Any]:
         """
         Search for similar documents.
 
@@ -414,9 +420,13 @@ class ChromaClient:
             where_document: Document content filter conditions
             level: Collection to search, ``ARTICLES`` or ``PASSAGES``. Only
                 the collection searched has its vector index loaded.
+            query_embeddings: Vectors of ``query_texts`` from an earlier call
+                (its result's ``query_embeddings``), so asking again for more
+                results does not embed, and bill, the query again.
 
         Returns:
-            Search results from ChromaDB
+            Search results from ChromaDB. When this call embedded the queries
+            itself, they come back as ``query_embeddings``.
         """
         try:
             query_kwargs = {
@@ -432,7 +442,10 @@ class ChromaClient:
             # included — is handed query_texts and left to embed them itself.
             _is_custom_ef = isinstance(self.embedding_function, CUSTOM_EMBEDDING_FUNCTIONS)
             embedding_started = time.perf_counter()
-            if _is_custom_ef and query_texts:
+            if query_embeddings:
+                query_kwargs["query_embeddings"] = query_embeddings
+                query_embeddings = None  # not embedded here, so not handed back
+            elif _is_custom_ef and query_texts:
                 query_embeddings = []
                 for qt in query_texts:
                     emb = self.embedding_function.embed_query_text(qt)
@@ -452,6 +465,8 @@ class ChromaClient:
             # How long the query took to embed, so a slow first search can be
             # told apart from a slow index load (see chroma_worker).
             results["embedding_seconds"] = embedding_seconds
+            if query_embeddings:
+                results["query_embeddings"] = query_embeddings
             logger.info(f"Semantic search returned {len(results.get('ids', [[]])[0])} results")
             return results
         except Exception as e:
@@ -1077,6 +1092,17 @@ def _passage_item_count(con: sqlite3.Connection, segment: str) -> int | None:
     return None
 
 
+_LIBRARY_IDS = """
+SELECT DISTINCT m.int_value
+FROM embedding_metadata m
+JOIN embeddings e ON e.id = m.id
+JOIN segments s ON e.segment_id = s.id
+JOIN collections c ON s.collection = c.id
+WHERE m.key = 'group_id' AND m.int_value IS NOT NULL
+  AND s.scope = 'METADATA' AND c.name = ? AND instr(e.embedding_id, '#') = 0
+"""
+
+
 def read_index_layout(persist_directory: str, collection_name: str) -> dict[str, Any]:
     """Count an index's records per level from SQLite, read-only.
 
@@ -1089,6 +1115,11 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
     empty; once it holds records the index has been split, so any left behind
     are reported but no longer decide where passages go. ``passage_items`` is
     None when ChromaDB's tables could not be read for it.
+
+    ``library_ids`` are the libraries the article collection's records name.
+    The ``*_without_parent_hint`` and ``attachments_without_library`` counts
+    say how many records a hint-based filter pre-filter would miss; this
+    index writes no attachment records, so there are none.
     """
     layout: dict[str, Any] = {
         "article_records": 0,
@@ -1096,6 +1127,10 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
         "passage_items": 0,
         "unmigrated_passages": 0,
         "passages_in_article_collection": 0,
+        "attachments_without_parent_hint": 0,
+        "passages_without_parent_hint": 0,
+        "attachments_without_library": 0,
+        "library_ids": [],
         "passage_collection_exists": False,
         "article_collection_id": None,
         "passage_collection_id": None,
@@ -1114,9 +1149,11 @@ def read_index_layout(persist_directory: str, collection_name: str) -> dict[str,
     try:
         article_id, bare, in_articles = _level_counts(con, collection_name)
         passage_id, in_passages, passage_items = _passage_counts(con, passage_collection_name(collection_name))
+        library_ids = sorted(row[0] for row in con.execute(_LIBRARY_IDS, (collection_name,)))
     finally:
         con.close()
     layout.update(
+        library_ids=library_ids,
         article_records=bare,
         passage_records=in_articles + in_passages,
         passage_items=passage_items,

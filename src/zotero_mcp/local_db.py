@@ -6,6 +6,7 @@ when running in local mode.
 """
 
 import atexit
+import contextlib
 import json
 import logging
 import os
@@ -20,6 +21,7 @@ import weakref
 from collections.abc import Iterator
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from concurrent.futures.process import BrokenProcessPool
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -35,6 +37,7 @@ from .extract import (
     normalize_attachment_priority,
     pick_by_priority,
 )
+from .semantic_filters import equality_clauses
 from .utils import _generate_search_variants, is_local_mode
 
 logger = logging.getLogger(__name__)
@@ -241,6 +244,50 @@ def _source_for_path(path: Path) -> str:
     if suffix in {".html", ".htm"}:
         return "html"
     return "file"
+
+
+def _pool_context():
+    """Multiprocessing context for the extraction pool.
+
+    Never plain ``fork`` where something safer exists: by the time a pool
+    starts, the parent has threads of its own (ChromaDB, the embedding
+    clients), and a child forked while another thread holds a lock can wait
+    for it forever. A hung worker then blocks the pool's shutdown, and with it
+    the whole run. ``forkserver`` forks from a clean single-threaded helper.
+    The worker needs nothing from the parent (a path and an int in, text out;
+    the initializer only sets log levels), so it behaves the same under it.
+    Returns None, the platform default, where there is no forkserver (Windows;
+    macOS already spawns) and in a frozen/packaged app, whose executable
+    cannot be re-entered as a forkserver helper.
+    """
+    import multiprocessing
+    import sys
+
+    if getattr(sys, "frozen", False) or "forkserver" not in multiprocessing.get_all_start_methods():
+        return None
+    return multiprocessing.get_context("forkserver")
+
+
+@contextmanager
+def _extraction_pool(workers: int):
+    """A process pool that cannot outlive an interrupted or failed run.
+
+    A normal exit waits for the workers. On any exception (a timeout, Ctrl-C, a
+    consumer that stops reading) queued work is cancelled and the workers are
+    killed rather than joined, so a stuck worker cannot hang the shutdown.
+    """
+    pool = ProcessPoolExecutor(max_workers=workers, initializer=_init_extraction_worker, mp_context=_pool_context())
+    try:
+        yield pool
+    except BaseException:
+        procs = list((getattr(pool, "_processes", None) or {}).values())
+        pool.shutdown(wait=False, cancel_futures=True)
+        for proc in procs:
+            with contextlib.suppress(Exception):
+                proc.kill()
+        raise
+    else:
+        pool.shutdown(wait=True)
 
 
 def _init_extraction_worker() -> None:
@@ -2176,9 +2223,7 @@ class LocalZoteroReader:
         deferred: list[tuple[int, str | None, tuple[Path, str] | None]] = []
         # Outstanding work at the moment the pool died, to redo in-process.
         stranded: list[tuple[int, str | None]] = []
-        with ProcessPoolExecutor(
-            max_workers=self.extraction_workers, initializer=_init_extraction_worker
-        ) as pool:
+        with _extraction_pool(self.extraction_workers) as pool:
             for item_id, item_key in items:
                 chosen = self._resolve_extraction_target(item_id)
                 if not chosen:
@@ -3226,6 +3271,145 @@ class LocalZoteroReader:
             list(lib_ids) + list(keys),
         ).fetchall()
         return {item["key"]: item for item in self._build_full_items(conn, rows)}
+
+    #: The owner fields semantic-search filters read (semantic_filters.live_fields).
+    _FILTER_OWNER_FIELDS = ("title", "DOI", "publicationTitle", "extra")
+
+    @staticmethod
+    def _owner_condition_item_type(values: list[str]) -> tuple[str, list[str]]:
+        return f"it.typeName IN ({','.join('?' * len(values))})", values
+
+    @staticmethod
+    def _owner_condition_item_key(values: list[str]) -> tuple[str, list[str]]:
+        return f"i.key IN ({','.join('?' * len(values))})", values
+
+    @staticmethod
+    def _owner_condition_tags(values: list[str]) -> tuple[str, list[str]] | None:
+        # A filter's ``tags`` is the space-joined tag string, so a value
+        # without a space equals it only for an item with that one tag: having
+        # the tag is a superset. A value with a space could equal a joined
+        # pair, so it is not pushed down.
+        if any(" " in v for v in values):
+            return None
+        return (
+            "EXISTS (SELECT 1 FROM itemTags itg JOIN tags t ON t.tagID = itg.tagID"
+            f" WHERE itg.itemID = i.itemID AND t.name IN ({','.join('?' * len(values))}))",
+            values,
+        )
+
+    #: Filter fields get_filter_owners narrows in SQL, each with the builder of
+    #: its condition over ``i`` (items) and ``it`` (itemTypes): ``(sql, params)``
+    #: that holds for every item the filter could match, or None to skip it.
+    #: Adding a field here is all it takes to push it down.
+    _OWNER_PUSHDOWN = {
+        "item_type": _owner_condition_item_type,
+        "item_key": _owner_condition_item_key,
+        "tags": _owner_condition_tags,
+    }
+
+    def get_filter_owners(
+        self,
+        *,
+        group_id: int | None = PERSONAL_LIBRARY_GROUP_ID,
+        where: dict[str, Any] | None = None,
+    ) -> list[dict]:
+        """Every item a semantic hit can resolve to, for filtering by live data (#826).
+
+        An owner is a regular item or a standalone attachment that is not in
+        the trash; notes and annotations are never indexed. Each is
+        pyzotero-shaped with just the filterable fields, plus
+        ``attachment_keys``: its non-trashed child attachments, whose records
+        a filter on the owner must also let through.
+
+        ``where`` (a Chroma-style filter) narrows the candidates in SQLite:
+        the ``$eq`` / ``$in`` conditions on the fields of ``_OWNER_PUSHDOWN``
+        that it ANDs at its top level. The result is a superset of what
+        ``where`` matches; the caller still evaluates ``where`` on each owner.
+
+        Scoped by library rather than by an id list, so a large library does
+        not run into SQLite's bound-parameter limit.
+        """
+        conn = self._get_connection()
+        lib_ids = self._resolve_scope_library_ids(group_id)
+        if not lib_ids:
+            return []
+        lib_ph = ",".join("?" * len(lib_ids))
+        narrow_sql, narrow_params = "", []
+        for field, clauses in equality_clauses(where, tuple(self._OWNER_PUSHDOWN)).items():
+            for values in clauses:
+                built = self._OWNER_PUSHDOWN[field].__func__(values)
+                if built is not None:
+                    narrow_sql += f" AND {built[0]}"
+                    narrow_params += built[1]
+        owner_select = f"""
+            SELECT i.itemID, i.key, it.typeName
+            FROM items i
+            JOIN itemTypes it ON it.itemTypeID = i.itemTypeID
+            LEFT JOIN deletedItems del ON del.itemID = i.itemID
+            LEFT JOIN itemAttachments ia ON ia.itemID = i.itemID
+            WHERE i.libraryID IN ({lib_ph}) AND del.itemID IS NULL
+              AND it.typeName NOT IN ('note', 'annotation')
+              AND ia.parentItemID IS NULL{narrow_sql}
+            """
+        owner_params = list(lib_ids) + narrow_params
+        rows = conn.execute(owner_select, owner_params).fetchall()
+        owners: dict[int, dict] = {
+            row["itemID"]: {
+                "key": row["key"],
+                "data": {"key": row["key"], "itemType": row["typeName"], "tags": []},
+                "attachment_keys": [],
+            }
+            for row in rows
+        }
+        # The detail queries read the narrowed owners only.
+        if narrow_sql:
+            owner_scope = f"i.itemID IN (SELECT itemID FROM ({owner_select}))"
+            scope_params = owner_params
+            attachment_scope = f"ia.parentItemID IN (SELECT itemID FROM ({owner_select}))"
+        else:
+            owner_scope = f"i.libraryID IN ({lib_ph})"
+            scope_params = list(lib_ids)
+            attachment_scope = f"i.libraryID IN ({lib_ph})"
+        field_ph = ",".join("?" * len(self._FILTER_OWNER_FIELDS))
+        for row in conn.execute(
+            f"""
+            SELECT id.itemID, f.fieldName, idv.value
+            FROM itemData id
+            JOIN items i ON i.itemID = id.itemID
+            JOIN fields f ON f.fieldID = id.fieldID
+            JOIN itemDataValues idv ON idv.valueID = id.valueID
+            WHERE {owner_scope} AND f.fieldName IN ({field_ph})
+            """,
+            scope_params + list(self._FILTER_OWNER_FIELDS),
+        ):
+            if (owner := owners.get(row["itemID"])) is not None:
+                owner["data"][row["fieldName"]] = row["value"]
+        for row in conn.execute(
+            f"""
+            SELECT itg.itemID, t.name
+            FROM itemTags itg
+            JOIN items i ON i.itemID = itg.itemID
+            JOIN tags t ON t.tagID = itg.tagID
+            WHERE {owner_scope}
+            """,
+            scope_params,
+        ):
+            if (owner := owners.get(row["itemID"])) is not None:
+                owner["data"]["tags"].append({"tag": row["name"]})
+        for row in conn.execute(
+            f"""
+            SELECT ia.parentItemID, i.key
+            FROM itemAttachments ia
+            JOIN items i ON i.itemID = ia.itemID
+            LEFT JOIN deletedItems del ON del.itemID = i.itemID
+            WHERE {attachment_scope} AND ia.parentItemID IS NOT NULL AND del.itemID IS NULL
+            ORDER BY i.itemID
+            """,
+            scope_params,
+        ):
+            if (owner := owners.get(row["parentItemID"])) is not None:
+                owner["attachment_keys"].append(row["key"])
+        return list(owners.values())
 
     def get_children_of(
         self,

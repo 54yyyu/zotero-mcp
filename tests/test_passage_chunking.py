@@ -280,6 +280,10 @@ def test_passages_fit_small_model(monkeypatch):
 
 
 class _ZotItemStub:
+    def items(self, itemKey="", start=0, limit=100, **kw):
+        found = [self.item(k) for k in itemKey.split(",")]
+        return found[start : start + limit]
+
     def item(self, key):
         return {"key": key, "data": {"title": f"Title {key}"}}
 
