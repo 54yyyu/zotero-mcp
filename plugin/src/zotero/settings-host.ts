@@ -2,7 +2,7 @@
 // Settings live in one pref; each host caches it parsed, and a pref observer drops the cache and tells the UI when
 // another window wrote it, so a change in the pane shows in every open panel at once, and the other way round.
 import type { BackendId, PanelSettings, SettingsHost } from "../types.ts";
-import { withDefaults } from "./defaults.ts";
+import { withDefaults, type SavedSettings } from "./defaults.ts";
 import { createImages } from "./image.ts";
 import { createSkills } from "./skills.ts";
 import * as keychain from "./keychain.ts";
@@ -29,7 +29,7 @@ export function createSettingsHost(opts: { version: string; win: any; dataDir: s
 
   // Read on every context change, so parsed once; dropped whenever the pref changes, from here or elsewhere.
   let cached: PanelSettings | null = null;
-  const settings = (): PanelSettings => (cached ??= withDefaults(prefs.json<Partial<PanelSettings>>("settings", {}), Zotero.locale));
+  const settings = (): PanelSettings => (cached ??= withDefaults(prefs.json<SavedSettings>("settings", {}), Zotero.locale));
   const listeners = new Set<() => void>();
   let writing = false;
   const observer = Zotero.Prefs.registerObserver(`${PREFIX}settings`, () => {
@@ -46,7 +46,12 @@ export function createSettingsHost(opts: { version: string; win: any; dataDir: s
   // Everything but the runtime, which the panel and the pane each bring.
   const host: Omit<SettingsHost, "runtime"> = {
     getSettings: settings,
-    async setSettings(patch) { write(JSON.stringify({ ...prefs.json("settings", {}), ...patch })); },
+    async setSettings(patch) {
+      const next = { ...prefs.json<SavedSettings>("settings", {}), ...patch };
+      if (next.customAgent && !next.customAgents) next.customAgents = { custom: next.customAgent };
+      delete next.customAgent;
+      write(JSON.stringify(next));
+    },
     async resetSettings() { write(""); await images.remove(); },
     setApiKey: keychain.setApiKey,
     hasApiKey: async (b: BackendId) => !!(await keychain.getApiKey(b)),

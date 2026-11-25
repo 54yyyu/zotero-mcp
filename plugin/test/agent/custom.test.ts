@@ -18,11 +18,12 @@ for (const variant of ["claude", "codex"]) test(`a custom ${variant} endpoint pr
   const calls: string[] = [];
   const native = createNodeSpawner({ baseEnv: { HOME: cwd, PATH: "", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) } });
   const spawner = { ...native, run: async (...args: Parameters<typeof native.run>) => { calls.push(args[0]); return native.run(...args); } };
-  const runtime = createRuntime({ spawner, bridgeDir: join(cwd, "never-install"), customAgent: () => config });
+  const id = `custom-${variant}` as const;
+  const runtime = createRuntime({ spawner, bridgeDir: join(cwd, "never-install"), customAgents: () => ({ [id]: config }) });
   try {
-    const session = await runtime.start({ backend: "custom", cwd, brief: "Use zotero-cli for the library." });
+    const session = await runtime.start({ backend: id, cwd, brief: "Use zotero-cli for the library." });
     try {
-      assert.equal(session.backend, "custom");
+      assert.equal(session.backend, id);
       assert.ok(session.models().length);
       assert.ok(session.modes().length);
       const model = session.models()[1]!;
@@ -46,7 +47,7 @@ for (const variant of ["claude", "codex"]) test(`a custom ${variant} endpoint pr
 
 test("an unconfigured custom backend explains how to configure it", async () => {
   const spawner = { baseEnv: async () => ({}), spawn: async () => { throw new Error("must not spawn"); }, run: async () => { throw new Error("must not run"); } };
-  const runtime = createRuntime({ spawner, bridgeDir: "/unused", customAgent: () => undefined });
+  const runtime = createRuntime({ spawner, bridgeDir: "/unused", customAgents: () => ({}) });
   await assert.rejects(runtime.start({ backend: "custom", cwd: "/unused", brief: "" }), /custom agent.*command/i);
 });
 
@@ -66,9 +67,9 @@ test("custom agents do not get unverified translation restrictions or resume com
   let spawned = false;
   const spawner = { baseEnv: async () => ({}), spawn: async () => { spawned = true; throw new Error("unexpected"); }, run: async () => { throw new Error("unexpected"); } };
   const runtime = createRuntime({ spawner, bridgeDir: "/unused" });
-  await assert.rejects(runtime.start({ backend: "custom", cwd: "/unused", brief: "", locked: true }), /Translate is not available/);
-  await assert.rejects(runtime.start({ backend: "custom", cwd: "/unused", brief: "", resumeSessionId: "old" }), /Start a new chat/);
-  assert.equal(resumeCommand("custom", "/unused", "old"), null);
+  await assert.rejects(runtime.start({ backend: "custom-named", cwd: "/unused", brief: "", locked: true }), /Translate is not available/);
+  await assert.rejects(runtime.start({ backend: "custom-named", cwd: "/unused", brief: "", resumeSessionId: "old" }), /Start a new chat/);
+  assert.equal(resumeCommand("custom-named", "/unused", "old"), null);
   assert.equal(spawned, false);
 });
 
@@ -82,11 +83,15 @@ test("custom detection checks executables without launching an agent or probing 
       return args[0] === "my-acp" ? { code: 0, stdout: "C:\\Agents\\my-acp.exe\r\n", stderr: "" } : { code: 1, stdout: "", stderr: "" };
     },
   };
-  let config = { label: "Native ACP", command: "my-acp", args: ["--acp"], env: {} };
-  const runtime = createRuntime({ spawner, bridgeDir: "C:\\unused", customAgent: () => config });
-  assert.deepEqual((await runtime.detect()).find(x => x.id === "custom"), { id: "custom", label: "Native ACP", available: true });
-  config = { ...config, command: "C:\\missing.exe" };
-  assert.equal((await runtime.detect()).find(x => x.id === "custom")?.available, false);
+  const config = { label: "Native ACP", command: "my-acp", args: ["--acp"], env: {} };
+  const runtime = createRuntime({ spawner, bridgeDir: "C:\\unused", customAgents: () => ({
+    custom: config, "custom-missing": { ...config, label: "Missing ACP", command: "C:\\missing.exe" },
+  }) });
+  const statuses = await runtime.detect();
+  assert.deepEqual(statuses.find(x => x.id === "custom"), { id: "custom", label: "Native ACP", available: true });
+  const missing = statuses.find(x => x.id === "custom-missing");
+  assert.equal(missing?.available, false);
+  assert.equal(missing?.label, "Missing ACP");
   assert.ok(calls.every(([command]) => command?.endsWith("where.exe")));
 });
 
@@ -99,7 +104,7 @@ test("a failed custom handshake closes its process", async () => {
     return { ...proc, kill: async () => { closed = true; await proc.kill(); } };
   } };
   const runtime = createRuntime({ spawner, bridgeDir: cwd, initTimeoutMs: 40,
-    customAgent: () => ({ label: "Hanging agent", command: process.execPath, args: [mock], env: { MOCK_INIT: "hang" } }) });
+    customAgents: () => ({ custom: { label: "Hanging agent", command: process.execPath, args: [mock], env: { MOCK_INIT: "hang" } } }) });
   try { await assert.rejects(runtime.start({ backend: "custom", cwd, brief: "" }), /did not answer initialize/i); assert.equal(closed, true); }
   finally { rmSync(cwd, { recursive: true, force: true }); }
 });
@@ -112,7 +117,7 @@ test("an ACP endpoint without optional offers has no invented model, mode or eff
     const result=m.method==='initialize'?{protocolVersion:1,agentCapabilities:{}}:{sessionId:'empty'};
     console.log(JSON.stringify({jsonrpc:'2.0',id:m.id,result}));
   });`;
-  const runtime = createRuntime({ spawner, bridgeDir: cwd, customAgent: () => ({ label: "Empty ACP", command: process.execPath, args: ["-e", script], env: {} }) });
+  const runtime = createRuntime({ spawner, bridgeDir: cwd, customAgents: () => ({ custom: { label: "Empty ACP", command: process.execPath, args: ["-e", script], env: {} } }) });
   try {
     const session = await runtime.start({ backend: "custom", cwd, brief: "" });
     try { assert.deepEqual([session.models(), session.modes(), session.efforts()], [[], [], []]); assert.equal(session.supportsImages, false); }

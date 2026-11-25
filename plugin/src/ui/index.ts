@@ -1,7 +1,8 @@
 // The panel: `mountPanel(root, host)` renders into a shadow root and returns its handle. This file wires
 // the parts together: header, the feed and composer (the chat), and the other screens. The conversation is
 // in chat.ts, setup health in health.ts, and the DOM of each part in messages / composer / views.
-import type { BackendId, Catalog, MountPanel, PanelHost, ZoteroRef } from "../types.ts";
+import type { BackendId, Catalog, CustomAgents, MountPanel, PanelHost, ZoteroRef } from "../types.ts";
+import { customLaunchKey, isCustomBackend } from "../custom-agent.ts";
 import { STYLES } from "./styles.ts";
 import { Look } from "./appearance.ts";
 import { clear, cleanTitle, clip, copyText, env, errMessage, h, icon, initEnv, setKids } from "./dom.ts";
@@ -17,7 +18,7 @@ import { answerNote } from "./notes.ts";
 import { answerText, promptFor } from "./transcript.ts";
 import { settingsView } from "./settings.ts";
 import { ownProviders } from "./settings-model.ts";
-import { BACKEND_LABEL, BACKENDS, emptyState, historyView, setupCard, statusView } from "./views.ts";
+import { agentIds, agentLabel, emptyState, historyView, setupCard, statusView } from "./views.ts";
 import { welcomeView } from "./welcome.ts";
 import { enabledSkills, invocationText, parseInvocation, pinned, skillPath } from "./skills-model.ts";
 import { resolveLanguage, setLanguage, t } from "../i18n.ts";
@@ -60,6 +61,7 @@ class Panel {
   private autoPicked = false;
   private disposers: (() => void)[] = [];
   private catalogs = new Map<BackendId, Catalog>();
+  private customAgents: CustomAgents;
   /** What decides which agent runs and whether it can (agentKey): a settings change that leaves it alone starts no check and closes no session. */
   private agentKey = "";
   private seenImage: string;
@@ -73,15 +75,16 @@ class Panel {
     this.chat = new Chat({
       host,
       onChange: () => this.scheduleRender(),
-      blockReason: () => this.health.blockReason(),
+      blockReason: () => this.chatBlockReason(),
       turnEnded: (stop) => this.feed.announce(stop === "end_turn" ? t("chat.answerFinished") : t("chat.turnEnded")),
       setupFailed: () => void this.health.refresh(),
-      sessionChanged: () => void this.loadCatalog(false), // the pickers; a session that came up has also said what its agent offers
+      sessionChanged: () => { this.onHealth(); void this.loadCatalog(false); },
       shownChanged: () => this.refreshChips(),
       expand: (text, cwd) => this.expand(text, cwd),
     });
     this.applyLanguage();
     this.agentKey = this.readAgentKey();
+    this.customAgents = host.getSettings().customAgents;
     this.build();
 
     this.disposers.push(host.onContextChange(() => this.refreshChips()), host.onThemeChange(() => { this.app.dataset.theme = host.theme(); }),
@@ -144,7 +147,7 @@ class Panel {
       loadChoices: async () => { await this.loadCatalog(true); return this.choices(); },
       switchAgent: (id) => this.switchAgent(id),
       hasMessages: () => this.chat.tr.messages.length > 0,
-      onFirstFocus: () => { if (!this.chat.session && !this.chat.starting && !this.health.blockReason()) void this.chat.ensureSession().catch(() => {}); },
+      onFirstFocus: () => { if (!this.chat.session && !this.chat.starting && !this.chatBlockReason()) void this.chat.ensureSession().catch(() => {}); },
       checkSetup: () => this.show("status"),
       onNewChat: () => void this.newChat(),
       contextInfo: () => ({ stats: chatStats(this.chat.tr), showCost: host.getSettings().showUsage, sent: sentLine(this.chat.lastContext), canCompact: !!this.chat.session?.canCompact }),
@@ -210,7 +213,7 @@ class Panel {
       v === "history" ? historyView(host, { current: () => this.chat.saved?.id ?? null, back, resume: (s) => void this.openSaved(s), deleted: (id) => { if (this.chat.saved?.id === id) void this.newChat(); }, renamed: (s) => this.chat.adoptRename(s.id, s.title) })
       : v === "welcome" ? welcomeView(host, this.health, { done: () => void this.finishWelcome(), recheck: () => void this.health.refresh(), changed: () => this.onSettings(), openSettings: () => this.show("settings") })
       : v === "status" ? statusView(host, { back, initial: this.health.checks, openSettings: () => this.show("settings"), changed: (c) => this.health.set(c) })
-      : settingsView(host, { back, statuses: () => this.health.statuses, refreshStatuses: () => void this.health.refreshStatuses().then(() => this.activeView?.render?.()), changed: () => this.onSettings(), cleared: () => this.onCleared(), look: this.look,
+      : settingsView(host, { back, statuses: () => this.health.statuses, changed: () => this.onSettings(), cleared: () => this.onCleared(), look: this.look,
         createSkill: () => void this.newChat().then(() => { this.composer.setText("/create-skill "); this.composer.focus(); }) });
     this.activeView = screen;
     this.viewEl.append(screen.el);
@@ -301,6 +304,7 @@ class Panel {
   private async openSaved(s: Parameters<Chat["load"]>[0]): Promise<void> {
     this.feed.clear();
     await this.chat.load(s);
+    this.onHealth();
     this.show("chat");
     this.render();
     this.feed.toBottom(false);
@@ -308,25 +312,33 @@ class Panel {
 
   // ───────────────────────────── health and settings ─────────────────────────────
 
+  private chatBlockReason(): string | null {
+    if (this.chat.cannotResumeCustom) return t("agent.custom.noResume");
+    return isCustomBackend(this.chat.session?.backend) ? null : this.health.blockReason();
+  }
+
   /** The doctor or the backend list changed: the dot, the label, the empty state and whether Send works. */
   private onHealth(): void {
     const s = this.host.getSettings();
-    const st = this.health.backend();
+    const b = this.chat.session || this.chat.cannotResumeCustom ? this.chat.backend : s.backend;
+    const st = this.health.statuses?.find((status) => status.id === b);
     this.statusBtn.dataset.state = this.health.state;
     // Say plainly who pays: a subscription's account name, or "API key". pi and OpenCode have neither: they use the providers set up in them.
-    const label = s.backend === "custom" ? s.customAgent?.label || t("agent.custom.label") : ownProviders(s.backend) ? BACKEND_LABEL[s.backend] : s.auth[s.backend] === "api-key" ? t("header.apiKey", { agent: BACKEND_LABEL[s.backend] }) : st?.account || t("header.subscription", { agent: BACKEND_LABEL[s.backend] });
+    const name = agentLabel(s, b);
+    const label = isCustomBackend(b) ? this.chat.customLabel || name : ownProviders(b) ? name : s.auth[b] === "api-key" ? t("header.apiKey", { agent: name }) : st?.account || t("header.subscription", { agent: name });
     this.accountEl.textContent = label;
     const bad = this.health.failing;
     const tip = { ok: t("status.allSet"), checking: t("common.checking"), unknown: t("header.statusUnknown"), warn: "", bad: "" }[this.health.state] || bad.map((c) => c.label).join(", ");
     this.statusBtn.title = t("header.statusTip", { status: tip });
     this.statusBtn.setAttribute("aria-label", t("header.statusLabel", { account: label, status: tip }));
-    this.composer.setBlocked(this.health.blockReason());
+    this.composer.setBlocked(this.chatBlockReason());
     this.syncPickers(); // the agents' status dots
     this.paintEmpty();
     if (this.view === "welcome") {
       this.autoPick();
       this.activeView?.render?.();
     }
+    if (this.view === "settings") this.activeView?.render?.();
   }
 
   /** On the welcome, once the agents are known: if the chosen one is not usable and another is, start with that one. */
@@ -342,23 +354,32 @@ class Panel {
 
   /** The agent, how it signs in, a custom agent's command and the folder chats run in. */
   private readAgentKey(): string {
-    const s = this.host.getSettings();
-    return JSON.stringify([s.backend, s.auth, s.customAgent ?? null, s.chatFolder]);
+    const s = this.host.getSettings(), b = s.backend;
+    return JSON.stringify([b, s.auth[b], isCustomBackend(b) ? customLaunchKey(s.customAgents[b]) : null, s.chatFolder]);
   }
 
   private onSettings(): void {
     if (this.applyLanguage()) this.relabel();
-    this.onHealth();
     this.applyBehavior();
+    const agents = this.host.getSettings().customAgents;
+    const profilesChanged = JSON.stringify(agents) !== JSON.stringify(this.customAgents);
+    if (profilesChanged) {
+      for (const id of this.catalogs.keys()) {
+        if (isCustomBackend(id) && customLaunchKey(agents[id]) !== customLaunchKey(this.customAgents[id])) this.catalogs.delete(id);
+      }
+      this.customAgents = agents;
+    }
     const key = this.readAgentKey();
     if (key !== this.agentKey) {
       this.agentKey = key;
-      this.catalogs.delete("custom");
       // An empty chat has no history to protect: a changed agent takes effect at once, also over a session still starting
       // (the panel starts one as soon as it opens, and that one was for the agent chosen before).
       if (!this.chat.tr.messages.length && (this.chat.session || this.chat.starting) && !this.chat.sending) void this.chat.closeSession();
+      this.health.agentChanged();
+    } else if (profilesChanged) {
       void this.health.refreshStatuses();
     }
+    this.onHealth();
     void this.loadCatalog(false);
   }
 
@@ -367,25 +388,26 @@ class Panel {
     const image = this.host.getSettings().appearance.image;
     if (image !== this.seenImage) { this.seenImage = image; this.look.setImage(null); } else this.look.apply(); // a new picture is read again
     this.onSettings();
-    if (this.view === "settings") this.activeView?.render?.();
   }
 
   /** What the composer's pickers show: the live session's values, else the saved choice over the backend's catalog. */
   private choices(): Choices {
     const s = this.host.getSettings();
-    const b = s.backend;
     const sess = this.chat.session;
+    const b = sess?.backend ?? (this.chat.cannotResumeCustom ? this.chat.backend : s.backend);
     const cat = this.catalogs.get(b);
     const saved = (k: "model" | "mode" | "effort") => s[k][b] || cat?.[k];
     // The agent's own default: what this session started on by itself, else what a probe session started on.
-    const defaultModel = (sess?.backend === b ? sess.defaultModel() : undefined) ?? cat?.model;
+    const defaultModel = sess?.defaultModel() ?? cat?.model;
+    const ids = agentIds(s);
+    if (!ids.includes(b)) ids.push(b); // a running or archived chat can belong to a removed custom agent
     return {
-      backend: sess?.backend ?? b,
-      agents: BACKENDS.map((id) => {
+      backend: b,
+      agents: ids.map((id) => {
         const st = this.health.statuses?.find((x) => x.id === id);
-        return { id, label: BACKEND_LABEL[id], available: st?.available, reason: st?.reason };
+        return { id, label: (id === b && this.chat.customLabel) || agentLabel(s, id), available: st?.available, reason: st?.reason };
       }),
-      defaultEffort: this.catalogs.get(sess?.backend ?? b)?.effort,
+      defaultEffort: cat?.effort,
       models: sess?.models() ?? cat?.models ?? [], model: sess ? sess.currentModel() : saved("model"), defaultModel,
       efforts: sess?.efforts() ?? cat?.efforts ?? [], effort: sess ? sess.currentEffort() : saved("effort"),
       modes: sess?.modes() ?? cat?.modes ?? [], mode: sess ? sess.currentMode() : saved("mode"),
@@ -396,9 +418,10 @@ class Panel {
 
   /** The chosen backend's models, modes and efforts. `strict`: let a failure reach the caller (a picker menu shows it). */
   private async loadCatalog(strict: boolean): Promise<void> {
-    const b = this.host.getSettings().backend;
-    if (b === "custom" && !strict) return this.syncPickers();
-    if (this.catalogs.has(b) || this.chat.session?.backend === b) return this.syncPickers();
+    const settings = this.host.getSettings(), b = settings.backend;
+    const source = isCustomBackend(b) ? customLaunchKey(settings.customAgents[b]) : undefined;
+    if (isCustomBackend(b) && (!strict || !source)) return this.syncPickers();
+    if (this.catalogs.has(b) || this.chat.session || this.chat.cannotResumeCustom) return this.syncPickers();
     // What is already known (read from a session before, kept by the host) costs nothing. Reading one starts an agent, so
     // that is left to a menu being opened (`strict`), and even then a session already starting is waited for instead.
     const known = await this.host.runtime.cached?.(b).catch(() => undefined);
@@ -406,22 +429,24 @@ class Panel {
     if (known || !strict) return this.syncPickers();
     if (this.chat.starting) {
       await this.chat.starting.catch(() => {});
-      if (this.chat.session?.backend === b) return this.syncPickers();
+      if (this.choices().backend !== b || this.catalogs.has(b) || this.chat.session) return this.syncPickers();
     }
-    const source = JSON.stringify(this.host.getSettings().customAgent);
+    const current = () => !isCustomBackend(b) || source === customLaunchKey(this.host.getSettings().customAgents[b]);
+    if (!current()) return this.syncPickers();
     try {
       const catalog = await this.host.runtime.catalog(b);
-      if (b !== "custom" || source === JSON.stringify(this.host.getSettings().customAgent)) this.catalogs.set(b, catalog);
+      if (current()) this.catalogs.set(b, catalog);
     } catch (e) {
-      if (strict) throw e;
+      if (strict && current()) throw e;
     }
     this.syncPickers();
   }
 
   /** The composer's agent switch: new chats use `id`, and a chat with messages is replaced by a new one. */
   private async switchAgent(id: BackendId): Promise<void> {
-    if (id === this.host.getSettings().backend) return;
-    await this.host.setSettings({ backend: id });
+    const s = this.host.getSettings();
+    if (isCustomBackend(id) && !s.customAgents[id]) throw new Error(t("agent.custom.noCommand"));
+    if (id !== s.backend) await this.host.setSettings({ backend: id });
     if (this.chat.tr.messages.length) await this.newChat();
     this.onSettings();
   }
@@ -455,7 +480,7 @@ class Panel {
       emptyState({ pins: pinned(s), ready: !this.health.blockReason(), run: (n) => this.runPinned(n), edit: () => this.show("settings", "#skills") })));
     if (slot) (this.root.querySelector(`.pin[data-slot="${slot}"]`) as HTMLElement | null)?.focus();
     // Mid-conversation only a problem that stops chatting gets a card, above the composer.
-    const mid = this.chat.tr.messages.length > 0 && first && (BLOCKING.has(first.id) || first.id === "backend");
+    const mid = this.chat.tr.messages.length > 0 && !this.chat.cannotResumeCustom && !isCustomBackend(this.chat.session?.backend) && first && BLOCKING.has(first.id);
     setKids(this.setupSlot, mid ? card() : null);
   }
 
@@ -531,7 +556,7 @@ class Panel {
     this.feed.update(c.tr, !c.busy);
     this.composer.setBusy(c.busy);
     this.composer.setContextFill(contextFill(c.tr));
-    this.feed.setPending(c.sending && c.tr.running === null ? (c.compacting ? t("work.summarising") : c.starting ? t("work.starting", { agent: BACKEND_LABEL[c.backend] }) : t("work.sending")) : null);
+    this.feed.setPending(c.sending && c.tr.running === null ? (c.compacting ? t("work.summarising") : c.starting ? t("work.starting", { agent: c.customLabel || agentLabel(this.host.getSettings(), c.backend) }) : t("work.sending")) : null);
   }
 
   private dispose(): void {

@@ -4,6 +4,7 @@ import type { Panel } from "./panel.ts";
 import { prefs } from "./settings.ts";
 import { maybeRunTestScript } from "./testrunner.ts";
 import { startupWord } from "../locales/languages.ts";
+import { isCustomBackend } from "../custom-agent.ts";
 
 interface InitArgs { id: string; version: string; rootURI: string }
 
@@ -100,7 +101,7 @@ class ChatPlugin {
    */
   private onSelectionPopup = (event: any): void => {
     const s = prefs.json<{ translate?: boolean; uiLanguage?: string; backend?: string }>("settings", {});
-    if (!event.params?.annotation?.text?.trim() || s.translate === false || s.backend === "custom") return;
+    if (!event.params?.annotation?.text?.trim() || s.translate === false || isCustomBackend(s.backend)) return;
     const box = event.doc.createElement("div");
     const b = event.doc.createElement("button");
     b.className = "toolbar-button wide-button";

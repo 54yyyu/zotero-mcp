@@ -1,4 +1,5 @@
-import type { BackendId, PanelSettings, PromptEntry } from "../types.ts";
+import type { BackendValues, CustomAgentConfig, PanelSettings, PromptEntry } from "../types.ts";
+import { customAgentIds, isCustomBackend } from "../custom-agent.ts";
 import { DEFAULT_APPEARANCE, readAppearance } from "../ui/appearance.ts";
 import { LANGUAGES, languageForLocale } from "../ui/settings-model.ts";
 import { UI_LANGUAGES, resolveLanguage, t } from "../i18n.ts";
@@ -11,10 +12,13 @@ export const defaultPrompts = (lang = "en"): PromptEntry[] => [
   { id: "compare", slot: 4, title: t("prompt.compare.title", undefined, lang), text: t("prompt.compare.text", undefined, lang) },
 ];
 
-const each = <T>(v: T): Record<BackendId, T> => ({ "claude-code": v, codex: v, pi: v, opencode: v, custom: v });
+const each = <T>(v: T): BackendValues<T> => ({ "claude-code": v, codex: v, pi: v, opencode: v, custom: v });
+
+export type SavedSettings = Partial<PanelSettings> & { customAgent?: CustomAgentConfig };
 
 export const DEFAULT_SETTINGS: PanelSettings = {
   backend: "claude-code",
+  customAgents: {},
   // "" = the backend's own default; the pickers list what each backend really offers.
   model: each(""),
   mode: each(""),
@@ -46,10 +50,18 @@ export const DEFAULT_SETTINGS: PanelSettings = {
  * appearance is validated field by field. The translate target is a known language, else the one `locale` (Zotero's UI
  * language) reads; the interface language a known one or "" (Zotero's), and the default prompts are in it.
  */
-export function withDefaults(saved: Partial<PanelSettings>, locale?: string): PanelSettings {
+export function withDefaults({ customAgent, ...saved }: SavedSettings, locale?: string): PanelSettings {
   const d = DEFAULT_SETTINGS;
+  // Legacy preferences use "custom" for both the backend and its choices; preserve that ID.
+  const customAgents = saved.customAgents ?? (customAgent ? { custom: customAgent } : d.customAgents);
+  let backend = saved.backend ?? d.backend;
+  if (isCustomBackend(backend) && !customAgents[backend]) {
+    backend = backend === "custom" ? customAgentIds(customAgents)[0] ?? backend : d.backend;
+  }
   return {
     ...d, ...saved,
+    backend,
+    customAgents,
     model: { ...d.model, ...saved.model }, mode: { ...d.mode, ...saved.mode },
     effort: { ...d.effort, ...saved.effort }, auth: { ...d.auth, ...saved.auth },
     skills: saved.skills && typeof saved.skills === "object" ? saved.skills : {},

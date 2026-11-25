@@ -1,10 +1,10 @@
 // What each fake backend offers (names and ids as the real bridges report them) and the default settings.
-import type { BackendId, Catalog, PanelSettings } from "../types.ts";
+import type { BuiltinBackendId, Catalog, PanelSettings } from "../types.ts";
 import { DEFAULT_APPEARANCE } from "./appearance.ts";
 
 const level = (id: string, name: string, description?: string) => ({ id, name, ...(description ? { description } : {}) });
 
-export const CATALOGS: Record<BackendId, Catalog> = {
+export const CATALOGS: Record<BuiltinBackendId | "custom", Catalog> = {
   custom: { models: [], modes: [], efforts: [] },
   "claude-code": {
     models: [
@@ -82,6 +82,7 @@ export function bigPiCatalog(): Catalog {
 export function defaultSettings(): PanelSettings {
   return {
     backend: "claude-code",
+    customAgents: {},
     model: { "claude-code": "", codex: "", pi: "", opencode: "" },
     mode: { "claude-code": "", codex: "", pi: "", opencode: "" },
     effort: { "claude-code": "", codex: "", pi: "", opencode: "" },

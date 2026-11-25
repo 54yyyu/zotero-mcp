@@ -1,5 +1,6 @@
 // PanelHost: what ui/ gets. This is the only place that knows both the UI's needs and Zotero's APIs.
 import type { AgentRuntime, BackendId, Catalog, ContextChip, PanelHost, Spawner } from "../types.ts";
+import { isCustomBackend } from "../custom-agent.ts";
 import { BACKENDS, CALLOUT_GUIDE, DRAWING_GUIDE, FORMAT_GUIDE, TOOL_SHEET, buildBrief, catalogOf, createRuntime, dirnameOf, isNative, prepareWorkspace, resumeCommand } from "../agent/index.ts";
 import { ContextTracker, stripBidi } from "./context.ts";
 import { describeContext } from "./describe.ts";
@@ -35,18 +36,18 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
   const spawner = createGeckoSpawner();
   const context = new ContextTracker(opts.id);
   context.start(win);
-  const base = createRuntime({ spawner, bridgeDir: PathUtils.join(dataDir, "bridges"), customAgent: () => settings().customAgent });
+  const base = createRuntime({ spawner, bridgeDir: PathUtils.join(dataDir, "bridges"), customAgents: () => settings().customAgents });
   const known = new Map<BackendId, Catalog>();
   // What each backend offers (models, modes, efforts), as its sessions said, kept across runs: the pickers show it when
   // the panel opens without an agent being started to ask. A bridge of another version is asked again (by the first chat).
   const catalogFile = PathUtils.join(dataDir, "catalogs.json");
-  const bridgeOf = (b: BackendId): string => (b === "custom" || isNative(BACKENDS[b]) ? "" : BACKENDS[b].version);
+  const bridgeOf = (b: BackendId): string => (isCustomBackend(b) || isNative(BACKENDS[b]) ? "" : BACKENDS[b].version);
   type Kept = Record<string, { bridge: string; catalog: Catalog } | undefined>;
   let kept: Promise<Kept> | null = null;
   const readKept = () => (kept ??= IOUtils.readUTF8(catalogFile).then((text: string) => (JSON.parse(text) ?? {}) as Kept).catch(() => ({} as Kept)));
   async function remember(b: BackendId, catalog: Catalog): Promise<void> {
+    if (isCustomBackend(b)) return; // the command can change; never reuse a saved catalog
     known.set(b, catalog);
-    if (b === "custom") return; // its command may change with every save: never kept
     const all = await readKept();
     const next = { bridge: bridgeOf(b), catalog };
     if (JSON.stringify(all[b]) === JSON.stringify(next)) return;
@@ -59,7 +60,7 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     ...base,
     catalog: (b) => base.catalog(b).then((c) => { void remember(b, c).catch((e) => Zotero.logError(e)); return c; }),
     async cached(b) {
-      if (b === "custom") return undefined;
+      if (isCustomBackend(b)) return undefined;
       const hit = known.get(b);
       if (hit) return hit;
       const k = (await readKept())[b];
@@ -165,10 +166,10 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       const b = backend ?? s.backend;
       // The skills that are on go into the agent's folder (Claude and Codex also find them there by themselves).
       await skills.sync(cwd, (await skills.host.list()).filter((k) => !s.skills?.[k.name]?.off).map((k) => k.name)).catch((e) => Zotero.logError(e));
-      const key = s.auth[b] === "api-key" ? await keychain.getApiKey(b) : null;
+      const key = !isCustomBackend(b) && s.auth[b] === "api-key" ? await keychain.getApiKey(b) : null;
       const varName = keychain.API_KEY_ENV[b];
       return { cwd, brief: `${buildBrief()}\n\n${TOOL_SHEET}\n\n${DRAWING_GUIDE}\n\n${CALLOUT_GUIDE}\n\n${FORMAT_GUIDE}`, env: key && varName ? { [varName]: key } : {} };
     },
   };
-  return { host, spawner, context, prefetchPaper: () => papers.prefetch(host.currentContext()), importImage: images.importImage, knownCatalog: (b) => b === "custom" ? undefined : known.get(b), dispose: () => { offSettings(); sh.dispose(); context.stop(); } };
+  return { host, spawner, context, prefetchPaper: () => papers.prefetch(host.currentContext()), importImage: images.importImage, knownCatalog: (b) => known.get(b), dispose: () => { offSettings(); sh.dispose(); context.stop(); } };
 }

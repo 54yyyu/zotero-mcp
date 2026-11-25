@@ -135,7 +135,7 @@ writeFileSync(join(profile, "user.js"), [
 ].map(([k, v]) => `user_pref(${JSON.stringify(k)}, ${JSON.stringify(v)});`).join("\n") + "\n");
 
 // Load the unpacked build through a proxy file, and force the add-on scan on this launch. The plugin's own prefs (settings
-// a previous test saved) are dropped too: every run starts from the defaults.
+// a previous test saved) are dropped too, unless --keep-settings is used to test a restart.
 // --xpi installs the zipped build instead (its files then live at jar: URLs, as in a real install; the unpacked proxy hides problems
 // that only a packaged plugin has, like a Settings pane or an icon that has to be fetched from inside the .xpi).
 rmSync(join(profile, "extensions", addon.id), { force: true });
@@ -145,7 +145,8 @@ else writeFileSync(join(profile, "extensions", addon.id), join(root, "dist", "ad
 const prefsJs = join(profile, "prefs.js");
 if (existsSync(prefsJs)) {
   const kept = readFileSync(prefsJs, "utf8").split("\n")
-    .filter((l) => !/extensions\.(lastAppBuildId|lastAppVersion|lastPlatformVersion)|extensions\.zotero\.(dataDir|useDataDir)|extensions\.zotero-chat\./.test(l));
+    .filter((l) => !/extensions\.(lastAppBuildId|lastAppVersion|lastPlatformVersion)|extensions\.zotero\.(dataDir|useDataDir)/.test(l))
+    .filter((l) => flag("keep-settings") || !/extensions\.zotero-chat\./.test(l));
   writeFileSync(prefsJs, kept.join("\n"));
 }
 for (const f of ["extensions.json", "addonStartup.json.lz4"]) rmSync(join(profile, f), { force: true });

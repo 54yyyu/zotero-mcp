@@ -35,6 +35,7 @@ import { dirnameOf, findBinary } from "./env.ts";
 import { shimTarget } from "./windows.ts";
 import { t } from "../i18n.ts";
 import type { Key } from "../i18n.ts";
+import { isCustomBackend } from "../custom-agent.ts";
 
 export interface BackendSpec {
   id: BackendId;
@@ -159,7 +160,7 @@ export const BACKENDS: Record<BridgedBackendId, BridgeSpec> & Record<"opencode",
 export const BACKEND_IDS: BuiltinBackendId[] = ["claude-code", "codex", "pi", "opencode"];
 
 export function backendOf(id: BackendId): BackendSpec {
-  if (id === "custom") return CUSTOM;
+  if (isCustomBackend(id)) return { ...CUSTOM, id };
   const b = BACKENDS[id];
   if (!b) throw new Error(`unknown backend "${id}"`);
   return b;
@@ -240,7 +241,7 @@ export async function findClaudeExecutable(spawner: Spawner, env: Record<string,
 
 /** `cd "<folder>" && <resume command>`: what to paste in a terminal to continue a chat started in the panel. */
 export function resumeCommand(backend: BackendId, cwd: string, sessionId: string): string | null {
-  if (backend === "custom") return null;
+  if (isCustomBackend(backend)) return null;
   const quoted = `'${cwd.replace(/'/g, `'\\''`)}'`;
   return `cd ${quoted} && ${BACKENDS[backend].resume(sessionId)}`;
 }
