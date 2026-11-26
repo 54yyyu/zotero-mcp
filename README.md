@@ -1,3 +1,5 @@
+[![Protodex Verified](https://img.shields.io/badge/Protodex-Verified_MCP-2DD9E0?style=flat-square&logo=github)](https://protodex.io/servers/54yyyu-zotero-mcp.html)
+
 <!-- mcp-name: io.github.54yyyu/zotero-mcp -->
 
 <p align="center">
