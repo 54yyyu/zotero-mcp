@@ -178,8 +178,8 @@ def _parse_bibtex_author_list(raw: str) -> list[dict[str, str]]:
             continue
         if braced and not _is_person_in_braces(name):
             creators.append({"creatorType": "author", "name": name})
-        elif _split_suffix_name(name) and not _looks_corporate(name):
-            last, first = _split_suffix_name(name)
+        elif (split := _split_suffix_name(name)) and not _looks_corporate(name):
+            last, first = split
             creators.append({
                 "creatorType": "author",
                 "firstName": first,
@@ -220,15 +220,17 @@ def _split_suffix_name(name: str) -> tuple[str, str] | None:
     """(lastName, firstName) for a BibTeX name with a suffix, else None.
 
     BibTeX writes it "von Last, Jr, First"; some exporters write "Last, First,
-    Jr". The suffix goes after the given name, as the CSL import does.
+    Jr". The suffix goes after the given name, as the CSL import does. When
+    both fields look like a suffix ("Nabokov, Jr., V."), BibTeX's own order
+    wins: the middle field is the suffix.
     """
     parts = [p.strip() for p in name.split(",")]
     if len(parts) != 3 or not all(parts):
         return None
     last, mid, end = parts
-    if _is_name_suffix(mid) and not _is_name_suffix(end):
+    if _is_name_suffix(mid):
         return last, f"{end}, {mid}"
-    if _is_name_suffix(end) and not _is_name_suffix(mid):
+    if _is_name_suffix(end):
         return last, f"{mid}, {end}"
     return None
 

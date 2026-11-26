@@ -246,6 +246,15 @@ class TestAuthorParsing:
         c = _parse_bibtex_author_list(raw)
         assert c == [{"creatorType": "author", "firstName": "Martin Luther, Jr.", "lastName": "King"}]
 
+    @pytest.mark.parametrize("raw, last, first", [
+        ("Nabokov, Jr., V.", "Nabokov", "V., Jr."),  # the initial V. is not the suffix
+        ("Smith, III, V.", "Smith", "V., III"),
+        ("Smith, Jr., Iv", "Smith", "Iv, Jr."),
+    ])
+    def test_name_with_suffix_and_suffix_like_first_name(self, raw, last, first):
+        (c,) = _parse_bibtex_author_list(raw)
+        assert c == {"creatorType": "author", "firstName": first, "lastName": last}
+
     def test_name_with_suffix_survives_full_import(self):
         bib = "@book{k, author = {van Beethoven, Jr., Ludwig and Doe, Jane}, title = {T}, year = {2020}}"
         item = bibtex_entry_to_zotero(parse_bibtex(bib)[0], make_template)
