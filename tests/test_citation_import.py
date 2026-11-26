@@ -238,6 +238,30 @@ class TestAuthorParsing:
             {"creatorType": "author", "firstName": "Jane", "lastName": "Doe"},
         ]
 
+    @pytest.mark.parametrize("raw", [
+        "King, Jr., Martin Luther",  # BibTeX "von Last, Jr, First"
+        "King, Martin Luther, Jr.",  # "Last, First, Jr"
+    ])
+    def test_name_with_suffix_keeps_last_and_first(self, raw):
+        c = _parse_bibtex_author_list(raw)
+        assert c == [{"creatorType": "author", "firstName": "Martin Luther, Jr.", "lastName": "King"}]
+
+    @pytest.mark.parametrize("raw, last, first", [
+        ("Nabokov, Jr., V.", "Nabokov", "V., Jr."),  # the initial V. is not the suffix
+        ("Smith, III, V.", "Smith", "V., III"),
+        ("Smith, Jr., Iv", "Smith", "Iv, Jr."),
+    ])
+    def test_name_with_suffix_and_suffix_like_first_name(self, raw, last, first):
+        (c,) = _parse_bibtex_author_list(raw)
+        assert c == {"creatorType": "author", "firstName": first, "lastName": last}
+
+    def test_name_with_suffix_survives_full_import(self):
+        bib = "@book{k, author = {van Beethoven, Jr., Ludwig and Doe, Jane}, title = {T}, year = {2020}}"
+        item = bibtex_entry_to_zotero(parse_bibtex(bib)[0], make_template)
+        assert [(c["firstName"], c["lastName"]) for c in item["creators"]] == [
+            ("Ludwig, Jr.", "van Beethoven"), ("Jane", "Doe"),
+        ]
+
     def test_accented_author_survives_full_import(self):
         bib = r"@article{k, author = {M{\"u}ller, Hans and {\'E}mile Zola}, title = {T}, year = {2020}}"
         item = bibtex_entry_to_zotero(parse_bibtex(bib)[0], make_template)

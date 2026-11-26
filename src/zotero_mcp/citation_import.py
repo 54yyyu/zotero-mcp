@@ -178,6 +178,13 @@ def _parse_bibtex_author_list(raw: str) -> list[dict[str, str]]:
             continue
         if braced and not _is_person_in_braces(name):
             creators.append({"creatorType": "author", "name": name})
+        elif (split := _split_suffix_name(name)) and not _looks_corporate(name):
+            last, first = split
+            creators.append({
+                "creatorType": "author",
+                "firstName": first,
+                "lastName": last,
+            })
         elif "," in name and name.count(",") == 1 and not _looks_corporate(name):
             last, first = [x.strip() for x in name.split(",", 1)]
             creators.append({
@@ -200,6 +207,32 @@ def _parse_bibtex_author_list(raw: str) -> list[dict[str, str]]:
 # BibTeX separates names with "and" between any whitespace, newlines
 # included: exported .bib files wrap long author lists mid-field.
 _AND_SEPARATOR = re.compile(r"\s+and\s+", re.IGNORECASE)
+
+
+_NAME_SUFFIXES = frozenset({"jr", "sr", "ii", "iii", "iv", "v", "vi"})
+
+
+def _is_name_suffix(part: str) -> bool:
+    return part.strip().rstrip(".").lower() in _NAME_SUFFIXES
+
+
+def _split_suffix_name(name: str) -> tuple[str, str] | None:
+    """(lastName, firstName) for a BibTeX name with a suffix, else None.
+
+    BibTeX writes it "von Last, Jr, First"; some exporters write "Last, First,
+    Jr". The suffix goes after the given name, as the CSL import does. When
+    both fields look like a suffix ("Nabokov, Jr., V."), BibTeX's own order
+    wins: the middle field is the suffix.
+    """
+    parts = [p.strip() for p in name.split(",")]
+    if len(parts) != 3 or not all(parts):
+        return None
+    last, mid, end = parts
+    if _is_name_suffix(mid):
+        return last, f"{end}, {mid}"
+    if _is_name_suffix(end):
+        return last, f"{mid}, {end}"
+    return None
 
 
 def _is_brace_group(s: str) -> bool:
