@@ -368,14 +368,17 @@ def export_bibliography(
         key_batches = [",".join(keys[i:i + 50]) for i in range(0, len(keys or []), 50)]
 
         def _bibtex_text(raw):
+            text = getattr(raw, "text", None)
+            if isinstance(text, str):
+                # pyzotero 1.17 returns its own BibTeX object, which keeps
+                # the .bib source Zotero sent.
+                return text
             if hasattr(raw, "entries"):
-                # pyzotero parses a format=bibtex response with bibtexparser
-                # (a 1.x BibDatabase, a 2.x Library from pyzotero 1.17);
+                # pyzotero up to 1.16 returns a bibtexparser 1.x BibDatabase;
                 # serialise it back to .bib text.
                 import bibtexparser
 
-                write = getattr(bibtexparser, "write_string", None) or bibtexparser.dumps
-                raw = write(raw)
+                raw = bibtexparser.dumps(raw)
             return raw.decode("utf-8") if isinstance(raw, bytes) else raw
 
         def _bibtex_pages(method, *args):

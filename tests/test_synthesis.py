@@ -289,25 +289,32 @@ def test_export_bibliography_bibtex_fenced(monkeypatch):
     assert "style" not in fake.last_kwargs
 
 
-def test_export_bibliography_bibtex_from_parsed_database(monkeypatch):
-    """pyzotero parses format=bibtex with bibtexparser (a 1.x BibDatabase,
-    a 2.x Library from pyzotero 1.17).
+def test_export_bibliography_bibtex_from_pyzotero_return_type(monkeypatch):
+    """The real client does not return the raw bytes the stub above does.
 
-    The stub above returns raw bytes, but the real client hands back the
-    parsed database, which used to crash with "'BibDatabase' object is not
-    iterable". It must reach the user as .bib text with every entry.
+    pyzotero 1.17 returns its own ``pyzotero.BibTeX`` (the source in
+    ``.text``), and up to 1.16 a bibtexparser 1.x ``BibDatabase``. Handing
+    the first to bibtexparser failed with "'BibTeX' object has no attribute
+    'blocks'", and iterating the second with "'BibDatabase' object is not
+    iterable". Either must reach the user as .bib text with every entry.
     """
-    import bibtexparser
+    import pyzotero
 
-    parse = getattr(bibtexparser, "parse_string", None) or bibtexparser.loads
+    source = (
+        "@inproceedings{yan2023,\n title = {FPDM},\n booktitle = {ICCV}\n}\n"
+        "@article{smith2020,\n title = {Title},\n author = {Smith, J.}\n}\n"
+    )
+    if hasattr(pyzotero, "BibTeX"):
+        returned = pyzotero.BibTeX(source)
+    else:
+        import bibtexparser
+
+        returned = bibtexparser.loads(source)
 
     class _ParsedBibZotero(_BibZotero):
         def _render(self, kwargs):
             if kwargs.get("format") == "bibtex":
-                return parse(
-                    "@inproceedings{yan2023, title={FPDM}, booktitle={ICCV}}\n"
-                    "@article{smith2020, title={Title}, author={Smith, J.}}\n"
-                )
+                return returned
             return super()._render(kwargs)
 
     fake = _ParsedBibZotero()
