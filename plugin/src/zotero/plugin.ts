@@ -4,6 +4,8 @@ import type { Panel } from "./panel.ts";
 import { prefs } from "./settings.ts";
 import { maybeRunTestScript } from "./testrunner.ts";
 import { startupWord } from "../locales/languages.ts";
+import { PAGE_ACTOR } from "./browser.ts";
+import type { BrowserLabel } from "./browser.ts";
 
 interface InitArgs { id: string; version: string; rootURI: string }
 
@@ -16,6 +18,8 @@ class ChatPlugin {
   /** Milliseconds spent reading plugin.js, in startup (of it, registering the Settings pane), and in loading panel.js for the panel or the pane: the budget tests' numbers. */
   readonly timing = { loadMs: 0, startupMs: 0, paneRegisterMs: 0, panelLoadMs: null as number | null, paneLoadMs: null as number | null };
   private panelModule: any = null;
+  private browserModule: typeof import("./browser-mcp.ts") | undefined;
+  private browserChrome: { destruct(): void } | undefined;
   /** The reader's Translate (panel.js createTranslate), made on its first press. */
   private translate: ReturnType<typeof import("./panel.ts").createTranslate> | null = null;
 
@@ -49,7 +53,37 @@ class ChatPlugin {
   }
 
   private loadPanel(win: any, shadow: ShadowRoot): Panel {
-    return this.module().createPanel({ id: this.init.id, version: this.init.version, win, dataDir: PathUtils.join(Zotero.Profile.dir, "zotero-chat"), shadow });
+    return this.module().createPanel({
+      id: this.init.id, version: this.init.version, win, dataDir: PathUtils.join(Zotero.Profile.dir, "zotero-chat"), shadow,
+      startBrowser: (label: (key: BrowserLabel) => string) => this.startBrowser(win, label),
+    });
+  }
+
+  private startBrowser(win: any, label: (key: BrowserLabel) => string) {
+    if (!this.browserModule) {
+      const scope: any = { Zotero, Services, ChromeUtils, Cc, Ci };
+      Services.scriptloader.loadSubScript(this.init.rootURI + "browser.js", scope);
+      this.browserModule = scope.ZoteroAgentBrowser;
+    }
+    return this.browserModule?.startBrowserMcp(win, () => this.registerBrowser(), label);
+  }
+
+  private registerBrowser(): void {
+    if (this.browserChrome) return;
+    const startup = Cc["@mozilla.org/addons/addon-manager-startup;1"].getService(Ci.amIAddonManagerStartup);
+    const manifest = Services.io.newURI(this.init.rootURI + "manifest.json");
+    const chrome = startup.registerChrome(manifest, [["content", "zotero-agent-browser", "browser/"]]);
+    try {
+      ChromeUtils.registerWindowActor(PAGE_ACTOR, {
+        child: { esModuleURI: "chrome://zotero-agent-browser/content/PageChild.sys.mjs" },
+        matches: ["http://*/*", "https://*/*"],
+        messageManagerGroups: ["zoteroAgentBrowser"],
+      });
+      this.browserChrome = chrome;
+    } catch (e) {
+      chrome.destruct();
+      throw e;
+    }
   }
 
   /**
@@ -152,6 +186,10 @@ class ChatPlugin {
     Services.obs.removeObserver(this.paneObserver, PANE_TOPIC); // Zotero drops the pane itself when a plugin shuts down
     for (const win of [...this.windows.keys()]) this.onMainWindowUnload(win);
     this.translate?.dispose();
+    if (this.browserChrome) {
+      ChromeUtils.unregisterWindowActor(PAGE_ACTOR);
+      this.browserChrome.destruct();
+    }
   }
 }
 

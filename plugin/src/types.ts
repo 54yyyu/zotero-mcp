@@ -114,6 +114,14 @@ export interface BackendStatus {
   account?: string;
 }
 
+/** Tools owned by the panel and available to one ACP conversation. */
+export interface SessionMcpServer {
+  config: { type: "http"; name: string; url: string; headers: { name: string; value: string }[] };
+  brief: string;
+  setTurnActive(active: boolean): void;
+  close(): void;
+}
+
 export interface StartOpts {
   backend: BackendId;
   /** The agent's working directory (the chat workspace). */
@@ -138,6 +146,8 @@ export interface StartOpts {
   ephemeral?: boolean;
   /** Extra environment for the bridge, e.g. ANTHROPIC_API_KEY for API mode. */
   env?: Record<string, string>;
+  /** Start after the ACP handshake, and only if the bridge accepts client-provided MCP over HTTP. */
+  startMcpServer?: () => SessionMcpServer | undefined;
   /**
    * A session that can only answer (the translator): `brief` is its whole system prompt, and nothing of the user's setup
    * loads. Claude: the brief replaces Claude Code's prompt, no tools, no settings, skills or MCP servers, not kept. Codex:
@@ -332,6 +342,8 @@ export interface PanelSettings {
   // Translate, in the reader's text selection popup.
   /** The popup shows a Translate button. */
   translate: boolean;
+  /** Offer an opt-in visible Zotero browser to new ACP chats. */
+  browser: boolean;
   /** The target language's id (ui/settings-model.ts LANGUAGES); the default follows Zotero's own language. */
   translateTo: string;
   /** Per backend: the translator's model; "" = the fastest one the backend offers. */

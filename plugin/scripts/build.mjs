@@ -28,12 +28,13 @@ writeFileSync(join(out, "manifest.json"), JSON.stringify({
 
 for (const f of ["bootstrap.js", "prefpane.xhtml", "prefpane.js", "LICENSE"]) cpSync(join(root, f), join(out, f));
 cpSync(join(root, "assets"), join(out, "assets"), { recursive: true });
+cpSync(join(root, "browser"), join(out, "browser"), { recursive: true });
 
-// Two scripts, IIFE (Gecko's subscript loader takes no module syntax): plugin.js is what Zotero loads at startup,
-// panel.js (host, agent runtime, UI) is read the first time the panel opens.
+// Scripts are IIFEs (Gecko's subscript loader takes no module syntax). Load the panel and browser on demand.
 const common = { bundle: true, format: "iife", target: "firefox140", platform: "neutral", mainFields: ["module", "main"], legalComments: "none", charset: "utf8", minify: !dev || !!process.env.ZMC_MINIFY, define: { "process.env.NODE_ENV": '"production"', __TEST_HOOKS__: String(dev) } };
 await build({ ...common, entryPoints: [join(root, "src", "zotero", "plugin.ts")], outfile: join(out, "plugin.js"), globalName: "ZoteroChat" });
 await build({ ...common, entryPoints: [join(root, "src", "zotero", "panel.ts")], outfile: join(out, "panel.js"), globalName: "ZoteroChatPanel" });
+await build({ ...common, entryPoints: [join(root, "src", "zotero", "browser-mcp.ts")], outfile: join(out, "browser.js"), globalName: "ZoteroAgentBrowser" });
 
 const xpi = join(root, "dist", `${addon.slug}.xpi`);
 execFileSync("zip", ["-q", "-r", xpi, "."], { cwd: out });

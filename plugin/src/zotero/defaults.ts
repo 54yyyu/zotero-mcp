@@ -35,6 +35,7 @@ export const DEFAULT_SETTINGS: PanelSettings = {
   titleSource: "agent",
   chatFolder: "",
   translate: true,
+  browser: false,
   translateTo: "en", // withDefaults puts Zotero's own language here
   translateModel: each(""),
   uiLanguage: "",
@@ -54,6 +55,7 @@ export function withDefaults(saved: Partial<PanelSettings>, locale?: string): Pa
     effort: { ...d.effort, ...saved.effort }, auth: { ...d.auth, ...saved.auth },
     skills: saved.skills && typeof saved.skills === "object" ? saved.skills : {},
     translate: typeof saved.translate === "boolean" ? saved.translate : d.translate,
+    browser: saved.browser === true,
     scrollOnSend: typeof saved.scrollOnSend === "boolean" ? saved.scrollOnSend : d.scrollOnSend,
     titleSource: saved.titleSource === "paper" || saved.titleSource === "question" ? saved.titleSource : d.titleSource,
     translateTo: LANGUAGES.some((l) => l.id === saved.translateTo) ? saved.translateTo! : languageForLocale(locale),

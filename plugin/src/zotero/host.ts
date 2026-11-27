@@ -1,5 +1,5 @@
 // PanelHost: what ui/ gets. This is the only place that knows both the UI's needs and Zotero's APIs.
-import type { AgentRuntime, BackendId, Catalog, ContextChip, PanelHost, Spawner } from "../types.ts";
+import type { AgentRuntime, BackendId, Catalog, ContextChip, PanelHost, SessionMcpServer, Spawner } from "../types.ts";
 import { BACKENDS, CALLOUT_GUIDE, DRAWING_GUIDE, FORMAT_GUIDE, TOOL_SHEET, buildBrief, catalogOf, createRuntime, dirnameOf, isNative, prepareWorkspace, resumeCommand } from "../agent/index.ts";
 import { ContextTracker, stripBidi } from "./context.ts";
 import { describeContext } from "./describe.ts";
@@ -14,6 +14,7 @@ import { chipForHit, search } from "./search.ts";
 import { createGeckoSpawner } from "./spawn-gecko.ts";
 import { createSettingsHost } from "./settings-host.ts";
 import { t } from "../i18n.ts";
+import type { BrowserLabel } from "./browser.ts";
 
 export interface HostBundle {
   host: PanelHost;
@@ -28,7 +29,9 @@ export interface HostBundle {
   dispose(): void;
 }
 
-export function createHost(opts: { id: string; version: string; win: any; dataDir: string }): HostBundle {
+export type StartBrowser = (label: (key: BrowserLabel) => string) => SessionMcpServer | undefined;
+
+export function createHost(opts: { id: string; version: string; win: any; dataDir: string; startBrowser: StartBrowser }): HostBundle {
   const { win, dataDir } = opts;
   const sh = createSettingsHost(opts);
   const { settings, store, images, skills, chatFolder, defaultFolder } = sh;
@@ -36,6 +39,23 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
   const context = new ContextTracker(opts.id);
   context.start(win);
   const base = createRuntime({ spawner, bridgeDir: PathUtils.join(dataDir, "bridges"), customAgent: () => settings().customAgent });
+  const browsers = new Set<SessionMcpServer>();
+  let disposed = false;
+  const closeBrowsers = () => { for (const server of browsers) server.close(); };
+  const openBrowserServer = () => {
+    if (disposed || !settings().browser) return undefined;
+    try {
+      const server = opts.startBrowser(t);
+      if (!server) return undefined;
+      const close = server.close;
+      server.close = () => { browsers.delete(server); close(); };
+      browsers.add(server);
+      return server;
+    } catch (e) {
+      Zotero.logError(e);
+      return undefined; // The chat works without the optional browser.
+    }
+  };
   const known = new Map<BackendId, Catalog>();
   // What each backend offers (models, modes, efforts), as its sessions said, kept across runs: the pickers show it when
   // the panel opens without an agent being started to ask. A bridge of another version is asked again (by the first chat).
@@ -69,7 +89,8 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     },
     async start(o) {
       const cli = await findCli(spawner, await spawner.baseEnv());
-      const session = await base.start(cli ? { ...o, path: [dirnameOf(cli), ...(o.path ?? [])] } : o);
+      const path = cli ? [dirnameOf(cli), ...(o.path ?? [])] : o.path;
+      const session = await base.start({ ...o, path, startMcpServer: openBrowserServer });
       // A chat's session has just said what the backend offers.
       if (!o.locked && !o.ephemeral) void remember(o.backend, catalogOf(session, o, known.get(o.backend))).catch((e) => Zotero.logError(e));
       return session;
@@ -81,7 +102,10 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
   const doctor = () => { prepared.clear(); return check(); };
   const papers = createPapers({ dataDir, defaultFolder, chatFolder });
   // The context settings decide what the tracker hands over, wherever they were changed.
-  const offSettings = sh.host.onSettingsChange(() => context.refresh());
+  const offSettings = sh.host.onSettingsChange(() => {
+    context.refresh();
+    if (!settings().browser) closeBrowsers();
+  });
 
   const host: PanelHost = {
     ...sh.host,
@@ -114,8 +138,15 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
     paperContext: (chips, ready) => papers.context(chips, ready),
     describeContext: (chips: ContextChip[]) => describeContext(chips),
 
-    async setSettings(patch) { await sh.host.setSettings(patch); context.refresh(); },
-    async resetSettings() { await sh.host.resetSettings(); context.refresh(); },
+    async setSettings(patch) {
+      await sh.host.setSettings(patch);
+      if (patch.browser === false) closeBrowsers();
+      context.refresh();
+    },
+    async resetSettings() {
+      try { await sh.host.resetSettings(); } finally { closeBrowsers(); }
+      context.refresh();
+    },
 
     sessions: () => store.sessions(),
     loadEvents: (id) => store.loadEvents(id),
@@ -170,5 +201,13 @@ export function createHost(opts: { id: string; version: string; win: any; dataDi
       return { cwd, brief: `${buildBrief()}\n\n${TOOL_SHEET}\n\n${DRAWING_GUIDE}\n\n${CALLOUT_GUIDE}\n\n${FORMAT_GUIDE}`, env: key && varName ? { [varName]: key } : {} };
     },
   };
-  return { host, spawner, context, prefetchPaper: () => papers.prefetch(host.currentContext()), importImage: images.importImage, knownCatalog: (b) => b === "custom" ? undefined : known.get(b), dispose: () => { offSettings(); sh.dispose(); context.stop(); } };
+  return {
+    host, spawner, context, prefetchPaper: () => papers.prefetch(host.currentContext()),
+    importImage: images.importImage, knownCatalog: (b) => b === "custom" ? undefined : known.get(b),
+    dispose() {
+      disposed = true;
+      closeBrowsers();
+      offSettings(); sh.dispose(); context.stop();
+    },
+  };
 }

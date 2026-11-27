@@ -12,6 +12,7 @@ const suites = [
   ["context", []],
   ["host", []],
   ["chat", ["--mock-agent", ...welcomed]],
+  ["browser", ["--mock-agent", "--xpi"]],
   ["context-economy", ["--mock-agent", ...welcomed]], // the same selection twice is sent once; real block sizes
   ["preload", ["--mock-agent", ...welcomed]], // the open paper: metadata in the block once, its text extracted on focus into papers/, cache rules
   ["ui", ["--mock-agent", ...welcomed]],

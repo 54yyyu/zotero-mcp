@@ -3,7 +3,7 @@
 import type { BackendId, Catalog, PanelHost } from "../types.ts";
 import { createRuntime } from "../agent/index.ts";
 import { withDefaults } from "./defaults.ts";
-import { createHost, type HostBundle } from "./host.ts";
+import { createHost, type HostBundle, type StartBrowser } from "./host.ts";
 import * as keychain from "./keychain.ts";
 import { PREFIX, prefs } from "./settings.ts";
 import { createTranslator, type Translator } from "./translate.ts";
@@ -22,7 +22,7 @@ export interface Panel {
   dispose(): void;
 }
 
-export function createPanel(opts: { id: string; version: string; win: any; dataDir: string; shadow: ShadowRoot }): Panel {
+export function createPanel(opts: { id: string; version: string; win: any; dataDir: string; shadow: ShadowRoot; startBrowser: StartBrowser }): Panel {
   const bundle = createHost(opts);
   const api = mountPanel(opts.shadow, bundle.host);
   // Focus in the composer: a message is coming, so the open paper's text is prepared now, not when it is sent.

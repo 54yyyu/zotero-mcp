@@ -14,7 +14,8 @@ const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 // "utf8"; \u escapes made it 1018k). plugin.js reads none of them. In Zotero panel.js still loads in ~35 ms (budget 150).
 // Raised 2026-11-12 with Mermaid diagrams (#823): 981k -> 1003k for ui/mermaid.ts, run only once a diagram shows; the mermaid
 // library itself would have been 5.5 MB. The xpi 322k -> 331k.)
-const BUDGET = { "plugin.js": 12_000, "panel.js": 1_030_000, "zotero-agent.xpi": 340_000 };
+// The optional Zotero Browser is lazy-loaded from its own bundle. Its window, actor, and UI strings add about 8 KB to the XPI.
+const BUDGET = { "plugin.js": 12_000, "panel.js": 1_030_000, "browser.js": 12_000, "zotero-agent.xpi": 350_000 };
 
 test("bundles stay within their size budget", () => {
   execFileSync("node", [join(root, "scripts", "build.mjs")], { cwd: root, stdio: "pipe" });
