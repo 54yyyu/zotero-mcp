@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **BibTeX export works on pyzotero 1.17** (#891). `zotero_export_bibliography` with `export_format="bibtex"` returned `Error rendering bibliography: 'BibTeX' object has no attribute 'blocks'` on any install with pyzotero 1.17, which returns its own `BibTeX` object where the code expected a bibtexparser one. The export now uses that object's `.bib` source as Zotero sent it; pyzotero 1.16 and earlier are unchanged.
+
 ## [0.17.4] - 2026-11-24
 
 ### Added
