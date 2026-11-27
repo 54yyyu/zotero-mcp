@@ -281,6 +281,12 @@ class TestDateParsing:
     def test_csl_date_year_only(self):
         assert _format_csl_date({"date-parts": [[2020]]}) == "2020"
 
+    def test_csl_date_null_parts(self):
+        # Crossref sends [[null]] for a record with no date (10.22541/au.149693987.70506124)
+        assert _format_csl_date({"date-parts": [[None]]}) == ""
+        assert _format_csl_date({"date-parts": [[2020, None]]}) == "2020"
+        assert _format_csl_date({"date-parts": [[2020, 5, None]]}) == "2020-05"
+
 
 # ---------------------------------------------------------------------------
 # bibtex_entry_to_zotero

@@ -338,7 +338,13 @@ def _format_csl_date(issued: Any) -> str:
         return str(issued["literal"]).strip()
     dp = issued.get("date-parts")
     if isinstance(dp, list) and dp and isinstance(dp[0], list):
-        parts = [str(p).strip() for p in dp[0] if str(p).strip()]
+        # A part CSL leaves null ends the date: Crossref sends "issued":
+        # {"date-parts": [[null]]} for a record with no date.
+        parts = []
+        for p in dp[0]:
+            if p is None or not str(p).strip():
+                break
+            parts.append(str(p).strip())
         # Zero-pad month/day
         if len(parts) >= 2:
             parts[1] = parts[1].zfill(2)
