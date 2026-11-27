@@ -243,6 +243,7 @@ export function settingsView(host: SettingsHost, o: SettingsDeps): { el: HTMLEle
           hint(t("settings.chat.titleSourceHint")),
         ),
       ),
+      section(t("browser.title"), t("browser.settingHint"), flag("browser", t("browser.setting"), "")),
       translate(s), skills(), folder(s), data(), about(s),
       h("div.set__saved", { role: "status", "aria-live": "polite" }, h("span", null, saved)));
     if (scroller) {

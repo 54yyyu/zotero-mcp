@@ -121,6 +121,14 @@ Open them from the gear in the panel, or in Zotero's own Settings window under *
 
 The panel opens and closes from the toolbar button, or with Cmd+Option+L (Ctrl+Alt+L elsewhere). You can drag items from the library list, or annotations from the reader's sidebar, onto the composer to attach them.
 
+## Browse inside Zotero
+
+Turn on **Settings > Zotero Browser > Let the agent browse in Zotero**, then start a chat with an agent that accepts MCP over HTTP. Ask it to open a publisher page in Zotero. The first request asks for consent. The agent can then open web addresses, read the visible text, and follow links in a separate Zotero window.
+
+Choose **Take control** before entering credentials or when a site needs your input. The agent can also hand the window to you. Its browser tools pause until you choose **Return control to agent**. Tell the agent to continue in the chat after returning control. It can then read the page you left open. Page text shared with the agent may be sent to its provider.
+
+The browser has one tab and its own site session. It requires a Zotero version with isolated cookie contexts and an ACP bridge advertising MCP over HTTP. Closing the chat or turning the setting off closes the browser. Sites that require pop-ups or a separate browser for sign-in may need to be used in your regular browser. Use Zotero's usual import tools to add PDFs to the library.
+
 ## Skills and prompts
 
 A **prompt** is a message you send often ("Summarize this paper in five sentences"). A **skill** is a longer set of
@@ -192,7 +200,9 @@ Codex uses `codex resume <session id>`, pi uses `pi --session <session id>` and 
 
 ## Privacy
 
-The plugin has no server and sends nothing itself. What leaves your machine is whatever the agent you chose sends to its own provider: your messages, the context block the panel adds to them (the open item, page and selection, and the paper's metadata: authors, venue, DOI, abstract, tags, collections), and anything the agent reads or fetches while working, such as PDF text. The panel's chat history is stored locally in your Zotero profile, under `zotero-chat/sessions/`. The agent keeps its own record of each session as well (for Claude Code under `~/.claude/projects`, for Codex under `~/.codex/sessions`, for pi under `~/.pi/agent/sessions`, for OpenCode in its database under `~/.local/share/opencode`); that is what makes terminal resume work, and it follows that agent's own settings and retention. Translate sends the selected text (up to 6,000 characters) to the same provider; Claude and pi keep no record of those sessions, Codex and OpenCode keep their usual one.
+The agent you chose sends your messages, the context block the panel adds (the open item, page and selection, and the paper's metadata), and material it reads while working to its provider. The panel's chat history is stored locally in your Zotero profile, under `zotero-chat/sessions/`. The agent keeps its own record of each session as well (for Claude Code under `~/.claude/projects`, for Codex under `~/.codex/sessions`, for pi under `~/.pi/agent/sessions`, for OpenCode in its database under `~/.local/share/opencode`); that is what makes terminal resume work, and it follows that agent's own settings and retention. Translate sends the selected text (up to 6,000 characters) to the same provider; Claude and pi keep no record of those sessions, Codex and OpenCode keep their usual one.
+
+The optional Zotero Browser visits the sites you and your agent open. A temporary loopback MCP server with a per-chat token lets the bridge request bounded page text and links. Cookie values, form fields and raw HTML stay in Gecko. Closing the window clears the browsing context's cookies and site storage.
 
 ## Troubleshooting
 

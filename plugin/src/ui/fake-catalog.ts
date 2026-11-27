@@ -94,7 +94,7 @@ export function defaultSettings(): PanelSettings {
     ],
     followFocus: true, attachSelection: true, attachAreas: true,
     enterToSend: true, showThinking: true, expandTools: false, showUsage: false, openAtStart: false, welcomed: true, scrollOnSend: true, titleSource: "agent", chatFolder: "",
-    translate: true, translateTo: "en", translateModel: { "claude-code": "", codex: "", pi: "", opencode: "" }, uiLanguage: "",
+    browser: false, translate: true, translateTo: "en", translateModel: { "claude-code": "", codex: "", pi: "", opencode: "" }, uiLanguage: "",
     appearance: { ...DEFAULT_APPEARANCE },
   };
 }

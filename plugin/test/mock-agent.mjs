@@ -132,7 +132,7 @@ async function handle(msg) {
       if (process.env.MOCK_INIT === "hang") return;
       return reply({
         protocolVersion: process.env.MOCK_INIT === "badversion" ? 99 : 1,
-        agentCapabilities: { loadSession: true, promptCapabilities: { image: variant !== "pi" || true, embeddedContext: true } },
+        agentCapabilities: { loadSession: true, promptCapabilities: { image: variant !== "pi" || true, embeddedContext: true }, mcpCapabilities: { http: variant === "claude" || variant === "codex" } },
         agentInfo: { name: "mock-acp", version: "0.0.0" },
         authMethods: [],
       });
@@ -143,6 +143,7 @@ async function handle(msg) {
       const sid = `mock-${nextSession++}`;
       const sp = params?._meta?.systemPrompt; // a string replaces the system prompt (a locked session), { append } adds to it
       const s = { brief: (typeof sp === "string" ? sp : sp?.append) ?? null, locked: params?._meta?.claudeCode?.options?.tools?.length === 0, model: initialModel(), effort: initialEffort(), mode: initialMode(), history: [], cwd: params?.cwd };
+      s.browser = params?.mcpServers?.find((server) => server.name === "zotero_browser");
       sessions.set(sid, s);
       send({ method: "_auth/status_update", params: { authStatus: { kind: "account", label: "Mock Max" } } });
       // The real bridges announce commands (and pi a banner) right after session/new: no turn is running.
@@ -171,6 +172,7 @@ async function handle(msg) {
       const sid = params?.sessionId;
       if (!sid || String(sid).startsWith("missing")) return fail(-32002, "Resource not found: session " + sid);
       const s = sessions.get(sid) ?? { brief: params?._meta?.systemPrompt?.append ?? null, model: initialModel(), effort: initialEffort(), mode: initialMode(), history: ["earlier question", "earlier answer"], cwd: params?.cwd };
+      s.browser = params?.mcpServers?.find((server) => server.name === "zotero_browser");
       sessions.set(sid, s);
       send({ method: "_auth/status_update", params: { authStatus: { kind: "account", label: "Mock Max" } } });
       const replay = () => {
@@ -257,6 +259,14 @@ async function prompt(id, params) {
   }
 
   if (text.includes("SCENARIO:error")) return send({ id, error: { code: -32603, message: "mock internal error" } });
+  const browserScenario = text.split("\n").find((line) => line.startsWith("SCENARIO:browser "));
+  if (browserScenario) {
+    try {
+      const result = s?.browser ? await browse(s.browser, JSON.parse(browserScenario.slice("SCENARIO:browser ".length))) : null;
+      chunk(JSON.stringify(result));
+    } catch (e) { chunk(JSON.stringify({ error: e.message })); }
+    return end();
+  }
   if (text.includes("SCENARIO:autherror")) return send({ id, error: { code: -32000, message: "Authentication required" } });
   // The agent names the session as claude-agent-acp does after the first exchange: a session_info_update mid-turn.
   if (text.includes("SCENARIO:title")) update(sid, { sessionUpdate: "session_info_update", title: "Mock agent's summary title" });
@@ -429,6 +439,36 @@ async function prompt(id, params) {
   }
   if (images) chunk(` images:${images}`);
   return end();
+}
+
+/** Test the real loopback MCP connection supplied via ACP, without sending anything to a model. */
+async function browse(server, calls) {
+  const headers = Object.fromEntries(server.headers.map(({ name, value }) => [name, value]));
+  const rpc = async (method, params, extra = headers, id = 1) => {
+    const response = await fetch(server.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "application/json, text/event-stream", ...extra },
+      body: JSON.stringify({ jsonrpc: "2.0", method, params, ...(id === null ? {} : { id }) }),
+      signal: AbortSignal.timeout(12_000),
+    });
+    return response.status === 200 ? await response.json() : response.status;
+  };
+  const results = [];
+  for (const [name, args] of calls) {
+    if (name === "connect") {
+      const init = await rpc("initialize", { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "mock-agent", version: "1" } });
+      const initialized = await rpc("notifications/initialized", undefined, headers, null);
+      const tools = await rpc("tools/list");
+      const untrusted = await rpc("tools/list", {}, { ...headers, Origin: "http://example.test" });
+      const anonymous = await rpc("tools/list", {}, {});
+      results.push({ init, initialized, tools: tools.result?.tools.map((tool) => tool.name), untrusted, anonymous });
+    } else {
+      const r = await rpc("tools/call", { name, arguments: args });
+      const result = r.result?.content?.[0]?.text;
+      results.push(r.result?.isError ? { error: result } : typeof result === "string" ? JSON.parse(result) : r);
+    }
+  }
+  return results;
 }
 
 let buf = "";

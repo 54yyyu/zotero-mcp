@@ -9,7 +9,7 @@
 // - An agent->client request that goes unanswered stalls the agent: permission requests are answered
 //   through respondPermission(), cancel() answers all pending ones "cancelled", close() too.
 // - The model is sent explicitly after session/new / session/load (a bridge's default may be old).
-import type { AgentSession, BackendId, ChatEvent, ModeOption, ModelOption, PermissionOption, PromptInput, StartOpts, ToolKind, ToolStatus, Usage } from "../types.ts";
+import type { AgentSession, BackendId, ChatEvent, ModeOption, ModelOption, PermissionOption, PromptInput, SessionMcpServer, StartOpts, ToolKind, ToolStatus, Usage } from "../types.ts";
 import type { AcpClient, InitializeResult } from "./acp.ts";
 import type { BackendSpec } from "./backends.ts";
 import { withBrief } from "./brief.ts";
@@ -278,6 +278,7 @@ export class AcpAgentSession implements AgentSession {
   #defaultModel: string | undefined;
   #closed = false;
   #cancelled = false;
+  #toolServer: SessionMcpServer | undefined;
 
   private constructor(client: AcpClient, spec: BackendSpec, sessionId: string, init: InitializeResult, catalog: Offers, firstPromptBrief: string | undefined) {
     this.#client = client;
@@ -298,32 +299,40 @@ export class AcpAgentSession implements AgentSession {
    * `client`: on a rejection it is closed here.
    */
   static async open(client: AcpClient, spec: BackendSpec, opts: StartOpts): Promise<AcpAgentSession> {
+    let toolServer: SessionMcpServer | undefined;
     try {
       const init = await client.initialize();
+      if (!opts.locked && !opts.ephemeral && init.agentCapabilities?.mcpCapabilities?.http === true) {
+        toolServer = opts.startMcpServer?.();
+      }
+      const mcpServers = toolServer ? [toolServer.config] : [];
+      const brief = toolServer ? `${opts.brief}\n\n${toolServer.brief}` : opts.brief;
       // A probe (catalog) must not litter the user's own session list: Claude's SDK takes persistSession: false. A locked
       // session's brief is a string, which replaces Claude Code's own prompt instead of appending to it.
       const meta = spec.briefVia !== "system-prompt" ? {}
         : opts.locked ? { _meta: { systemPrompt: opts.brief, claudeCode: { options: { persistSession: false, tools: [], settingSources: [], strictMcpConfig: true } } } }
-        : { _meta: { systemPrompt: { append: opts.brief }, ...(opts.ephemeral ? { claudeCode: { options: { persistSession: false } } } : {}) } };
+        : { _meta: { systemPrompt: { append: brief }, ...(opts.ephemeral ? { claudeCode: { options: { persistSession: false } } } : {}) } };
       let sessionId: string;
       let res: Obj;
       if (opts.resumeSessionId) {
         // Replayed history arrives as session/update notifications before this resolves; no turn is
         // running, so none of it is emitted.
         try {
-          res = asObj(await client.request("session/load", { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers: [], ...meta })) ?? {};
+          res = asObj(await client.request("session/load", { sessionId: opts.resumeSessionId, cwd: opts.cwd, mcpServers, ...meta })) ?? {};
         } catch (e) {
           // The agent answered, and the answer is no (it pruned the session, or loads none): not a dead bridge or a timeout.
           throw e instanceof JsonRpcError ? new ResumeError(e.message) : e;
         }
         sessionId = opts.resumeSessionId;
       } else {
-        res = asObj(await client.request("session/new", { cwd: opts.cwd, mcpServers: [], ...meta })) ?? {};
+        res = asObj(await client.request("session/new", { cwd: opts.cwd, mcpServers, ...meta })) ?? {};
         const id = str(res["sessionId"]);
         if (!id) throw new Error("the agent did not return a sessionId from session/new");
         sessionId = id;
       }
-      const session = new AcpAgentSession(client, spec, sessionId, init, readCatalog(res, spec), spec.briefVia === "first-prompt" && !opts.resumeSessionId ? opts.brief : undefined);
+      const firstPromptBrief = spec.briefVia === "first-prompt" ? (opts.resumeSessionId ? toolServer?.brief : brief) : undefined;
+      const session = new AcpAgentSession(client, spec, sessionId, init, readCatalog(res, spec), firstPromptBrief);
+      session.#toolServer = toolServer;
       session.#banner = str(asObj(asObj(res["_meta"])?.["piAcp"])?.["startupInfo"]);
       // A resumed session reports the model it had, not the agent's default.
       if (!opts.resumeSessionId) session.#defaultModel = session.currentModel();
@@ -341,6 +350,7 @@ export class AcpAgentSession implements AgentSession {
       if (opts.resumeSessionId) session.#scheduleTitlePull(1200); // a list-only backend already has its title; a pushed one ignores this
       return session;
     } catch (e) {
+      toolServer?.close();
       await client.close();
       throw e;
     }
@@ -500,6 +510,7 @@ export class AcpAgentSession implements AgentSession {
     const turn = { id: `t${++this.#turnCount}-${Date.now().toString(36)}`, tools: new Map<string, ToolState>(), costBase: this.#cost, produced: false };
     this.#turn = turn;
     this.#cancelled = false;
+    this.#toolServer?.setTurnActive(true);
     this.#emit({ t: "turn_start", turn: turn.id });
 
     const text = this.#firstPromptBrief === undefined ? input.text : withBrief(this.#firstPromptBrief, input.text);
@@ -541,6 +552,7 @@ export class AcpAgentSession implements AgentSession {
   }
 
   #endTurn(turnId: string, stop: Extract<ChatEvent, { t: "turn_end" }>["stop"], usage?: Usage): void {
+    this.#toolServer?.setTurnActive(false);
     this.#turn = undefined;
     this.#emit({ t: "turn_end", turn: turnId, stop, ...(usage ? { usage } : {}) });
     this.#scheduleTitlePull();
@@ -611,6 +623,7 @@ export class AcpAgentSession implements AgentSession {
   async cancel(): Promise<void> {
     if (!this.#turn || this.#closed) return;
     this.#cancelled = true;
+    this.#toolServer?.setTurnActive(false);
     // ACP: the cancel notification goes first, then pending permission requests are answered
     // "cancelled", and the turn ends "cancelled".
     this.#client.notify("session/cancel", { sessionId: this.sessionId });
@@ -633,6 +646,7 @@ export class AcpAgentSession implements AgentSession {
 
   async close(): Promise<void> {
     this.#closed = true;
+    this.#toolServer?.close();
     this.#cancelPending();
     await this.#client.close();
   }

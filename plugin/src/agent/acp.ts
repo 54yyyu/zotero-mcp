@@ -15,6 +15,7 @@ export interface InitializeResult {
   protocolVersion: number;
   agentCapabilities?: {
     loadSession?: boolean;
+    mcpCapabilities?: { http?: boolean };
     promptCapabilities?: { image?: boolean; audio?: boolean; embeddedContext?: boolean };
     [k: string]: unknown;
   };
