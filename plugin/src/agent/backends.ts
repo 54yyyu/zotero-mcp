@@ -30,6 +30,12 @@
 //                            and Stop (session/cancel) is the way out. Measured 2026-11-12 with no account (Zen's free
 //                            models): handshake, chat, session/load, the zotero-cli skill and a locked Translate session,
 //                            through this runtime. Not measured: paid providers' model lists and effort names, Windows.
+//   omp 19.2.1 (measured 2026-11-28)  no bridge: `omp acp`. configOptions: mode (default, plan) / model ("provider/model") /
+//                            thinking (category thought_level, only for a model with reasoning levels); a `modes` block too;
+//                            no `models`. An unknown method is -32603 "Internal error" {details:"Unknown ACP ext method: …"},
+//                            NOT -32601, so the model call must be picked from what session/new advertised (session.ts
+//                            #modelVia). session/set_config_option works and answers with the full configOptions plus a
+//                            config_option_update update; session/set_mode works; `_meta.steering` is advertised.
 import type { BackendId, BuiltinBackendId, Spawner } from "../types.ts";
 import { dirnameOf, findBinary } from "./env.ts";
 import { shimTarget } from "./windows.ts";

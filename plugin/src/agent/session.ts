@@ -26,6 +26,8 @@ interface Offers {
   currentModel?: string;
   /** The config option that carries the model (claude: "model"), when the bridge has one. */
   modelConfigId?: string;
+  /** Which call changed the list when it was first read: ACP's `models` block (codex) or a model config option (omp). */
+  modelSource?: "models" | "config";
   modes: ModeOption[];
   currentMode?: string;
   efforts: ModeOption[];
@@ -160,11 +162,13 @@ function readCatalog(res: Obj, backend: BackendSpec): Offers {
     cat.models = readOptions(modelOpt["options"], true);
     cat.currentModel = str(modelOpt["currentValue"]);
     cat.modelConfigId = str(modelOpt["id"]);
+    cat.modelSource = "config";
   };
   const fromModels = () => {
     if (!modelsBlock) return;
     cat.models = readOptions(modelsBlock["availableModels"], true);
     cat.currentModel = str(modelsBlock["currentModelId"]);
+    cat.modelSource = "models";
   };
   if (backend.modelVia === "set_model") {
     fromModels();
@@ -414,10 +418,22 @@ export class AcpAgentSession implements AgentSession {
     return { base, level, wire: `${base}[${level}]` };
   }
 
+  /**
+   * Which call changes the model: the one this agent advertised after session/new. A `models` block means
+   * `session/set_model` (codex); a model config option means `session/set_config_option` (claude, pi, omp). An
+   * endpoint that advertises neither falls back to its table entry. The order matters: omp answers a method it
+   * does not serve with -32603 "Unknown ACP ext method", not -32601, so a wrong first call ends the switch.
+   */
+  #modelVia(): "config_option" | "set_model" {
+    if (this.#catalog.modelSource === "models") return "set_model";
+    if (this.#catalog.modelSource === "config") return "config_option";
+    return this.#spec.modelVia;
+  }
+
   async setModel(id: string): Promise<void> {
     const prevEffort = this.#catalog.currentEffort;
     const target = this.#wire(id, prevEffort);
-    const order: ("config_option" | "set_model")[] = this.#spec.modelVia === "set_model" ? ["set_model", "config_option"] : ["config_option", "set_model"];
+    const order: ("config_option" | "set_model")[] = this.#modelVia() === "set_model" ? ["set_model", "config_option"] : ["config_option", "set_model"];
     let last: unknown;
     for (const via of order) {
       if (via === "config_option" && !this.#catalog.modelConfigId && this.#spec.modelVia !== "config_option") continue;
