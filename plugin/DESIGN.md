@@ -84,6 +84,8 @@ Zotero main window ── #tabs-deck lives in an hbox below the tab bar; we appe
   (0 dark, 1 light) flips the window's `prefers-color-scheme`, so a test can take light and dark snapshots for real.
 - `claude-agent-acp` 0.85.1: `session/set_model` is -32601; set the model with `session/set_config_option {configId:"model"}`.
   codex-acp speaks `set_model`. Codex and pi ignore `_meta.systemPrompt`, so the brief rides on the first prompt.
+  omp 19.2.1 offers only config options and answers an unknown method with -32603, not -32601, so a -32601 fallback
+  would never fire: the call is chosen from what `session/new` advertised (a `models` block or a model config option).
 - A bridge may write its `available_commands_update` in the same chunk as the `session/new` reply, so it can be read before
   the session listens; `AcpClient` holds updates that arrive with no listener and hands them to the first one (without it
   `/compact` went unseen under load and Summarise now never showed).

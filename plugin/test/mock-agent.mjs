@@ -9,6 +9,9 @@
 //   MOCK_VARIANT=pi                config options only, `modes` are thinking levels, no permissions
 //   MOCK_VARIANT=opencode          `opencode acp` 1.19.5: config options only (model, mode build/plan, effort only for a model
 //                                  with variants), set_model / set_config_option / set_mode all work, no /compact advertised
+//   MOCK_VARIANT=omp               omp 19.2.1: a `modes` block plus config options (mode, model "provider/model", thinking in
+//                                  category thought_level), no `models` block; an unknown method is -32603 (not -32601):
+//                                  session/set_model -> "Unknown ACP ext method: session/set_model". set_config_option works.
 //   MOCK_CODEX_HIDE_DEFAULT=1      codex: the current model (gpt-6-sol) is missing from availableModels, as on the real bridge
 //   MOCK_INIT=hang                 never answer initialize (bad-handshake timeout)
 //   MOCK_INIT=badversion           answer initialize with protocolVersion 99
@@ -61,6 +64,15 @@ const OC_MODES = [
 ];
 /** OpenCode's model variants: only some models have them, and "default" is always offered with them. */
 const OC_VARIANTS = { "opencode/deepseek-v4.1-flash-free": ["low", "medium", "high"] };
+const OMP_MODELS = [
+  { value: "zhipu-coding-plan/glm-5.3-flash", name: "GLM-5.3 Flash", description: "zhipu-coding-plan/glm-5.3-flash" },
+  { value: "zhipu-coding-plan/glm-4.6", name: "GLM-4.6", description: "zhipu-coding-plan/glm-4.6" },
+];
+const OMP_MODES = [
+  { id: "default", name: "Default", description: "Standard ACP headless mode" },
+  { id: "plan", name: "Plan", description: "Read-only planning mode that drafts a plan to a markdown file before any code changes" },
+];
+const OMP_LEVELS = ["off", "auto", "low", "medium", "high"];
 const EFFORT_OPTS = ["default", "low", "medium", "high", "xhigh", "max"].map((v) => ({ value: v, name: v }));
 
 /** sessionId -> state */
@@ -80,6 +92,13 @@ function update(sessionId, u) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function configOptions(s) {
+  if (variant === "omp") {
+    return [
+      { id: "mode", name: "Mode", category: "mode", type: "select", currentValue: s.mode, options: OMP_MODES.map((m) => ({ value: m.id, name: m.name, description: m.description })) },
+      { id: "model", name: "Model", category: "model", type: "select", currentValue: s.model, options: OMP_MODELS },
+      { id: "thinking", name: "Thinking", category: "thought_level", type: "select", currentValue: s.effort, options: OMP_LEVELS.map((v) => ({ value: v, name: v })) },
+    ];
+  }
   if (variant === "opencode") {
     const variants = OC_VARIANTS[s.model];
     return [
@@ -105,6 +124,7 @@ function configOptions(s) {
 
 function sessionResult(id, s) {
   const result = { sessionId: id, configOptions: configOptions(s) };
+  if (variant === "omp") result.modes = { currentModeId: s.mode, availableModes: OMP_MODES };
   if (variant === "claude") result.modes = { currentModeId: s.mode, availableModes: MODES };
   if (variant === "codex") {
     result.modes = { currentModeId: s.mode, availableModes: CODEX_MODES };
@@ -117,9 +137,9 @@ function sessionResult(id, s) {
   return result;
 }
 
-const initialModel = () => (variant === "opencode" ? "opencode/big-pickle" : variant === "codex" ? "gpt-6-sol[medium]" : (variant === "claude" && process.env.ANTHROPIC_MODEL) || "opus"); // claude-agent-acp starts on ANTHROPIC_MODEL
-const initialEffort = () => (variant === "pi" ? "high" : "medium");
-const initialMode = () => (variant === "codex" ? "agent" : variant === "opencode" ? "build" : "auto");
+const initialModel = () => (variant === "omp" ? "zhipu-coding-plan/glm-5.3-flash" : variant === "opencode" ? "opencode/big-pickle" : variant === "codex" ? "gpt-6-sol[medium]" : (variant === "claude" && process.env.ANTHROPIC_MODEL) || "opus"); // claude-agent-acp starts on ANTHROPIC_MODEL
+const initialEffort = () => (variant === "pi" || variant === "omp" ? "high" : "medium");
+const initialMode = () => (variant === "omp" ? "default" : variant === "codex" ? "agent" : variant === "opencode" ? "build" : "auto");
 
 async function handle(msg) {
   const { id, method, params } = msg;
@@ -186,6 +206,7 @@ async function handle(msg) {
     }
 
     case "session/set_model": {
+      if (variant === "omp") return fail(-32603, "Internal error", { details: `Unknown ACP ext method: ${method}` });
       if (variant === "opencode") {
         const s = sessions.get(params.sessionId);
         if (!OC_MODELS.some((o) => o.value === params.modelId)) return fail(-32602, "Invalid params: unknown model " + params.modelId);
@@ -203,6 +224,15 @@ async function handle(msg) {
     case "session/set_config_option": {
       if (variant === "codex") return fail(-32601, `"Method not found": ${method}`, { method });
       const s = sessions.get(params.sessionId);
+      if (variant === "omp") {
+        if (params.configId === "model" && OMP_MODELS.some((o) => o.value === params.value)) s.model = params.value;
+        else if (params.configId === "mode" && OMP_MODES.some((m) => m.id === params.value)) s.mode = params.value;
+        else if (params.configId === "thinking" && OMP_LEVELS.includes(params.value)) s.effort = params.value;
+        else if (params.configId === "model") return fail(-32603, "Internal error", { details: "Unknown ACP model: " + params.value });
+        else return fail(-32603, "Internal error", { details: "Unknown ACP config option: " + params.configId });
+        update(params.sessionId, { sessionUpdate: "config_option_update", configOptions: configOptions(s) });
+        return reply({ configOptions: configOptions(s) });
+      }
       if (variant === "opencode") {
         if (params.configId === "model" && OC_MODELS.some((o) => o.value === params.value)) { s.model = params.value; s.effort = OC_VARIANTS[s.model]?.[0]; }
         else if (params.configId === "mode" && OC_MODES.some((o) => o.value === params.value)) s.mode = params.value;

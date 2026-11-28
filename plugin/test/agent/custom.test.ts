@@ -44,6 +44,30 @@ for (const variant of ["claude", "codex"]) test(`a custom ${variant} endpoint pr
   } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
 
+test("an endpoint that offers models only as a config option (omp) sets them with set_config_option", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "zmc-custom-"));
+  const config = { label: "omp", command: process.execPath, args: [mock], env: { MOCK_VARIANT: "omp" } };
+  const native = createNodeSpawner({ baseEnv: { HOME: cwd, PATH: "", ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) } });
+  const runtime = createRuntime({ spawner: native, bridgeDir: join(cwd, "never-install"), customAgent: () => config });
+  try {
+    const session = await runtime.start({ backend: "custom", cwd, brief: "" });
+    try {
+      assert.deepEqual(session.models().map((m) => m.id), ["zhipu-coding-plan/glm-5.3-flash", "zhipu-coding-plan/glm-4.6"]);
+      assert.equal(session.currentModel(), "zhipu-coding-plan/glm-5.3-flash");
+      // omp answers a method it does not serve with -32603, not -32601, so a wrong first call would end the switch
+      await session.setModel("zhipu-coding-plan/glm-4.6");
+      assert.equal(session.currentModel(), "zhipu-coding-plan/glm-4.6");
+      assert.deepEqual(session.efforts().map((e) => e.id), ["off", "auto", "low", "medium", "high"]);
+      await session.setEffort("low");
+      assert.equal(session.currentEffort(), "low");
+      const mode = session.modes().at(-1)!;
+      assert.equal(mode.id, "plan");
+      await session.setMode(mode.id);
+      assert.equal(session.currentMode(), mode.id);
+    } finally { await session.close(); }
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
 test("an unconfigured custom backend explains how to configure it", async () => {
   const spawner = { baseEnv: async () => ({}), spawn: async () => { throw new Error("must not spawn"); }, run: async () => { throw new Error("must not run"); } };
   const runtime = createRuntime({ spawner, bridgeDir: "/unused", customAgent: () => undefined });
